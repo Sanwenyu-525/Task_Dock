@@ -151,6 +151,27 @@ describe("FilePane 键盘焦点与选择", () => {
     await waitFor(() => expect(bridgeMocks.fsOpen).toHaveBeenCalledWith(`${DIR}\\file-01.txt`));
   });
 
+  it("选中前保留操作条占位：首次选中只切换内容，列表不发生位移", async () => {
+    await renderPane();
+    const before = document.querySelector<HTMLElement>(".fw-selection-bar");
+    expect(before).toBeTruthy();
+    expect(before!.classList.contains("is-empty")).toBe(true);
+    expect(before!.querySelector("button")).toBeNull();
+
+    fireEvent.pointerDown(screen.getByText("file-00.txt").closest("[data-fw-path]")!, {
+      button: 0,
+      clientX: 100,
+      clientY: 100,
+      pointerId: 1,
+    });
+    fireEvent.pointerUp(window, { pointerId: 1 });
+    await waitFor(() => expect(selectionPaths()).toHaveLength(1));
+
+    const after = document.querySelector<HTMLElement>(".fw-selection-bar");
+    expect(after).toBe(before);
+    expect(after!.classList.contains("is-empty")).toBe(false);
+  });
+
   it("输入框内方向键不被文件选择消费", async () => {
     await renderPane();
     const input = document.createElement("input");

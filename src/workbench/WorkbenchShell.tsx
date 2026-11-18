@@ -1812,7 +1812,6 @@ export default function WorkbenchShell() {
             </span>
             <span className="wb-nav-label">{t("workbench.home")}</span>
           </button>
-          <div className="wb-nav-sep" role="presentation" />
           {navDrag.dropLineTop !== null && (
             <div
               className="wb-nav-drop-line"
@@ -1883,7 +1882,7 @@ export default function WorkbenchShell() {
                     {/* 行是普通布局容器；页面切换与隐藏是独立按钮，拖拽由整行
                         pointerdown 统一承接。手柄只保留视觉提示，不再是独立控件。 */}
                     <span className="wb-nav-grip" data-nav-grip aria-hidden="true">
-                      <GripVertical size={17} strokeWidth={2} />
+                      <GripVertical size={13} strokeWidth={2} />
                     </span>
                     <button
                       type="button"

@@ -1677,8 +1677,10 @@ export default function FilePane({
         </div>
       )}
 
-      {/* 选中上下文操作区：高频操作按选择出现，常驻工具栏保持收敛 */}
-      {selectedPaths.length > 0 && (
+      {/* 选中上下文操作区：高频操作按选择出现，常驻工具栏保持收敛。
+          无选中时保留同高占位条——首次选中若插入新行会把列表整体下移，
+          双击第二击落到相邻行，表现为“选中的文件点不开”。 */}
+      {selectedPaths.length > 0 ? (
         <div className="fw-selection-bar" role="toolbar" aria-label={t("fw.selection.aria")}>
           <span className="fw-selection-count">{t("fw.status.selected", { count: selectedPaths.length })}</span>
           {totalPanes > 1 && (
@@ -1772,6 +1774,8 @@ export default function FilePane({
             </button>
           )}
         </div>
+      ) : (
+        <div className="fw-selection-bar is-empty" aria-hidden="true" />
       )}
 
       {/* 分页停滞警示：不阻断列表与已有操作，仅提示目录未读完、可刷新重试。 */}

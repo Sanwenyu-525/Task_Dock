@@ -38,8 +38,10 @@ export interface MarqueeGeometry {
   gridCellWidth: number;
   gridCellHeight: number;
   gridGap: number;
-  /** 网格行左右内边距（与 `.fw-grid-row` 的 0 4px 对应）。 */
+  /** 网格行左右总内边距（滚动容器内边距 + `.fw-grid-row` 的 0 4px）。 */
   gridPaddingX: number;
+  /** 滚动容器内容盒左右内边距（与 `.fw-body` 的 padding 一致；列表命中共用）。 */
+  bodyPaddingX?: number;
   /** 列表行可选择区域宽度（内容坐标）。 */
   bodyWidth: number;
 }
@@ -92,7 +94,7 @@ export function toMarqueeContentPoint(
  * 按虚拟几何命中矩形覆盖的文件路径。
  *
  * 只遍历矩形覆盖的行/列候选：复杂度与框选覆盖量相关，与目录总条目数无关。
- * 列表行使用视觉 inset（上下各 1px、左右 2px），与独立行轮廓保持一致；
+ * 列表行使用视觉 inset（上下各 1px、左右 2px，叠加滚动容器内边距），与独立行轮廓保持一致；
  * 网格卡片按实际列数、卡片宽高与 gap 计算。
  */
 export function marqueeHitTest(
@@ -112,11 +114,17 @@ export function marqueeHitTest(
       Math.floor((rect.bottom - 0.001) / rowHeight),
     );
     const width = Math.max(0, geometry.bodyWidth);
+    const padX = Math.max(0, geometry.bodyPaddingX ?? 0);
     for (let index = firstRow; index <= lastRow; index += 1) {
       // 行槽本身参与虚拟滚动；绘制背景的 inset 不改变行槽高度。
       const rowTop = index * rowHeight + 1;
       const rowBottom = (index + 1) * rowHeight - 1;
-      const item: MarqueeRect = { left: 2, top: rowTop, right: width - 2, bottom: rowBottom };
+      const item: MarqueeRect = {
+        left: padX + 2,
+        top: rowTop,
+        right: width - padX - 2,
+        bottom: rowBottom,
+      };
       if (rectsIntersect(rect, item)) hits.push(joinPath(dirPath, entries[index].name));
     }
     return hits;

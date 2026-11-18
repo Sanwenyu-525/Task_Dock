@@ -37,6 +37,8 @@ const LIST_HEAD_H = 26;
 const GRID_CELL_W = 104;
 const GRID_CELL_H = 116;
 const GRID_GAP = 8;
+/** 滚动容器内容盒左右内边距（与 files.css 的 `.fw-body { padding: 0 6px }` 一致）。 */
+const BODY_PAD_X = 6;
 /** 鼠标移动超过该距离才从「空白点击」升级为框选，避免手抖误清空/误选。 */
 const MARQUEE_THRESHOLD_PX = 5;
 const MARQUEE_AUTO_SCROLL_MAX = 14;
@@ -473,7 +475,7 @@ export default function FileList({
       return;
     }
     const measure = () => {
-      const inner = el.clientWidth - 8;
+      const inner = el.clientWidth - BODY_PAD_X * 2 - 8;
       const per = Math.max(2, Math.floor((inner + GRID_GAP) / (GRID_CELL_W + GRID_GAP)));
       setCols(per);
       onGridColsChange?.(per);
@@ -552,7 +554,8 @@ export default function FileList({
     gridCellWidth: GRID_CELL_W,
     gridCellHeight: GRID_CELL_H,
     gridGap: GRID_GAP,
-    gridPaddingX: 4,
+    gridPaddingX: BODY_PAD_X + 4,
+    bodyPaddingX: BODY_PAD_X,
     bodyWidth: Math.max(0, el.clientWidth),
   });
 

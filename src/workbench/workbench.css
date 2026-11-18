@@ -126,7 +126,8 @@ html[data-window-maximized="true"] .wb-root .resize-grips {
   display: flex;
   flex-direction: column;
   gap: 1px;
-  padding-top: 2px;
+  /* 底部留白：滚到底时最后一项不会贴着固定区上边框（底部区本身不覆盖内容）。 */
+  padding: 2px 0 6px;
   /* 落点线用「列表内容坐标」定位（top 已含 scrollTop）：相对定位让绝对子元素
      落在滚动内容上，自动滚动时跟着内容走。 */
   position: relative;
@@ -142,19 +143,13 @@ html[data-window-maximized="true"] .wb-root .resize-grips {
   height: 0;
 }
 
-.wb-nav-sep {
-  height: 1px;
-  margin: 6px 6px;
-  background: var(--border-subtle);
-}
-
 .wb-nav-item {
   /* 固定列宽：手柄 / 功能图标 / 名称 / 徽标 / × 各有独立轨道，图标与文字
      不会因悬停显隐或徽标出现而横向跳动。普通入口（首页/设置）没有首尾操作，
      但保留空轨道，功能图标仍与可排序 Tab 对齐。
      行网格与内边距走自定义属性：名称宽度实测（data-nav-measuring）要用同一份
      几何把行临时恢复成宽态，避免测量与真实布局出现两套数字。 */
-  --wb-nav-row-columns: 28px 20px minmax(0, 1fr) auto 24px;
+  --wb-nav-row-columns: 24px 20px minmax(0, 1fr) auto 24px;
   --wb-nav-row-padding: 3px 4px 3px 2px;
   display: grid;
   grid-template-columns: var(--wb-nav-row-columns);
@@ -289,7 +284,7 @@ html[data-window-maximized="true"] .wb-root .resize-grips {
 .wb-root[data-nav-compact="true"] .wb-nav-grip {
   justify-self: center;
   width: 24px;
-  height: 24px;
+  height: 32px;
   opacity: 0;
 }
 .wb-root[data-nav-compact="true"] .wb-nav-item:hover .wb-nav-grip,
@@ -683,6 +678,14 @@ body.wb-resizing {
 
 .tab-content-workspace {
   padding: 16px 20px;
+}
+
+/* 文件工作区是满幅工具页：页面画布直接铺到内容区边缘，不再由 `.tab-content`
+   的 10px 内边距把「标题栏 + 文件浏览器」再包成一张外层卡片。
+   滚动与内容高度由页面自身的 `.fw-root` / `.fw-workarea` 承担。 */
+.tab-content-files {
+  padding: 0;
+  overflow: hidden;
 }
 
 .wb-home-slot {
@@ -1762,23 +1765,23 @@ body.wb-resizing {
 }
 
 /* ── 导航分节标题 ─────────────────────────────────────────────────────── */
+/* 分组只靠统一的间距与标题建立层级：三组共用同一字号/字重/颜色/上下边距，
+   首页与第一组之间同样走这一份 14px 间距（不再单独画一条分割线）。 */
 .wb-nav-group {
-  margin: 12px 9px 4px;
-  font-size: 10px;
+  margin: 14px 9px 4px;
+  font-size: 10.5px;
   font-weight: 600;
-  letter-spacing: 0.05em;
-  color: var(--text-tertiary);
+  letter-spacing: 0.04em;
+  /* 标题是导航结构的一部分：次级文字色保证可读，不再是近似禁用态的弱灰。 */
+  color: var(--text-secondary);
   user-select: none;
-}
-.wb-nav-group:first-child {
-  margin-top: 4px;
 }
 
 /* ── 左侧导航拖拽排序（2026-11-15，2026-11-16 整行化）──────────────
    视觉保持二维平面：跟手位移 + 其它行让位 + 落点细线，不做缩放/倾斜/3D。
-   手柄占行首 28×28 视觉区，17px 六点图标；默认低对比灰色、无背景，不与
-   功能图标争夺注意力。整行都是拖拽面，手柄只负责视觉提示；只有悬停整行/
-   拖拽时变强调色，真正拖拽才出现轻背景。 */
+   手柄占行首 24×32 的可操作轨道，13px 六点图标；默认可见但低干扰，
+   悬停整行/键盘聚焦时变强调色，真正拖拽才出现轻背景。整行都是拖拽面，
+   手柄只负责视觉提示；24px 轨道比旧 28px 更省横向空间，不挤压名称。 */
 .wb-nav-grip {
   grid-column: 1;
   justify-self: center;
@@ -1786,15 +1789,15 @@ body.wb-resizing {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 32px;
   padding: 0;
   border: 0;
   border-radius: var(--radius-control);
   background: transparent;
   color: var(--text-tertiary);
   font: inherit;
-  opacity: 0.55;
+  opacity: 0.72;
   /* 手柄只承担视觉提示；整行的 pointerdown 才是拖拽入口，
      这样手柄本身不需要、也不保留一个无实际用途的独立按钮。 */
   pointer-events: none;

@@ -24,7 +24,9 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  background: var(--fw-surface-base);
+  /* 页面画布由工作台外壳提供：文件工作区不再绘制第二层页面背景，
+     避免出现「页面背景 → 外层卡片 → 文件浏览器」的重复层级。 */
+  background: transparent;
   color: var(--text-primary);
   /* 页面级响应式上下文：工具栏/分栏按本页内容宽度收敛，而不是按窗口外框猜测。 */
   container-type: inline-size;
@@ -46,15 +48,17 @@ html[data-theme="light"] .fw-root {
 
 /* ── 顶部工具栏 ─────────────────────────────────────────────────────── */
 
+/* 页面标题 + 工具条：直接铺在页面画布上（不是一张抬升卡片），只用底边分隔内容。
+   标题与「文件 / 回收站」二级入口靠左成组，工具按钮由 margin-left:auto 收到右侧。 */
 .fw-toolbar {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 12px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--border-subtle);
-  background: var(--surface-raised);
+  background: transparent;
 }
 
 .fw-toolbar-title {
@@ -108,6 +112,52 @@ html[data-theme="light"] .fw-root {
   align-items: center;
   gap: 6px;
   flex-wrap: nowrap;
+  margin-left: auto;
+}
+
+/* 文件 / 回收站：标题栏内的二级页面入口。
+   样式必须随面板本体加载（files.css），不能放在懒加载的回收站 chunk，
+   否则首次进入文件工作区时入口没有激活底色与字重（原生验收发现）。 */
+.fw-source-switch {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--surface-raised);
+}
+
+.fw-source-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.fw-source-btn:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.fw-source-btn.is-active {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.fw-source-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 /* ── 分割树 ─────────────────────────────────────────────────────────── */
@@ -116,7 +166,8 @@ html[data-theme="light"] .fw-root {
   flex: 1 1 auto;
   min-height: 0;
   min-width: 0;
-  padding: 8px;
+  /* 左右 12px 与标题栏内边距对齐：文件浏览器左边缘与标题/工具按钮同一竖向基线。 */
+  padding: 10px 12px 12px;
   display: flex;
   /* 多目录在过窄内容区放不下时，在工作区内横向滚动兜底；不把溢出推到整页横向滚动。 */
   overflow: auto;
@@ -323,8 +374,10 @@ body.fw-resizing-row * {
   container-name: fw-pane;
 }
 
+/* 文件浏览器外框：默认低对比中性色；只有当前分栏用更深的同级中性边框强调，
+   不再常驻强调色（避免「一直处于聚焦态」的错觉）。 */
 .fw-pane.is-active {
-  border-color: color-mix(in srgb, var(--accent) 28%, var(--fw-border-strong));
+  border-color: var(--border-strong);
 }
 
 /* 布局编辑模式：区域边框轻微强调 + 顶部细把手（普通模式没有整窗格拖拽）。 */
@@ -479,6 +532,11 @@ body.fw-resizing-row * {
   border-bottom: 1px solid var(--border-subtle);
   background: color-mix(in srgb, var(--accent) 7%, var(--surface-raised));
   overflow: hidden;
+}
+
+/* 空态占位：保持与选中态同高，避免首次选中时插入新行把列表整体下移（双击第二击落空）。 */
+.fw-selection-bar.is-empty {
+  visibility: hidden;
 }
 
 .fw-selection-count {
@@ -929,6 +987,8 @@ body.fw-resizing-row * {
   overflow: auto;
   position: relative;
   outline: none;
+  /* 内容左右留白：行悬停/选中轮廓不再贴着分栏边框（与 FileList 的 BODY_PAD_X 保持一致）。 */
+  padding: 0 6px;
   /* 容器查询锚点：窄分栏时次要列逐级让位（P2：338px 分栏时文件名被固定列压到 0）。 */
   container-type: inline-size;
 }
@@ -1003,9 +1063,10 @@ body.fw-resizing-row * {
   border-color: color-mix(in srgb, var(--accent) 42%, transparent);
 }
 
-/* 焦点是独立视觉通道：未选中也有轮廓，选中时叠加在选中背景之上。 */
+/* 焦点是独立视觉通道：未选中也有轮廓，选中时叠加在选中背景之上。
+   用不透明的强调色描边（而非低比例混色），键盘移动焦点时清晰可辨。 */
 .fw-row.is-active::before {
-  outline: 1px solid color-mix(in srgb, var(--accent) 66%, transparent);
+  outline: 1px solid var(--accent);
   outline-offset: -1px;
 }
 
@@ -1141,7 +1202,7 @@ body.fw-resizing-row * {
 }
 
 .fw-cell.is-active {
-  outline: 1px solid color-mix(in srgb, var(--accent) 66%, transparent);
+  outline: 1px solid var(--accent);
   outline-offset: -1px;
 }
 

@@ -899,12 +899,12 @@ describe("显隐与恢复默认不回归", () => {
 });
 
 describe("拖拽手柄视觉与整行拖拽语义", () => {
-  it("手柄图标 17px、视觉区 28×28；手柄位于 Tab 左侧、× 位于最右侧，行高保持 36px", async () => {
+  it("手柄图标 13px、操作轨道 24×32；手柄位于 Tab 左侧、× 位于最右侧，行高保持 36px", async () => {
     await renderShell();
     const row = navRows()[0];
     const grip = gripOf(row);
-    expect(grip.querySelector("svg")?.getAttribute("width")).toBe("17");
-    expect(grip.querySelector("svg")?.getAttribute("height")).toBe("17");
+    expect(grip.querySelector("svg")?.getAttribute("width")).toBe("13");
+    expect(grip.querySelector("svg")?.getAttribute("height")).toBe("13");
     // 宽导航下整行不挂名称 tooltip。
     expect(row.hasAttribute("data-tip")).toBe(false);
 
@@ -928,11 +928,11 @@ describe("拖拽手柄视觉与整行拖拽语义", () => {
     expect(hide.querySelector("svg")?.getAttribute("width")).toBe("15");
     expect(hide.querySelector("svg")?.getAttribute("height")).toBe("15");
 
-    // CSS 契约：17px 图标 / 28×28 视觉区；默认低对比灰、无背景；行高不变。
-    expect(cssRule(".wb-nav-grip")).toMatch(/width: 28px/);
-    expect(cssRule(".wb-nav-grip")).toMatch(/height: 28px/);
+    // CSS 契约：13px 图标 / 24×32 操作轨道；默认可见但低干扰、无背景；行高不变。
+    expect(cssRule(".wb-nav-grip")).toMatch(/width: 24px/);
+    expect(cssRule(".wb-nav-grip")).toMatch(/height: 32px/);
     expect(cssRule(".wb-nav-grip")).toMatch(/background: transparent/);
-    expect(cssRule(".wb-nav-grip")).toMatch(/opacity: 0\.55/);
+    expect(cssRule(".wb-nav-grip")).toMatch(/opacity: 0\.72/);
     // 手柄已纯视觉化：不接收指针，整行才是拖拽入口。
     expect(cssRule(".wb-nav-grip")).toMatch(/pointer-events: none/);
     expect(cssRule(".wb-nav-grip")).not.toMatch(/pointer-events: auto/);
@@ -943,7 +943,7 @@ describe("拖拽手柄视觉与整行拖拽语义", () => {
     expect(cssRule(".wb-nav-item")).toMatch(/min-height: 36px/);
     // 宽态行网格抽成自定义属性：名称宽度实测要复用同一份几何。
     expect(cssRule(".wb-nav-item")).toContain(
-      "--wb-nav-row-columns: 28px 20px minmax(0, 1fr) auto 24px",
+      "--wb-nav-row-columns: 24px 20px minmax(0, 1fr) auto 24px",
     );
     expect(cssRule(".wb-nav-item")).toMatch(/grid-template-columns: var\(--wb-nav-row-columns\)/);
     expect(row.classList.contains("has-grip")).toBe(true);
