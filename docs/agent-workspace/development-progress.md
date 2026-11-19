@@ -172,3 +172,22 @@
   `buildId`、性能基线。当前桌面二进制因重建 OOM 被移除，重建 3 次失败（内存不足）。
 
 证据见 [test-plan.md](test-plan.md) §12、[acceptance-report.md](acceptance-report.md) §12。
+
+## v81 修订轮（2026-11-19 代码级缺陷修复与协议统一）
+
+| 交付 | 状态 | 位置 |
+|---|---|---|
+| P0 文件导入权限边界：身份拆分 + 目录策略 + 待审核 + 幂等声明 | 已完成（代码） | `agent_access/{mod,permissions,sync,watch,commands}.rs`、`schema.rs`（迁移 v81） |
+| P1 冲突契约统一（db/file/dismiss）与按资源类型鉴权 | 已完成（代码） | `agent_access/sync.rs`、`commands.rs`、前端 `AgentAccessSection.tsx` |
+| P1 Context 分权装配、项目范围、近期变更关联、预算、中文检索 | 已完成（代码） | `agent_access/context.rs` |
+| P1 REST 生命周期（先绑定后登记、真实状态、端口切换） | 已完成（代码） | `agent_access/rest.rs` |
+| P1 Handoff 操作者身份与报告范围 | 已完成（代码） | `agent_access/handoff.rs` |
+| P2 Markdown task.update、导入幂等、监听状态可观测 | 已完成（代码） | `agent_access/sync.rs`、`watch.rs` |
+| P2 前端：报告数据源、冲突单条选择、导入审核、权限分组与撤销确认 | 已完成（代码） | `src/components/capability/AgentAccessSection.tsx`、`agent-access.css` |
+| P2 CLI 命令注册表 / 文档契约 / 未知参数校验 / 兼容别名 | 已完成（代码） | `agent_access/cli.rs`、`docs/agent-workspace/cli-specification.md` |
+| 契约测试（Rust 18 例 + 前端 9 例） | 已完成（代码） | `agent_access/tests.rs`、`AgentAccessSection.test.tsx` |
+
+**验证口径**：`npm run typecheck` exit 0；`npx vitest run src/components/capability/AgentAccessSection.test.tsx` 9/9 通过；
+`npm run cargo -- check --lib` exit 0。`cargo test --lib agent_access` 在共享工作区被**其他会话**的
+`src-tauri/src/diagnostics/panic_hook.rs`（test cfg）编译错误阻塞（E0597，非本任务模块），
+改在集成隔离工作区执行，结论见 [acceptance-report.md](acceptance-report.md) v81 章节。

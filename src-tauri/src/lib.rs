@@ -752,9 +752,6 @@ pub fn run() {
             handle.manage(Arc::new(transfer::context::ContextState::default()));
             // 快速捕获语音输入：只构造服务对象，工作线程与 COM 在首次使用时才创建。
             handle.manage(Arc::new(quick_capture::voice::VoiceInput::new()));
-            let settings = db::Settings::load(&db).unwrap_or_else(|e| {
-                tracing::warn!(
-                    "启动时读取设置失败，使用默认值（剪贴板等模块将按默认关闭）: {}",
             // 快速捕获图片附件：独立托管目录 data_dir/capture-attachments，
             // 与剪贴板资产分属不同生命周期（删除捕获记录不能影响剪贴板历史）。
             let capture_files = Arc::new(
@@ -762,6 +759,9 @@ pub fn run() {
                     .expect("快速捕获附件目录初始化失败"),
             );
             handle.manage(capture_files);
+            let settings = db::Settings::load(&db).unwrap_or_else(|e| {
+                tracing::warn!(
+                    "启动时读取设置失败，使用默认值（剪贴板等模块将按默认关闭）: {}",
                     e
                 );
                 Default::default()
@@ -944,20 +944,23 @@ pub fn run() {
                 }
                 // 窗口销毁时撤销本进程的拖入接管：进程内重建窗口会复用/新建 HWND，
                 // 旧注册必须解除，绝不留给系统回收。对已销毁句柄撤销只会返回错误。
-                win.on_window_event(|event| {
+                // 同时移除该窗口的跨 Tab 上下文，避免残留指向已删除实体。
+                let ctx_handle = handle.clone();
+                let window_label = win.label().to_string();
+                win.on_window_event(move |event| {
                     if matches!(event, tauri::WindowEvent::Destroyed) {
                         dragdrop::uninstall_native_bridge();
+                        if let Some(state) = ctx_handle
+                            .try_state::<Arc<transfer::context::ContextState>>()
+                        {
+                            state.forget(&window_label);
+                        }
                     }
                 });
                 magnetic::watch_destroy(&win);
                 // 拖拽期间 `window_shape::apply` 会跳过回读与 DWM 写入（逐帧写会让
                 // DWM 反复重新合成，表现为拖动中整窗透明）。松手时由磁力层的
                 // `WM_EXITSIZEMOVE` 调 `flush_deferred`，通过本回调一次性补做校准。
-                        if let Some(state) = ctx_handle
-                            .try_state::<Arc<transfer::context::ContextState>>()
-                        {
-                            state.forget(&window_label);
-                        }
                 let win_for_flush = win.clone();
                 window_shape::register_apply_hook(Box::new(move || {
                     let _ = window_shape::apply(&win_for_flush);
@@ -1767,17 +1770,17 @@ pub fn run() {
             quick_capture::quick_capture_voice_start,
             quick_capture::quick_capture_voice_stop,
             quick_capture::quick_capture_open_speech_settings,
+            quick_capture::quick_capture_focus,
+            quick_capture::quick_capture_add_attachment,
+            quick_capture::quick_capture_remove_attachment,
+            quick_capture::quick_capture_attachment_thumb,
+            quick_capture::quick_capture_attachment_preview,
             // 统一任务上下文（v0.5）
             commands::context::task_context,
             // 文件暂存架（v0.8）
             commands::shelf::shelf_list,
             commands::shelf::shelf_get_item,
             commands::shelf::shelf_stats,
-            quick_capture::quick_capture_focus,
-            quick_capture::quick_capture_add_attachment,
-            quick_capture::quick_capture_remove_attachment,
-            quick_capture::quick_capture_attachment_thumb,
-            quick_capture::quick_capture_attachment_preview,
             commands::shelf::shelf_groups,
             commands::shelf::shelf_group_create,
             commands::shelf::shelf_group_rename,
@@ -1858,8 +1861,8 @@ pub fn run() {
             commands::file_workspace::fs_volume_keys,
             commands::file_workspace::fs_preview_image,
             commands::file_workspace::fs_read_text,
-            commands::file_workspace::fs_preview_media_url,
             commands::file_workspace::fs_read_binary,
+            commands::file_workspace::fs_preview_media_url,
             commands::file_workspace::fs_release_preview_url,
             commands::file_workspace::fs_copy_paths,
             commands::file_workspace::fs_move_paths,
@@ -2093,6 +2096,7 @@ pub fn run() {
             agent_access::commands::agent_access_export,
             agent_access::commands::agent_access_scan,
             agent_access::commands::agent_access_sync_status,
+            agent_access::commands::agent_access_conflicts,
             agent_access::commands::agent_access_conflict_detail,
             agent_access::commands::agent_access_import_requests,
             agent_access::commands::agent_access_import_approve,
@@ -2100,7 +2104,6 @@ pub fn run() {
             agent_access::commands::agent_access_import_policies,
             agent_access::commands::agent_access_import_policy_set,
             agent_access::commands::agent_access_import_policy_remove,
-            agent_access::commands::agent_access_conflicts,
             agent_access::commands::agent_access_resolve_conflict,
             agent_access::commands::agent_access_activity,
             agent_access::commands::agent_access_handoffs,

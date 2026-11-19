@@ -2129,7 +2129,6 @@ CREATE INDEX idx_novel_chapters_volume
     // 文件导入授权（v81）：目录策略 / 待审核请求 / 导入幂等声明。
     // 默认无策略 = 待审核，文件导入不再等价本机用户。
     crate::agent_access::schema::MIGRATION_81,
-    crate::transfer::schema::MIGRATION_79,
 ];
 
 /// 历史测试数据的保守回填（幂等）。
