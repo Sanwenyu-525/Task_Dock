@@ -1807,6 +1807,8 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
   };
 
   const paneCount = paneIds(tree).length;
+  // 空窗格数量：用于布局菜单「关闭所有空窗格」的禁用判定。
+  const emptyPaneCount = paneIds(tree).filter((id) => (panes[id]?.tabs.length ?? 0) === 0).length;
   const activeDir =
     panes[activePaneId]?.tabs.find((x) => x.tabId === panes[activePaneId]?.activeTabId)?.path ?? "";
   void activeDir;
@@ -1864,6 +1866,16 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
     },
     { key: "maximize", label: maximizedPaneId ? t("fw.layout.restoreMax") : t("fw.layout.maximize"), icon: maximizedPaneId ? <Minimize2 size={13} /> : <Maximize2 size={13} />, disabled: paneCount <= 1, onSelect: () => store.getState().toggleMaximize(activePaneId) },
     { key: "closeOthers", label: t("fw.layout.closeOthers"), disabled: paneCount <= 1, onSelect: () => closeOtherPanes(activePaneId) },
+    {
+      // 空窗格批量清理：至少留一个窗格由 store 内部保证；无可清理时禁用。
+      key: "closeEmptyPanes",
+      label: t("fw.layout.closeEmptyPanes"),
+      disabled: emptyPaneCount < 1 || paneCount <= 1,
+      onSelect: () => {
+        const n = store.getState().closeAllEmptyPanes();
+        if (n > 0) showToast(t("fw.layout.closeEmptyPanesDone", { count: n }), { kind: "success" });
+      },
+    },
     { key: "workspaceSearch", label: t("fw.search.workspace"), icon: <Search size={13} />, onSelect: () => setWorkspaceSearchOpen(true) },
     { key: "duplicates", label: t("fw.duplicates.find"), icon: <Files size={13} />, onSelect: () => setDuplicateOpen(true) },
     { key: "reset", label: t("fw.layout.resetDefault"), onSelect: () => applyLayoutPreset("single") },

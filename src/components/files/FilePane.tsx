@@ -370,6 +370,8 @@ export default function FilePane({
   const [dirState, setDirState] = useState<DirState | null>(null);
   const [pathEdit, setPathEdit] = useState<string | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number; entry: FsEntry | null } | null>(null);
+  /** 空态窗格专用右键菜单位置：与正常目录的 menu 分离，避免两套菜单互相污染。 */
+  const [emptyMenu, setEmptyMenu] = useState<{ x: number; y: number } | null>(null);
   const [dialog, setDialog] = useState<PendingOp | null>(null);
   const [filterOpen, setFilterOpen] = useState(false);
   const [dialogInput, setDialogInput] = useState("");
@@ -951,10 +953,15 @@ export default function FilePane({
     } else if (kind === "rename" && path) {
       try {
         await fsRename(path, name);
+        // 目录/文件改名成功后同步所有标签的起始路径、当前路径与历史；
+        // 仅匹配该路径及其子路径，无匹配时内部直接返回 0，无副作用。
+        const newFullPath = joinPath(parentOf(path) ?? "", name);
+        store.getState().remapTabPaths(path, newFullPath);
         refreshBoth([parentOf(path) ?? ""].filter(Boolean));
         store.getState().clearSelection(paneId);
         showToast(t("fw.report.renamed", { name }), { kind: "success" });
       } catch (e) {
+        // 改名失败不改任何标签路径。
         showToast(errorMessage(e), { kind: "error" });
       }
     }
@@ -1160,6 +1167,13 @@ export default function FilePane({
     e.preventDefault();
     store.getState().setActivePane(paneId);
     setMenu({ x: e.clientX, y: e.clientY, entry: null });
+  };
+
+  /** 空态窗格右键：复用 FreeMenu 基元，不另建菜单系统。 */
+  const onEmptyContextMenu = (e: ReactMouseEvent) => {
+    e.preventDefault();
+    store.getState().setActivePane(paneId);
+    setEmptyMenu({ x: e.clientX, y: e.clientY });
   };
 
   const menuSelection = menu ? (store.getState().selection[paneId]?.paths ?? []) : [];
@@ -1381,6 +1395,75 @@ export default function FilePane({
   const canForward = tab ? tab.historyIndex < tab.history.length - 1 : false;
   const canUp = Boolean(parentOf(dirPath));
 
+  /** 空态菜单项：真·空窗格的顶部「更多」与右键共用同一份定义；
+   *  有标签但无目录（空白标签）时不含「关闭空窗格」，关闭走标签自身的 x。 */
+  const emptyPaneMenuItems = [
+    {
+      key: "browseFolder",
+      label: t("fw.pane.browseFolder"),
+      icon: <FolderOpen size={13} />,
+      onSelect: () => void browseAndOpen(),
+    },
+    {
+      key: "inputPath",
+      label: t("fw.pane.inputPath"),
+      icon: <FolderPlus size={13} />,
+      onSelect: () =>
+        window.dispatchEvent(new CustomEvent("taskdock-fw-open-folder", { detail: paneId })),
+    },
+    ...(pane.tabs.length === 0
+      ? [
+          {
+            key: "closeEmptyPane",
+            label: t("fw.pane.closeEmptyPane"),
+            icon: <X size={13} />,
+            disabled: totalPanes <= 1,
+            onSelect: () => {
+              store.getState().closeEmptyPane(paneId);
+            },
+          },
+        ]
+      : []),
+  ];
+
+  /** 单个标签：正常窗格与空白标签态共用，保证 Tooltip 与关闭入口一致。 */
+  const renderTab = (item: FolderTab) => (
+    <div
+      key={item.tabId}
+      role="tab"
+      aria-selected={item.tabId === pane.activeTabId}
+      data-fw-tab={item.tabId}
+      className={`fw-tab${item.tabId === pane.activeTabId ? " is-active" : ""}`}
+      onPointerDown={(e) => {
+        store.getState().setActiveTab(paneId, item.tabId);
+        beginDragCandidate(e, null, item.tabId);
+      }}
+      onDoubleClick={() => store.getState().duplicateTabInPane(paneId, item.tabId)}
+      onAuxClick={(e) => {
+        if (e.button === 1) store.getState().closeTab(paneId, item.tabId);
+      }}
+    >
+      <span
+        className="fw-tab-label"
+        data-tip={`${tabTitle(item)}\n${item.openedPath}`}
+        title={item.openedPath}
+      >
+        {tabTitle(item)}
+      </span>
+      <button
+        type="button"
+        className="fw-tab-close"
+        aria-label={t("fw.tab.close", { name: tabTitle(item) })}
+        onClick={(e) => {
+          e.stopPropagation();
+          store.getState().closeTab(paneId, item.tabId);
+        }}
+      >
+        <X size={11} aria-hidden="true" />
+      </button>
+    </div>
+  );
+
   // ── 空窗格（未打开目录）─────────────────────────────────────────────
   if (!tab || !dirPath) {
     const chip = (path: string) => (
@@ -1409,8 +1492,48 @@ export default function FilePane({
         {layoutEditMode && (
           <EditHandle paneId={paneId} onPointerDown={(e) => beginDragCandidate(e, null, null, true)} />
         )}
-        <div className="fw-pane-tabbar" ref={tabbarRef} />
-        <div className="fw-empty-pane">
+        {/* 统一窗格框架：有标签但无目录（空白标签）也渲染标签栏，关闭走标签自身 x；
+            真·空窗格（tabs 为空）才在顶部右侧提供「更多」与「关闭空窗格」。 */}
+        <div className="fw-pane-tabbar" ref={tabbarRef} role="tablist" aria-label={t("fw.tabs.aria")}>
+          {pane.tabs.map(renderTab)}
+          {pane.tabs.length === 0 && (
+            <div className="fw-pane-tabbar-actions">
+              <DropdownMenu
+                menuLabel={t("fw.pane.more")}
+                placement="bottom-end"
+                trigger={({ ref, expanded, onClick, onKeyDown }) => (
+                  <button
+                    ref={ref}
+                    type="button"
+                    className="fw-icon-btn"
+                    aria-haspopup="menu"
+                    aria-expanded={expanded}
+                    aria-label={t("fw.pane.more")}
+                    data-tip={t("fw.pane.more")}
+                    onClick={onClick}
+                    onKeyDown={onKeyDown}
+                  >
+                    <MoreHorizontal size={14} aria-hidden="true" />
+                  </button>
+                )}
+                items={emptyPaneMenuItems}
+              />
+              <button
+                type="button"
+                className="fw-icon-btn"
+                aria-label={t("fw.pane.closeEmptyPane")}
+                data-tip={totalPanes <= 1 ? t("fw.pane.closeLast") : t("fw.pane.closeEmptyPane")}
+                disabled={totalPanes <= 1}
+                onClick={() => {
+                  store.getState().closeEmptyPane(paneId);
+                }}
+              >
+                <X size={13} aria-hidden="true" />
+              </button>
+            </div>
+          )}
+        </div>
+        <div className="fw-empty-pane" onContextMenu={onEmptyContextMenu}>
           <span className="fw-empty-icon" aria-hidden="true">
             <FolderOpen size={26} strokeWidth={1.4} />
           </span>
@@ -1452,6 +1575,16 @@ export default function FilePane({
         <div className="fw-pane-status">
           <span className="fw-status-count">{t("fw.status.noDir")}</span>
         </div>
+        {/* 空态右键菜单：与正常目录的 menu 分离，避免两套菜单互相污染 */}
+        {emptyMenu && (
+          <FreeMenu
+            x={emptyMenu.x}
+            y={emptyMenu.y}
+            menuLabel={t("fw.pane.blankAria")}
+            items={emptyPaneMenuItems}
+            onClose={() => setEmptyMenu(null)}
+          />
+        )}
         {dropHint && <DropPreview zone={dropHint} />}
       </section>
     );
@@ -1478,38 +1611,7 @@ export default function FilePane({
       )}
       {/* 标签栏 */}
       <div className="fw-pane-tabbar" ref={tabbarRef} role="tablist" aria-label={t("fw.tabs.aria")}>
-        {pane.tabs.map((item) => (
-          <div
-            key={item.tabId}
-            role="tab"
-            aria-selected={item.tabId === pane.activeTabId}
-            data-fw-tab={item.tabId}
-            className={`fw-tab${item.tabId === pane.activeTabId ? " is-active" : ""}`}
-            onPointerDown={(e) => {
-              store.getState().setActiveTab(paneId, item.tabId);
-              beginDragCandidate(e, null, item.tabId);
-            }}
-            onDoubleClick={() => store.getState().duplicateTab(paneId, item.tabId)}
-            onAuxClick={(e) => {
-              if (e.button === 1) store.getState().closeTab(paneId, item.tabId);
-            }}
-          >
-            <span className="fw-tab-label" title={item.path}>
-              {tabTitle(item)}
-            </span>
-            <button
-              type="button"
-              className="fw-tab-close"
-              aria-label={t("fw.tab.close", { name: tabTitle(item) })}
-              onClick={(e) => {
-                e.stopPropagation();
-                store.getState().closeTab(paneId, item.tabId);
-              }}
-            >
-              <X size={11} aria-hidden="true" />
-            </button>
-          </div>
-        ))}
+        {pane.tabs.map(renderTab)}
         <button
           type="button"
           className="fw-tab-add"
@@ -1773,7 +1875,7 @@ export default function FilePane({
               { key: "newDir", label: t("fw.menu.newFolder"), onSelect: () => { setDialog({ kind: "newDir" }); setDialogInput(t("fw.menu.newFolderName")); } },
               { key: "newFile", label: t("fw.menu.newFile"), onSelect: () => { setDialog({ kind: "newFile" }); setDialogInput(t("fw.menu.newFileName")); } },
               { key: "sep1", separator: true },
-              { key: "dupTab", label: t("fw.tab.duplicate"), onSelect: () => store.getState().duplicateTab(paneId, tab.tabId) },
+              { key: "dupTab", label: t("fw.tab.duplicate"), onSelect: () => store.getState().duplicateTabInPane(paneId, tab.tabId) },
               { key: "closeTab", label: t("fw.tab.closeCurrent"), onSelect: () => store.getState().closeTab(paneId, tab.tabId) },
               { key: "sep2", separator: true },
               { key: "splitLeft", label: t("fw.pane.splitLeft"), onSelect: () => store.getState().splitPane(paneId, "horizontal", null, "before") },

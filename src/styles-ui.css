@@ -86,7 +86,9 @@
 
 .ui-popover {
   min-width: var(--popover-min-w, 0);
-  max-width: min(420px, var(--popover-max-w, 100vw - 24px));
+  /* 宽度上限：调用方声明的 cap（默认 420）与本次实测可用宽取小；
+     两者都是「不得超过」语义，min-width 由 Popover 收敛到可用宽以内。 */
+  max-width: min(var(--popover-width-cap, 420px), var(--popover-max-w, 100vw - 24px));
   padding: 4px;
   background: var(--menu-face);
   border-radius: var(--menu-radius);
@@ -95,16 +97,64 @@
   /* 玻璃预设的内高光与边缘反射；梦幻渐变用不到时是同色，无视觉副作用 */
   border: 1px solid var(--menu-border);
   animation: ui-pop-in 0.12s var(--ease-out);
+  /* 入场方向随最终落点：翻转后不会继续从错误方向展开 */
+  --ui-pop-x: 0px;
+  --ui-pop-y: -2px;
+  --ui-pop-origin: top left;
   transform-origin: var(--ui-pop-origin, top left);
   -webkit-user-select: none;
   user-select: none;
 }
 
+/* 主方向 → 入场位移方向（与 transform-origin 分离：位移表示「从哪里来」） */
 .ui-popover[data-placement^="top"] {
+  --ui-pop-y: 2px;
+}
+.ui-popover[data-placement^="left"] {
+  --ui-pop-x: 2px;
+  --ui-pop-y: 0px;
+}
+.ui-popover[data-placement^="right"] {
+  --ui-pop-x: -2px;
+  --ui-pop-y: 0px;
+}
+
+/* 落点 → transform-origin：侧边 + 对齐的组合决定从哪条边展开 */
+.ui-popover[data-placement="bottom-start"] {
+  --ui-pop-origin: top left;
+}
+.ui-popover[data-placement="bottom"] {
+  --ui-pop-origin: top center;
+}
+.ui-popover[data-placement="bottom-end"] {
+  --ui-pop-origin: top right;
+}
+.ui-popover[data-placement="top-start"] {
   --ui-pop-origin: bottom left;
 }
-.ui-popover[data-placement$="end"] {
-  --ui-pop-origin: top right;
+.ui-popover[data-placement="top"] {
+  --ui-pop-origin: bottom center;
+}
+.ui-popover[data-placement="top-end"] {
+  --ui-pop-origin: bottom right;
+}
+.ui-popover[data-placement="left-start"] {
+  --ui-pop-origin: right top;
+}
+.ui-popover[data-placement="left"] {
+  --ui-pop-origin: right center;
+}
+.ui-popover[data-placement="left-end"] {
+  --ui-pop-origin: right bottom;
+}
+.ui-popover[data-placement="right-start"] {
+  --ui-pop-origin: left top;
+}
+.ui-popover[data-placement="right"] {
+  --ui-pop-origin: left center;
+}
+.ui-popover[data-placement="right-end"] {
+  --ui-pop-origin: left bottom;
 }
 
 .ui-select-popover {
@@ -127,7 +177,7 @@
 @keyframes ui-pop-in {
   from {
     opacity: 0;
-    transform: scale(0.97) translateY(-2px);
+    transform: scale(0.97) translate(var(--ui-pop-x, 0px), var(--ui-pop-y, -2px));
   }
   to {
     opacity: 1;
@@ -690,6 +740,9 @@
   -webkit-line-clamp: 2;
   overflow: hidden;
   overflow-wrap: anywhere;
+  /* 保留 data-tip 中的换行：标签 Tooltip 用「名称\n完整起始路径」两行结构；
+     与上面的 line-clamp:2 + overflow:hidden 配合，超长路径仍截断不溢出。 */
+  white-space: pre-line;
   animation: ui-pop-in 0.1s var(--ease-out);
 }
 

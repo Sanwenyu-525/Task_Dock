@@ -54,7 +54,7 @@ describe("normalizePersisted", () => {
     };
     const out = normalizePersisted(raw);
     expect(out.states.global?.activePaneId).toBe(paneIdsOf(validTree())[0]);
-    expect(out.states.global?.panes[0].tabs[0]).toEqual({ tabId: "t1", path: "D:\\a" });
+    expect(out.states.global?.panes[0].tabs[0]).toEqual({ tabId: "t1", path: "D:\\a", openedPath: "D:\\a" });
   });
 
   it("窗格不在树中时丢弃该窗格数据（保留窗格空态由恢复侧补）", () => {
@@ -103,6 +103,155 @@ function paneIdsOf(tree: SplitNode): string[] {
   if (tree.type === "pane") return [tree.paneId];
   return [...paneIdsOf(tree.first), ...paneIdsOf(tree.second)];
 }
+
+describe("normalizePersisted：会话字段与 tabId 唯一性", () => {
+  it("透传全部会话字段（含 history/historyIndex/openedPath）", () => {
+    const tree = validTree();
+    const paneId = paneIdsOf(tree)[0];
+    const raw = {
+      version: FILE_WORKSPACE_VERSION,
+      states: {
+        global: {
+          tree,
+          panes: [{
+            paneId,
+            tabs: [{
+              tabId: "t1",
+              path: "D:\\work\\sub",
+              openedPath: "D:\\work",
+              history: ["D:\\work", "D:\\work\\sub"],
+              historyIndex: 1,
+              viewMode: "grid",
+              sortField: "modified",
+              sortAsc: false,
+              search: "报表",
+              filter: "sheet",
+              showHidden: true,
+            }],
+            activeTabId: "t1",
+          }],
+          activePaneId: paneId,
+        },
+      },
+    };
+    const out = normalizePersisted(raw);
+    expect(out.states.global?.panes[0].tabs[0]).toEqual({
+      tabId: "t1",
+      path: "D:\\work\\sub",
+      openedPath: "D:\\work",
+      history: ["D:\\work", "D:\\work\\sub"],
+      historyIndex: 1,
+      viewMode: "grid",
+      sortField: "modified",
+      sortAsc: false,
+      search: "报表",
+      filter: "sheet",
+      showHidden: true,
+    });
+  });
+
+  it("旧数据缺 openedPath 时用 path 兜底；无 history 时不写 history 字段", () => {
+    const tree = validTree();
+    const paneId = paneIdsOf(tree)[0];
+    const out = normalizePersisted({
+      version: FILE_WORKSPACE_VERSION,
+      states: {
+        global: {
+          tree,
+          panes: [{ paneId, tabs: [{ tabId: "old", path: "C:\\legacy" }], activeTabId: "old" }],
+          activePaneId: paneId,
+        },
+      },
+    });
+    const tab = out.states.global?.panes[0].tabs[0];
+    expect(tab).toEqual({ tabId: "old", path: "C:\\legacy", openedPath: "C:\\legacy" });
+    expect(tab?.history).toBeUndefined();
+  });
+
+  it("historyIndex 越界被钳制；非法枚举/字段被丢弃", () => {
+    const tree = validTree();
+    const paneId = paneIdsOf(tree)[0];
+    const out = normalizePersisted({
+      version: FILE_WORKSPACE_VERSION,
+      states: {
+        global: {
+          tree,
+          panes: [{
+            paneId,
+            tabs: [{
+              tabId: "t", path: "D:\\x",
+              history: ["D:\\x", "D:\\x\\y"],
+              historyIndex: 99,
+              viewMode: "bogus",
+              sortField: "bogus",
+              filter: "bogus",
+              sortAsc: "yes",
+            }],
+            activeTabId: "t",
+          }],
+          activePaneId: paneId,
+        },
+      },
+    });
+    const tab = out.states.global?.panes[0].tabs[0]!;
+    expect(tab.historyIndex).toBe(1);
+    expect(tab.viewMode).toBeUndefined();
+    expect(tab.sortField).toBeUndefined();
+    expect(tab.filter).toBeUndefined();
+    expect(tab.sortAsc).toBeUndefined();
+  });
+
+  it("重复 tabId 跨窗格去重；activeTabId 无效回落首个", () => {
+    const tree = validTree();
+    const [a, b] = paneIdsOf(tree);
+    const out = normalizePersisted({
+      version: FILE_WORKSPACE_VERSION,
+      states: {
+        global: {
+          tree,
+          panes: [
+            {
+              paneId: a,
+              tabs: [{ tabId: "dup", path: "D:\\a" }, { tabId: "only-a", path: "D:\\a2" }],
+              activeTabId: "dup",
+            },
+            {
+              paneId: b,
+              tabs: [{ tabId: "dup", path: "D:\\b" }, { tabId: "only-b", path: "D:\\b2" }],
+              activeTabId: "ghost",
+            },
+          ],
+          activePaneId: a,
+        },
+      },
+    });
+    const panes = out.states.global?.panes!;
+    // 第二个窗格里的 dup 被丢弃，仅保留 first-wins 的那一个。
+    expect(panes[0].tabs.map((t) => t.tabId)).toEqual(["dup", "only-a"]);
+    expect(panes[1].tabs.map((t) => t.tabId)).toEqual(["only-b"]);
+    expect(panes[1].activeTabId).toBe("only-b");
+  });
+
+  it("重复 tabId 跨窗格与收纳去重（收纳中与窗格冲突的被丢弃）", () => {
+    const tree = validTree();
+    const paneId = paneIdsOf(tree)[0];
+    const out = normalizePersisted({
+      version: FILE_WORKSPACE_VERSION,
+      states: {
+        global: {
+          tree,
+          panes: [{ paneId, tabs: [{ tabId: "shared", path: "D:\\inPane" }], activeTabId: "shared" }],
+          activePaneId: paneId,
+          stashed: [
+            { tabId: "shared", path: "D:\\stashedDup" },
+            { tabId: "stashed-ok", path: "D:\\stashedOk" },
+          ],
+        },
+      },
+    });
+    expect(out.states.global?.stashed?.map((t) => t.tabId)).toEqual(["stashed-ok"]);
+  });
+});
 
 describe("persistFilesWorkspace 写入链", () => {
   interface FakeStore {

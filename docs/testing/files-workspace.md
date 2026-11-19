@@ -338,3 +338,99 @@ cargo clippy --all-targets --all-features
 |---|---|
 | 2026-11-18 | 建立 Phase 1 测试矩阵：现有资产、单元/集成/原生/大目录矩阵；未执行任何测试 |
 | 2026-11-19 | 增补 §8.4 R9 执行记录：前端 38 文件/370 用例、typecheck、cargo check 通过；Rust 直调 66/66（含 mt.exe 清单配方）；测试夹具 finishedMs 缺陷修复 |
+| 2026-11-19 | R10 测试方案登记（未执行）：三层会话模型的标签名称/持久化/分割/空窗格/UI 测试矩阵见 §11；命令与证据规范沿用 §3 |
+
+## 11. R10 测试方案（2026-11-19，未执行）
+
+> 本轮为方案登记，**尚未运行任何测试**。下列用例是实现 DoD 的必测清单；结果写入
+> `tmp/acceptance/files-workspace/round10/logs/`，按 §3 记录命令/目录/退出码/时间/日志。
+
+### 11.1 标签名称（`useFilesWorkspaceStore.test.ts` + `model.test.ts`）
+
+| # | 用例 | 断言要点 |
+|---|---|---|
+| 1 | `makeTab()` 初始化 | `openedPath === path === normalizePath(input)` |
+| 2 | 进入子目录 | `openInPane(replace)` 后 `path` 变、`openedPath` 不变 |
+| 3 | 返回父目录 | `navigate("up"/"back")` 后 `openedPath` 不变 |
+| 4 | `tabTitle()` | 进入多层子目录后仍等于 `basename(openedPath)` |
+| 5 | Tooltip 完整路径 | 组件测试：标签 `title`/`data-tip` 含完整 openedPath，显示文本仅名称、超长省略 |
+| 6 | 同名目录区分 | 两个同名 `正文` 不同 openedPath，Tooltip 不同 |
+| 7 | Windows 大小写 | `samePath` 语义；映射/去重大小写不敏感 |
+| 8 | 目录改名映射 | `remapTabPaths` 更新 openedPath/path/history |
+| 9 | 相似前缀不误匹配 | `D:\Projects\A` 不影响 `D:\Projects\AB` |
+
+### 11.2 持久化（`persist.test.ts` + `useFilesWorkspaceStore.test.ts` + `.layout.test.ts`）
+
+| # | 用例 | 断言要点 |
+|---|---|---|
+| 1 | 新数据保存 openedPath | `snapshot()` 的 PersistedTab 含 openedPath 与会话字段 |
+| 2 | hydrate 恢复 openedPath | 新格式 round-trip 后 openedPath 保持 |
+| 3 | 旧数据缺 openedPath | 以 `path` 兜底，不猜层级 |
+| 4 | 迁移后再保存稳定 | 旧数据 hydrate→snapshot→hydrate 幂等 |
+| 5/6 | 多标签/多窗格恢复 | 数量、顺序、比例、激活标签不丢 |
+| 7/8 | 模板保存/恢复 | applyTemplate 保留 openedPath 与会话字段，不重新 makeTab(path) |
+| 9 | normalizePanes 不破坏 openedPath | 归一化后 openedPath 未被 path 覆盖 |
+| 10 | 无效 tabId 不崩 | 不存在 tabId 成 active 时回落有效标签 |
+
+### 11.3 分割（`useFilesWorkspaceStore.test.ts` + `.layout.test.ts`）
+
+| # | 用例 | 断言要点 |
+|---|---|---|
+| 1/2 | 单/多标签分割 | 新窗格只含复制后的当前标签；原窗格标签全部保留 |
+| 3/4 | 激活标签复制正确 + 新旧 tabId 不同 | 复制的是 active tab，id 唯一 |
+| 5/6 | openedPath/path 相同 | 复制标签两路径与源一致 |
+| 7 | 导航历史独立 | 深拷贝：新标签改 path 不影响源 history 数组 |
+| 8/9/10 | 排序/筛选/搜索复制 | viewMode/sortField/filter/search/showHidden 一致 |
+| 11 | 选择状态不复制 | selection 按 paneId，新窗格独立为空 |
+| 12/13 | 两窗格独立导航 / 重复分割 | 互不干扰；多次分割树不损坏 |
+| 14/15 | 横向/纵向分割 | 方向正确、比例 0.5、可拖动 |
+| 16/17 | 关闭新窗格 / 撤销重做 | 标签可转移/收纳；undo 丢弃 createdTabId，redo 恢复 |
+| 18 | 保存模板后恢复 | 分割结构 + 会话完整恢复 |
+
+### 11.4 空窗格（`useFilesWorkspaceStore.test.ts` + 组件测试）
+
+| # | 用例 | 断言要点 |
+|---|---|---|
+| 1/2 | 空窗格关闭按钮 + 点击移除 | 按钮存在、点击后窗格数 -1 |
+| 3 | 不影响其他窗格 | 其余窗格标签/比例不变 |
+| 4 | 最后一个不可关闭 | Store 返回 blocked(lastPane)，UI 按钮禁用 + Tooltip |
+| 5 | 空白标签不误判空窗格 | `tabs.length>0` 但 path 空 → 走关标签而非关窗格 |
+| 6 | 正常标签窗格不误关 | 有标签窗格不出现在批量关闭集合 |
+| 7/8 | 关闭所有空窗格 / 全空至少留一个 | 一次性移除；全空保留 active 窗格 |
+| 9 | 关闭空窗格零文件 IPC | 断言无 `fs_*` 调用 |
+| 10 | 右键菜单入口 | 空窗格右键含打开文件夹/输入路径/关闭空窗格 |
+
+### 11.5 UI（`FilesWorkspacePanel.splitter.test.tsx` / `FilePane.*.test.tsx` / `FileList.layout.test.tsx`）
+
+- 搜索框聚焦只有一层描边（容器 focus-within 生效，内层 input 无 box-shadow）。
+- 表头与文件列共用列定义（窄栏/滚动同步不错位）。
+- 筛选栏无异常大空白、列表高度利用合理。
+- 横向/纵向窗格布局正常；空窗格关闭按钮不被裁切；Tooltip 不超出窗格可视区。
+
+### 11.6 性能与安全
+
+- 分割只复制一个标签（深拷贝目标标签，非全表深拷贝、非文件复制）。
+- 批量关闭单次更新、单次持久化；无重复目录扫描或列表请求。
+- 临时选择状态不落库；跨目录拖拽/复制移动无回归（复用既有测试）。
+
+## 12. R10 执行记录（2026-11-19）
+
+| 命令（工作目录 `D:\Develop\task_dock`） | 退出码 | 结果 |
+|---|---|---|
+| `npx tsc --noEmit` | 0 | 全项目类型检查通过（含 FilePane 两处 `duplicateTabInPane` 改名、locale 新 key） |
+| `npx vitest run src/lib/filesWorkspace src/components/files src/store/useFilesWorkspaceStore.test.ts src/store/useFilesWorkspaceStore.layout.test.ts` | 0 | **45 文件 / 474 用例全部通过**（r9 基线 38/370 → +7 文件 / +104 用例） |
+| `npm run cargo -- check` | 0 | 通过（`Finished dev profile`，109s；调度 `m-mwn10usc-5b5f4e`） |
+| `npm run integrate:status` | 0 | 核对快照：R10 代码尚未进入任何快照（最近成功构建 b08-desktop-r1） |
+| 集成快照 / 正式构建 / Windows 原生 | 未执行 | 见 round10 报告；不得标 PASS |
+
+新增测试文件：`FilePane.emptyPane.test.tsx`、`FilePane.rename.test.tsx`、
+`FilesWorkspacePanel.layoutMenu.test.tsx`、`FilePane.visual.test.tsx`、
+`FileList.headerAlign.test.tsx`。扩展：`model.test.ts`、`persist.test.ts`、
+`useFilesWorkspaceStore.test.ts`。
+
+**重要口径**：新增组件测试 mock 了 `useLocale` 为 identity（`t(key)=key`），因此断言用 locale key；
+产品文案由 zh/en locale 提供。jsdom 只证明 DOM/CSS 契约，不证明真实像素与焦点层叠，视觉仍需
+B/C 通道真机验收。
+
+**发现（P3，未修）**：`src/styles-flat.test.ts` 的「窄窗任务页回退」用例失败，断言
+`tasks-workspace.css` 的 `@container (max-width:520px)`，属其他任务在途改动，与 R10 无关，未触碰。

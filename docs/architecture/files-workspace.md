@@ -1,7 +1,7 @@
 # 文件工作区技术架构与数据模型
 
-- 日期：2026-11-18
-- 阶段：Phase 1 开发前基线（方案冻结前的现状 + 目标架构）
+- 日期：2026-11-19
+- 阶段：R10 开发前方案（三层会话模型重构；三层数据模型/边界/接口冻结；未改代码）
 - 功能台账：[docs/features/files-workspace.md](../features/files-workspace.md)
 - 既有实现细节：[docs/ARCHITECTURE.md 文件工作区章节](../ARCHITECTURE.md)、
   [docs/files-workspace-marquee-selection.md](../files-workspace-marquee-selection.md)
@@ -588,3 +588,176 @@ automations: FileAutomation[];
 | 2026-11-18 | 建立 Phase 1 架构基线：现状分层、目标 facade、数据模型、函数级清单、所有权与风险 |
 | 2026-11-18 | P0 批次 1：导航快捷键/路径历史、文件剪贴板 payload、FsStat 属性、系统集成命令、操作预演、搜索大小/隐藏条件与项目/固定目录来源 |
 | 2026-11-19 | R9 架构收敛与缺陷修复：新增 §2.3「已实现与目标结构的边界」（clipboard/plan/search/operations 目标项作废或推迟，唯一实现锁定）；WorkspaceFolderState 移除 selectedItems（选择属窗格）；pinnedDirs 迁移四项前置条件；`measure_tree` 元数据失败计入 inaccessible 且置 incomplete；预演确认门禁 + `checkSourcesExist` 二次验证；剪贴板 `subscribeFwClipboard`/`useFwClipboard`（Store 不新增 clipboard 字段）；无新增模块/IPC/表 |
+
+## 12. R10 标签会话模型架构（2026-11-19，方案冻结，未改代码）
+
+### 12.1 三层职责边界（本轮最重要约束）
+
+```
+Layout（布局）  → SplitNode 树：窗格的横向/纵向组织、分割比例、窗格 ID
+                   只组织窗格，不持有目录会话内容
+      │ 持有 paneId 引用
+      ▼
+Pane（窗格）    → PaneState { tabs: FolderTab[], activeTabId }
+                   会话容器：承载多个标签、标记当前激活标签；不复制会话内容
+      │ 持有 tab
+      ▼
+FolderTab（标签会话）→ 一个独立、可恢复的目录浏览会话
+                   openedPath（起始目录身份）/ path（当前浏览位置）/ history /
+                   historyIndex / viewMode / sortField / sortAsc / search / filter / showHidden
+```
+
+- **禁止混淆**：起始目录身份（`openedPath`）、当前路径（`path`）、窗格位置（树中的 paneId）
+  三者是三个正交概念，不得合并成一个字段。
+- **禁止第二套机制**：不加第二个标签 Store、第二个布局管理器、第二套历史系统、第二套持久化、
+  第二套文件操作队列。`FilePaneTabs.tsx` 在本仓库**不存在**（核对确认），标签栏内联在
+  `FilePane.tsx:1480-1522`，本轮不新建同名组件。
+- 唯一 Store `useFilesWorkspaceStore.ts`；唯一布局树 `lib/filesWorkspace/model.ts`；
+  唯一持久化 `lib/filesWorkspace/persist.ts`（设置键 `file_workspace_layouts`）。
+
+### 12.2 核对发现的事实（与旧文档的差异，按代码为准）
+
+| 方法/字段 | 真实实现（代码为准） | 旧文档描述 | R10 处理 |
+|---|---|---|---|
+| `makeTab(path, history=[])` | Store 内私有函数，仅 `{tabId,path,history,historyIndex,viewMode,sortField,sortAsc,search,showHidden}`，`filter` 可选；**无 openedPath** | §数据模型称含完整状态 | 增 `openedPath` 参数/字段，初始化两者相同 |
+| `tabTitle(tab)` | 导出函数，`basename(tab.path) || tab.path` | 未记录 | 改为 `basename(tab.openedPath)`；保留兜底链 |
+| `duplicateTab(paneId,tabId)` | Store 已有，语义是「同窗格内复制标签」 | 未记录 | 新增纯函数 `duplicateTab(sourceTab)`（深拷贝）供 `splitPane` 调用；Store action 语义保持并复用纯函数 |
+| `splitPane(paneId,dir,openPath?,side?)` | Store 取当前 path → `makeTab(path)` 重建新标签（丢会话状态） | 称「复制当前路径」 | 改用 `duplicateTab()` 深拷贝；无有效激活标签则拒绝 |
+| 空态 | `FilePane.tsx:1385` `if(!tab||!dirPath) return` 提前返回，空窗格无工具栏/关闭入口 | 未记录 | 拆分公共框架+空态内容；补空窗格关闭入口 |
+| 持久化 | `PersistedTab={tabId,path}`，`snapshot()` 只存两字段；history 不落库 | 称「含 viewMode 等随 panes 持久化」 | `PersistedTab` 可选扩展；以代码为准，差异登记 |
+
+### 12.3 FolderTab 数据模型变更
+
+```ts
+interface FolderTab {
+  tabId: string;
+  /** R10 新增：用户最初添加的目录（会话身份 + 标签显示来源）；非权限边界。 */
+  openedPath: string;
+  /** 当前实际浏览位置（导航只改这个，绝不覆盖 openedPath）。 */
+  path: string;
+  history: string[];
+  historyIndex: number;
+  viewMode: ViewMode;
+  sortField: SortField;
+  sortAsc: boolean;
+  search: string;
+  filter?: FileFilter;
+  showHidden: boolean;
+}
+```
+
+- `makeTab(path, history=[])`：`openedPath = normalizePath(path)`，`path` 同值；两者后续独立变化。
+- `tabTitle(tab)`：`basename(tab.openedPath) || tab.openedPath || basename(tab.path) || tab.path`
+  （用户自定义标题若已存在则保留最高优先级——核对确认当前**无**自定义标题字段，本轮不新增）。
+- `openInPane(..., "replace")` / `navigate("back"|"forward"|"up")`：只改 `path/history/historyIndex`，
+  不触碰 `openedPath`。
+- `remapTabPaths(tab, oldPath, newPath): FolderTab`（新增纯函数，放 model.ts 或 pathUtils 邻近）：
+  精确分量匹配 + 子路径映射；Windows 大小写不敏感（`samePath` / `isSubPath` 已有的分量边界语义）；
+  `D:\Projects\A` 不误匹配 `D:\Projects\AB`。映射范围：`openedPath`、`path`、`history[]` 每项。
+
+### 12.4 函数级改动清单（R10）
+
+| 函数 | 位置 | 改动 | 要点 |
+|---|---|---|---|
+| `makeTab` | `useFilesWorkspaceStore.ts` | 扩展 | 增 `openedPath` 字段，与 path 同初始值 |
+| `tabTitle` | `useFilesWorkspaceStore.ts` | 修改 | 取 `openedPath`；保留兜底链 |
+| `duplicateTab(sourceTab)` | `model.ts`（纯函数）+ Store action 调用 | 新增 | 深拷贝 history/filter 等可变引用；新 tabId；不复制选中/拖拽/临时态 |
+| `splitPane(paneId, dir, openPath?, side?)` | Store | 修改 | 取当前激活标签 → `duplicateTab()` 深拷贝入新窗格；源窗格不动；无有效激活标签则拒绝（返回 null，不产生错误状态） |
+| `extractTabToPane` | Store | 保持 | 移动语义、保留 tabId、源窗格移除，与 duplicate 严格区分 |
+| `closeEmptyPane(paneId)` | Store | 新增 | 校验 `tabs.length===0` 且 `paneCount>1`，一次 setState 移除 |
+| `closeAllEmptyPanes()` | Store | 新增 | 一次性移除所有空窗格、至少留一个（全空时留 active）、一次持久化；不触发文件 IPC |
+| `snapshot()` | Store | 扩展 | `PersistedTab` 增 `openedPath` 及会话字段；排除临时态 |
+| `hydrate()` | Store | 扩展 | `openedPath = persisted.openedPath ?? persisted.path`；恢复会话字段 |
+| `normalizePanes()` | `useFilesWorkspaceStore.ts` | 新增/复用 | 校验 tabId 不重复、activeTabId 有效、至少一窗格、openedPath 不被 path 覆盖；旧数据迁移 |
+| `applyTemplate/saveCurrentAsTemplate` | Store | 扩展 | 模板保留 openedPath/path/会话字段，不重新 makeTab(path) 丢会话 |
+| `remapTabPaths` | model/pathUtils 邻近 | 新增 | 目录改名/移动的精确路径映射 |
+| `closePane/closeOtherPanes` | Store | 复用 | 既有容量保护/lastPane 保护，空窗格关闭复用而非另起 |
+
+### 12.5 持久化兼容（设置键 `file_workspace_layouts` 稳定）
+
+- `PersistedTab` 以**可选字段**追加：`openedPath?`、`history?`、`historyIndex?`、`viewMode?`、
+  `sortField?`、`sortAsc?`、`search?`、`filter?`、`showHidden?`。版本保持 `1`（`FILE_WORKSPACE_VERSION`），
+  不引入破坏性迁移；旧数据缺字段时 `normalizePanes`/`hydrate` 用 `path` 兜底 `openedPath`、其余用默认值。
+- 历史 `history/historyIndex` 当前代码**不持久化**（hydrate 时收敛为单条，见 Store 注释）。
+  R10 目标要求保存导航历史 → 以可选字段持久化；若最终产品决定仍不落历史，需在验收报告登记偏差，
+  但 `openedPath` 属会话身份必须持久化。
+- 不写临时态：悬停、拖拽、临时焦点、未提交重命名、执行中 IPC Promise 一律不进 snapshot。
+
+### 12.6 UI 修复方案（截图标记项，根因已定位）
+
+| 问题 | 根因（核对确认） | 修复 |
+|---|---|---|
+| 筛选栏下方空白过大 | `files.css:551` `.fw-filter-bar` `max-height:78px` + `flex-wrap`，chip 仅单行时预留多行高度；需复核 `.fw-body` 顶边距 | 收紧筛选条高度/间距，不压缩行高、不用负 margin；虚拟滚动/固定定位不受影响 |
+| 搜索框双重聚焦边框 | `.fw-searchbox:focus-within` 画容器边框（`files.css:964`），其内 `input` 未挂 `.input-embedded`、不在 `styles-ui.css:397-422` 豁免清单 → 主题层 `input:focus{box-shadow:--control-shadow-focus}`（`styles-themes.css:2670`）与 `input[type=text]:focus{box-shadow:--inset-shadow-focus}`（3364）仍生效 → 两层 | 把 `.fw-searchbox input` 纳入「内层不画焦点层」规则，只保留容器一层焦点反馈；Tab/点击聚焦与 focus-visible 保留 |
+| 表头对齐 | `FileList.tsx:877-883` 表头 span 与 `FilePane` 列宽需共用同一份 `--fw-col-*`（`files.css:1015-1030` 已定义 grid 列）；日期/大小 `justify-self:end`，名称左对齐 | 表头与文件行共用同一列定义（已具备则需复核窄栏/滚动同步），表头文字在列内居中或按类型一致对齐，禁止两套百分比/固定 margin |
+| 窗格关闭 vs 标签关闭 | 空窗格提前返回 `FilePane.tsx:1385`（`!tab || !dirPath`）导致空窗格无统一工具栏/关闭入口 | 拆分「公共窗格框架 + 空态内容」：空窗格顶部右侧保留更多菜单 + `x` 关闭按钮（`totalPanes<=1` 禁用 + Tooltip），标签关闭仅在 `fw-tab-close`；两种状态严格区分 |
+
+### 12.7 性能与安全约束（R10）
+
+1. 只在执行 `duplicateTab()` 时深拷贝目标标签，不在渲染期深拷贝全部标签。
+2. `closeEmptyPane/closeAllEmptyPanes` 单次 setState + 单次持久化；批量关闭不循环触发全布局落盘。
+3. 分割只复制浏览会话（纯数据），绝不调用任何文件复制 IPC；`duplicateTab` 不是文件操作。
+4. 分割后不重新加载无关标签、不重复列目录（dirCache 按 path 复用）。
+5. 临时选择状态不进持久化；最后一个窗格 Store 层与 UI 层双重校验。
+
+### 12.8 并行所有权（R10，避免同文件写入冲突）
+
+| 角色 | 独占写入 | 备注 |
+|---|---|---|
+| Agent A（数据模型/持久化） | `useFilesWorkspaceStore.ts`、`model.ts`、`persist.ts`、对应 `.test.ts` | Store 由 A 独占，B/C 只提接口需求 |
+| Agent B（窗格/分割 UI） | `FilesWorkspacePanel.tsx`、`FilePane.tsx`、组件 `.test.tsx` | 通过 A 暴露的 Store action 调用，不改 Store |
+| Agent C（视觉/文档） | `files.css`、四份 `docs/*/files-workspace.md` | 焦点样式涉及 `styles-ui.css` 时须与全局所有者协调，优先在 `files.css` 局部覆写 |
+| 主 Agent | 审核模型、集成、统一测试/构建/原生验收、最终报告 | 写入范围冲突时裁定唯一所有者串行 |
+
+### 12.9 R10 实现记录（2026-11-19，代码完成 + 前端验证通过）
+
+**无新增 Store / 无新增 IPC / 无数据库迁移 / `bridge.ts` 零改动**；全部落在既有模块内。
+
+1. **数据模型（Agent A）**
+   - `FolderTab` 新增 `openedPath`；`makeTab` 初始化为 `normalizePath(path)`，导航只改 `path/history`。
+   - `tabTitle = basename(openedPath) || basename(path) || path`。
+   - `model.ts` 新增泛型纯函数 `duplicateTab<T>(source)`：新 `tabId` + `history` 深拷贝，不复制临时态。
+   - Store action `duplicateTab` **改名** `duplicateTabInPane`，内部复用纯函数；`splitPane` 改为
+     `duplicateTab(activeTab)` 复制完整会话，无有效激活标签返回 `null` 且不建窗格/不写历史；
+     `createdTabIds` 撤销机制保留。`extractTabToPane` 移动语义保持不变。
+   - 新增 `closeEmptyPane(paneId): boolean`、`closeAllEmptyPanes(): number`（单次 setState + 单次
+     `schedulePersist`，至少保留一个窗格，不触发任何文件 IPC）、`remapTabPaths(old,new): number`
+     （覆盖所有窗格标签 + stashed 的 `openedPath/path/history`，`samePath` 精确 + `isSubPath` 分量边界）。
+2. **持久化（Agent A）**
+   - `PersistedTab` 追加 9 个**可选**字段（openedPath/history/historyIndex/viewMode/sortField/
+     sortAsc/search/filter/showHidden）；版本仍为 `1`，旧数据 `openedPath ?? path` 兜底。
+   - `snapshot()` 写入完整会话字段；`hydrate()`/`applyTemplate()` 共用 `restoreTab` 恢复逻辑；
+     `normalizePanes` 跨窗格 tabId 去重、activeTabId 校验回落、字段形状白名单。
+3. **UI（Agent B）**
+   - 两处 `duplicateTab` 调用改 `duplicateTabInPane`；标签 Tooltip `data-tip` 含完整 `openedPath`。
+   - 空窗格保留统一窗格框架：真·空窗格（`tabs.length===0`）顶部右侧「更多 + 关闭（x）」，
+     `totalPanes<=1` 禁用；空白标签（`tabs>0` 但无目录）不显示关窗格按钮，关闭走标签 x；
+     空窗格右键含打开文件夹/输入路径/关闭空窗格；原有 pinned/recent/project chips 与拖拽提示保留。
+   - 布局菜单新增「关闭所有空窗格」，禁用条件 `emptyPaneCount>=1 && paneCount>1`。
+   - 目录改名成功（`fsRename` 后、try 内）调用 `remapTabPaths(old, joinPath(parentOf(old), name))`；
+     失败分支不调用。
+4. **视觉（Agent C）**
+   - 搜索框：`.fw-searchbox input` 的 `:focus/:focus-visible` 局部覆写
+     `box-shadow/outline/border: none`，只保留容器 `:focus-within` 一层（无需改 styles-ui 豁免清单）。
+   - 筛选栏：`flex-wrap: wrap→nowrap`，去掉 `max-height:78px/overflow:auto`，改
+     `overflow-x:auto; overflow-y:hidden` + 隐藏滚动条，单行固定高度；chip `flex:0 0 auto`。
+   - 表头：复核确认已与文件行共用 `--fw-col-*` 与共享 grid 轨道、断点成对改写，无两套列宽；
+     新增契约测试固化。
+   - 空窗格操作区 `.fw-pane-tabbar-actions` 正式样式（`margin-left:auto` 等）；关闭按钮
+     `focus-visible` 内缩 2px 避免被 `overflow-x:auto` 裁切。
+5. **主 Agent 收口**
+   - 补齐 3 个 locale key（zh/en）：`fw.pane.closeEmptyPane`、`fw.layout.closeEmptyPanes`、
+     `fw.layout.closeEmptyPanesDone`；去除 FilePane 内联样式。
+   - `.ui-tooltip` 加 `white-space: pre-line`，让「名称\n完整路径」两行生效（与 `line-clamp:2`+
+     `overflow:hidden` 配合，超长仍截断）。
+   - 修正新增测试的断言口径：测试 mock `useLocale` 为 identity，断言用 locale key 而非中文。
+
+**验证**：`npx tsc --noEmit` exit 0；文件工作区全量 Vitest **45 文件 / 474 用例通过**
+（r9 基线 38/370 → +7 文件 / +104 用例）；`npm run cargo -- check` exit 0（109s）。
+**未执行**：集成快照、正式构建、Windows 原生验收（见 round10 报告）。
+
+## 13. 变更记录（续）
+
+| 日期 | 变更 |
+|---|---|
+| 2026-11-19 | R10 实现：FolderTab.openedPath、tabTitle 取起始目录、纯函数 duplicateTab 深拷贝、Store action 改名 duplicateTabInPane、splitPane 完整会话复制、closeEmptyPane/closeAllEmptyPanes、remapTabPaths、PersistedTab 可选会话字段、空窗格 UI 框架与关闭入口、搜索框单层焦点/筛选栏收紧/表头契约、Tooltip 两行；无新 Store/IPC/迁移 |

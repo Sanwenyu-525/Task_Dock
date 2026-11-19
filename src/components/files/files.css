@@ -431,6 +431,27 @@ body.fw-resizing-row * {
   display: none;
 }
 
+/* 空窗格顶部右侧操作区（「更多」+「关闭空窗格」）：与标签同一行、右对齐。
+   这里提供正式样式，FilePane.tsx 的 <div className="fw-pane-tabbar-actions"
+   style={{ marginLeft: "auto", display: "flex", gap: 2 }}> 内联样式即可移除。
+   flex:0 0 auto 防止被标签挤压；align-items 保证图标按钮垂直居中。 */
+.fw-pane-tabbar-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+/* 空窗格操作区按钮：默认沿用 .fw-icon-btn 的透明底、次要色，不抢注意力；
+   hover 由 .fw-icon-btn:hover:not(:disabled) 提供背景；这里补齐键盘
+   focus-visible 的清晰焦点环。outline-offset 取负值把环画在按钮内部，
+   避免被标签栏 overflow-x:auto 的边界裁切。 */
+.fw-pane-tabbar-actions .fw-icon-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
 .fw-tab {
   display: inline-flex;
   align-items: center;
@@ -547,20 +568,32 @@ body.fw-resizing-row * {
   white-space: nowrap;
 }
 
-/* 文件类型筛选条：可折叠，每个标签独立状态 */
+/* 文件类型筛选条：改为单行横向滚动，12 个 chip 不再在窄栏换行预留多行高度。
+   原 max-height:78px + flex-wrap:wrap 会把窄栏撑成 3 行（约 77px），
+   在筛选条与表头之间留下大块无意义空白、挤掉列表可视高度。
+   - flex:0 0 auto：筛选条仍固定在列表上方，不参与 .fw-body 的纵向虚拟滚动；
+   - flex-wrap:nowrap + overflow-x:auto：保持单行，超出部分横向滚动查看；
+   - 隐藏横向滚动条（与 .fw-pane-tabbar 同款）：不额外占纵向高度，行高不压缩；
+   - 行高由 chip 自身 21px + 上下 padding 决定，不再受 max-height 人为预留。 */
 .fw-filter-bar {
   flex: 0 0 auto;
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 3px;
-  padding: 4px 8px;
+  padding: 3px 8px;
   border-bottom: 1px solid var(--border-subtle);
   background: var(--surface-raised);
-  max-height: 78px;
-  overflow: auto;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.fw-filter-bar::-webkit-scrollbar {
+  display: none;
 }
 
 .fw-filter-chip {
+  flex: 0 0 auto;
   height: 21px;
   padding: 0 7px;
   border: 1px solid transparent;
@@ -973,6 +1006,19 @@ body.fw-resizing-row * {
   font-size: 12px;
   outline: none;
   min-width: 0;
+}
+
+/* 搜索框的焦点反馈只由容器 .fw-searchbox:focus-within 提供那一层边框。
+   主题层 input:focus / input[type="text"]:focus 会给内层 input 再画一圈
+   box-shadow，两层叠加就成了「大框套小框」的双边框。files.css 是无 @layer
+   的组件样式，优先级高于 @layer theme / @layer ui，这里局部清掉内层多余
+   焦点样式即可，不改全局焦点规则、不影响其他独立 input。
+   鼠标点击与键盘 Tab 聚焦都仍由容器 :focus-within 给出唯一一层清晰反馈。 */
+.fw-searchbox input:focus,
+.fw-searchbox input:focus-visible {
+  box-shadow: none;
+  outline: none;
+  border: none;
 }
 
 .fw-searchbox input::placeholder {

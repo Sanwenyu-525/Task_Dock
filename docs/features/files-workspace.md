@@ -1,7 +1,7 @@
 # 文件工作区唯一功能登记表（Feature Registry）
 
-- 日期：2026-11-18（Asia/Shanghai）
-- 阶段：**Phase 1 开发前基线**（只做盘点、登记、方案；未改业务代码、未执行测试）
+- 日期：2026-11-19（Asia/Shanghai）
+- 阶段：**R10 开发前方案**（三层会话模型重构；只做盘点、登记、方案；未改业务代码、未执行测试）
 - 模块：`workspace/files`
 - 相关文档：[技术架构与数据模型](../architecture/files-workspace.md)、
   [测试矩阵](../testing/files-workspace.md)、[验收矩阵](../acceptance/files-workspace.md)
@@ -176,6 +176,22 @@
   `FilesWorkspacePanel.splitter.test.tsx`、`FilesWorkspacePanel.drawer.test.tsx`、
   `FileList.layout.test.tsx`、`FileList.scroll.test.tsx`；本轮未执行。
   验收：布局切换保留标签/导航/选择语义；强制重启恢复；容量阻止不静默丢标签。
+
+  **R10 扩展（2026-11-19，方案已定，代码/测试未执行）**：本 Feature 是 R10「标签会话模型、
+  分割窗格与空窗格管理重构」唯一承载 ID，不另建新 ID。扩展子能力（均为本 Feature 的实现细节，
+  不单列 Feature）：
+  - **标签起始目录身份**：`FolderTab` 新增 `openedPath`（用户最初添加的目录），与 `path`
+    （当前浏览位置）分离；`openedPath` 是身份与显示来源，不是权限边界。
+  - **标签名称稳定**：`tabTitle()` 由 `basename(tab.path)` 改为 `basename(tab.openedPath)`；
+    面包屑继续用实时 `path`。悬停 Tooltip 显示「名称 + 完整起始路径」。
+  - **标签完整会话复制**：新增纯函数 `duplicateTab(sourceTab)` 深拷贝全部可持久化浏览状态；
+    `splitPane()` 改用它复制当前激活标签，不再只复制 path 后 `makeTab()` 重建。
+  - **空窗格管理**：新增 `closeEmptyPane()` / `closeAllEmptyPanes()`，UI 空窗格保留统一窗格框架与
+    关闭/更多入口；最后一个窗格受 Store 层保护。
+  - **持久化兼容**：`PersistedTab` 追加 `openedPath` 及会话字段（可选），
+    `hydrate()` 以 `openedPath ?? path` 迁移旧数据；模板/归一化同步扩展。
+  - 三层职责：**标签=独立可恢复的目录浏览会话；窗格=承载标签的容器；布局=窗格的组织结构**。
+  - 状态：本轮先 `DESIGNING` → 代码实现后转 `IMPLEMENTING` → 测试/原生证据齐全才可 `PASS`。
 
 #### FW-NAV-001 地址栏（面包屑 / 路径输入 / 复制路径） `P0` · `PARTIAL`
 - 目的/场景：快速看清当前位置并跳转到任意绝对路径；Windows 用户习惯 Ctrl+L。
@@ -915,3 +931,30 @@ P2：9
 | 2026-11-18 | 建立 Phase 1 基线：47 个 Feature、现状映射、重复实现检查、方案汇总；未执行测试 |
 | 2026-11-18 | P0 批次 1（r8）：FW-NAV-001/002、FW-FILE-004、FW-INFO-001、FW-SYS-001、FW-OPS-003、FW-SEARCH-001/002 实现；FW-FILE-004 因剪切态视觉/清理入口缺失下调 PARTIAL |
 | 2026-11-19 | R9 缺陷修复：FW-FILE-004 剪切态可见化（订阅/视觉/清理入口，回升 TESTING）；FW-INFO-001 属性空值兜底 + 夹具修复；FW-SYS-001 统一错误出口；FW-OPS-003 预演完整性 + 确认门禁 + 二次验证。新增测试 2 文件，前端 38 文件 / 370 用例、Rust file_workspace 66/66 通过；原生与正式构建待执行 |
+| 2026-11-19 | R10 方案登记（未改代码）：FW-LAYOUT-001 扩展标签会话模型（openedPath/path 分离、tabTitle 取起始目录、duplicateTab 完整复制、空窗格关闭/批量清理、持久化兼容、三层职责边界）；三层数据模型与 UI 修复写入架构/测试/验收文档；本轮尚无实现或测试证据，不产生 PASS |
+
+## 8. R10 产品规则（2026-11-19，权威口径）
+
+> 以下规则由本轮任务给定，作为 `FW-LAYOUT-001` 扩展的权威产品口径；实现与文档冲突时，
+> 以本节规则为准，代码为准绳，测试/原生证据齐全后才更新状态。
+
+1. **标签显示起始目录名，面包屑显示实时路径**：`tabTitle = basename(openedPath)`，
+   两级（如 `正文/第一卷/第一章`）任意深入，标签恒显示「正文」，面包屑显示
+   `D: / Projects / Novel / 正文 / 第一卷 / 第一章`。Tooltip 显示「名称 + 完整 openedPath」。
+2. **标签 = 独立可恢复的目录浏览会话**：会话状态含 `openedPath / path / history /
+   historyIndex / viewMode / sortField / sortAsc / search / filter / showHidden`（及后续新增的
+   可持久化浏览状态）；不含选中文件、拖拽、临时焦点、未提交重命名、执行中的 IPC Promise。
+3. **窗格 = 会话容器**：`PaneState { tabs, activeTabId }`，只负责承载/组织标签，不承载会话内容语义。
+4. **布局 = 窗格组织结构**：`SplitNode` 分割树（方向/比例/窗格 ID），只负责窗格的横向/纵向组织。
+5. **分割复制完整会话**：`splitPane()` 仅复制当前激活标签，经 `duplicateTab()` 深拷贝得到**新 tabId**；
+   源窗格标签不动；新旧标签 path 相同但导航/选择完全独立。
+6. **移动 ≠ 复制**：`extractTabToPane()` 移动原标签、保留原 `tabId`、源窗格移除；
+   `duplicateTab()` 复制会话、生成新 `tabId`、原标签保留。二者不合并。
+7. **空窗格可关闭，最后一个受保护**：`pane.tabs.length === 0` 为空窗格，提供关闭入口；
+   `closeEmptyPane/closeAllEmptyPanes` 在 Store 层校验「至少保留一个窗格」；空窗格右键保留
+   「打开文件夹/输入路径/关闭空窗格」。
+8. **三种空态严格区分**：A 空窗格（无标签）→ 关窗格；B 空白标签（有标签无有效目录）→ 关标签；
+   C 正常窗格 → 保留既有标签逻辑。禁止混淆。
+9. **目录改名/移动同步**：TaskDock 内部重命名/移动目录时用统一 `remapTabPaths()` 精确映射
+   所有受影响标签的 `openedPath/path/history`（分量边界，大小写不敏感，不误匹配相似前缀）；
+   外部程序改动复用现有失效处理，定位不到新路径则显式标注失效，不猜层级。

@@ -16,6 +16,7 @@ import {
   MAX_TABS_PER_PANE,
   adjacentPaneId,
   defaultTree,
+  duplicateTab,
   freshId,
   hasPane,
   normalizeTree,
@@ -37,6 +38,7 @@ import {
 } from "../lib/filesWorkspace/layoutTransfer";
 import {
   basename,
+  isSubPath,
   normalizePath,
   parentOf,
   samePath,
@@ -72,6 +74,11 @@ export type FileFilter =
 
 export interface FolderTab {
   tabId: string;
+  /**
+   * 用户最初添加的目录（规范化绝对路径）；导航只改 path，该值在标签生命周期内不变。
+   * 标题恒取它的名称，因此进入子目录不会改变标签标题。
+   */
+  openedPath: string;
   /** 当前目录（规范化绝对路径）。 */
   path: string;
   /** 目录历史（含当前）。 */
@@ -142,6 +149,8 @@ function makeTab(path: string, history: string[] = []): FolderTab {
   const hist = history.length ? [...history, normalized] : [normalized];
   return {
     tabId: freshId("tab"),
+    // openedPath 与 path 初始化为同一值；后续导航只动 path。
+    openedPath: normalized,
     path: normalized,
     history: hist,
     historyIndex: hist.length - 1,
@@ -154,7 +163,79 @@ function makeTab(path: string, history: string[] = []): FolderTab {
 }
 
 export function tabTitle(tab: FolderTab): string {
-  return basename(tab.path) || tab.path;
+  // 恒取最初打开目录的名称；老数据/异常数据 openedPath 为空时退回 path。
+  return basename(tab.openedPath) || basename(tab.path) || tab.path;
+}
+
+// ── 持久化 ⇄ 标签 的共用恢复/序列化（hydrate 与 applyTemplate 共用，避免迁移规则漂移）──
+
+function isViewMode(value: unknown): value is ViewMode {
+  return value === "list" || value === "grid";
+}
+function isSortField(value: unknown): value is SortField {
+  return value === "name" || value === "modified" || value === "type" || value === "size";
+}
+const FILE_FILTER_VALUES: FileFilter[] = [
+  "all", "folder", "image", "video", "audio", "doc", "sheet",
+  "slide", "code", "archive", "large", "recent",
+];
+function isFileFilter(value: unknown): value is FileFilter {
+  return typeof value === "string" && FILE_FILTER_VALUES.includes(value as FileFilter);
+}
+
+/** 限制历史长度（与导航裁剪一致）。 */
+const MAX_TAB_HISTORY = 64;
+
+/**
+ * 从持久化标签恢复完整会话：hydrate 与 applyTemplate 共用同一迁移规则。
+ * - openedPath = persisted.openedPath ?? persisted.path（旧数据兜底）；
+ * - 会话字段缺失用 makeTab 默认值；
+ * - history/historyIndex 有则恢复并校验越界，否则收敛为单条当前路径。
+ */
+function restoreTab(persisted: PersistedTab): FolderTab {
+  const path = normalizePath(persisted.path);
+  const base = makeTab(path);
+  const tab: FolderTab = {
+    ...base,
+    openedPath: persisted.openedPath ? normalizePath(persisted.openedPath) : path,
+    viewMode: isViewMode(persisted.viewMode) ? persisted.viewMode : base.viewMode,
+    sortField: isSortField(persisted.sortField) ? persisted.sortField : base.sortField,
+    sortAsc: typeof persisted.sortAsc === "boolean" ? persisted.sortAsc : base.sortAsc,
+    search: typeof persisted.search === "string" ? persisted.search : base.search,
+    filter: isFileFilter(persisted.filter) ? persisted.filter : base.filter,
+    showHidden: typeof persisted.showHidden === "boolean" ? persisted.showHidden : base.showHidden,
+  };
+  const stored = Array.isArray(persisted.history)
+    ? persisted.history.map(normalizePath).filter(Boolean).slice(0, MAX_TAB_HISTORY)
+    : [];
+  if (stored.length > 0) {
+    const rawIndex =
+      typeof persisted.historyIndex === "number" && Number.isInteger(persisted.historyIndex)
+        ? persisted.historyIndex
+        : stored.length - 1;
+    const index = Math.min(Math.max(rawIndex, 0), stored.length - 1);
+    tab.history = stored;
+    tab.historyIndex = index;
+    tab.path = stored[index];
+  }
+  return tab;
+}
+
+/** 标签 → 持久化标签（含全部会话字段；不写选中/拖拽等临时态）。 */
+function toPersistedTab(tab: FolderTab): PersistedTab {
+  return {
+    tabId: tab.tabId,
+    path: tab.path,
+    openedPath: tab.openedPath,
+    history: [...tab.history],
+    historyIndex: tab.historyIndex,
+    viewMode: tab.viewMode,
+    sortField: tab.sortField,
+    sortAsc: tab.sortAsc,
+    search: tab.search,
+    filter: tab.filter,
+    showHidden: tab.showHidden,
+  };
 }
 
 interface FilesWorkspaceData {
@@ -208,7 +289,8 @@ export interface FilesWorkspaceActions {
   refreshPane: (paneId: string) => void;
   closeTab: (paneId: string, tabId: string) => void;
   setActiveTab: (paneId: string, tabId: string) => void;
-  duplicateTab: (paneId: string, tabId: string) => void;
+  /** 同窗格内复制标签（插到源标签后并激活副本）；深拷贝由纯函数 duplicateTab 负责。 */
+  duplicateTabInPane: (paneId: string, tabId: string) => void;
   reorderTab: (paneId: string, from: number, to: number) => void;
   moveTabToPane: (tabId: string, fromPaneId: string, toPaneId: string, index?: number) => void;
   extractTabToPane: (
@@ -233,6 +315,15 @@ export interface FilesWorkspaceActions {
   closePane: (paneId: string, options?: { mode?: "transfer" | "stash" | "discard" }) => ClosePaneResult;
   /** 关闭除保留区域外的所有区域（同样不静默丢标签）。 */
   closeOtherPanes: (keepPaneId: string, options?: { mode?: "transfer" | "stash" | "discard" }) => ClosePaneResult;
+  /** 仅关闭确实为空（无标签）的窗格；最后一个窗格受保护。返回是否关闭成功。 */
+  closeEmptyPane: (paneId: string) => boolean;
+  /** 一次性关闭全部空窗格（至少保留一个）；返回关闭数量。 */
+  closeAllEmptyPanes: () => number;
+  /**
+   * 目录重命名成功后，把所有标签（含 stashed）的 openedPath/path/history 中的旧路径
+   * 同步为新路径（精确匹配 + 子路径 + Windows 大小写不敏感）。返回受影响标签数。
+   */
+  remapTabPaths: (oldPath: string, newPath: string) => number;
   /** 与相邻窗格交换位置（保持标签）。 */
   swapPane: (paneId: string) => void;
   /** 任意两区域位置互换（布局编辑模式：拖动区域 A 到区域 B 中心）。 */
@@ -627,15 +718,14 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
       for (const paneId of ids) {
         const persisted = state.panes.find((p) => p.paneId === paneId);
         if (persisted && persisted.tabs.length > 0) {
-          const tabs = persisted.tabs.slice(0, MAX_TABS_PER_PANE).map((t) => {
-            const tab = makeTab(t.path);
-            if (t.tabId && !seenTabIds.has(t.tabId)) {
-              seenTabIds.add(t.tabId);
-              tab.tabId = t.tabId;
+          const tabs = persisted.tabs.slice(0, MAX_TABS_PER_PANE).map((persistedTab) => {
+            const tab = restoreTab(persistedTab);
+            if (persistedTab.tabId && !seenTabIds.has(persistedTab.tabId)) {
+              seenTabIds.add(persistedTab.tabId);
+              tab.tabId = persistedTab.tabId;
             }
             return tab;
           });
-          // 恢复：把历史收敛为单条（历史不持久化），路径即当前。
           panes[paneId] = {
             tabs,
             activeTabId:
@@ -645,14 +735,14 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
           panes[paneId] = { tabs: [], activeTabId: null };
         }
       }
-      // 收纳标签恢复：tabId 与标题保留，历史收敛为单条。
+      // 收纳标签恢复：复用同一迁移规则（会话字段/历史随标签一起恢复）。
       const stashed = (state.stashed ?? [])
         .slice(0, MAX_STASHED_TABS)
-        .map((t) => {
-          const tab = makeTab(t.path);
-          if (t.tabId && !seenTabIds.has(t.tabId)) {
-            seenTabIds.add(t.tabId);
-            tab.tabId = t.tabId;
+        .map((persistedTab) => {
+          const tab = restoreTab(persistedTab);
+          if (persistedTab.tabId && !seenTabIds.has(persistedTab.tabId)) {
+            seenTabIds.add(persistedTab.tabId);
+            tab.tabId = persistedTab.tabId;
           }
           return tab;
         })
@@ -689,7 +779,7 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
             return [
               {
                 paneId,
-                tabs: pane.tabs.map((t) => ({ tabId: t.tabId, path: t.path })),
+                tabs: pane.tabs.map(toPersistedTab),
                 activeTabId: pane.activeTabId,
               },
             ];
@@ -697,7 +787,7 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
           activePaneId: s.activePaneId,
           pinnedDirs: [...s.pinnedDirs],
           recentDirs: [...s.recentDirs],
-          stashed: s.stashed.map((t): PersistedTab => ({ tabId: t.tabId, path: t.path })),
+          stashed: s.stashed.map(toPersistedTab),
         },
       };
     },
@@ -819,12 +909,12 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
       schedulePersist(get);
     },
 
-    duplicateTab: (paneId, tabId) => {
+    duplicateTabInPane: (paneId, tabId) => {
       set((s) => {
         const pane = s.panes[paneId];
         const source = pane?.tabs.find((t) => t.tabId === tabId);
         if (!pane || !source || pane.tabs.length >= MAX_TABS_PER_PANE) return s;
-        const copy: FolderTab = { ...source, tabId: freshId("tab") };
+        const copy = duplicateTab(source);
         const idx = pane.tabs.findIndex((t) => t.tabId === tabId);
         const tabs = [...pane.tabs];
         tabs.splice(idx + 1, 0, copy);
@@ -910,28 +1000,25 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
       return true;
     },
 
-    splitPane: (paneId, direction, openPath, side = "after") => {
+    splitPane: (paneId, direction, _openPath, side = "after") => {
       const s = get();
+      // 没有可复制的活动标签时不产生窗格（也不写历史）——避免空窗格凭空出现。
+      // openPath 仅为签名兼容保留：新窗格一律复制当前标签的完整会话，而非按路径重建。
+      const pane = s.panes[paneId];
+      const activeTab = pane?.tabs.find((t) => t.tabId === pane.activeTabId);
+      if (!activeTab) return null;
       const result = splitPaneInTree(s.tree, paneId, direction, side);
       if (!result) return null;
-      const path =
-        openPath ??
-        s.panes[paneId]?.tabs.find((t) => t.tabId === s.panes[paneId]?.activeTabId)?.path ??
-        "";
+      const copy = duplicateTab(activeTab);
       const history = recordHistory("split", paneId);
-      let createdTabId: string | null = null;
       set((st) => {
         const panes = ensurePaneState(st.panes, result.tree);
-        const newPane = panes[result.newPaneId];
-        if (newPane && newPane.tabs.length === 0 && path) {
-          const tab = makeTab(path);
-          createdTabId = tab.tabId;
-          panes[result.newPaneId] = { tabs: [tab], activeTabId: tab.tabId };
-        }
+        panes[result.newPaneId] = { tabs: [copy], activeTabId: copy.tabId };
         return { tree: result.tree, panes, activePaneId: result.newPaneId, maximizedPaneId: null };
       });
-      if (createdTabId && history) {
-        history.createdTabIds = [...(history.createdTabIds ?? []), createdTabId];
+      // 撤销分割时必须同时丢弃这个复制标签，否则 undo 后会多出一个重复目录。
+      if (history) {
+        history.createdTabIds = [...(history.createdTabIds ?? []), copy.tabId];
       }
       schedulePersist(get);
       return result.newPaneId;
@@ -946,6 +1033,98 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
         return { status: "closed", movedTabs: 0, stashedTabs: 0, discardedTabs: 0 };
       }
       return applyClose(keepPaneId, closing, options?.mode ?? "transfer");
+    },
+
+    closeEmptyPane: (paneId) => {
+      const s = get();
+      const ids = paneIds(s.tree);
+      // 不存在 / 最后一个窗格 / 非空窗格都不动。
+      if (!hasPane(s.tree, paneId) || ids.length <= 1) return false;
+      if ((s.panes[paneId]?.tabs.length ?? -1) !== 0) return false;
+      const tree = removePane(s.tree, paneId);
+      if (!tree) return false;
+      recordHistory("close-empty-pane", paneId);
+      const remaining = paneIds(tree);
+      set({
+        tree,
+        panes: ensurePaneState(s.panes, tree),
+        activePaneId: remaining.includes(s.activePaneId) ? s.activePaneId : remaining[0],
+        maximizedPaneId: s.maximizedPaneId && s.maximizedPaneId !== paneId ? s.maximizedPaneId : null,
+        selection: {},
+      });
+      schedulePersist(get);
+      return true;
+    },
+
+    closeAllEmptyPanes: () => {
+      const s = get();
+      const allIds = paneIds(s.tree);
+      if (allIds.length <= 1) return 0;
+      const empty = allIds.filter((id) => (s.panes[id]?.tabs.length ?? 0) === 0);
+      if (empty.length === 0) return 0;
+      let closing = empty;
+      if (empty.length === allIds.length) {
+        // 全部为空：至少保留 activePaneId（无效则保留树第一个）。
+        const keep = allIds.includes(s.activePaneId) ? s.activePaneId : allIds[0];
+        closing = empty.filter((id) => id !== keep);
+      }
+      if (closing.length === 0) return 0;
+      let tree = s.tree;
+      for (const id of closing) {
+        const next = removePane(tree, id);
+        if (!next) return 0; // 结构异常：保持原状，不写任何状态。
+        tree = next;
+      }
+      recordHistory("close-all-empty", closing.join(","));
+      const remaining = paneIds(tree);
+      set({
+        tree,
+        panes: ensurePaneState(s.panes, tree),
+        activePaneId: remaining.includes(s.activePaneId) ? s.activePaneId : remaining[0],
+        maximizedPaneId:
+          s.maximizedPaneId && !closing.includes(s.maximizedPaneId) ? s.maximizedPaneId : null,
+        selection: {},
+      });
+      schedulePersist(get);
+      return closing.length;
+    },
+
+    remapTabPaths: (oldPath, newPath) => {
+      const oldP = normalizePath(oldPath);
+      const newP = normalizePath(newPath);
+      if (!oldP || !newP) return 0;
+      // 精确匹配用 samePath（大小写不敏感）；子路径用 isSubPath（自带分量边界，
+      // D:\Projects\A 不会误匹配 D:\Projects\AB）；后缀沿用原路径大小写。
+      const mapPath = (p: string): string => {
+        if (samePath(p, oldP)) return newP;
+        if (isSubPath(oldP, p)) return newP + p.slice(oldP.length);
+        return p;
+      };
+      const s = get();
+      let affected = 0;
+      const remapTab = (tab: FolderTab): FolderTab => {
+        const openedPath = mapPath(tab.openedPath);
+        const path = mapPath(tab.path);
+        const history = tab.history.map(mapPath);
+        if (
+          openedPath === tab.openedPath &&
+          path === tab.path &&
+          history.every((h, i) => h === tab.history[i])
+        ) {
+          return tab;
+        }
+        affected += 1;
+        return { ...tab, openedPath, path, history };
+      };
+      const panes: Record<string, PaneState> = {};
+      for (const [paneId, pane] of Object.entries(s.panes)) {
+        panes[paneId] = { ...pane, tabs: pane.tabs.map(remapTab) };
+      }
+      const stashed = s.stashed.map(remapTab);
+      if (affected === 0) return 0;
+      set({ panes, stashed });
+      schedulePersist(get);
+      return affected;
     },
 
     swapPane: (paneId) => {
@@ -1139,11 +1318,11 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
       const seenTabIds = new Set<string>();
       for (const [oldId, newId] of mapping) {
         const persisted = template.panes.find((p) => p.paneId === oldId);
-        const tabs = (persisted?.tabs ?? []).slice(0, MAX_TABS_PER_PANE).map((t) => {
-          const tab = makeTab(t.path);
-          if (t.tabId && !seenTabIds.has(t.tabId)) {
-            seenTabIds.add(t.tabId);
-            tab.tabId = t.tabId;
+        const tabs = (persisted?.tabs ?? []).slice(0, MAX_TABS_PER_PANE).map((persistedTab) => {
+          const tab = restoreTab(persistedTab);
+          if (persistedTab.tabId && !seenTabIds.has(persistedTab.tabId)) {
+            seenTabIds.add(persistedTab.tabId);
+            tab.tabId = persistedTab.tabId;
           }
           return tab;
         });

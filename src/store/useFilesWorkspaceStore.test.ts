@@ -1,7 +1,7 @@
 //! 文件工作区 store 单测：hydrate、分栏、标签移动、导航历史、选择、
 //! 持久化恢复（激活标签/模板映射/项目切换 flush/窗格上限）。
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { LAYOUT_PRESETS, paneIds, pathToPane, type SplitNode } from "../lib/filesWorkspace/model";
 import { setFwClipboard, getFwClipboard } from "../lib/filesWorkspace/interactions";
@@ -11,7 +11,7 @@ import {
   __flushFilesWorkspaceWrites,
   type FilesWorkspacePersisted,
 } from "../lib/filesWorkspace/persist";
-import { useFilesWorkspaceStore } from "./useFilesWorkspaceStore";
+import { tabTitle, useFilesWorkspaceStore } from "./useFilesWorkspaceStore";
 
 /** 总是取最新状态（zustand getState 快照在动作后不自动更新）。 */
 function state() {
@@ -140,10 +140,11 @@ describe("标签与导航", () => {
 
   it("moveTabToPane 跨窗格移动且源窗格保留其余标签", () => {
     const a = state().activePaneId;
-    const split = state().splitPane(a, "horizontal", null);
-    expect(split).not.toBeNull();
     state().openInPane(a, "D:\\x1", "newTab");
     state().openInPane(a, "D:\\x2", "newTab");
+    // splitPane 现在必须有活动标签才能分栏（复制该标签进新窗格）。
+    const split = state().splitPane(a, "horizontal", null);
+    expect(split).not.toBeNull();
     const moving = state().panes[a].tabs[0].tabId;
     state().moveTabToPane(moving, a, split!);
     const s = state();
@@ -152,14 +153,20 @@ describe("标签与导航", () => {
     expect(s.panes[split!].activeTabId).toBe(moving);
   });
 
-  it("duplicateTab 复制当前标签", () => {
+  it("duplicateTabInPane 复制当前标签（深拷贝 history、插在源标签后并激活副本）", () => {
     const paneId = state().activePaneId;
     state().openInPane(paneId, "D:\\dup", "newTab");
+    const source = state().panes[paneId].tabs[0];
     const before = state().panes[paneId].tabs.length;
-    state().duplicateTab(paneId, state().panes[paneId].activeTabId!);
+    state().duplicateTabInPane(paneId, source.tabId);
     const s = state();
     expect(s.panes[paneId].tabs).toHaveLength(before + 1);
-    expect(s.panes[paneId].tabs[before].path).toBe("D:\\dup");
+    const copy = s.panes[paneId].tabs[1];
+    expect(copy.path).toBe("D:\\dup");
+    expect(copy.tabId).not.toBe(source.tabId);
+    expect(copy.history).toEqual(source.history);
+    expect(copy.history).not.toBe(source.history);
+    expect(s.panes[paneId].activeTabId).toBe(copy.tabId);
   });
 });
 
@@ -176,6 +183,7 @@ describe("布局操作", () => {
 
   it("closePane 移除窗格并把 active 落回剩余窗格", () => {
     const a = state().activePaneId;
+    state().openInPane(a, "D:\\seed", "newTab");
     const b = state().splitPane(a, "horizontal", null)!;
     state().closePane(b);
     const s = state();
@@ -206,6 +214,7 @@ describe("选择", () => {
 
   it("setSelection / clearSelection 按窗格隔离", () => {
     const a = state().activePaneId;
+    state().openInPane(a, "D:\\seed", "newTab");
     const b = state().splitPane(a, "horizontal", null)!;
     state().setSelection(a, ["D:\\1", "D:\\2"], "D:\\1");
     state().setSelection(b, ["D:\\3"], null);
@@ -315,17 +324,18 @@ describe("恢复：自定义模板映射", () => {
     expect(root.ratio).toBeCloseTo(0.5);
   });
 
-  it("splitPane side=before 新窗格在左且打开指定路径", () => {
+  it("splitPane side=before 新窗格在左且复制当前标签会话", () => {
     const a = state().activePaneId;
     state().openInPane(a, "D:\\main", "newTab");
-    const newId = state().splitPane(a, "horizontal", "D:\\left-side", "before");
+    const newId = state().splitPane(a, "horizontal", null, "before");
     expect(newId).not.toBeNull();
     const s = state();
     const root = s.tree as Extract<SplitNode, { type: "split" }>;
     expect((root.first as { type: string }).type).toBe("pane");
     expect((root.first as { paneId?: string }).paneId).toBe(newId!);
     expect((root.second as { paneId?: string }).paneId).toBe(a);
-    expect(s.panes[newId!].tabs[0].path).toBe("D:\\left-side");
+    expect(s.panes[newId!].tabs[0].path).toBe("D:\\main");
+    expect(s.panes[newId!].tabs[0].openedPath).toBe("D:\\main");
   });
 });
 
@@ -363,6 +373,7 @@ describe("持久化：项目切换 flush 竞态", () => {
 
   it("连续比例修改后快照保留最终比例", async () => {
     const a = state().activePaneId;
+    state().openInPane(a, "D:\\seed", "newTab");
     const b = state().splitPane(a, "horizontal", null)!;
     const root0 = state().tree as Extract<SplitNode, { type: "split" }>;
     state().updateRatio(root0.id, 0.3);
@@ -378,6 +389,8 @@ describe("持久化：项目切换 flush 竞态", () => {
 
   it("12 窗格上限边界：恢复后窗格数一致", async () => {
     state().hydrate({ tree: LAYOUT_PRESETS.single.build(), panes: [], activePaneId: "" }, "global");
+    // 每个新窗格都会复制源窗格的活动标签，因此先给首个窗格放一个标签即可保证后续都有可复制标签。
+    state().openInPane(state().activePaneId, "D:\\seed", "newTab");
     // 始终分割最浅层的窗格（树深 ≤6 是真实上限；只分割第一个窗格会先撞深度上限）。
     const shallowest = (): string => {
       const tree = state().tree;
@@ -407,5 +420,430 @@ describe("持久化：项目切换 flush 竞态", () => {
     const saved = persistedNow().states["global"];
     state().hydrate(saved!, "global");
     expect(Object.keys(state().panes)).toHaveLength(12);
+  });
+});
+
+// ── openedPath / 标签标题 ───────────────────────────────────────────────
+
+describe("openedPath 与标签标题", () => {
+  beforeEach(reset);
+
+  it("makeTab 初始化两路径相同；导航进子目录/返回/上级只改 path 不改 openedPath", () => {
+    const paneId = state().activePaneId;
+    state().openInPane(paneId, "D:\\proj", "newTab");
+    let tab = state().panes[paneId].tabs[0];
+    expect(tab.openedPath).toBe("D:\\proj");
+    expect(tab.path).toBe("D:\\proj");
+
+    state().openInPane(paneId, "D:\\proj\\sub", "replace");
+    tab = state().panes[paneId].tabs[0];
+    expect(tab.path).toBe("D:\\proj\\sub");
+    expect(tab.openedPath).toBe("D:\\proj");
+
+    state().navigate(paneId, "back");
+    tab = state().panes[paneId].tabs[0];
+    expect(tab.path).toBe("D:\\proj");
+    expect(tab.openedPath).toBe("D:\\proj");
+
+    state().navigate(paneId, "up");
+    tab = state().panes[paneId].tabs[0];
+    expect(tab.path).toBe("D:\\");
+    expect(tab.openedPath).toBe("D:\\proj");
+  });
+
+  it("tabTitle 恒取 openedPath 名称（进入子目录后标题不变）", () => {
+    const paneId = state().activePaneId;
+    state().openInPane(paneId, "D:\\project-x", "newTab");
+    expect(tabTitle(state().panes[paneId].tabs[0])).toBe("project-x");
+    state().openInPane(paneId, "D:\\project-x\\a\\b", "replace");
+    expect(tabTitle(state().panes[paneId].tabs[0])).toBe("project-x");
+    // 兜底：openedPath 为空时退回 path。
+    expect(tabTitle({ ...state().panes[paneId].tabs[0], openedPath: "", path: "D:\\fallback" })).toBe("fallback");
+  });
+});
+
+// ── splitPane 复制标签会话 ──────────────────────────────────────────────
+
+describe("splitPane 复制当前标签会话", () => {
+  beforeEach(reset);
+
+  it("多标签：新窗格只含复制的当前标签，原窗格全保留，会话字段复制且 history 独立", () => {
+    const a = state().activePaneId;
+    state().openInPane(a, "D:\\p\\one", "newTab");
+    state().openInPane(a, "D:\\p\\two", "newTab");
+    state().openInPane(a, "D:\\p\\two\\sub", "replace"); // 当前标签历史增长，openedPath 不变
+    const srcId = state().panes[a].activeTabId!;
+    state().patchTab(a, srcId, {
+      viewMode: "grid",
+      sortField: "size",
+      sortAsc: false,
+      search: "abc",
+      filter: "image",
+      showHidden: true,
+    });
+    const src = state().panes[a].tabs.find((t) => t.tabId === srcId)!;
+    const originalIds = state().panes[a].tabs.map((t) => t.tabId);
+
+    const newPane = state().splitPane(a, "horizontal", null)!;
+    const s = state();
+    // 原窗格完全不变。
+    expect(s.panes[a].tabs.map((t) => t.tabId)).toEqual(originalIds);
+    expect(s.panes[newPane].tabs).toHaveLength(1);
+    const copy = s.panes[newPane].tabs[0];
+    expect(copy.tabId).not.toBe(srcId);
+    expect(s.panes[newPane].tabs.every((t) => !originalIds.includes(t.tabId))).toBe(true);
+    expect(copy.openedPath).toBe(src.openedPath);
+    expect(copy.path).toBe(src.path);
+    expect(copy.history).toEqual(src.history);
+    expect(copy.history).not.toBe(src.history); // 不共享引用
+    expect(copy.viewMode).toBe("grid");
+    expect(copy.sortField).toBe("size");
+    expect(copy.sortAsc).toBe(false);
+    expect(copy.search).toBe("abc");
+    expect(copy.filter).toBe("image");
+    expect(copy.showHidden).toBe(true);
+    // 改动副本的 history 不影响源。
+    copy.history.push("D:\\p\\two\\deep");
+    expect(state().panes[a].tabs.find((t) => t.tabId === srcId)!.history).toEqual(src.history);
+
+    // 撤销分割：复制标签随新窗格一起消失。
+    expect(state().undoLayout()).toBe(true);
+    const allIds = [
+      ...Object.values(state().panes).flatMap((p) => p.tabs.map((t) => t.tabId)),
+      ...state().stashed.map((t) => t.tabId),
+    ];
+    expect(allIds).not.toContain(copy.tabId);
+  });
+
+  it("无有效激活标签时返回 null，且不产生新窗格/历史", () => {
+    const a = state().activePaneId;
+    const treeBefore = state().tree;
+    const historyBefore = state().layoutHistory.length;
+    expect(state().splitPane(a, "horizontal", "D:\\ignored")).toBeNull();
+    expect(state().tree).toBe(treeBefore);
+    expect(state().layoutHistory).toHaveLength(historyBefore);
+    expect(Object.keys(state().panes)).toHaveLength(1);
+
+    // activeTabId 指向不存在的标签同样拒绝（直接注入脏状态，绕过 hydrate 的归一化修正）。
+    state().openInPane(a, "D:\\a", "newTab");
+    useFilesWorkspaceStore.setState((s) => ({
+      panes: { ...s.panes, [a]: { ...s.panes[a], activeTabId: "ghost" } },
+    }));
+    expect(state().splitPane(a, "horizontal", null)).toBeNull();
+    expect(paneIds(state().tree)).toHaveLength(1);
+  });
+});
+
+// ── 关闭空窗格 ──────────────────────────────────────────────────────────
+
+describe("关闭空窗格", () => {
+  beforeEach(reset);
+
+  function seedQuadWithEmpties(): string[] {
+    const tree = LAYOUT_PRESETS.quad.build();
+    const ids = paneIds(tree);
+    state().hydrate(
+      {
+        tree,
+        panes: [
+          { paneId: ids[0], tabs: [{ tabId: "t0", path: "D:\\a" }], activeTabId: "t0" },
+          { paneId: ids[1], tabs: [], activeTabId: null },
+          { paneId: ids[2], tabs: [], activeTabId: null },
+          { paneId: ids[3], tabs: [], activeTabId: null },
+        ],
+        activePaneId: ids[0],
+      },
+      "global",
+    );
+    return ids;
+  }
+
+  it("closeEmptyPane 只关空窗格；最后窗格与有标签窗格受保护", () => {
+    const ids = seedQuadWithEmpties();
+    expect(state().closeEmptyPane(ids[1])).toBe(true);
+    expect(paneIds(state().tree)).toEqual([ids[0], ids[2], ids[3]]);
+    expect(state().closeEmptyPane(ids[1])).toBe(false); // 已不存在
+    expect(state().closeEmptyPane(ids[0])).toBe(false); // 非空
+
+    // 最后一个窗格（即便空）不可关闭。
+    reset();
+    expect(state().closeEmptyPane(state().activePaneId)).toBe(false);
+    expect(paneIds(state().tree)).toHaveLength(1);
+  });
+
+  it("closeAllEmptyPanes 批量关闭全部空窗格、至少留一个且不影响有标签窗格", () => {
+    const ids = seedQuadWithEmpties();
+    expect(state().closeAllEmptyPanes()).toBe(3);
+    expect(paneIds(state().tree)).toEqual([ids[0]]);
+    expect(state().panes[ids[0]].tabs).toHaveLength(1);
+    expect(state().activePaneId).toBe(ids[0]);
+    // 再次调用：无可关闭窗格。
+    expect(state().closeAllEmptyPanes()).toBe(0);
+  });
+
+  it("全部为空时至少保留 activePaneId 对应窗格", () => {
+    const tree = LAYOUT_PRESETS.leftRight.build();
+    const ids = paneIds(tree);
+    state().hydrate(
+      {
+        tree,
+        panes: [
+          { paneId: ids[0], tabs: [], activeTabId: null },
+          { paneId: ids[1], tabs: [], activeTabId: null },
+        ],
+        activePaneId: ids[1],
+      },
+      "global",
+    );
+    expect(state().closeAllEmptyPanes()).toBe(1);
+    expect(paneIds(state().tree)).toEqual([ids[1]]);
+    expect(state().activePaneId).toBe(ids[1]);
+  });
+
+  it("closeAllEmptyPanes 单次 setState + 单次持久化 + 单条撤销", async () => {
+    seedQuadWithEmpties();
+    const historyBefore = state().layoutHistory.length;
+    const spy = vi.spyOn(memSettings, "update");
+    expect(state().closeAllEmptyPanes()).toBe(3);
+    expect(state().layoutHistory).toHaveLength(historyBefore + 1);
+    await state().flushPending();
+    await __flushFilesWorkspaceWrites();
+    expect(spy).toHaveBeenCalledTimes(1);
+    spy.mockRestore();
+  });
+});
+
+// ── 目录重命名路径映射 ──────────────────────────────────────────────────
+
+describe("remapTabPaths 路径映射", () => {
+  beforeEach(reset);
+
+  function seedPaths(): void {
+    state().hydrate(
+      {
+        tree: LAYOUT_PRESETS.leftRight.build(),
+        panes: [
+          {
+            paneId: "pane-a",
+            tabs: [
+              { tabId: "t1", path: "D:\\Projects\\A", openedPath: "D:\\Projects\\A", history: ["D:\\Projects\\A"] },
+              {
+                tabId: "t2",
+                path: "D:\\Projects\\A\\sub",
+                openedPath: "D:\\Projects\\A",
+                history: ["D:\\Projects\\A", "D:\\Projects\\A\\sub"],
+              },
+              { tabId: "t3", path: "D:\\Projects\\AB", openedPath: "D:\\Projects\\AB", history: ["D:\\Projects\\AB"] },
+            ],
+            activeTabId: "t1",
+          },
+          {
+            paneId: "pane-b",
+            tabs: [
+              {
+                tabId: "t4",
+                path: "d:\\projects\\a\\Child",
+                openedPath: "D:\\Projects\\A",
+                history: ["d:\\projects\\a", "d:\\projects\\a\\Child"],
+              },
+            ],
+            activeTabId: "t4",
+          },
+        ],
+        activePaneId: "pane-a",
+        stashed: [
+          {
+            tabId: "t5",
+            path: "D:\\Projects\\A\\stash",
+            openedPath: "D:\\Projects\\A",
+            history: ["D:\\Projects\\A", "D:\\Projects\\A\\stash"],
+          },
+        ],
+      },
+      "global",
+    );
+  }
+
+  function findTab(tabId: string) {
+    const all = [
+      ...Object.values(state().panes).flatMap((p) => p.tabs),
+      ...state().stashed,
+    ];
+    return all.find((t) => t.tabId === tabId)!;
+  }
+
+  it("精确匹配/子路径/大小写/多标签同步；相似前缀不误匹配；stashed 一并处理", () => {
+    seedPaths();
+    expect(state().remapTabPaths("D:\\Projects\\A", "D:\\New")).toBe(4); // t1/t2/t4/t5
+
+    expect(findTab("t1").path).toBe("D:\\New");
+    expect(findTab("t1").openedPath).toBe("D:\\New");
+    expect(findTab("t1").history).toEqual(["D:\\New"]);
+
+    expect(findTab("t2").path).toBe("D:\\New\\sub");
+    expect(findTab("t2").openedPath).toBe("D:\\New");
+    expect(findTab("t2").history).toEqual(["D:\\New", "D:\\New\\sub"]);
+
+    // 相似前缀 D:\Projects\AB 完全不动。
+    expect(findTab("t3").path).toBe("D:\\Projects\\AB");
+    expect(findTab("t3").history).toEqual(["D:\\Projects\\AB"]);
+
+    // 大小写不敏感 + 子路径后缀沿用原大小写。
+    expect(findTab("t4").path).toBe("D:\\New\\Child");
+    expect(findTab("t4").openedPath).toBe("D:\\New");
+    expect(findTab("t4").history).toEqual(["D:\\New", "D:\\New\\Child"]);
+
+    // stashed 标签同步。
+    expect(findTab("t5").path).toBe("D:\\New\\stash");
+    expect(findTab("t5").openedPath).toBe("D:\\New");
+
+    // 幂等：再映射一次已无匹配项。
+    expect(state().remapTabPaths("D:\\Projects\\A", "D:\\New")).toBe(0);
+    expect(state().remapTabPaths("", "D:\\x")).toBe(0);
+  });
+});
+
+// ── 会话字段持久化与迁移 ────────────────────────────────────────────────
+
+describe("会话字段持久化与迁移", () => {
+  beforeEach(reset);
+
+  it("snapshot 写入 openedPath/全部会话字段；hydrate round-trip 稳定", async () => {
+    const a = state().activePaneId;
+    state().openInPane(a, "D:\\sess", "newTab");
+    state().openInPane(a, "D:\\sess\\sub", "replace");
+    const id = state().panes[a].activeTabId!;
+    state().patchTab(a, id, {
+      viewMode: "grid",
+      sortField: "type",
+      sortAsc: false,
+      search: "q",
+      filter: "doc",
+      showHidden: true,
+    });
+    await state().persistNow();
+    await __flushFilesWorkspaceWrites();
+
+    const saved = persistedNow().states.global!;
+    const persistedTab = saved.panes[0].tabs[0];
+    expect(persistedTab.openedPath).toBe("D:\\sess");
+    expect(persistedTab.path).toBe("D:\\sess\\sub");
+    expect(persistedTab.history).toEqual(["D:\\sess", "D:\\sess\\sub"]);
+    expect(persistedTab.historyIndex).toBe(1);
+    expect(persistedTab.viewMode).toBe("grid");
+    expect(persistedTab.sortField).toBe("type");
+    expect(persistedTab.sortAsc).toBe(false);
+    expect(persistedTab.search).toBe("q");
+    expect(persistedTab.filter).toBe("doc");
+    expect(persistedTab.showHidden).toBe(true);
+
+    // 模拟重启：重新 hydrate 后所有字段保持（round-trip 稳定）。
+    state().hydrate(saved, "global");
+    const restored = state().panes[state().activePaneId].tabs[0];
+    expect(restored.openedPath).toBe("D:\\sess");
+    expect(restored.path).toBe("D:\\sess\\sub");
+    expect(restored.history).toEqual(["D:\\sess", "D:\\sess\\sub"]);
+    expect(restored.historyIndex).toBe(1);
+    expect(restored.viewMode).toBe("grid");
+    expect(restored.sortField).toBe("type");
+    expect(restored.sortAsc).toBe(false);
+    expect(restored.search).toBe("q");
+    expect(restored.filter).toBe("doc");
+    expect(restored.showHidden).toBe(true);
+  });
+
+  it("旧数据缺 openedPath 用 path 兜底，history 收敛单条", () => {
+    state().hydrate(
+      {
+        tree: LAYOUT_PRESETS.single.build(),
+        panes: [{ paneId: "pane-1", tabs: [{ tabId: "legacy", path: "D:\\old" }], activeTabId: "legacy" }],
+        activePaneId: "pane-1",
+      },
+      "global",
+    );
+    const tab = state().panes["pane-1"].tabs[0];
+    expect(tab.openedPath).toBe("D:\\old");
+    expect(tab.path).toBe("D:\\old");
+    expect(tab.history).toEqual(["D:\\old"]);
+    expect(tab.historyIndex).toBe(0);
+  });
+
+  it("多窗格 + stashed + 模板恢复均保留会话字段与历史", () => {
+    const tree = LAYOUT_PRESETS.leftRight.build();
+    const sessionTab = {
+      tabId: "ta",
+      path: "D:\\t\\sub",
+      openedPath: "D:\\t",
+      history: ["D:\\t", "D:\\t\\sub"],
+      historyIndex: 1,
+      viewMode: "grid" as const,
+      sortField: "size" as const,
+      sortAsc: false,
+      search: "s",
+      filter: "code" as const,
+      showHidden: true,
+    };
+    // hydrate：多窗格 + stashed（tabId 必须唯一，重复的会被去重丢弃）。
+    const stashedTabSource = { ...sessionTab, tabId: "ts" };
+    state().hydrate(
+      {
+        tree,
+        panes: [
+          { paneId: "pane-a", tabs: [sessionTab], activeTabId: "ta" },
+          { paneId: "pane-b", tabs: [], activeTabId: null },
+        ],
+        activePaneId: "pane-a",
+        stashed: [stashedTabSource],
+      },
+      "global",
+    );
+    const hydrated = Object.values(state().panes).flatMap((p) => p.tabs).find((t) => t.tabId === "ta")!;
+    const stashedTab = state().stashed.find((t) => t.tabId === "ts")!;
+    expect(hydrated.history).toEqual(["D:\\t", "D:\\t\\sub"]);
+    expect(hydrated.openedPath).toBe("D:\\t");
+    expect(stashedTab.viewMode).toBe("grid");
+    expect(stashedTab.historyIndex).toBe(1);
+    expect(stashedTab.history).toEqual(["D:\\t", "D:\\t\\sub"]);
+
+    // applyTemplate：复用同一恢复逻辑，不丢会话。
+    reset();
+    state().applyTemplate("tpl-x", [
+      {
+        id: "tpl-x",
+        tree,
+        panes: [
+          { paneId: "pane-a", tabs: [sessionTab], activeTabId: "ta" },
+          { paneId: "pane-b", tabs: [], activeTabId: null },
+        ],
+      },
+    ]);
+    const fromTemplate = Object.values(state().panes).flatMap((p) => p.tabs)[0];
+    expect(fromTemplate.openedPath).toBe("D:\\t");
+    expect(fromTemplate.path).toBe("D:\\t\\sub");
+    expect(fromTemplate.history).toEqual(["D:\\t", "D:\\t\\sub"]);
+    expect(fromTemplate.historyIndex).toBe(1);
+    expect(fromTemplate.viewMode).toBe("grid");
+    expect(fromTemplate.sortField).toBe("size");
+    expect(fromTemplate.search).toBe("s");
+    expect(fromTemplate.filter).toBe("code");
+    expect(fromTemplate.showHidden).toBe(true);
+  });
+
+  it("historyIndex 越界被钳制到界内", () => {
+    state().hydrate(
+      {
+        tree: LAYOUT_PRESETS.single.build(),
+        panes: [{
+          paneId: "pane-1",
+          tabs: [{ tabId: "t", path: "D:\\z", history: ["D:\\z", "D:\\z\\b"], historyIndex: 99 }],
+          activeTabId: "t",
+        }],
+        activePaneId: "pane-1",
+      },
+      "global",
+    );
+    const tab = state().panes["pane-1"].tabs[0];
+    expect(tab.historyIndex).toBe(1);
+    expect(tab.path).toBe("D:\\z\\b");
   });
 });

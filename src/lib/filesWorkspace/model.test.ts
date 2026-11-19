@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   clampRatio,
   defaultTree,
+  duplicateTab,
   hasPane,
   LAYOUT_PRESETS,
   MAX_PANES,
@@ -124,6 +125,28 @@ describe("splitTree 基础", () => {
     const ids = paneIds(tree);
     expect(pathToPane(tree, ids[0])).toHaveLength(2);
     expect(pathToPane(tree, "nope")).toBeNull();
+  });
+});
+
+describe("duplicateTab 深拷贝纯函数", () => {
+  it("生成新 tabId 且深拷贝 history（改一个不影响另一个）", () => {
+    const source = {
+      tabId: "tab-src",
+      history: ["D:\\a", "D:\\a\\sub"],
+      openedPath: "D:\\a",
+      path: "D:\\a\\sub",
+      viewMode: "grid" as const,
+    };
+    const copy = duplicateTab(source);
+    expect(copy.tabId).not.toBe(source.tabId);
+    expect(copy.history).toEqual(source.history);
+    expect(copy.history).not.toBe(source.history); // 不共享数组引用
+    copy.history.push("D:\\a\\sub\\deep");
+    copy.history[0] = "D:\\changed";
+    expect(source.history).toEqual(["D:\\a", "D:\\a\\sub"]); // 源完全不受影响
+    // 其他字段按值复制。
+    expect(copy.openedPath).toBe("D:\\a");
+    expect(copy.viewMode).toBe("grid");
   });
 });
 

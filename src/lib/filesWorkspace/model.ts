@@ -46,6 +46,24 @@ export function clampRatio(ratio: number): number {
   return Math.min(RATIO_MAX, Math.max(RATIO_MIN, ratio));
 }
 
+/**
+ * 深拷贝一个标签（泛型约束以避免与 store 的 FolderTab 循环依赖）。
+ *
+ * - 生成全新 tabId（与源标签彻底独立）；
+ * - 深拷贝 history 等可变对象——当前 FolderTab 的可变状态主要是 history 字符串数组，
+ *   filter 等为字符串枚举（不可变），故浅展开 + history 复制即可保证新旧标签不共享可变引用；
+ * - 不复制任何临时态（选中/拖拽等字段本就不在标签模型内）。
+ *
+ * 用于「同窗格复制标签」与「分栏时复制当前标签」两条路径，避免二者各自实现导致漂移。
+ */
+export function duplicateTab<T extends { tabId: string; history: string[] }>(source: T): T {
+  return {
+    ...source,
+    tabId: freshId("tab"),
+    history: [...source.history],
+  };
+}
+
 /** 深度优先收集窗格 ID（顺序即视觉顺序：先 first 后 second）。 */
 export function paneIds(node: SplitNode): string[] {
   if (node.type === "pane") return [node.paneId];

@@ -14,10 +14,40 @@ import { normalizeTree, MAX_PANES, MAX_TABS_PER_PANE } from "./model";
 export const FILE_WORKSPACE_SETTING_KEY = "file_workspace_layouts";
 export const FILE_WORKSPACE_VERSION = 1;
 
-/** 单窗格标签（持久化最小集；视图/排序属于会话恢复可选数据）。 */
+/**
+ * 单窗格标签。
+ *
+ * `tabId`/`path` 是最小集（旧数据只有这两项）；其余为会话恢复可选字段——
+ * 新数据全部写入，缺失时由恢复侧用默认值兜底，因此版本仍为 1（向后兼容）。
+ */
 export interface PersistedTab {
   tabId: string;
+  /** 当前目录（规范化绝对路径）。 */
   path: string;
+  /** 用户最初添加的目录；旧数据缺失时用 path 兜底。 */
+  openedPath?: string;
+  /** 导航历史（含当前）；缺失时收敛为单条 path。 */
+  history?: string[];
+  /** 历史游标（校验在界内）。 */
+  historyIndex?: number;
+  viewMode?: "list" | "grid";
+  sortField?: "name" | "modified" | "type" | "size";
+  sortAsc?: boolean;
+  search?: string;
+  filter?:
+    | "all"
+    | "folder"
+    | "image"
+    | "video"
+    | "audio"
+    | "doc"
+    | "sheet"
+    | "slide"
+    | "code"
+    | "archive"
+    | "large"
+    | "recent";
+  showHidden?: boolean;
 }
 
 export interface PersistedPane {
@@ -89,7 +119,70 @@ function sanePath(value: unknown): string | null {
   return value;
 }
 
-function normalizePanes(raw: unknown, tree: SplitNode): PersistedPane[] {
+/** 会话枚举白名单（与 store 的同名联合类型一致，但本模块不依赖 store）。 */
+const VIEW_MODES = ["list", "grid"] as const;
+const SORT_FIELDS = ["name", "modified", "type", "size"] as const;
+const FILE_FILTERS = [
+  "all", "folder", "image", "video", "audio", "doc", "sheet",
+  "slide", "code", "archive", "large", "recent",
+] as const;
+
+function oneOf<T extends string>(raw: unknown, allowed: readonly T[]): T | null {
+  return typeof raw === "string" && (allowed as readonly string[]).includes(raw)
+    ? (raw as T)
+    : null;
+}
+
+/** 历史数组上限（与 store 内导航裁剪一致）。 */
+const MAX_PERSISTED_HISTORY = 64;
+
+/**
+ * 归一化单个持久化标签：透传并校验会话字段，旧数据缺 openedPath 时用 path 兜底。
+ * `seenTabIds` 跨窗格/收纳共享，用于保证 tabId 全局唯一（重复者直接丢弃）。
+ */
+function normalizePersistedTab(raw: Record<string, unknown>, seenTabIds: Set<string>): PersistedTab | null {
+  const path = sanePath(raw.path);
+  const tabId = typeof raw.tabId === "string" && raw.tabId.length <= 64 ? raw.tabId : null;
+  if (!path || !tabId || seenTabIds.has(tabId)) return null;
+  seenTabIds.add(tabId);
+
+  const tab: PersistedTab = {
+    tabId,
+    path,
+    openedPath: sanePath(raw.openedPath) ?? path,
+  };
+
+  if (Array.isArray(raw.history)) {
+    const history = raw.history
+      .map((p) => sanePath(p))
+      .filter((p): p is string => p !== null)
+      .slice(0, MAX_PERSISTED_HISTORY);
+    if (history.length > 0) {
+      tab.history = history;
+      const idx =
+        typeof raw.historyIndex === "number" && Number.isInteger(raw.historyIndex)
+          ? raw.historyIndex
+          : history.length - 1;
+      tab.historyIndex = Math.min(Math.max(idx, 0), history.length - 1);
+    }
+  }
+  const viewMode = oneOf(raw.viewMode, VIEW_MODES);
+  if (viewMode) tab.viewMode = viewMode;
+  const sortField = oneOf(raw.sortField, SORT_FIELDS);
+  if (sortField) tab.sortField = sortField;
+  const filter = oneOf(raw.filter, FILE_FILTERS);
+  if (filter) tab.filter = filter;
+  if (typeof raw.sortAsc === "boolean") tab.sortAsc = raw.sortAsc;
+  if (typeof raw.showHidden === "boolean") tab.showHidden = raw.showHidden;
+  if (typeof raw.search === "string") tab.search = raw.search;
+  return tab;
+}
+
+function normalizePanes(
+  raw: unknown,
+  tree: SplitNode,
+  seenTabIds: Set<string> = new Set(),
+): PersistedPane[] {
   const validPaneIds = new Set(idsOf(tree));
   const panes: PersistedPane[] = [];
   if (Array.isArray(raw)) {
@@ -101,14 +194,13 @@ function normalizePanes(raw: unknown, tree: SplitNode): PersistedPane[] {
       if (Array.isArray(item.tabs)) {
         for (const tab of item.tabs.slice(0, MAX_TABS_PER_PANE)) {
           if (!isRecord(tab)) continue;
-          const path = sanePath(tab.path);
-          const tabId = typeof tab.tabId === "string" && tab.tabId.length <= 64 ? tab.tabId : null;
-          if (path && tabId) tabs.push({ tabId, path });
+          const normalized = normalizePersistedTab(tab, seenTabIds);
+          if (normalized) tabs.push(normalized);
         }
       }
+      // activeTabId 必须指向本窗格实际存在的标签，否则回落首个（绝不悬空）。
       const activeTabId =
-        typeof item.activeTabId === "string" &&
-        tabs.some((t) => t.tabId === item.activeTabId)
+        typeof item.activeTabId === "string" && tabs.some((t) => t.tabId === item.activeTabId)
           ? item.activeTabId
           : (tabs[0]?.tabId ?? null);
       panes.push({ paneId, tabs, activeTabId });
@@ -137,17 +229,13 @@ function normalizeDirs(raw: unknown, max: number): string[] {
   return out;
 }
 
-function normalizeStashed(raw: unknown): PersistedTab[] {
+function normalizeStashed(raw: unknown, seenTabIds: Set<string> = new Set()): PersistedTab[] {
   if (!Array.isArray(raw)) return [];
   const out: PersistedTab[] = [];
-  const seen = new Set<string>();
   for (const item of raw.slice(0, MAX_STASHED_TABS)) {
     if (!isRecord(item)) continue;
-    const path = sanePath(item.path);
-    const tabId = typeof item.tabId === "string" && item.tabId.length <= 64 ? item.tabId : null;
-    if (!path || !tabId || seen.has(tabId)) continue;
-    seen.add(tabId);
-    out.push({ tabId, path });
+    const normalized = normalizePersistedTab(item, seenTabIds);
+    if (normalized) out.push(normalized);
   }
   return out;
 }
@@ -155,7 +243,9 @@ function normalizeStashed(raw: unknown): PersistedTab[] {
 function normalizeState(raw: unknown): PersistedState | null {
   if (!isRecord(raw)) return null;
   const tree = normalizeTree(raw.tree);
-  const panes = normalizePanes(raw.panes, tree);
+  // 跨窗格 + 收纳共享去重集合：同一 tabId 在整套状态里只能出现一次。
+  const seenTabIds = new Set<string>();
+  const panes = normalizePanes(raw.panes, tree, seenTabIds);
   const ids = idsOf(tree);
   if (ids.length === 0) return null;
   const activePaneId =
@@ -168,7 +258,7 @@ function normalizeState(raw: unknown): PersistedState | null {
     activePaneId,
     pinnedDirs: normalizeDirs(raw.pinnedDirs, MAX_PINNED_DIRS),
     recentDirs: normalizeDirs(raw.recentDirs, MAX_RECENT_DIRS),
-    stashed: normalizeStashed(raw.stashed),
+    stashed: normalizeStashed(raw.stashed, seenTabIds),
   };
 }
 
