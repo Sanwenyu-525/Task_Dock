@@ -507,6 +507,15 @@ pub fn fs_read_text(app: AppHandle, path: String, max_bytes: Option<usize>) -> A
     fw::read_text_preview(&path, max_bytes.unwrap_or(512 * 1024))
 }
 
+/// 原始字节只读预览（图片原图 / PDF；默认 32 MiB，上限 64 MiB）。
+/// 超限返回前缀字节并置 `truncated=true`，由前端决定是否放弃内嵌预览。
+#[tauri::command]
+pub fn fs_read_binary(app: AppHandle, path: String, max_bytes: Option<usize>) -> AppResult<fw::FsBinaryPreview> {
+    let path = fw::validate_abs_path(&path)?;
+    fw::ensure_not_protected(&path, &protected_dirs(&app))?;
+    fw::read_binary_preview(&path, max_bytes.unwrap_or(32 * 1024 * 1024))
+}
+
 /// 视频/音频快速预览 URL：短期 token + 自定义协议，支持 Range；不扩大 asset 协议范围。
 #[tauri::command]
 pub fn fs_preview_media_url(app: AppHandle, path: String) -> AppResult<String> {

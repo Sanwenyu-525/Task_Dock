@@ -1,22 +1,26 @@
-//! 快速预览：图片/视频/音频/文本代码；Space 打开、Escape 关闭、左右方向键切换。
-//! 大文件按需读取，媒体通过短期 token 协议 + Range，不扩大 asset 协议范围。
+//! 快速预览容器：Space 打开、Escape 关闭、左右方向键切换同目录文件。
+//!
+//! 唯一入口与唯一容器：类型判定交给 `preview/previewKind`，各类型渲染交给
+//! `preview/File*Preview`；这里只负责列表导航、头部元信息、生命周期与键盘。
+//! 资源释放：媒体 token 由各媒体组件在经过同一 tracker 语义下释放，
+//! 图片 Blob URL / PDF 文档在各自组件卸载时释放，容器不持有第二套机制。
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ChevronLeft, ChevronRight, ExternalLink, Minus, Plus } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { ChevronLeft, ChevronRight, ExternalLink } from "lucide-react";
 import { Dialog } from "../ui/Dialog";
 import { useLocale } from "../../hooks/useLocale";
-import {
-  fsOpen,
-  fsPreviewImage,
-  fsPreviewMediaUrl,
-  fsReadText,
-  fsReleasePreviewUrl,
-  type FsEntry,
-  type FsTextPreview,
-} from "../../lib/bridge";
+import { fsOpen, type FsEntry } from "../../lib/bridge";
 import { formatModified, formatSize } from "../../lib/filesWorkspace/fileMeta";
 import { joinPath } from "../../lib/filesWorkspace/pathUtils";
-import { errorMessage } from "../../lib/errors";
+import FileImagePreview from "./preview/FileImagePreview";
+import FileTextPreview from "./preview/FileTextPreview";
+import FilePdfPreview from "./preview/FilePdfPreview";
+import FileVideoPreview from "./preview/FileVideoPreview";
+import FileAudioPreview from "./preview/FileAudioPreview";
+import { PreviewUnsupported } from "./preview/PreviewState";
+import { extOf, getPreviewKind, previewTypeLabel } from "./preview/previewKind";
+
+export { createPreviewTokenTracker, type PreviewTokenTracker } from "./preview/mediaToken";
 
 export interface PreviewRequest {
   paneId: string;
@@ -30,235 +34,41 @@ interface Props {
   onClose: () => void;
 }
 
-function extOf(name: string): string {
-  const dot = name.lastIndexOf(".");
-  return dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
-}
-
-function previewKind(entry: FsEntry | null | undefined): "image" | "video" | "audio" | "text" | "unsupported" {
-  if (!entry) return "unsupported";
-  if (entry.category === "image") return "image";
-  if (entry.category === "video") return "video";
-  if (entry.category === "audio") return "audio";
-  // 只有明确的文本/代码类别，或下面的文本扩展名白名单才按文本读取。
-  // doc（PDF/DOCX）、sheet（XLSX）、archive、program 等二进制格式没有预览引擎，
-  // 不能丢给 read_text 后把“二进制拒绝”误报成读取失败。
-  if (entry.category === "text" || entry.category === "code") return "text";
-  const ext = extOf(entry.name);
-  if (["png", "jpg", "jpeg", "webp", "gif", "bmp", "svg", "avif", "ico", "tif", "tiff"].includes(ext)) return "image";
-  if (["mp4", "webm", "mov", "m4v", "mkv", "avi"].includes(ext)) return "video";
-  if (["mp3", "wav", "flac", "m4a", "aac", "ogg", "oga"].includes(ext)) return "audio";
-  if (["txt", "md", "json", "ts", "tsx", "js", "jsx", "css", "html", "rs", "py", "toml", "yaml", "yml", "xml", "csv", "log", "ini", "cfg", "conf", "sql"].includes(ext)) {
-    return "text";
-  }
-  return "unsupported";
-}
-
-const KEYWORDS =
-  /\b(const|let|var|function|return|if|else|for|while|import|export|from|class|interface|type|async|await|true|false|null|undefined|pub|fn|struct|enum|match|use|mod|impl|self|mut|new|def|elif|public|private|void|static)\b/g;
-
-/** 轻量语法高亮：按行 token 化，只生成 React 文本节点，不写 innerHTML。 */
-function highlightLine(line: string, ext: string): ReactNode[] {
-  const tokens: ReactNode[] = [];
-  const comment = line.indexOf(ext === "py" ? "#" : "//");
-  const body = comment >= 0 ? line.slice(0, comment) : line;
-  const commentText = comment >= 0 ? line.slice(comment) : "";
-  let last = 0;
-  const pattern = /("[^"]*"|'[^']*'|`[^`]*`|\b\d+(?:\.\d+)?\b)/g;
-  let match: RegExpExecArray | null;
-  while ((match = pattern.exec(body))) {
-    if (match.index > last) {
-      tokens.push(...highlightKeywords(body.slice(last, match.index), tokens.length));
-    }
-    tokens.push(
-      <span key={`s${match.index}`} className="fw-preview-token-string">
-        {match[0]}
-      </span>,
-    );
-    last = match.index + match[0].length;
-  }
-  if (last < body.length) tokens.push(...highlightKeywords(body.slice(last), tokens.length));
-  if (commentText) {
-    tokens.push(
-      <span key="comment" className="fw-preview-token-comment">
-        {commentText}
-      </span>,
-    );
-  }
-  return tokens;
-}
-
-function highlightKeywords(text: string, offset: number): ReactNode[] {
-  const nodes: ReactNode[] = [];
-  let last = 0;
-  KEYWORDS.lastIndex = 0;
-  let match: RegExpExecArray | null;
-  while ((match = KEYWORDS.exec(text))) {
-    if (match.index > last) nodes.push(text.slice(last, match.index));
-    nodes.push(
-      <span key={`k${offset}-${match.index}`} className="fw-preview-token-keyword">
-        {match[0]}
-      </span>,
-    );
-    last = match.index + match[0].length;
-  }
-  if (last < text.length) nodes.push(text.slice(last));
-  return nodes;
-}
-
-export interface PreviewTokenTracker {
-  /** 登记一个已取得、尚未释放的媒体 token。 */
-  register(url: string): void;
-  /** 释放：只有仍活跃的 token 返回 true（调用方据此发 IPC），重复调用返回 false。 */
-  release(url: string): boolean;
-  has(url: string): boolean;
-  readonly activeCount: number;
-  readonly historySize: number;
-}
-
-/**
- * 有界媒体 token 跟踪器：活跃集合 + 最近释放历史（默认上限 128）。
- * 活跃集合保证同一 token 只发一次释放 IPC；历史只用于诊断，超限淘汰最旧，
- * 不会随预览次数无限增长。
- */
-export function createPreviewTokenTracker(historyMax = 128): PreviewTokenTracker {
-  const active = new Set<string>();
-  const history: string[] = [];
-  return {
-    register(url: string): void {
-      if (url) active.add(url);
-    },
-    release(url: string): boolean {
-      if (!url || !active.has(url)) return false;
-      active.delete(url);
-      history.push(url);
-      if (history.length > historyMax) history.shift();
-      return true;
-    },
-    has(url: string): boolean {
-      return active.has(url);
-    },
-    get activeCount(): number {
-      return active.size;
-    },
-    get historySize(): number {
-      return history.length;
-    },
-  };
+/** 键盘事件是否应归输入控件/媒体控件自己处理（预览不抢这些按键）。 */
+function ownsKey(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  if (!el || typeof el.closest !== "function") return false;
+  if (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT") return true;
+  if (el.isContentEditable) return true;
+  return Boolean(el.closest("video, audio, [role='slider']"));
 }
 
 export default function QuickPreviewDialog({ request, onClose }: Props) {
   const { t } = useLocale();
   const [index, setIndex] = useState(0);
-  const [imageUrl, setImageUrl] = useState<string | null>(null);
-  const [mediaUrl, setMediaUrl] = useState<string | null>(null);
-  const [text, setText] = useState<FsTextPreview | null>(null);
-  const [encodingWarning, setEncodingWarning] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [zoom, setZoom] = useState(100);
-  const [fit, setFit] = useState(true);
-  /**
-   * 媒体 token 生命周期跟踪（有界，不随组件生命周期无限增长）。
-   *
-   * - `register`：拿到可用 URL 后登记为活跃；晚到响应也先登记再释放。
-   * - `release`：只有仍活跃的 token 才发一次 IPC；释放后移出活跃集。
-   * - 已释放 token 不会再出现在活跃集里，因此关闭/切换/卸载/晚到响应先后命中同一
-   *   URL 时不会重复 IPC；即使极端情况下漏网，后端 `release_media_url` 仍幂等兜底。
-   * - `history` 只保留最近 128 个已释放 token 供诊断，超出淘汰最旧，内存有界。
-   */
-  const tokenTrackerRef = useRef(createPreviewTokenTracker());
-  const releaseMediaToken = (url: string | null): void => {
-    if (!url) return;
-    if (!tokenTrackerRef.current.release(url)) return;
-    // 释放失败不影响关闭/切换流程；Promise.resolve 兜底非 Promise 返回（如测试桩）。
-    Promise.resolve(fsReleasePreviewUrl(url)).catch(() => undefined);
-  };
 
+  // 只在当前目录的**文件**之间切换：文件夹不进预览列表（与文件管理器一致）。
   const files = useMemo(
     () => (request ? request.entries.filter((entry) => entry.kind !== "dir") : []),
     [request],
   );
   const current = files[index] ?? null;
-  const kind = previewKind(current);
+  const kind = getPreviewKind(current);
   const currentPath = current && request ? joinPath(request.dir, current.name) : request?.path ?? "";
+  const ext = current ? extOf(current.name) : "";
 
   useEffect(() => {
     if (!request) return;
     const found = files.findIndex((entry) => joinPath(request.dir, entry.name) === request.path);
     setIndex(found >= 0 ? found : 0);
-    setZoom(100);
-    setFit(true);
   }, [request, files]);
 
-  useEffect(() => {
-    if (!mediaUrl) return;
-    return () => {
-      // 切换文件/关闭对话框时让旧 token 立即失效；不等 30 分钟 TTL。
-      releaseMediaToken(mediaUrl);
-    };
-  }, [mediaUrl]);
-
-  // 对话框关闭（request 置空）时组件仍挂载在父面板上：主动释放残留媒体 token，
-  // 并清空旧图片 base64 / 文本内存态，不等 30 分钟 TTL、不在关闭后保留旧预览数据。
-  useEffect(() => {
-    if (request) return;
-    if (mediaUrl) {
-      releaseMediaToken(mediaUrl);
-      setMediaUrl(null);
-    }
-    setImageUrl(null);
-    setText(null);
-  }, [request, mediaUrl]);
-
-  useEffect(() => {
-    if (!request || !current) return;
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    setImageUrl(null);
-    setMediaUrl(null);
-    setText(null);
-    setEncodingWarning(false);
-    const path = joinPath(request.dir, current.name);
-    void (async () => {
-      try {
-        if (kind === "image") {
-          const url = await fsPreviewImage(path);
-          if (cancelled) return;
-          if (url) setImageUrl(url);
-          else setError(t("fw.preview.imageUnavailable"));
-        } else if (kind === "video" || kind === "audio") {
-          const url = await fsPreviewMediaUrl(path);
-          tokenTrackerRef.current.register(url);
-          if (cancelled) {
-            // 切换/关闭后后端仍已注册该 token：立即释放，避免挂到 30 分钟 TTL。
-            releaseMediaToken(url);
-            return;
-          }
-          setMediaUrl(url);
-        } else if (kind === "text") {
-          const preview = await fsReadText(path);
-          if (!cancelled) {
-            setText(preview);
-            setEncodingWarning(preview.content.includes("\uFFFD"));
-          }
-        }
-      } catch (e) {
-        if (!cancelled) setError(errorMessage(e));
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [current?.name, request?.dir, kind]);
-
+  // Escape 由全局弹层栈（Dialog）关闭；这里只处理左右切换，且不消费输入控件按键。
   useEffect(() => {
     if (!request) return;
     const onKey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+      if (ownsKey(event.target)) return;
       if (event.key === "ArrowLeft" && index > 0) {
         event.preventDefault();
         setIndex((value) => Math.max(0, value - 1));
@@ -273,161 +83,100 @@ export default function QuickPreviewDialog({ request, onClose }: Props) {
 
   if (!request) return null;
 
-  const canOpen = kind === "unsupported" || error !== null;
-  const ext = current ? extOf(current.name) : "";
-  const codeLike =
-    current?.category === "code" ||
-    ["ts", "tsx", "js", "jsx", "css", "html", "rs", "py", "json", "toml", "yaml", "yml", "xml", "md", "markdown", "txt", "log"].includes(ext);
+  const title = current?.name ?? request.path.split(/[\\/]/).pop() ?? "";
+  const typeLabel = previewTypeLabel(kind, ext);
+
+  const body = (() => {
+    if (!current) {
+      return <PreviewUnsupported hint={t("fw.preview.unsupported")} />;
+    }
+    const common = { path: currentPath, name: current.name, size: current.size };
+    switch (kind) {
+      case "image":
+        return <FileImagePreview key={currentPath} {...common} />;
+      case "text":
+        return <FileTextPreview key={currentPath} {...common} />;
+      case "pdf":
+        return <FilePdfPreview key={currentPath} {...common} />;
+      case "video":
+        return <FileVideoPreview key={currentPath} {...common} />;
+      case "audio":
+        return <FileAudioPreview key={currentPath} {...common} />;
+      default:
+        return <PreviewUnsupported hint={t("fw.preview.unsupported")} />;
+    }
+  })();
 
   return (
     <Dialog
       open
       onClose={onClose}
-      title={current?.name ?? request.path.split(/[\\/]/).pop() ?? ""}
+      title={
+        <span className="fw-preview-title">
+          <span className="fw-preview-title-name" title={title}>
+            {title}
+          </span>
+          {current && (
+            <span className="fw-preview-title-meta">
+              {typeLabel}
+              {" · "}
+              {formatSize(current.size)}
+              {current.modifiedMs ? ` · ${formatModified(current.modifiedMs)}` : ""}
+            </span>
+          )}
+        </span>
+      }
       size="lg"
       ariaLabel={t("fw.preview.title")}
       className="fw-preview-dialog"
       footer={
         <>
-          <button type="button" className="btn" onClick={onClose}>
-            {t("common.close")}
-          </button>
-          <button type="button" className="btn" onClick={() => void fsOpen(currentPath)} disabled={!currentPath}>
-            <ExternalLink size={13} aria-hidden="true" />
-            {t("fw.preview.openDefault")}
-          </button>
+          <div className="fw-preview-nav" role="group" aria-label={t("fw.preview.navAria")}>
+            <button
+              type="button"
+              className="fw-icon-btn"
+              disabled={index <= 0}
+              aria-label={t("fw.preview.previous")}
+              data-tip={t("fw.preview.previous")}
+              onClick={() => setIndex((value) => Math.max(0, value - 1))}
+            >
+              <ChevronLeft size={14} aria-hidden="true" />
+            </button>
+            <span className="fw-preview-counter" aria-live="polite">
+              {t("fw.preview.counter", { index: files.length ? index + 1 : 0, total: files.length })}
+            </span>
+            <button
+              type="button"
+              className="fw-icon-btn"
+              disabled={index >= files.length - 1}
+              aria-label={t("fw.preview.next")}
+              data-tip={t("fw.preview.next")}
+              onClick={() => setIndex((value) => Math.min(files.length - 1, value + 1))}
+            >
+              <ChevronRight size={14} aria-hidden="true" />
+            </button>
+          </div>
+          <div className="fw-preview-actions">
+            <button
+              type="button"
+              className="btn"
+              onClick={() => void fsOpen(currentPath)}
+              disabled={!currentPath}
+            >
+              <ExternalLink size={13} aria-hidden="true" />
+              {t("fw.preview.openDefault")}
+            </button>
+            <button type="button" className="btn primary" onClick={onClose}>
+              {t("common.close")}
+            </button>
+          </div>
         </>
       }
     >
-      <div className="fw-preview-toolbar">
-        <div className="fw-preview-nav">
-          <button
-            type="button"
-            className="fw-icon-btn"
-            disabled={index <= 0}
-            aria-label={t("fw.preview.previous")}
-            onClick={() => setIndex((value) => Math.max(0, value - 1))}
-          >
-            <ChevronLeft size={14} />
-          </button>
-          <span className="fw-preview-counter">
-            {index + 1} / {files.length}
-          </span>
-          <button
-            type="button"
-            className="fw-icon-btn"
-            disabled={index >= files.length - 1}
-            aria-label={t("fw.preview.next")}
-            onClick={() => setIndex((value) => Math.min(files.length - 1, value + 1))}
-          >
-            <ChevronRight size={14} />
-          </button>
-        </div>
-        {current && (
-          <span className="fw-preview-meta">
-            {formatSize(current.size)} · {formatModified(current.modifiedMs)} · {ext.toUpperCase() || current.category}
-          </span>
-        )}
-        {kind === "image" && imageUrl && (
-          <div className="fw-preview-zoom">
-            <button
-              type="button"
-              className="fw-icon-btn"
-              aria-label={t("fw.preview.zoomOut")}
-              onClick={() => {
-                setFit(false);
-                setZoom((value) => Math.max(25, value - 25));
-              }}
-            >
-              <Minus size={13} />
-            </button>
-            <span>{fit ? t("fw.preview.fit") : `${zoom}%`}</span>
-            <button
-              type="button"
-              className="fw-icon-btn"
-              aria-label={t("fw.preview.zoomIn")}
-              onClick={() => {
-                setFit(false);
-                setZoom((value) => Math.min(400, value + 25));
-              }}
-            >
-              <Plus size={13} />
-            </button>
-            <button type="button" className="btn" onClick={() => { setFit(true); setZoom(100); }}>
-              {t("fw.preview.fitAction")}
-            </button>
-          </div>
-        )}
+      <div className="fw-preview-stage" data-kind={kind} data-preview-path={currentPath}>
+        {body}
       </div>
-
-      <div className="fw-preview-stage">
-        {loading && <div className="fw-preview-state">{t("fw.preview.loading")}</div>}
-        {!loading && error && (
-          <div className="fw-preview-state is-error">
-            <p>{t("fw.preview.error", { error })}</p>
-          </div>
-        )}
-        {!loading && !error && kind === "image" && imageUrl && (
-          <div className="fw-preview-image-scroll">
-            <img
-              src={imageUrl}
-              alt={current?.name ?? ""}
-              style={fit ? { maxWidth: "100%", maxHeight: "100%" } : { width: `${zoom}%`, maxWidth: "none" }}
-            />
-          </div>
-        )}
-        {!loading && !error && kind === "video" && mediaUrl && (
-          <video
-            className="fw-preview-video"
-            src={mediaUrl}
-            controls
-            preload="metadata"
-            onError={() => setError(t("fw.preview.playbackFailed"))}
-          >
-            {t("fw.preview.videoUnsupported")}
-          </video>
-        )}
-        {!loading && !error && kind === "audio" && mediaUrl && (
-          <div className="fw-preview-audio">
-            <div className="fw-preview-audio-name">{current?.name}</div>
-            <audio
-              src={mediaUrl}
-              controls
-              preload="metadata"
-              onError={() => setError(t("fw.preview.playbackFailed"))}
-            />
-            <div className="fw-preview-audio-meta">
-              {formatSize(current?.size ?? null)} · {formatModified(current?.modifiedMs ?? null)}
-            </div>
-          </div>
-        )}
-        {!loading && !error && kind === "text" && text && (
-          <div className="fw-preview-text">
-            {text.truncated && <p className="fw-preview-truncated">{t("fw.preview.truncated")}</p>}
-            {encodingWarning && <p className="fw-preview-encoding">{t("fw.preview.encodingWarning")}</p>}
-            <pre>
-              {codeLike
-                ? text.content.split("\n").map((line, lineIndex) => (
-                    <div key={lineIndex} className="fw-preview-code-line">
-                      <span className="fw-preview-line-number">{lineIndex + 1}</span>
-                      <span>{highlightLine(line, ext)}</span>
-                    </div>
-                  ))
-                : text.content}
-            </pre>
-          </div>
-        )}
-        {!loading && !error && kind === "unsupported" && (
-          <div className="fw-preview-state">
-            <p>{t("fw.preview.unsupported")}</p>
-          </div>
-        )}
-      </div>
-
-      <p className="fw-preview-hint">
-        {t("fw.preview.hint")}
-        {canOpen ? ` · ${t("fw.preview.fallbackOpen")}` : ""}
-      </p>
+      <p className="fw-preview-hint">{t("fw.preview.hint")}</p>
     </Dialog>
   );
 }

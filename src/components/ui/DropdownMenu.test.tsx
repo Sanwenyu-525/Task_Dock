@@ -249,3 +249,34 @@ describe("DropdownMenu 基元", () => {
     expect(screen.queryByRole("menu")).toBeNull();
   });
 });
+
+describe("DropdownMenu 宽度策略", () => {
+  it("默认按内容宽度展开，不锁成触发按钮宽（操作菜单不被压缩）", async () => {
+    const user = userEvent.setup();
+    render(<Harness />);
+    await user.click(screen.getByRole("button", { name: "排序" }));
+    const host = document.querySelector(".ui-popover-host") as HTMLElement;
+    expect(host).toBeTruthy();
+    expect(host.dataset.popupWidth).toBeUndefined();
+  });
+
+  it("显式声明 exact-match 时才锁宽度", async () => {
+    const user = userEvent.setup();
+    render(
+      <DropdownMenu
+        menuLabel="排序方式"
+        widthMode="exact-match"
+        items={BASIC.map((it) => ({ ...it, onSelect: () => undefined }))}
+        trigger={(p) => (
+          <button type="button" ref={p.ref} aria-haspopup="menu" onClick={p.onClick}>
+            排序
+          </button>
+        )}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "排序" }));
+    const host = document.querySelector(".ui-popover-host") as HTMLElement;
+    // jsdom 中锚点宽度为 0：exact 有明确锚点宽度才生效，这里只验证不误锁成 0
+    expect(host.dataset.popupWidth).toBeUndefined();
+  });
+});

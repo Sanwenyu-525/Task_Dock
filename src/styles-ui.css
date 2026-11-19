@@ -157,13 +157,25 @@
   --ui-pop-origin: left bottom;
 }
 
+/* 严格匹配触发按钮宽度（Select / Combobox）：
+   外部宽度 = --popover-exact-w，内容再长也只能在内部省略，不允许横向滚动。
+   注意：width 模式的标记写在**外壳**（.ui-popover-host，floating-ui 的 floating 元素），
+   面板本身是它的子节点，因此这里用后代选择器；--popover-exact-w 由外壳写入并继承下来。 */
+.ui-popover-host[data-popup-width="exact"] .ui-popover {
+  width: var(--popover-exact-w, auto);
+  min-width: var(--popover-exact-w, 0);
+  max-width: var(--popover-exact-w, 100vw);
+}
+
 .ui-select-popover {
-  /* 宽度贴合触发器：min-width 跟随触发器（matchWidth），内容更宽时自然扩展；
-     不再设固定下限（146px 会让 66px 的排序触发器弹出两倍宽的菜单） */
+  /* 宽度由 Popover 的 exact-match 写入 --popover-exact-w；
+     --menu-min-w 只在调用方明确要求更宽时生效，且不会越过严格匹配值。 */
   min-width: max(var(--menu-min-w, 0px), var(--popover-min-w, 0px));
+  overflow-x: hidden;
 }
 .ui-combobox-popover {
   min-width: max(var(--menu-min-w, 0px), var(--popover-min-w, 0px));
+  overflow-x: hidden;
 }
 .ui-menu-popover {
   /* 无锚定宽度的独立菜单：由最长选项文本 + 图标 + 勾选标记自然撑宽；
@@ -212,6 +224,7 @@
 .ui-menu {
   max-height: var(--popover-max-h, 320px);
   overflow-y: auto;
+  overflow-x: hidden;
   overscroll-behavior: contain;
   scrollbar-width: thin;
   scrollbar-color: var(--border-strong) transparent;
@@ -273,6 +286,7 @@
 .ui-option-icon {
   display: inline-flex;
   align-items: center;
+  flex: none;
   color: currentColor;
   opacity: 0.85;
 }
@@ -286,13 +300,19 @@
 }
 
 .ui-option-hint {
+  /* 下拉宽度已被锁成触发按钮宽：hint 允许被压缩并省略，绝不能把弹层撑宽 */
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 46%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 10px;
   color: var(--menu-text-dim);
-  flex-shrink: 0;
 }
 
 .ui-option-check {
-  flex-shrink: 0;
+  flex: none;
   color: var(--menu-active-text);
 }
 
@@ -361,6 +381,9 @@
 }
 
 .ui-select-label {
+  /* 按钮宽度固定：标签负责吃掉剩余空间并省略，chevron 与 hint 永不变形 */
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

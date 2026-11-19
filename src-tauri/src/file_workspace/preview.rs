@@ -93,7 +93,8 @@ pub fn release_media_url(url: &str) -> AppResult<()> {
     Ok(())
 }
 
-fn mime_for(path: &Path) -> &'static str {
+/// 预览用 MIME 映射（媒体协议与原始字节预览共用，避免两套扩展名表）。
+pub(crate) fn mime_for_path(path: &Path) -> &'static str {
     let ext = path
         .extension()
         .and_then(|ext| ext.to_str())
@@ -111,6 +112,16 @@ fn mime_for(path: &Path) -> &'static str {
         "aac" => "audio/aac",
         "ogg" | "oga" => "audio/ogg",
         "flac" => "audio/flac",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        "bmp" => "image/bmp",
+        "svg" => "image/svg+xml",
+        "avif" => "image/avif",
+        "ico" => "image/x-icon",
+        "tif" | "tiff" => "image/tiff",
+        "pdf" => "application/pdf",
         _ => "application/octet-stream",
     }
 }
@@ -182,9 +193,9 @@ pub fn handle_preview_uri(request: &Request<Vec<u8>>) -> Response<Vec<u8>> {
     }
     let size = meta.len();
     if size == 0 {
-        return build_status(StatusCode::NO_CONTENT, mime_for(&path));
+        return build_status(StatusCode::NO_CONTENT, mime_for_path(&path));
     }
-    let mime = mime_for(&path);
+    let mime = mime_for_path(&path);
     let range = request
         .headers()
         .get(header::RANGE)

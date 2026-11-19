@@ -57,6 +57,7 @@ import { showFileJobOutcome } from "./fsOpFeedback";
 import {
   loadDir,
   loadMore,
+  refreshDir,
   reloadIfChanged,
   subscribeDir,
   getDirState,
@@ -389,6 +390,12 @@ export default function FilePane({
     targetPaneId?: string;
     capacity: number;
   } | null>(null);
+  /** 手动刷新中（只表示本窗格当前目录，不影响其他窗格/标签）。 */
+  const [refreshing, setRefreshing] = useState(false);
+  /** 手动刷新收尾提示：成功短暂显示「已更新」，失败保留列表并给出可重试错误条。 */
+  const [refreshNote, setRefreshNote] = useState<{ kind: "updated" } | { kind: "error"; error: string } | null>(null);
+  const refreshSeqRef = useRef(0);
+  const refreshNoteTimer = useRef<number | null>(null);
 
   const tabbarRef = useRef<HTMLDivElement>(null);
   const paneRef = useRef<HTMLElement>(null);
@@ -415,6 +422,52 @@ export default function FilePane({
     const unsub = subscribeDir(dirPath, showHidden, (state) => setDirState({ ...state }));
     setDirState({ ...getDirState(dirPath, showHidden) });
     return unsub;
+  }, [dirPath, showHidden]);
+
+  /**
+   * 工具栏刷新 / 右键菜单刷新 / 分页与错误重试的唯一入口。
+   *
+   * 只刷新本窗格当前目录；并发由 `dirCache.refreshDir` 合并，旧请求晚到由请求序号裁决。
+   * 刷新期间保留旧列表（不清空 content），失败时列表照旧、错误行内展示。
+   */
+  const refreshActiveDir = useCallback(async (): Promise<void> => {
+    if (!dirPath) return;
+    const seq = ++refreshSeqRef.current;
+    if (refreshNoteTimer.current !== null) {
+      window.clearTimeout(refreshNoteTimer.current);
+      refreshNoteTimer.current = null;
+    }
+    setRefreshing(true);
+    setRefreshNote(null);
+    const targetPath = dirPath;
+    const targetHidden = showHidden;
+    const ok = await refreshDir(targetPath, targetHidden);
+    // 切换目录 / 关闭标签 / 又点了一次刷新：旧结果不再驱动 UI。
+    if (seq !== refreshSeqRef.current) return;
+    setRefreshing(false);
+    if (ok) {
+      setRefreshNote({ kind: "updated" });
+      refreshNoteTimer.current = window.setTimeout(() => {
+        refreshNoteTimer.current = null;
+        setRefreshNote((current) => (current?.kind === "updated" ? null : current));
+      }, 2200);
+      return;
+    }
+    const message = getDirState(targetPath, targetHidden).error;
+    if (message) setRefreshNote({ kind: "error", error: message });
+  }, [dirPath, showHidden]);
+
+  // 目录切换 / 卸载：作废在途刷新的 UI 回调，清理提示定时器（不影响其他窗格）。
+  useEffect(() => {
+    return () => {
+      refreshSeqRef.current += 1;
+      if (refreshNoteTimer.current !== null) {
+        window.clearTimeout(refreshNoteTimer.current);
+        refreshNoteTimer.current = null;
+      }
+      setRefreshing(false);
+      setRefreshNote(null);
+    };
   }, [dirPath, showHidden]);
 
   useEffect(() => {
@@ -1378,7 +1431,7 @@ export default function FilePane({
             },
           ]
         : []),
-      { key: "refresh", label: t("fw.menu.refresh"), onSelect: () => refreshBoth([dirPath]) },
+      { key: "refresh", label: t("fw.menu.refresh"), onSelect: () => void refreshActiveDir() },
       {
         key: "hidden",
         label: tab?.showHidden ? t("fw.menu.hideHidden") : t("fw.menu.showHidden"),
@@ -1388,7 +1441,7 @@ export default function FilePane({
       },
     ];
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [menu, dirPath, paneId, menuSelection, singlePath, tab, fwClipboard, t]);
+  }, [menu, dirPath, paneId, menuSelection, singlePath, tab, fwClipboard, t, refreshActiveDir]);
 
   // ── 面包屑 ──────────────────────────────────────────────────────────
   const crumbs = useMemo(() => breadcrumbSegments(dirPath), [dirPath]);
@@ -1579,6 +1632,7 @@ export default function FilePane({
         {/* 空态右键菜单：与正常目录的 menu 分离，避免两套菜单互相污染 */}
         {emptyMenu && (
           <FreeMenu
+            key={`empty:${emptyMenu.x}:${emptyMenu.y}`}
             x={emptyMenu.x}
             y={emptyMenu.y}
             menuLabel={t("fw.pane.blankAria")}
@@ -1636,7 +1690,14 @@ export default function FilePane({
           <button type="button" className="fw-icon-btn" aria-label={t("fw.pane.up")} disabled={!canUp} onClick={() => store.getState().navigate(paneId, "up")}>
             <ArrowUp size={14} aria-hidden="true" />
           </button>
-          <button type="button" className="fw-icon-btn" aria-label={t("fw.pane.refresh")} onClick={() => refreshBoth([dirPath])}>
+          <button
+            type="button"
+            className={`fw-icon-btn fw-refresh-btn${refreshing ? " is-refreshing" : ""}`}
+            aria-label={t("fw.pane.refresh")}
+            aria-busy={refreshing}
+            data-tip={refreshing ? t("fw.refresh.refreshing") : t("fw.pane.refresh")}
+            onClick={() => void refreshActiveDir()}
+          >
             <RotateCcw size={13} aria-hidden="true" />
           </button>
         </div>
@@ -2029,11 +2090,21 @@ export default function FilePane({
           <button
             type="button"
             className="fw-paging-stalled-refresh"
-            onClick={() => refreshBoth([dirPath])}
+            onClick={() => void refreshActiveDir()}
             data-tip={t("fw.pane.refresh")}
           >
             <RotateCcw size={12} aria-hidden="true" />
             {t("fw.menu.refresh")}
+          </button>
+        </div>
+      )}
+
+      {/* 手动刷新失败：保留已有列表，行内给出错误与重试（不整块报错、不变空目录）。 */}
+      {refreshNote?.kind === "error" && (
+        <div className="fw-refresh-error" role="alert">
+          <span className="fw-refresh-error-text">{t("fw.refresh.failed", { error: refreshNote.error })}</span>
+          <button type="button" className="btn sm" onClick={() => void refreshActiveDir()}>
+            {t("common.retry")}
           </button>
         </div>
       )}
@@ -2044,7 +2115,7 @@ export default function FilePane({
           <p>{t("fw.pane.dirMissing")}</p>
           <code className="fw-error-path">{dirPath}</code>
           <div className="fw-error-actions">
-            <button type="button" className="btn sm" onClick={() => refreshBoth([dirPath])}>
+            <button type="button" className="btn sm" onClick={() => void refreshActiveDir()}>
               {t("common.retry")}
             </button>
             {parentOf(dirPath) && (
@@ -2106,15 +2177,26 @@ export default function FilePane({
           {t("fw.status.items", { count: visibleEntries.length })}
           {selectedPaths.length > 0 ? ` · ${t("fw.status.selected", { count: selectedPaths.length })}` : ""}
         </span>
+        {refreshing && (
+          <span className="fw-status-refresh" role="status">
+            {t("fw.refresh.refreshing")}
+          </span>
+        )}
+        {!refreshing && refreshNote?.kind === "updated" && (
+          <span className="fw-status-refresh is-ok" role="status">
+            {t("fw.refresh.updated")}
+          </span>
+        )}
         {dirState?.hasMore && <span className="fw-status-truncated">{t("fw.status.truncated")}</span>}
       </div>
 
       {/* 应用内拖拽视觉提示层（细边框 + 半透明方向区 + 小标签） */}
       {dropHint && <DropPreview zone={dropHint} />}
 
-      {/* 右键菜单（自由位置） */}
+      {/* 右键菜单（自由位置）：按坐标重建实例，连续右键不同位置只有最新一个菜单。 */}
       {menu && (
         <FreeMenu
+          key={`${menu.x}:${menu.y}`}
           x={menu.x}
           y={menu.y}
           menuLabel={menu.entry ? menu.entry.name : dirPath}

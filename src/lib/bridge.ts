@@ -101,10 +101,12 @@ import type {
   TaskReminderLink,
   CaptureState,
   CaptureItem,
+  CaptureAttachment,
   SubmitCaptureInput,
   SubmitCaptureResult,
   CaptureDraftSaved,
   QuickCaptureShowResult,
+  QuickCaptureHideResult,
   CaptureVoiceStartResult,
   AgentChangedEvent,
   NotificationNavigatePayload,
@@ -246,6 +248,7 @@ import type {
   FsBatchRenameItem,
   FsHashEntry,
   VerifiedDuplicateDeleteGroup,
+  FsBinaryPreview,
   FsTextPreview,
   OperationPreview,
   RecycleStats,
@@ -995,12 +998,32 @@ export const quickCaptureConvertToTask = (id: string) =>
 export const quickCaptureShow = () =>
   invoke<QuickCaptureShowResult>("quick_capture_show");
 /**
+ * 只做前台激活（窗口已显示但系统未自动给焦点时的一次补救）。
+ * 返回是否已确认在前台；后端有每轮显示的次数上限，不会无界抢焦点。
+ */
+export const quickCaptureFocus = () => invoke<boolean>("quick_capture_focus");
+/**
  * 隐藏捕获窗口并恢复原前台焦点（后端实现）。
- * 后端命令为零参数（`quick_capture_hide()`），不传任何参数；
- * reason 仅用于前端语义标注（用户关闭 / 保存成功），不会发给后端。
+ * 返回是否真的收起（以及是否本来就不可见）；失败会抛出，前端必须给出反馈，
+ * 不能静默吞掉。reason 仅用于前端语义标注，不会发给后端。
  */
 export const quickCaptureHide = (_reason?: "user" | "success") =>
-  invoke<void>("quick_capture_hide");
+  invoke<QuickCaptureHideResult>("quick_capture_hide");
+/**
+ * 添加一张粘贴图片：`dataBase64` 是前端 canvas 归一化后的 PNG，
+ * 后端再做签名/尺寸校验、落盘并返回附件元数据。失败时抛出可展示的错误。
+ */
+export const quickCaptureAddAttachment = (dataBase64: string, mime: string) =>
+  invoke<CaptureAttachment>("quick_capture_add_attachment", { dataBase64, mime });
+/** 删除草稿附件（同时删除磁盘文件）；已提交条目的图片不走这里。 */
+export const quickCaptureRemoveAttachment = (id: string) =>
+  invoke<void>("quick_capture_remove_attachment", { id });
+/** 附件缩略图（data URL，约 192px）；不存在时返回 null。 */
+export const quickCaptureAttachmentThumb = (id: string) =>
+  invoke<string | null>("quick_capture_attachment_thumb", { id });
+/** 附件原图（data URL）；仅用于大图预览，不参与列表渲染。 */
+export const quickCaptureAttachmentPreview = (id: string) =>
+  invoke<string | null>("quick_capture_attachment_preview", { id });
 
 
 export const quickCaptureVoiceStart = () =>
@@ -1299,6 +1322,8 @@ export const agentAccessExport = () => invoke<AgentAccessData>("agent_access_exp
 export const agentAccessScan = () => invoke<AgentAccessData>("agent_access_scan", {});
 export const agentAccessSyncStatus = () => invoke<AgentAccessData>("agent_access_sync_status", {});
 export const agentAccessConflicts = () => invoke<AgentAccessData>("agent_access_conflicts", {});
+export const agentAccessConflictDetail = (conflictId: string) =>
+  invoke<AgentAccessData>("agent_access_conflict_detail", { conflictId });
 /**
  * 冲突解决方式。与 Rust `sync::resolve_conflict` 的枚举严格一致：
  * db = 保留 TaskDock 数据，file = 接受外部文件，dismiss = 暂时忽略。
@@ -1308,8 +1333,6 @@ export const agentAccessResolveConflict = (
   conflictId: string,
   resolution: ConflictResolution,
 ) => invoke<AgentAccessData>("agent_access_resolve_conflict", { conflictId, resolution });
-export const agentAccessConflictDetail = (conflictId: string) =>
-  invoke<AgentAccessData>("agent_access_conflict_detail", { conflictId });
 export const agentAccessImportRequests = (params?: { status?: string }) =>
   invoke<AgentAccessData>("agent_access_import_requests", params ?? {});
 export const agentAccessImportApprove = (requestId: string, note?: string) =>
@@ -2475,6 +2498,10 @@ export const fsPreviewImage = (path: string) =>
 /** 文本/代码只读预览（最多 2 MiB，二进制拒绝）。 */
 export const fsReadText = (path: string, maxBytes?: number) =>
   invoke<FsTextPreview>("fs_read_text", { path, maxBytes });
+
+/** 原始字节只读预览（图片原图 / PDF；默认 32 MiB，上限 64 MiB）。 */
+export const fsReadBinary = (path: string, maxBytes?: number) =>
+  invoke<FsBinaryPreview>("fs_read_binary", { path, maxBytes });
 
 /** 视频/音频预览 URL（短期 token + 自定义协议，支持 Range）。 */
 export const fsPreviewMediaUrl = (path: string) =>

@@ -159,6 +159,78 @@ export function loadDir(path: string, showHidden: boolean, force = false): void 
 }
 
 /**
+ * 正在进行的用户刷新（同一 `hide:path` 合并为同一个 Promise）。
+ * 连续点击刷新 / 工具栏与右键菜单同时触发时只发一次 IPC；完成后移除条目。
+ */
+const refreshing = new Map<string, Promise<boolean>>();
+
+/**
+ * 用户手动刷新目录（工具栏 / 右键菜单 / 错误重试的唯一入口）。
+ *
+ * - 同一路径 + 隐藏态的并发刷新合并为同一个 Promise，连续点击不产生额外 IPC；
+ * - 递增 `reqSeq`：刷新期间由轮询/文件操作触发的旧请求晚到也不会覆盖结果；
+ * - 失败时**保留上一次成功列表**，只写 `error`（首次加载失败才显示整块错误态）；
+ * - 返回本次刷新是否成功（被更新请求取代时返回 false，调用方不应据此报错）。
+ *
+ * `force=true` 用于文件操作后的强制失效：不复用正在进行的手动刷新，
+ * 保证拿到操作之后的目录内容（`invalidateDirs` 用）。
+ */
+export function refreshDir(path: string, showHidden: boolean, force = false): Promise<boolean> {
+  const key = `${showHidden ? "h1" : "h0"}:${path}`;
+  if (!force) {
+    const existing = refreshing.get(key);
+    if (existing) return existing;
+  }
+  touch(key);
+  const entry = getDirState(path, showHidden);
+  entry.loading = true;
+  entry.error = null;
+  notify(path, showHidden);
+  inflight.add(key);
+  const seq = (reqSeq.get(key) ?? 0) + 1;
+  reqSeq.set(key, seq);
+  const promise = fsListDir(path, showHidden, 0)
+    .then((listing) => {
+      // 乱序裁决：只有最新一次请求允许落地。
+      if ((reqSeq.get(key) ?? 0) !== seq) return false;
+      const current = getDirState(path, showHidden);
+      current.listing = listing.entries;
+      current.truncated = listing.hasMore;
+      current.hasMore = listing.hasMore;
+      current.diskScanned = listing.nextOffset;
+      current.fetchedAt = Date.now();
+      current.error = null;
+      if (current.signatureModifiedMs === null) {
+        void refreshSignature(path, showHidden);
+      }
+      return true;
+    })
+    .catch((e) => {
+      if ((reqSeq.get(key) ?? 0) !== seq) return false;
+      const current = getDirState(path, showHidden);
+      // 刷新失败不得把已有列表变成空目录：保留 listing，只暴露错误。
+      if (current.listing === null) {
+        current.hasMore = false;
+        current.diskScanned = null;
+      }
+      current.error = e instanceof Error ? e.message : String(e);
+      return false;
+    })
+    .finally(() => {
+      if ((reqSeq.get(key) ?? 0) === seq) {
+        inflight.delete(key);
+        const current = getDirState(path, showHidden);
+        current.loading = false;
+        notify(path, showHidden);
+        // 序号仍是最新：映射里这一项属于本次请求，可以安全移除。
+        refreshing.delete(key);
+      }
+    });
+  refreshing.set(key, promise);
+  return promise;
+}
+
+/**
  * 分页停滞错误码：后端声明 hasMore=true，但 `nextOffset` 未推进到当前 offset 之后。
  * 此时停止翻页并如实报错，绝不重复请求同一页，也不静默当作完整。
  */
@@ -270,7 +342,8 @@ export function invalidateDirs(paths: string[]): void {
   for (const path of paths) {
     for (const hidden of [false, true]) {
       const key = `${hidden ? "h1" : "h0"}:${path}`;
-      if (cache.has(key)) loadDir(path, hidden, true);
+      // 强制刷新：不复用可能在操作前就发起的手动刷新，保证拿到操作后的内容。
+      if (cache.has(key)) void refreshDir(path, hidden, true);
     }
   }
 }

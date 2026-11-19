@@ -434,3 +434,32 @@ B/C 通道真机验收。
 
 **发现（P3，未修）**：`src/styles-flat.test.ts` 的「窄窗任务页回退」用例失败，断言
 `tasks-workspace.css` 的 `@container (max-width:520px)`，属其他任务在途改动，与 R10 无关，未触碰。
+
+## 13. R12 执行记录（2026-11-19）
+
+### 13.1 命令与结果
+
+| 命令 | 退出码 | 结果 |
+|---|---|---|
+| `npx tsc --noEmit` | 0 | 全项目类型检查通过（含预览新组件、`fsReadBinary`、locale 新 key） |
+| `npx vitest run src/components/files src/lib/filesWorkspace --maxWorkers=1` | 0 | **49 文件 / 520 用例全部通过**（166s；`--maxWorkers=1` 是本机内存约束，不是用例要求） |
+| `cargo test --manifest-path src-tauri/Cargo.toml file_workspace::` | 见 §13.2 | Rust 文件工作区单测（含 `read_binary_preview` / 编码识别 / 字符边界截断） |
+
+### 13.2 新增/扩展用例
+
+| 文件 | 用例数 | 覆盖 |
+|---|---|---|
+| `src/components/files/preview/previewKind.test.ts` | 63 | 全格式矩阵、上限、语言标签、隐藏文件扩展名 |
+| `src/lib/filesWorkspace/dirCache.refresh.test.ts` | 6 | 立即 loading、成功更新、失败保留旧列表、并发合并、隐藏态隔离、乱序裁决、刷新后可再刷新 |
+| `src/components/files/FilePane.refresh.test.tsx` | 4 | 旋转/aria-busy/状态条、连续点击合并、右键同入口、双窗格独立 |
+| `src/components/files/FilePane.contextMenuClose.test.tsx` | 8 | 外部点击 / 失焦 / Escape / 菜单项 / 重开 / 连续右键唯一实例 / 内部 pointerdown / 卸载清理 |
+| `src/components/files/QuickPreviewDialog.preview.test.tsx` | 26 | 图片两条解码路径与释放、文本编码/截断/复制/失败、PDF 真实渲染链路/翻页取消/销毁/超限、视频音频、格式不支持、目录跳过、竞态、关闭取消、连续开关、选择恢复、输入控件守卫、50 次媒体切换 |
+| `src/components/files/QuickPreviewDialog.lifecycle.test.tsx`（既有） | 16 | 媒体 token 生命周期（本轮仅修正错误态断言与 `encoding` 夹具） |
+| `src/components/files/QuickPreviewDialog.test.tsx`（既有） | 3 | 关闭/切换/取消时的 token 释放 |
+
+### 13.3 本轮未覆盖（不得标 PASS）
+
+- 正式构建 `buildId` 与安装包：见验收矩阵 §13。
+- Windows 原生窗口上的真实像素/交互走查（图片缩放、PDF 阅读宽度、音频控制条在 125% DPI 下的表现）。
+- 超大真实 PDF（>20 MiB、含中日韩字体）与扫描件（JBIG2/JPX）的解码正确性。
+- `src/styles-flat.test.ts` 的窄窗任务页用例失败属其他任务在途改动（R10 已登记 P3），本轮未触碰。

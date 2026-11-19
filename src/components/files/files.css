@@ -1430,6 +1430,57 @@ body.fw-resizing-row * {
   white-space: nowrap;
 }
 
+/* 手动刷新：只在本窗格状态条内反馈，不弹 Toast、不遮挡列表。 */
+.fw-status-refresh {
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+
+.fw-status-refresh.is-ok {
+  color: var(--status-ok, #2f9e44);
+}
+
+.fw-refresh-btn.is-refreshing svg {
+  animation: fw-refresh-spin 0.9s linear infinite;
+}
+
+.fw-refresh-btn[aria-busy="true"] {
+  cursor: progress;
+}
+
+@keyframes fw-refresh-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 刷新失败：保留旧列表，行内错误条 + 重试；不整块替换成错误态。 */
+.fw-refresh-error {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 10px 0;
+  padding: 6px 10px;
+  border: 1px solid color-mix(in srgb, var(--danger, #e5484d) 40%, var(--border-subtle));
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--danger, #e5484d) 7%, var(--fw-surface-raised));
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.fw-refresh-error-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fw-refresh-btn.is-refreshing svg {
+    animation: none;
+  }
+}
+
 .fw-status-truncated {
   color: var(--status-waiting, var(--text-tertiary));
 }
@@ -2708,135 +2759,437 @@ body.fw-resizing-row * {
   gap: 6px;
 }
 
-/* 快速预览：舞台固定高度，图片缩放只在自己的滚动容器内 */
+/* 快速预览：容器统一（头/体/脚），各类型内容区自行适配；舞台不产生页面级滚动 */
 .fw-preview-dialog .ui-dialog-panel,
 .fw-preview-dialog {
-  max-width: min(1040px, 92vw);
+  max-width: min(1120px, 94vw);
+  width: min(1120px, 94vw);
 }
 
-.fw-preview-toolbar {
+.fw-preview-title {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  align-items: baseline;
   gap: 8px;
-  margin-bottom: 6px;
   min-width: 0;
 }
 
-.fw-preview-nav,
-.fw-preview-zoom {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-}
-
-.fw-preview-counter {
-  font-size: 11px;
-  color: var(--text-tertiary);
-  font-variant-numeric: tabular-nums;
-  min-width: 44px;
-  text-align: center;
-}
-
-.fw-preview-meta {
-  flex: 1 1 auto;
+.fw-preview-title-name {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--text-tertiary);
+  font-weight: 600;
+}
+
+.fw-preview-title-meta {
+  flex: 0 0 auto;
   font-size: 11px;
+  font-weight: 400;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.fw-preview-dialog .ui-dialog-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.fw-preview-nav,
+.fw-preview-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.fw-preview-counter {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  min-width: 52px;
+  text-align: center;
 }
 
 .fw-preview-stage {
   display: flex;
-  align-items: center;
+  align-items: stretch;
   justify-content: center;
-  /* 小高度窗口下不强制 360px 最小高：先按视口高度收敛，避免弹窗内容被顶出可视区。 */
-  min-height: min(360px, 42vh);
+  position: relative;
+  /* 大窗口充分利用高度；小高度窗口先按视口收敛，避免内容被顶出可视区。 */
+  height: clamp(260px, 62vh, 640px);
   max-height: 62vh;
+  min-height: 0;
   overflow: hidden;
   border: 1px solid var(--border-subtle);
   border-radius: 7px;
   background: var(--surface-base);
 }
 
+.fw-preview-stage[data-kind="video"],
+.fw-preview-stage[data-kind="audio"] {
+  background: color-mix(in srgb, var(--surface-base) 92%, #000 8%);
+}
+
+/* 加载 / 错误 / 不支持：统一垂直居中，不撑破舞台 */
 .fw-preview-state {
-  padding: 18px;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
   text-align: center;
   color: var(--text-tertiary);
   font-size: 12px;
+}
+
+.fw-preview-state p {
+  margin: 0;
+  max-width: 56ch;
+  line-height: 1.55;
 }
 
 .fw-preview-state.is-error {
   color: var(--danger, #e5484d);
 }
 
-.fw-preview-image-scroll {
+.fw-preview-state-title {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.fw-preview-state-detail {
+  max-width: 100%;
+  padding: 3px 8px;
+  border-radius: var(--radius-xs);
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.fw-preview-state-hint {
+  color: var(--text-tertiary);
+}
+
+.fw-preview-spinner {
+  animation: fw-preview-spin 0.9s linear infinite;
+  color: var(--text-tertiary);
+}
+
+@keyframes fw-preview-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ── 图片 ───────────────────────────────────────────────────────────── */
+.fw-preview-image {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+}
+
+.fw-preview-image-viewport {
+  flex: 1 1 auto;
+  min-height: 0;
   width: 100%;
-  height: 62vh;
-  max-height: 62vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   overflow: auto;
+  padding: 10px;
+}
+
+.fw-preview-image-viewport[data-fit="false"] {
+  align-items: flex-start;
+  justify-content: flex-start;
+}
+
+.fw-preview-image-viewport img {
+  display: block;
+  object-fit: contain;
+  user-select: none;
+  border-radius: 3px;
+  background:
+    repeating-conic-gradient(color-mix(in srgb, var(--text-tertiary) 12%, transparent) 0% 25%, transparent 0% 50%)
+    50% / 16px 16px;
+}
+
+/* 缩放/适应的悬浮控制条：固定在内容区底部，不遮挡主体 */
+.fw-preview-hud {
+  position: absolute;
+  left: 50%;
+  bottom: 10px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface-raised) 88%, transparent);
+  backdrop-filter: blur(8px);
+  box-shadow: var(--shadow-sm, 0 4px 14px rgb(0 0 0 / 12%));
+  max-width: calc(100% - 20px);
+}
+
+.fw-preview-hud-value {
+  min-width: 48px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.fw-preview-hud-sep {
+  width: 1px;
+  height: 14px;
+  margin: 0 3px;
+  background: var(--border-subtle);
+}
+
+.fw-preview-hud-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.fw-preview-hud-btn:hover {
+  background: var(--surface-hover, color-mix(in srgb, var(--text-primary) 6%, transparent));
+  color: var(--text-primary);
+}
+
+.fw-preview-hud-btn.is-on {
+  border-color: color-mix(in srgb, var(--accent, #3b82f6) 45%, transparent);
+  background: color-mix(in srgb, var(--accent, #3b82f6) 12%, transparent);
+  color: var(--text-primary);
+}
+
+/* ── 视频 ───────────────────────────────────────────────────────────── */
+.fw-preview-video-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 8px;
 }
 
-.fw-preview-image-scroll img {
-  display: block;
-  object-fit: contain;
-  user-select: none;
-}
-
 .fw-preview-video {
   width: 100%;
-  max-height: 62vh;
+  height: 100%;
+  max-height: 100%;
   background: #000;
   border-radius: 6px;
+  object-fit: contain;
 }
 
+.fw-preview-media-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+/* ── 音频（自定义控制条，不用浏览器默认播放器）────────────────────── */
 .fw-preview-audio {
   display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
   align-items: center;
-  gap: 10px;
-  padding: 24px;
+  justify-content: center;
+  gap: 12px;
+  padding: 22px clamp(16px, 6vw, 64px);
   width: 100%;
+  min-width: 0;
 }
 
-.fw-preview-audio-name {
+.fw-preview-audio-art {
+  display: grid;
+  place-items: center;
+  width: 84px;
+  height: 84px;
+  border-radius: 18px;
+  background: linear-gradient(
+    140deg,
+    color-mix(in srgb, var(--accent, #3b82f6) 26%, transparent),
+    color-mix(in srgb, var(--accent, #3b82f6) 6%, transparent)
+  );
+  color: color-mix(in srgb, var(--accent, #3b82f6) 70%, var(--text-primary));
+}
+
+.fw-preview-audio-title {
+  max-width: 100%;
   font-size: 13px;
   font-weight: 600;
-  word-break: break-all;
+  color: var(--text-primary);
   text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.fw-preview-audio audio {
-  width: min(100%, 520px);
+.fw-preview-audio-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: min(100%, 620px);
 }
 
-.fw-preview-audio-meta {
-  font-size: 11px;
+.fw-preview-audio-play {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--accent, #3b82f6);
+  color: #fff;
+  cursor: pointer;
+}
+
+.fw-preview-audio-play:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.fw-preview-audio-track {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.fw-preview-audio-times {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
   color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
 }
 
-.fw-preview-text {
+.fw-preview-audio-volume {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 108px;
+}
+
+.fw-preview-audio-el {
+  display: none;
+}
+
+/* 统一滑杆：进度用 --fw-range-progress 表达已播放比例 */
+.fw-preview-range {
   width: 100%;
-  height: 62vh;
-  max-height: 62vh;
-  overflow: auto;
-  padding: 8px 10px;
+  height: 16px;
+  margin: 0;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.fw-preview-range::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(
+    to right,
+    var(--accent, #3b82f6) 0%,
+    var(--accent, #3b82f6) var(--fw-range-progress, 0%),
+    color-mix(in srgb, var(--text-tertiary) 30%, transparent) var(--fw-range-progress, 0%),
+    color-mix(in srgb, var(--text-tertiary) 30%, transparent) 100%
+  );
+}
+
+.fw-preview-range::-webkit-slider-thumb {
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -4px;
+  border: 2px solid var(--surface-base);
+  border-radius: 50%;
+  background: var(--accent, #3b82f6);
+}
+
+/* ── 文本 / 代码 ────────────────────────────────────────────────────── */
+.fw-preview-text {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.fw-preview-info {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--surface-raised) 60%, transparent);
+}
+
+.fw-preview-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-tertiary) 10%, transparent);
+  color: var(--text-secondary);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.fw-preview-chip.is-strong {
+  background: color-mix(in srgb, var(--accent, #3b82f6) 14%, transparent);
+  color: var(--text-primary);
+}
+
+.fw-preview-chip.is-warn {
+  background: color-mix(in srgb, var(--warning, #d97706) 14%, transparent);
+  color: var(--warning, #d97706);
+}
+
+.fw-preview-info-spacer {
+  flex: 1 1 auto;
 }
 
 .fw-preview-truncated {
-  margin: 0 0 6px;
+  flex: 0 0 auto;
+  margin: 6px 10px 0;
   color: var(--warning, #d97706);
   font-size: 11px;
 }
 
 .fw-preview-encoding {
-  margin: 0 0 6px;
+  flex: 0 0 auto;
+  margin: 6px 10px 0;
   padding: 4px 7px;
   border-radius: 4px;
   background: color-mix(in srgb, var(--warning, #d97706) 10%, transparent);
@@ -2844,7 +3197,14 @@ body.fw-resizing-row * {
   font-size: 11px;
 }
 
-.fw-preview-text pre {
+.fw-preview-text-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 10px 12px;
+}
+
+.fw-preview-text-scroll pre {
   margin: 0;
   font-family: var(--font-mono, ui-monospace, Consolas, monospace);
   font-size: 12px;
@@ -2852,6 +3212,11 @@ body.fw-resizing-row * {
   color: var(--text-primary);
   white-space: pre;
   tab-size: 2;
+}
+
+.fw-preview-text-scroll pre.is-plain {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .fw-preview-code-line {
@@ -2867,6 +3232,10 @@ body.fw-resizing-row * {
   user-select: none;
 }
 
+.fw-preview-code-text {
+  min-width: 0;
+}
+
 .fw-preview-token-keyword {
   color: #c792ea;
 }
@@ -2880,21 +3249,112 @@ body.fw-resizing-row * {
   font-style: italic;
 }
 
+/* ── PDF ────────────────────────────────────────────────────────────── */
+.fw-preview-pdf {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+}
+
+.fw-preview-pdf-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--surface-raised) 60%, transparent);
+}
+
+.fw-preview-pdf-pages,
+.fw-preview-pdf-zoom {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.fw-preview-pdf-counter {
+  min-width: 96px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.fw-preview-pdf-scroll {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 8px;
+  background: color-mix(in srgb, var(--text-tertiary) 6%, transparent);
+}
+
+.fw-preview-pdf-canvas {
+  display: block;
+  flex: 0 0 auto;
+  background: #fff;
+  box-shadow: 0 2px 10px rgb(0 0 0 / 18%);
+  border-radius: 2px;
+}
+
+.fw-preview-pdf-rendering {
+  position: absolute;
+  left: 50%;
+  top: 10px;
+  transform: translateX(-50%);
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface-raised) 90%, transparent);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: 10px;
+  pointer-events: none;
+}
+
 .fw-preview-hint {
   margin: 8px 0 0;
   font-size: 11px;
   color: var(--text-tertiary);
 }
 
-@media (max-width: 600px) {
-  .fw-preview-toolbar {
+@media (max-width: 720px) {
+  .fw-preview-dialog .ui-dialog-panel,
+  .fw-preview-dialog {
+    width: 96vw;
+    max-width: 96vw;
+  }
+
+  .fw-preview-stage {
+    height: 52vh;
+    max-height: 52vh;
+  }
+
+  .fw-preview-audio-controls {
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  .fw-preview-audio-volume {
+    width: 92px;
+  }
+
+  .fw-preview-dialog .ui-dialog-foot {
     flex-wrap: wrap;
   }
-  .fw-preview-stage,
-  .fw-preview-image-scroll,
-  .fw-preview-text {
-    height: 48vh;
-    max-height: 48vh;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fw-preview-spinner {
+    animation: none;
   }
 }
 

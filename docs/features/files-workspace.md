@@ -531,22 +531,37 @@
   新增 `FilePane.properties.test.tsx` 6 例：完整字段/文件夹/缺失访问时间/旧夹具缺字段/
   读取失败/快速切换。缺口不变：侧边常驻详情面板、原生与资源管理器对照。
 
-#### FW-PREVIEW-001 文件预览 `P1` · `PARTIAL`
-- 目的/场景：不打开外部应用即可看图片/视频/音频/文本/代码；预览失败不伪造成功。
-- 现有：是（部分）。`QuickPreviewDialog.tsx:38-55` 支持 image/video/audio/text/code；
-  `bridge.ts:5800-5821`（`fs_preview_image/fs_read_text/fs_preview_media_url/
-  fs_release_preview_url`）；Rust `file_workspace/preview.rs`、`thumbnail.rs`；
-  媒体 token 跟踪器（128 历史上限）。
-  缺口：PDF、Office、Markdown 渲染（当前 md 按纯文本）；`canPreviewFile/getFilePreview`
-  统一 API。
-- 目标 UI：预览对话框（已有），扩展类型与关闭释放。
-- 目标 API/函数：`canPreviewFile(path) / getFilePreview(path) / openFilePreview(path) /
-  closeFilePreview()`。
-- 数据模型：`FilePreview { kind, url|text, truncated, size }`。
-- 依赖：FW-INFO-001。
-- 测试/验收：`QuickPreviewDialog.test.tsx`、`QuickPreviewDialog.lifecycle.test.tsx`；
-  缺口：PDF/Office 原生渲染、超大文件拒绝策略。
-  验收：50 次切换 token 注册/释放各一次；二进制不误当文本。
+#### FW-PREVIEW-001 文件内容预览 `P1` · `PARTIAL`（第一阶段已交付，待正式构建原生验收）
+- 目的/场景：不打开外部应用即可看图片/PDF/视频/音频/文本/代码；预览失败不伪造成功。
+- 第一阶段范围（2026-11-19 R12）：图片、文本/代码、PDF、视频、音频；Office 等二进制明确标记
+  不支持并保留外部打开入口。
+- 支持格式矩阵（唯一口径见 `src/components/files/preview/previewKind.ts`）：
+
+| kind | 扩展名 | 数据来源 | 渲染 | 失败回退 |
+|---|---|---|---|---|
+| image | png jpg jpeg webp gif bmp svg avif ico tif tiff | `fs_read_binary`（≤32 MiB，SVG ≤8 MiB）→ Blob URL | `<img>` + 适应/缩放/1:1/双击 | 解码失败或 >24 MiB → `fs_preview_image`（Shell 解码 PNG）→ 仍失败则错误态 |
+| text | txt md json csv log yaml yml toml xml html css js mjs cjs ts jsx tsx py rs sql ini cfg conf sh bat cmd ps1 c/h/cpp/hpp java go env gitignore | `fs_read_text`（前 512 KiB，后端拒绝二进制） | 等宽 + 行号 + 轻量高亮 + 复制 | 截断/乱码提示；读取失败显示错误 + 文件名 |
+| pdf | pdf | `fs_read_binary`（≤64 MiB） | pdf.js 本地单页 canvas，翻页/适应宽度/适应页面/缩放 | 超限/损坏/加密 → 错误 + 外部打开 |
+| video | mp4 webm mov m4v mkv avi | `fs_preview_media_url`（token + Range） | `<video controls>` | 编码不支持 → 错误态 |
+| audio | mp3 wav flac m4a aac ogg oga | `fs_preview_media_url` | 自定义控制条（播放/进度/时长/音量） | 同上 |
+| unsupported | docx xlsx pptx doc xls ppt zip 7z exe dll 及其他 | 不读取内容 | 「暂不支持内嵌预览」+ 外部打开 | 不把二进制丢给 `fs_read_text` |
+
+- 实现：`QuickPreviewDialog.tsx`（唯一容器）+ `preview/` 下按类型拆分的渲染组件；
+  `bridge.ts` 新增 `fsReadBinary`；Rust `fs_read_binary` / `FsBinaryPreview` /
+  `FsTextPreview.encoding`；`pdfjs-dist@6.5.438` 本地打包（worker `?url`，
+  CMap/字体/WASM 由 `scripts/pdfjs-assets.mjs` 同步到 `public/pdfjs/`，禁止 CDN/上传）。
+- 资源生命周期：媒体 token 由 `createPreviewTokenTracker` 管理并恰好释放一次；
+  图片 Blob URL 由 `createObjectUrlTracker` 吊销；PDF 切页取消渲染任务、关闭销毁文档与 worker；
+  关闭预览不改变文件选择。
+- 快捷键：Space 打开（面板已有入口）、Escape 关闭、左右方向键切换同目录文件；
+  输入控件/媒体控件内不抢键。
+- 测试：`QuickPreviewDialog.test.tsx`（3）、`QuickPreviewDialog.lifecycle.test.tsx`（16）、
+  `QuickPreviewDialog.preview.test.tsx`（26）、`preview/previewKind.test.ts`（63）；
+  Rust `file_workspace::tests` 覆盖二进制读取上限/MIME/编码识别/二进制拒绝/字符边界截断。
+- 未完成：Office 内嵌渲染、Markdown 富文本渲染、PDF 文本选择/搜索、连续预加载；
+  正式构建上的原生截图验收（见验收矩阵 §13）。
+- 验收：50 次切换注册/释放各一次且不重复；PDF 渲染链路经真实 `getDocument → getPage → render`
+  路径断言；二进制不误当文本。
 
 ### 3.5 系统集成与压缩
 

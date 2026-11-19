@@ -5,7 +5,7 @@
 
 import { useEffect, useId, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { Check } from "lucide-react";
-import Popover from "./Popover";
+import Popover, { type PopoverWidthMode } from "./Popover";
 import { scrollIntoViewIfNeeded } from "./overlay";
 import type { PopupAlignment, PopupSide } from "./positioning";
 
@@ -61,6 +61,13 @@ export interface DropdownMenuProps {
   /** 主方向放不下时是否允许翻到左右侧边（默认 true）；指针锚定的右键菜单
    *  必须为 false：菜单应留在指针附近上下翻转，而不是跑到指针左侧/右侧。 */
   flipToSide?: boolean;
+  /**
+   * 宽度策略：默认 `content`（按内容自然宽度，操作菜单不应被按钮宽度压缩）。
+   * 只有明确要求「与触发按钮同宽」时才用 `exact-match`；
+   * `min-match` 是旧的 `matchWidth` 语义（不小于按钮，内容更宽时继续增长）。
+   */
+  widthMode?: PopoverWidthMode;
+  /** @deprecated 等价于 `widthMode="min-match"`；操作菜单请保留默认 content。 */
   matchWidth?: boolean;
   /** 菜单目标最小宽度（px）：按最长选项文本 + 图标 + 勾选标记 + 内边距声明，
    *  内容更宽时仍会自然增长，绝不截断选项 */
@@ -80,6 +87,7 @@ export default function DropdownMenu({
   collisionPadding,
   maxHeight,
   flipToSide = true,
+  widthMode,
   matchWidth = false,
   menuMinWidth,
   className,
@@ -222,6 +230,7 @@ export default function DropdownMenu({
         collisionPadding={collisionPadding}
         maxHeight={maxHeight}
         flipToSide={flipToSide}
+        widthMode={widthMode}
         matchWidth={matchWidth}
         style={menuMinWidth ? ({ "--menu-min-w": `${menuMinWidth}px` } as CSSProperties) : undefined}
         className={`ui-menu-popover ${className ?? ""}`}

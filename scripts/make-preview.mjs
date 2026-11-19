@@ -9,9 +9,121 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
-const dist = join(root, "dist");
+const dist = process.env.PREVIEW_DIST ? join(root, process.env.PREVIEW_DIST) : join(root, "dist");
 const html = readFileSync(join(dist, "index.html"), "utf8");
 
+// ── R12 预览夹具：PDF / SVG / WAV 在本地生成，不依赖网络与外部样本 ──────────
+function buildPreviewPdf() {
+  const esc = (s) => s.replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)");
+  const pageContent = (title, lines) =>
+    [
+      "BT /F1 22 Tf 56 780 Td (" + esc(title) + ") Tj ET",
+      "0.18 0.45 0.86 rg 56 764 483 4 re f",
+      ...lines.map(
+        (line, index) =>
+          "BT /F1 12 Tf 56 " + (730 - index * 24) + " Td (" + esc(line) + ") Tj ET",
+      ),
+    ].join("\n");
+  const contents = [
+    pageContent("TaskDock PDF Preview", [
+      "Page 1 of 3 - rendered locally by pdf.js.",
+      "No CDN, no upload: the bytes only travel through IPC.",
+      "Use the arrows to change pages, or Fit width / Fit page.",
+    ]),
+    pageContent("Second page", [
+      "Vector text stays sharp at any zoom level.",
+      "The canvas is re-rendered per page and cancelled on switch.",
+    ]),
+    pageContent("Third page", [
+      "Closing the preview destroys the document and its worker.",
+      "All file actions stay on this machine.",
+    ]),
+  ];
+  const objects = [];
+  objects[1] = "<< /Type /Catalog /Pages 2 0 R >>";
+  objects[2] = "<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R] /Count 3 >>";
+  for (let i = 0; i < 3; i += 1) {
+    objects[3 + i] =
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 9 0 R >> >> /Contents " +
+      (6 + i) +
+      " 0 R >>";
+    const body = contents[i];
+    objects[6 + i] = "<< /Length " + Buffer.byteLength(body, "latin1") + " >>\nstream\n" + body + "\nendstream";
+  }
+  objects[9] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
+  let out = "%PDF-1.7\n";
+  const offsets = [];
+  for (let i = 1; i <= 9; i += 1) {
+    offsets[i] = Buffer.byteLength(out, "latin1");
+    out += i + " 0 obj\n" + objects[i] + "\nendobj\n";
+  }
+  const xref = Buffer.byteLength(out, "latin1");
+  out += "xref\n0 10\n0000000000 65535 f \n";
+  for (let i = 1; i <= 9; i += 1) {
+    out += String(offsets[i]).padStart(10, "0") + " 00000 n \n";
+  }
+  out += "trailer\n<< /Size 10 /Root 1 0 R >>\nstartxref\n" + xref + "\n%%EOF\n";
+  return out;
+}
+
+const PREVIEW_PDF = buildPreviewPdf();
+const PREVIEW_PDF_B64 = Buffer.from(PREVIEW_PDF, "latin1").toString("base64");
+const PREVIEW_PDF_SIZE = Buffer.byteLength(PREVIEW_PDF, "latin1");
+
+const PREVIEW_SVG = [
+  '<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760">',
+  '<defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">',
+  '<stop offset="0" stop-color="#12263a"/><stop offset="0.55" stop-color="#1f5f8b"/><stop offset="1" stop-color="#43aa8b"/>',
+  "</linearGradient>",
+  '<linearGradient id="bar" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#8ecae6"/><stop offset="1" stop-color="#ffb703"/></linearGradient>',
+  "</defs>",
+  '<rect width="1200" height="760" fill="url(#bg)"/>',
+  '<circle cx="980" cy="150" r="190" fill="#8ecae6" opacity="0.18"/>',
+  '<circle cx="200" cy="640" r="150" fill="#ffb703" opacity="0.16"/>',
+  '<text x="80" y="180" fill="#eaf4fb" font-family="Segoe UI, Arial" font-size="64" font-weight="700">Image Preview</text>',
+  '<text x="80" y="240" fill="#bcd7e8" font-family="Segoe UI, Arial" font-size="26">SVG rendered as an image resource - no HTML injection.</text>',
+  '<rect x="80" y="290" width="520" height="10" rx="5" fill="url(#bar)"/>',
+  '<g fill="#eaf4fb" font-family="Segoe UI, Arial" font-size="22">',
+  '<text x="80" y="360">Fit to window / zoom / 1:1</text>',
+  '<text x="80" y="400">Double-click toggles fit and actual size</text>',
+  '<text x="80" y="440">GIF animation stays alive through Blob URLs</text>',
+  "</g>",
+  '<rect x="80" y="500" width="1040" height="180" rx="18" fill="#ffffff" opacity="0.08"/>',
+  '<text x="112" y="556" fill="#eaf4fb" font-family="Consolas, monospace" font-size="20">D:\\Games\\MyGame\\Preview\\poster.svg</text>',
+  '<text x="112" y="596" fill="#9fc3d8" font-family="Consolas, monospace" font-size="18">1.2 MB source - decoded locally</text>',
+  '<text x="112" y="636" fill="#9fc3d8" font-family="Consolas, monospace" font-size="18">background checkerboard = transparency</text>',
+  "</svg>",
+].join("");
+
+function buildPreviewWav() {
+  const rate = 22050;
+  const seconds = 4;
+  const total = rate * seconds;
+  const data = Buffer.alloc(total * 2);
+  for (let i = 0; i < total; i += 1) {
+    const t = i / rate;
+    const env = Math.min(1, t * 3) * Math.min(1, (seconds - t) * 3);
+    const tone = Math.sin(2 * Math.PI * 440 * t) * 0.35 + Math.sin(2 * Math.PI * 660 * t) * 0.15;
+    data.writeInt16LE(Math.max(-32768, Math.min(32767, Math.round(tone * env * 32767))), i * 2);
+  }
+  const header = Buffer.alloc(44);
+  header.write("RIFF", 0, "ascii");
+  header.writeUInt32LE(36 + data.length, 4);
+  header.write("WAVE", 8, "ascii");
+  header.write("fmt ", 12, "ascii");
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(rate, 24);
+  header.writeUInt32LE(rate * 2, 28);
+  header.writeUInt16LE(2, 32);
+  header.writeUInt16LE(16, 34);
+  header.write("data", 36, "ascii");
+  header.writeUInt32LE(data.length, 40);
+  return Buffer.concat([header, data]);
+}
+
+const PREVIEW_WAV = buildPreviewWav();
 // URL 参数控制场景：?theme=light|dark|system &material=solid|glass&agents=empty
 const shim = `
 (function () {
@@ -1133,6 +1245,16 @@ const shim = `
     fwEntry("crash_dump.dmp", "file", "other", "dmp", 65536),
   ]);
   fwDir("D:\\\\Games\\\\MyGame\\\\Build\\\\Android", []);
+  // R12 预览夹具：图片 / PDF / 代码 / 文本 / 音频 / 不支持格式各一份。
+  fwDir("D:\\\\Games\\\\MyGame\\\\Preview", [
+    fwEntry("poster.svg", "file", "image", "svg", 1258291),
+    fwEntry("report.pdf", "file", "doc", "pdf", ${PREVIEW_PDF_SIZE}),
+    fwEntry("main.ts", "file", "code", "ts", 2048),
+    fwEntry("notes.md", "file", "text", "md", 1024),
+    fwEntry("access.log", "file", "text", "log", 892928),
+    fwEntry("theme.wav", "file", "audio", "wav", ${PREVIEW_WAV.length}),
+    fwEntry("spec.docx", "file", "doc", "docx", 66560),
+  ]);
   const fwTouch = (dir) => { fwSig.set(dir, Date.now()); };
   const fwNorm = (p) => {
     let s = (p || "").trim();
@@ -1169,6 +1291,72 @@ const shim = `
     indexedAtMs: fwNow - 60_000,
     syncing: 0,
   });
+
+  // ── R12 预览夹具内容（PDF/SVG 由 Node 侧生成后注入；文本为可高亮样例）──
+  const FW_SVG = ${JSON.stringify(PREVIEW_SVG)};
+  const fwB64Utf8 = (text) => btoa(unescape(encodeURIComponent(text)));
+  const fwTextFor = (name, path) => {
+    if (name === "main.ts") {
+      return [
+        'import { fsReadBinary, fsReadText } from "../../lib/bridge";',
+        "",
+        "export interface PreviewLimits {",
+        "  imageBytes: number;",
+        "  pdfBytes: number;",
+        "}",
+        "",
+        "// 预览只读取必要的前缀，不把整份文件塞进内存。",
+        "export const LIMITS: PreviewLimits = {",
+        "  imageBytes: 32 * 1024 * 1024,",
+        "  pdfBytes: 64 * 1024 * 1024,",
+        "};",
+        "",
+        "export async function loadText(path: string): Promise<string> {",
+        "  const preview = await fsReadText(path);",
+        "  if (preview.truncated) {",
+        '    console.info("truncated at", preview.size, "bytes");',
+        "  }",
+        "  return preview.content;",
+        "}",
+        "",
+        "export async function loadPdf(path: string): Promise<Uint8Array> {",
+        "  const binary = await fsReadBinary(path, LIMITS.pdfBytes);",
+        '  if (binary.truncated) throw new Error("PDF too large");',
+        '  return Uint8Array.from(atob(binary.base64), (c) => c.charCodeAt(0));',
+        "}",
+        "",
+      ].join("\\n");
+    }
+    if (name === "notes.md") {
+      return [
+        "# 预览走查说明",
+        "",
+        "- 图片、PDF、文本、音频各有独立布局，容器与导航保持一致。",
+        "- 左右方向键切换同目录文件，Escape 关闭。",
+        "- 关闭后回到原来的选择状态。",
+        "",
+        "> Markdown 第一阶段按纯文本预览，不做富文本渲染。",
+        "",
+      ].join("\\n");
+    }
+    if (name === "access.log") {
+      const lines = [];
+      for (let i = 0; i < 260; i += 1) {
+        lines.push(
+          "2026-11-19 19:" +
+            String(10 + (i % 48)).padStart(2, "0") +
+            ":" +
+            String(i % 60).padStart(2, "0") +
+            " INFO  fs.preview path=D:\\\\Games\\\\MyGame\\\\Preview\\\\poster.svg bytes=" +
+            (1200 + i) +
+            " ms=" +
+            (4 + (i % 17)),
+        );
+      }
+      return lines.join("\\n");
+    }
+    return "// " + path + "\\n// 预览夹具：该扩展名使用通用文本内容。\\n";
+  };
 
   async function invoke(cmd, args) {
     await new Promise((r) => setTimeout(r, 30));
@@ -1556,6 +1744,34 @@ const shim = `
       case "fs_open_terminal":
       case "fs_show_properties":
         throw new Error("ShellExecute 模拟失败（走查夹具专用）");
+      // ── R12 预览：原始字节 / 文本 / 媒体 URL（本地夹具，不联网）──────────
+      case "fs_read_binary": {
+        const path = fwNorm(args?.path || "");
+        const name = path.slice(path.lastIndexOf(FW_BS) + 1).toLowerCase();
+        if (name.endsWith(".pdf")) {
+          return { path, size: ${PREVIEW_PDF_SIZE}, truncated: false, mime: "application/pdf", base64: "${PREVIEW_PDF_B64}" };
+        }
+        if (name.endsWith(".svg")) {
+          return { path, size: FW_SVG.length, truncated: false, mime: "image/svg+xml", base64: fwB64Utf8(FW_SVG) };
+        }
+        // 其余图片：夹具不含真实位图 → 走 Shell 解码回退（fs_preview_image）。
+        if (name.endsWith(".png") || name.endsWith(".jpg") || name.endsWith(".jpeg")) {
+          return { path, size: FW_SVG.length, truncated: true, mime: "image/png", base64: "" };
+        }
+        throw new Error("预览夹具未包含该文件: " + path);
+      }
+      case "fs_preview_image": return "data:image/svg+xml;base64," + fwB64Utf8(FW_SVG);
+      case "fs_read_text": {
+        const path = fwNorm(args?.path || "");
+        const name = path.slice(path.lastIndexOf(FW_BS) + 1).toLowerCase();
+        const text = fwTextFor(name, path);
+        return { path, size: text.length, truncated: name === "access.log", encoding: "UTF-8", content: text };
+      }
+      case "fs_preview_media_url": {
+        const path = fwNorm(args?.path || "");
+        return path.toLowerCase().endsWith(".wav") ? "/fixtures/theme.wav" : "/fixtures/missing-media";
+      }
+      case "fs_release_preview_url": return null;
       case "fs_thumbnail": return null;
       // ── r9 走查：任务服务模拟（真实移动 fwTree + 立即终态 + 逐项报告）──
       case "fs_move_job_start":
@@ -2007,13 +2223,19 @@ const shim = `
   // 背景模拟桌面壁纸，验证毛玻璃透出效果（仅预览用）
   // 注意：shim 在 <head> 中执行，此时 document.body 还不存在，
   // 直接 appendChild 会抛 TypeError（走查时表现为每页一条错误）。
-  if (!document.getElementById("preview-desktop-bg")) {
+  const mountBg = () => {
+    if (document.getElementById("preview-desktop-bg")) return;
     const bg = document.createElement("div");
     bg.id = "preview-desktop-bg";
     bg.style.cssText =
-      "position:fixed;inset:0;z-index:-1;" +
+      "position:fixed;inset:0;z-index:-1;pointer-events:none;" +
       "background:linear-gradient(135deg,#0f4c81 0%,#1a936f 45%,#f3a712 100%);";
     (document.body || document.documentElement).appendChild(bg);
+  };
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", mountBg, { once: true });
+  } else {
+    mountBg();
   }
 })();
 `;
@@ -2040,4 +2262,9 @@ mkdirSync(join(root, ".preview"), { recursive: true });
 writeFileSync(join(root, ".preview", "preview-shim.js"), shim);
 writeFileSync(join(root, ".preview", "preview.html"), preview);
 writeFileSync(join(root, ".preview", "workbench-preview.html"), wsPreview);
+// 音频夹具：真实可播放的 WAV，供预览走查验证自定义控制条（不入库）。
+for (const dir of [join(dist, "fixtures"), join(root, ".preview", "fixtures")]) {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "theme.wav"), PREVIEW_WAV);
+}
 console.log("preview.html + workbench-preview.html + preview-shim.js 已生成（dist/ 与 .preview/）");

@@ -115,6 +115,7 @@ import { dropTargetAt, registerFileDropConsumer, discardOperation } from "../../
 import type { DragPayloadView } from "../../lib/dragPayload";
 import { useFilesWorkspaceStore, tabTitle } from "../../store/useFilesWorkspaceStore";
 import { useTransferStore } from "../../store/useTransferStore";
+import { resolvePathInputs } from "../../lib/crossTab/fileKinds";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useUiStore } from "../../store/useUiStore";
 import { useWorkbenchPageActive } from "../../lib/windowHost";
@@ -1816,19 +1817,30 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
   async function addSelectedToTray() {
     if (selectedPaths.length === 0) return;
     try {
-      const report = await useTransferStore.getState().add(
-        selectedPaths.map((path) => ({
-          itemType: "file",
-          sourceModule: "files",
-          sourceId: path,
-          title: path.split(/[\\/]/).filter(Boolean).pop() ?? path,
-          description: path,
-          payload: { path },
-        })),
-      );
-      showToast(`已加入工作篮 ${report.added} 项`, { kind: "success" });
-      if (report.duplicates > 0) {
-        showToast(`其中 ${report.duplicates} 项已在工作篮中`, { kind: "warning" });
+      // 真实形态识别：目录 → directory、文件 → file、失效路径 → rejected，
+      // 不能一律标成 file（否则发送时会用「复制文件」处理目录）。
+      const resolved = await resolvePathInputs(selectedPaths, fsStat, "files");
+      const report = resolved.inputs.length
+        ? await useTransferStore.getState().add(resolved.inputs)
+        : { added: 0, duplicates: 0, rejected: [], items: [] };
+      const rejected = [...resolved.rejected, ...report.rejected];
+      if (report.added === 0) {
+        const first = rejected[0];
+        showToast(
+          first
+            ? `加入工作篮失败：${first.title}：${first.message}`
+            : "所选内容已全部在工作篮中",
+          { kind: "error" },
+        );
+        return;
+      }
+      if (rejected.length > 0 || report.duplicates > 0) {
+        showToast(
+          `已加入 ${report.added} 项，${report.duplicates} 项重复，${rejected.length} 项被拒绝`,
+          { kind: "warning" },
+        );
+      } else {
+        showToast(`已加入工作篮 ${report.added} 项`, { kind: "success" });
       }
       useTransferStore.getState().openPanel();
     } catch (e) {

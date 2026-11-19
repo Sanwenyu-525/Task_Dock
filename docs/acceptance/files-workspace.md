@@ -397,3 +397,77 @@ r9 修复范围（对应 §3.2 的 r8 发现）：
 
 **范围**：只修空目录右键；不新增 Store/IPC/迁移/全局右键拦截，不改 `.fw-empty-pane` 语义，
 不把 `FilePane` 迁到 `PointerMenu`（列为独立改造评审）。
+
+## 13. R12 交互收尾与第一阶段文件内容预览（2026-11-19）
+
+> 本节只登记**本轮真实执行**的结果。B 通道＝浏览器 harness（真实组件 + IPC 桩 + 真实 pdf.js/Chromium 渲染）；
+> C 通道＝Windows 原生窗口（正式构建包），本轮**未执行**（见 §13.6）。
+
+### 13.1 R11 收尾：右键菜单关闭生命周期
+
+| 场景 | 结果 | 证据 |
+|---|---|---|
+| 点击菜单外部空白 → 关闭 | PASS（B 通道，真实 DOM 事件） | `pane-shots.mjs` 输出 `MENU_AFTER_OUTSIDE 0`；截图 `shots/pane-context-closed.png` |
+| 窗口失焦 → 关闭 | PASS（自动化） | `FilePane.contextMenuClose.test.tsx`「窗口失焦关闭」 |
+| Escape → 关闭 | PASS（B 通道 + 自动化） | `MENU_AFTER_ESCAPE 0`；截图 `shots/pane-context-escape.png`；用例「Escape 关闭，且只关这一层」 |
+| 点击菜单项 → 关闭并执行操作 | PASS（自动化） | 用例「菜单项执行后关闭，并触发对应操作」 |
+| 关闭后再次右键 → 新位置重新打开 | PASS（B 通道 + 自动化） | `MENU_REOPEN 1`；用例「关闭后再次右键在新位置重新打开」 |
+| 快速连续右键不同位置 → 只有一个菜单实例 | PASS（自动化） | 用例「快速连续右键不同位置：不产生多个菜单实例」；实现为 `FreeMenu` 按 `x:y` 重建实例 |
+| 菜单内部 pointerdown 不误关 | PASS（自动化） | 用例「菜单内部 pointerdown 不误关」 |
+| 卸载不残留菜单/监听器 | PASS（自动化） | 用例「组件卸载时菜单随之移除，后续事件不报错」 |
+
+### 13.2 刷新目录反馈
+
+| 场景 | 结果 | 证据 |
+|---|---|---|
+| 点击后立即有过程反馈 | PASS（B 通道） | `REFRESH_DURING {"busy":"true","spinning":true,"status":"正在刷新…","rows":7}`；截图 `shots/pane-refreshing.png` |
+| 刷新期间保留旧列表（不闪空态） | PASS（B 通道） | 同一采样中 `rows:7`（旧条目仍在） |
+| 成功后结束并显示「已更新」 | PASS（B 通道） | `REFRESH_AFTER {"busy":"false","status":"已更新"}`；截图 `shots/pane-refreshed.png` |
+| 失败有反馈且保留旧列表 | PASS（自动化） | `FilePane.refresh.test.tsx`「刷新失败：结束 loading、显示行内错误、保留旧列表」 |
+| 连续点击不产生重复请求 | PASS（自动化） | `dirCache.refresh.test.ts`「同一路径并发刷新合并为同一个 Promise」；`FilePane.refresh.test.tsx`「连续点击合并为一次请求」 |
+| 旧请求晚到不覆盖新结果 | PASS（自动化） | `dirCache.refresh.test.ts`「旧刷新晚到不覆盖新刷新结果（序号裁决）」 |
+| 不同窗格刷新状态独立 | PASS（自动化） | `FilePane.refresh.test.tsx`「不同窗格的刷新状态互相独立」 |
+| 工具栏与右键菜单同一入口 | PASS（自动化） | `FilePane.refresh.test.tsx`「右键菜单刷新与工具栏共用同一入口」 |
+
+### 13.3 第一阶段文件内容预览（FW-PREVIEW-001）
+
+| 类型 | 走查结果 | 证据（B 通道真实渲染） |
+|---|---|---|
+| 图片（SVG → Blob URL） | PASS | `poster.svg {"stage":"image","hasImg":true}`；截图 `shots/preview-image-svg.png` |
+| 文本/代码（TS） | PASS | `main.ts {"stage":"text","hasText":true}`；行号 + 高亮 + 编码/语言/行数芯片；截图 `shots/preview-code-ts.png` |
+| 文本（Markdown） | PASS | `notes.md {"stage":"text","hasText":true}`；截图 `shots/preview-text-md.png` |
+| 大文本截断提示 | PASS | `access.log` 命中截断分支；截图 `shots/preview-text-truncated.png` |
+| PDF 渲染 | PASS | `report.pdf {"stage":"pdf","hasCanvas":true,"canvasSize":"356x505"}`（pdf.js 真实渲染当前页）；截图 `shots/preview-pdf.png` |
+| PDF 翻页 | PASS | 翻页后计数 `第 2 / 3 页`；截图 `shots/preview-pdf-page2.png` |
+| 音频自定义控制条 | PASS | `theme.wav {"audio":true,"play":true,"seek":true,"err":""}`；截图 `shots/preview-audio.png` |
+| 不支持格式（DOCX） | PASS | `spec.docx` 显示「该类型不支持内嵌快速预览，可使用系统默认程序打开。」；截图 `shots/preview-unsupported.png` |
+| 视频 | PARTIAL | 自动化覆盖 token 获取/释放与错误态；**未取得可播放视频样本**（环境无 ffmpeg/媒体夹具），原生播放未验证 |
+
+### 13.4 自动化测试结果（本轮）
+
+| 命令 | 退出码 | 结果 |
+|---|---|---|
+| `npx tsc --noEmit` | 0 | 全项目类型检查通过 |
+| `npx vitest run src/components/files src/lib/filesWorkspace --maxWorkers=1` | 0 | **49 文件 / 520 用例通过** |
+| `npx vitest run src/components/files/preview/previewKind.test.ts` | 0 | 63 用例通过（格式矩阵） |
+| `npx vitest run src/lib/filesWorkspace/dirCache.refresh.test.ts` | 0 | 6 用例通过（刷新入口） |
+| `npx vitest run src/components/files/FilePane.refresh.test.tsx` | 0 | 4 用例通过（刷新反馈） |
+| `npx vitest run src/components/files/FilePane.contextMenuClose.test.tsx` | 0 | 8 用例通过（右键生命周期） |
+| `npx vitest run src/components/files/QuickPreviewDialog.preview.test.tsx` | 0 | 26 用例通过（预览矩阵/竞态/释放） |
+| `npx vite build --outDir dist-r12 --emptyOutDir=false` | 0 | pdf.js 独立 chunk（451 KiB）+ worker 资源（1.3 MiB）+ `dist-r12/pdfjs/`（CMap/字体/WASM 3.6 MiB）均产出 |
+
+### 13.5 本轮结论
+
+- **FW-PREVIEW-001**：`PARTIAL`。第一阶段功能（图片/文本代码/PDF/视频/音频）已实现并通过自动化 + B 通道真实渲染走查；
+  **正式构建包上的原生验收（C 通道）与 Office 内嵌渲染未完成**，因此不得标 PASS。
+- **右键菜单关闭（R11 收尾）**：`PASS`（自动化 + B 通道真实事件）。
+- **刷新反馈（R12）**：`PASS`（自动化 + B 通道真实事件）。
+
+### 13.6 未执行 / 阻塞项（必须如实记录）
+
+| 项 | 状态 | 原因 |
+|---|---|---|
+| Windows 原生窗口验收（C 通道，真实安装包） | **BLOCKED** | 本轮未能从集成快照产出正式安装包：Rust 依赖编译在并行构建下崩溃（`STATUS_STACK_BUFFER_OVERRUN`，`image`/`windows` crate），且共享 `src-tauri/target` 被其他在途构建占用（`.cargo-lock` 拒绝访问）。 |
+| 正式构建 buildId / 安装包 / snapshotId | **未执行** | 同上；`npx vite build` 在 `dist/` 上还会被环境安全删除守卫拦截（`SAFE_DELETE_BULK_CONFIRM_REQUIRED`），本轮改用 `--outDir dist-r12` 验证打包。 |
+| 视频播放（真实编码） | **NOT EXECUTED** | 环境无 ffmpeg 与媒体样本，无法生成可播放视频夹具；仅自动化覆盖 token 生命周期与错误态。 |
+| 中文字形显示 | 环境限制 | 走查用的 headless Chromium 缺少中文字体，截图中汉字呈窄形占位；**布局/几何/交互结论有效，字形渲染需在原生 WebView2 复核**。 |

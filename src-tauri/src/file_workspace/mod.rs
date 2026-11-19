@@ -19,6 +19,7 @@ use std::fs;
 use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, AppResult};
@@ -1826,7 +1827,23 @@ pub struct FsTextPreview {
     pub path: String,
     pub size: u64,
     pub truncated: bool,
+    /// 实际解码口径：`UTF-8` / `UTF-8 BOM` / `UTF-16 LE` / `UTF-16 BE` / `UTF-8 (lossy)`。
+    /// 前端据此显示编码信息与乱码提示；旧前端忽略该字段仍可工作（兼容新增）。
+    pub encoding: String,
     pub content: String,
+}
+
+/// 原始字节只读预览（图片原图 / PDF）。上限由调用方给定并在核心层再次钳制；
+/// 超限时只返回前缀字节并置 `truncated=true`，绝不整文件读入内存。
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct FsBinaryPreview {
+    pub path: String,
+    pub size: u64,
+    pub truncated: bool,
+    pub mime: String,
+    /// 前缀字节的 base64；仅用于 WebView 侧构造 Blob（图片/SVG）或交给 pdf.js。
+    pub base64: String,
 }
 
 pub fn read_text_preview(path: &Path, max_bytes: usize) -> AppResult<FsTextPreview> {
@@ -1842,19 +1859,80 @@ pub fn read_text_preview(path: &Path, max_bytes: usize) -> AppResult<FsTextPrevi
         .take((cap + 1) as u64)
         .read_to_end(&mut buffer)
         .map_err(|e| AppError::Io(e))?;
-    if buffer.iter().any(|byte| *byte == 0) {
-        return Err(AppError::Validation("二进制文件不支持文本预览".into()));
-    }
     let truncated = buffer.len() > cap;
     if truncated {
         buffer.truncate(cap);
     }
-    // 非 UTF-8 文本按 lossy 展示；不假装是原始字节完全一致。
+    let (content, encoding) = decode_text_preview(&buffer)?;
     Ok(FsTextPreview {
         path: path.to_string_lossy().into_owned(),
         size: meta.len(),
         truncated,
-        content: String::from_utf8_lossy(&buffer).into_owned(),
+        encoding,
+        content,
+    })
+}
+
+/// 文本解码：BOM 优先（UTF-8 / UTF-16 LE / UTF-16 BE），其余按 UTF-8 校验。
+/// 无 BOM 且含 NUL 的按二进制拒绝——不把未知二进制造假成文本。
+fn decode_text_preview(buffer: &[u8]) -> AppResult<(String, String)> {
+    if let Some(body) = buffer.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
+        return Ok((String::from_utf8_lossy(body).into_owned(), "UTF-8 BOM".into()));
+    }
+    if let Some(body) = buffer.strip_prefix(&[0xFF, 0xFE]) {
+        let units: Vec<u16> = body
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+        return Ok((String::from_utf16_lossy(&units), "UTF-16 LE".into()));
+    }
+    if let Some(body) = buffer.strip_prefix(&[0xFE, 0xFF]) {
+        let units: Vec<u16> = body
+            .chunks_exact(2)
+            .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
+            .collect();
+        return Ok((String::from_utf16_lossy(&units), "UTF-16 BE".into()));
+    }
+    if buffer.contains(&0) {
+        return Err(AppError::Validation("二进制文件不支持文本预览".into()));
+    }
+    match std::str::from_utf8(buffer) {
+        Ok(text) => Ok((text.to_string(), "UTF-8".into())),
+        // 截断恰好切在多字节字符中间：只裁掉不完整尾巴，不把整份文件标成乱码。
+        Err(err) if err.error_len().is_none() => {
+            let valid = &buffer[..err.valid_up_to()];
+            Ok((String::from_utf8_lossy(valid).into_owned(), "UTF-8".into()))
+        }
+        Err(_) => Ok((String::from_utf8_lossy(buffer).into_owned(), "UTF-8 (lossy)".into())),
+    }
+}
+
+/// 原始字节只读预览：单次读取上限内字节并 base64 返回；不缓存、不落盘。
+pub fn read_binary_preview(path: &Path, max_bytes: usize) -> AppResult<FsBinaryPreview> {
+    use std::io::Read as _;
+    let meta = fs::metadata(path).map_err(|e| AppError::NotFound(format!("文件不可读: {e}")))?;
+    if !meta.is_file() {
+        return Err(AppError::Validation("仅支持预览单个文件".into()));
+    }
+    let cap = max_bytes.clamp(64 * 1024, 64 * 1024 * 1024);
+    // 预留容量不超过真实文件大小，避免为小文件按上限分配。
+    let reserve = usize::try_from(meta.len()).unwrap_or(cap).min(cap) + 1;
+    let mut file = fs::File::open(path).map_err(|e| AppError::Io(e))?;
+    let mut buffer = Vec::with_capacity(reserve);
+    file.by_ref()
+        .take((cap + 1) as u64)
+        .read_to_end(&mut buffer)
+        .map_err(|e| AppError::Io(e))?;
+    let truncated = buffer.len() > cap;
+    if truncated {
+        buffer.truncate(cap);
+    }
+    Ok(FsBinaryPreview {
+        path: path.to_string_lossy().into_owned(),
+        size: meta.len(),
+        truncated,
+        mime: preview::mime_for_path(path).to_string(),
+        base64: base64::engine::general_purpose::STANDARD.encode(&buffer),
     })
 }
 
@@ -3072,6 +3150,79 @@ mod tests {
         let (complete, _items, files) = measure(3);
         assert!(!complete);
         assert!(files < 5);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    // ── 预览（文本编码 / 原始字节）──────────────────────────────────────
+
+    #[test]
+    fn read_text_preview_reports_encoding() {
+        let root = temp_root("preview-encoding");
+        let plain = root.join("plain.txt");
+        fs::write(&plain, "hello 你好\n").unwrap();
+        let preview = read_text_preview(&plain, 64 * 1024).unwrap();
+        assert_eq!(preview.encoding, "UTF-8");
+        assert_eq!(preview.content, "hello 你好\n");
+        assert!(!preview.truncated);
+
+        let bom = root.join("bom.txt");
+        fs::write(&bom, [&[0xEF, 0xBB, 0xBF][..], "bom 文本".as_bytes()].concat()).unwrap();
+        let preview = read_text_preview(&bom, 64 * 1024).unwrap();
+        assert_eq!(preview.encoding, "UTF-8 BOM");
+        assert_eq!(preview.content, "bom 文本");
+
+        // UTF-16 LE（含 BOM）：以前会因 NUL 被误判为二进制，现在必须正确解码。
+        let wide = root.join("wide.txt");
+        let mut bytes = vec![0xFF, 0xFE];
+        for unit in "中文 UTF-16".encode_utf16() {
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+        fs::write(&wide, &bytes).unwrap();
+        let preview = read_text_preview(&wide, 64 * 1024).unwrap();
+        assert_eq!(preview.encoding, "UTF-16 LE");
+        assert_eq!(preview.content, "中文 UTF-16");
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn read_text_preview_rejects_binary_without_bom() {
+        let root = temp_root("preview-binary");
+        let bin = root.join("blob.bin");
+        fs::write(&bin, [0u8, 1, 2, 3, 0, 255]).unwrap();
+        let err = read_text_preview(&bin, 64 * 1024).unwrap_err();
+        assert!(format!("{err:?}").contains("二进制"));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn read_text_preview_truncates_at_character_boundary() {
+        let root = temp_root("preview-truncate");
+        let text = root.join("long.txt");
+        // 3 字节汉字重复，确保截断点落在字符中间。
+        fs::write(&text, "汉".repeat(20_000)).unwrap();
+        let preview = read_text_preview(&text, 16 * 1024).unwrap();
+        assert!(preview.truncated);
+        assert_eq!(preview.encoding, "UTF-8");
+        assert!(!preview.content.ends_with('\u{FFFD}'));
+        assert!(preview.content.chars().count() >= 5_000);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn read_binary_preview_caps_and_reports_mime() {
+        let root = temp_root("preview-binary-cap");
+        let pdf = root.join("sample.pdf");
+        fs::write(&pdf, vec![0xABu8; 100 * 1024]).unwrap();
+        let preview = read_binary_preview(&pdf, 64 * 1024).unwrap();
+        assert!(preview.truncated);
+        assert_eq!(preview.size, 100 * 1024);
+        assert_eq!(preview.mime, "application/pdf");
+        // base64 解码后必须正好是上限字节（只读前缀，不整读）。
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(preview.base64.as_bytes())
+            .unwrap();
+        assert_eq!(decoded.len(), 64 * 1024);
         fs::remove_dir_all(&root).unwrap();
     }
 

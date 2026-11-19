@@ -802,3 +802,156 @@ Vitest 46 文件 / 481 用例通过；`npm run typecheck` exit 0。Windows 原�
 |---|---|
 | 2026-11-19 | R10 实现：FolderTab.openedPath、tabTitle 取起始目录、纯函数 duplicateTab 深拷贝、Store action 改名 duplicateTabInPane、splitPane 完整会话复制、closeEmptyPane/closeAllEmptyPanes、remapTabPaths、PersistedTab 可选会话字段、空窗格 UI 框架与关闭入口、搜索框单层焦点/筛选栏收紧/表头契约、Tooltip 两行；无新 Store/IPC/迁移 |
 | 2026-11-19 | R11 修复：`.fw-body-empty` 接入 `onBodyContextMenu`，真实空目录/搜索无结果不再落到 WebView2 原生右键菜单；四种右键边界（条目/列表空白/空目录/空窗格）固化测试；新增 6 例，文件工作区 46/481，tsc 0；无新 Store/IPC/迁移 |
+
+---
+
+## 14. R12 文件内容预览与刷新反馈架构（2026-11-19，方案冻结）
+
+### 14.1 第一阶段预览支持矩阵（唯一口径）
+
+| kind | 扩展名 | 数据来源 | 渲染方式 | 失败回退 |
+|---|---|---|---|---|
+| image | png jpg jpeg webp gif bmp **svg** avif ico tif tiff | `fs_read_binary`（原始字节 → Blob URL） | `<img>`，2D/contain/缩放/双击 | `<img>` 解码失败或超限 → `fs_preview_image`（Windows Shell 解码为 PNG）→ 仍失败则错误态 + 「用默认程序打开」 |
+| text/code | txt md markdown json csv log yaml yml toml xml html css js ts jsx tsx py rs sql ini cfg conf sh bat ps1 c cpp h java go | `fs_read_text`（≤2 MiB，默认 512 KiB） | 等宽字体 + 行号 + 轻量高亮（React 文本节点，无 innerHTML） | 二进制/超限/编码异常 → 错误或截断提示，保留文件名与错误信息 |
+| pdf | pdf | `fs_read_binary`（≤64 MiB） | pdfjs-dist 本地渲染当前页 canvas（逐页，不整本渲染） | 超限/损坏/加密 → 错误态 + 「用默认程序打开」 |
+| video | mp4 webm mov m4v mkv avi | `fs_preview_media_url`（短期 token + Range） | `<video controls>` | 编码不支持 → `onError` 错误态 |
+| audio | mp3 wav flac m4a aac ogg oga | `fs_preview_media_url` | `<audio>` + 自定义控制条（播放/进度/音量/时长） | 同上 |
+| unsupported | docx xlsx pptx doc xls ppt 及其他二进制 | 不读取内容 | 明确「暂不支持内嵌预览」+ 外部打开入口 | 不得把二进制丢给 `fs_read_text` |
+
+格式识别唯一入口：`src/components/files/preview/previewKind.ts`
+（`getPreviewKind(entry)` / `isPreviewSupported(entry)` / `getPreviewSizeLimit(kind)` / `previewLanguage(ext)`）。
+组件内禁止再维护扩展名白名单。
+
+### 14.2 组件职责（不新建第二套预览系统）
+
+| 文件 | 职责 |
+|---|---|
+| `QuickPreviewDialog.tsx` | 唯一容器：请求 → 当前索引 → 异步代际控制 → 键盘 → 生命周期；不含各类型渲染细节 |
+| `preview/previewKind.ts` | 纯函数：kind 判定、文本语言标签、大小上限、MIME |
+| `preview/FileImagePreview.tsx` | 原始字节 Blob / Shell 回退、缩放/适应/双击、错误态 |
+| `preview/FileTextPreview.tsx` | 编码/截断/语言信息、行号高亮、复制内容 |
+| `preview/FilePdfPreview.tsx` | pdf.js 动态加载、单页渲染、翻页/缩放/适应、进度与错误 |
+| `preview/FileVideoPreview.tsx` | 视频播放与错误反馈（沿用 token URL） |
+| `preview/FileAudioPreview.tsx` | 自定义音频控制条（play/pause、seek、volume、时长） |
+
+`QuickPreviewDialog` 仍是唯一入口；容器统一头部（文件名/类型/大小）与底部（上一个/下一个/序号/
+缩放/适应/默认程序打开/关闭）。媒体 token 生命周期仍由 `createPreviewTokenTracker` +
+`fsReleasePreviewUrl` 管理，不新增第二套释放机制。
+
+### 14.3 IPC 变更（只增不改语义）
+
+| 命令 | 变更 | 边界 |
+|---|---|---|
+| `fs_read_binary` | **新增**：返回 `{ path, size, truncated, mime, base64 }` | 复用 `validate_abs_path` + `ensure_not_protected`；默认上限 32 MiB、最大 64 MiB；只读；超限返回 `truncated=true` 且只含前缀字节，由前端决定「不支持内嵌预览」 |
+| `fs_read_text` | 返回结构**新增** `encoding` 字段（`UTF-8` / `UTF-8 BOM` / `UTF-16 LE` / `UTF-16 BE` / `UTF-8 (lossy)`） | 兼容新增；BOM 文本按 UTF-16 正确解码，不再误判为二进制；上限与二进制拒绝语义不变 |
+| `fs_preview_image` | 行为保持：Shell 解码为 PNG data URL | 仅作为图片解码回退；SVG 由原始字节路径渲染，不进 innerHTML |
+
+SVG 安全：SVG 只以 `Blob(image/svg+xml)` 喂给 `<img>`；不在 DOM 注入 SVG 源码，不使用
+`dangerouslySetInnerHTML`；SVG 大小上限 8 MiB（原始字节路径）。
+
+### 14.4 PDF 技术路线（冻结）
+
+- 依赖：`pdfjs-dist@6.5.438`（本地 npm 依赖，随 Vite 打包；**禁止 CDN / 禁止上传**）。
+- 加载：`FilePdfPreview` 内 `import("pdfjs-dist")` 动态加载（独立 chunk，不增加首屏体积）；
+  worker 用 `import("pdfjs-dist/build/pdf.worker.min.mjs?url")` 交给 Vite 生成本地资源 URL；
+  `GlobalWorkerOptions.workerSrc` 指向该 URL。
+- 数据：`fs_read_binary(path, 64 MiB)` → base64 → `Uint8Array` → `getDocument({ data })`；
+  不使用自定义协议跨域 fetch，不扩大 asset 协议范围。
+- 渲染：只渲染当前页；`page.render({ canvas, viewport })`；页面切换/关闭时 `renderTask.cancel()`，
+  `pdf.destroy()` 释放文档与 worker 资源；加载进度用 `loadingTask.onProgress`。
+- 超限/损坏/加密：错误态 + 外部打开入口；不逐页预渲染，不做编辑器能力。
+
+### 14.5 异步竞态与资源释放
+
+1. **代际控制**：容器持有 `requestSeqRef`；每次文件切换/关闭递增。晚到结果先比对代际，
+   不一致则丢弃；媒体 token 在丢弃分支立即 `release`（既有行为保留）。
+2. **图片**：Blob URL 在切换/关闭/卸载时 `URL.revokeObjectURL`；同一 URL 只吊销一次
+   （`createObjectUrlTracker`，语义同媒体 tracker）；SVG/大图上限见 14.3。
+3. **文本**：只保留当前文件内容，切换即覆盖；无外部资源。
+4. **PDF**：`pdf.destroy()` / `loadingTask.destroy()` 幂等；关闭后不再 `setState`。
+5. **音频/视频**：沿用媒体 token tracker；切换/关闭/卸载释放一次，不重复 IPC。
+6. **预览关闭**：`request=null` 时释放全部资源并清空内容态；文件选择状态由 FilePane 独立持有，
+   不受预览影响。
+
+### 14.6 刷新反馈（R12）
+
+- 唯一入口：`dirCache.refreshDir(path, showHidden): Promise<boolean>`。
+  - 同一 `path+showHidden` 的并发刷新**合并为同一个 Promise**，连续点击不产生额外 IPC；
+  - 请求序号（`reqSeq`）裁决乱序响应，旧响应不能覆盖新目录结果（既有机制保留）；
+  - 刷新失败时**保留上一次成功列表**，只写 `error`；首次加载失败才显示整块错误态；
+  - `invalidateDirs`（文件操作后）内部复用 `refreshDir`。
+- UI（FilePane）：
+  - 工具栏刷新按钮读取 `dirState.loading` 显示旋转与 `aria-busy`；
+  - 刷新期间保留旧列表，不闪空态；
+  - 用户手动刷新成功后状态条短暂显示「已更新」，失败显示可重试的行内错误条（不打断列表）；
+  - 右键菜单刷新、分页停滞重试、目录错误重试与工具栏共用同一刷新函数。
+
+### 14.7 右键菜单关闭生命周期（R12 收尾）
+
+- 不重复实现关闭机制：`DropdownMenu → Popover` 已提供
+  `pointerdown`（捕获阶段）外部点击关闭、`scroll` 外部关闭、`window blur` 关闭、
+  `useOverlayLayer` Escape 单层关闭，卸载时自动移除监听。
+- `FilePane.FreeMenu` 增加位置 `key`（`x:y`）：连续右键不同位置时重建菜单实例，
+  同一时刻只存在一个 `role="menu"`，且在新位置展开。
+- 补测试锁定：外部点击 / Escape / 菜单项执行后关闭 / 重新打开 / 连续右键唯一实例 /
+  卸载无残留 / 菜单内部 pointerdown 不误关。
+
+### 14.8 兼容性与性能
+
+- `FsTextPreview` 新增 `encoding` 为兼容性新增字段；旧前端忽略该字段仍可工作。
+- `fs_read_binary` 只读、上限 64 MiB、不落盘、不缓存；关闭预览即释放引用。
+- 图片/PDF 均不进入缩略图 LRU 缓存；PDF 单页 canvas 尺寸受容器与最大缩放约束。
+- 不改变现有虚拟列表、多窗格、标签、拖拽、dirCache 轮询与缓存机制。
+
+### 14.9 验证口径
+
+- 单元/组件：`QuickPreviewDialog.test.tsx`（token 生命周期）、`QuickPreviewDialog.preview.test.tsx`
+  （类型/错误/切换/竞态/PDF 渲染链路/50 次切换）、`dirCache.refresh.test.ts`、
+  `FilePane.refresh.test.tsx`、`FilePane.contextMenuClose.test.tsx`。
+- 回归：文件工作区全量 Vitest、`npm run typecheck`；Rust `cargo test file_workspace::`。
+- 真实交互：B 通道预览 harness（含 PDF/图片/文本夹具）+ C 通道隔离实例（截图与日志）；
+  正式包只从集成快照构建。
+
+### 14.10 实际实现清单（2026-11-19 R12 落地）
+
+| 文件 | 职责 | 关键约束 |
+|---|---|---|
+| `src/components/files/preview/previewKind.ts` | 唯一格式判定：`getPreviewKind / isPreviewSupported / getPreviewSizeLimit / previewLanguage / extOf / isCodeLike` | 扩展名优先、category 兜底；`doc/sheet/slide/archive/program` 不做文本读取 |
+| `src/components/files/preview/mediaToken.ts` | 媒体 token 跟踪器、Blob URL 跟踪器、`base64ToBytes` | 媒体 URL 恰好释放一次；Blob URL 同一对象只吊销一次 |
+| `src/components/files/preview/useMediaPreviewUrl.ts` | 音视频 URL 获取 + 生命周期（video/audio 共用） | 关闭后才返回的 URL 先登记再立即释放 |
+| `src/components/files/preview/FileImagePreview.tsx` | 原始字节 → Blob URL；Shell 解码回退；适应/缩放/1:1/双击 | SVG 只作为 `<img>` 资源；大图（>24 MiB）直接走 Shell，避免整文件入内存 |
+| `src/components/files/preview/FileTextPreview.tsx` | 编码/语言/行数/截断提示、行号 + 轻量高亮、复制内容 | 无 `dangerouslySetInnerHTML`；>160k 字符关闭高亮；读取失败保留文件名与错误 |
+| `src/components/files/preview/FilePdfPreview.tsx` | pdf.js 动态加载、单页 canvas、翻页/适应宽度/适应页面/缩放 | 只渲染当前页；切页/卸载取消 `renderTask`；`loadingTask.destroy()` 释放文档与 worker |
+| `src/components/files/preview/FileVideoPreview.tsx` | 原生 `<video controls>` + 错误/加载态 | 编码不支持 → 错误态 + 外部打开 |
+| `src/components/files/preview/FileAudioPreview.tsx` | 自定义控制条：播放/暂停、进度、时长、音量、静音 | `<audio controls>` 不直接展示（`display:none`） |
+| `src/components/files/preview/PreviewState.tsx` | 加载/错误/不支持三种统一占位 | 错误态带可操作指引与重试 |
+| `src/components/files/QuickPreviewDialog.tsx` | 唯一容器：索引、头部元信息、footer 导航、键盘、代际 | 只做编排，不含渲染细节；`key=path` 保证切换不闪旧内容 |
+
+### 14.11 PDF 静态资源本地化（禁止 CDN）
+
+- `pdfjs-dist@6.5.438` 的 worker 通过 `import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url"`
+  交给 Vite 生成本地资源 URL，`GlobalWorkerOptions.workerSrc` 指向它（独立 chunk，不进首屏）。
+- CMap / 标准字体 / WASM 编解码器由 `scripts/pdfjs-assets.mjs` 从依赖复制到 `public/pdfjs/`
+  （`cmaps/`、`standard_fonts/`、`wasm/`，约 3.6 MiB，带版本戳，版本未变直接跳过）；
+  该函数在 `vite.config.ts` 配置求值时调用，dev 与 build 走同一路径，产物落 `dist/pdfjs/`。
+- `getDocument({ data, cMapUrl: "/pdfjs/cmaps/", cMapPacked: true,
+  standardFontDataUrl: "/pdfjs/standard_fonts/", wasmUrl: "/pdfjs/wasm/", useSystemFonts: true })`。
+- 生成目录已加入 `.gitignore`（`public/pdfjs/`），不把依赖产物入库；
+  离线/内网环境同样可用，因为资源随包发布。
+
+### 14.12 控制条布局决策（与 §4.1 的偏差说明）
+
+对话主导航（上一个/序号/下一个）、外部打开、关闭固定在 Dialog footer；**缩放与翻页控制**
+放在内容区底部的统一 `fw-preview-hud`（图片）与 PDF 顶部工具条（翻页 + 适应宽度/适应页面 + 缩放）。
+原因：PDF 需要「页码 + 两种适应模式」而图片需要「适应/1:1/百分比」，二者控件集不同；
+强行挤进同一 footer 会造成窄窗口换行与按钮挤压（§7 第 8-10 条）。视觉语言（圆角胶囊、
+同尺寸图标按钮、同色 token）保持统一，窄窗口下工具条可换行。
+
+### 14.13 刷新入口最终签名
+
+`refreshDir(path: string, showHidden: boolean, force = false): Promise<boolean>`
+
+- 默认（用户点击）：同键并发合并为同一 Promise，连续点击不产生额外 IPC；
+- `force=true`（`invalidateDirs`，文件操作后）：不复用正在进行的手动刷新，保证拿到操作后内容；
+- 两种模式都递增 `reqSeq`，旧响应晚到一律丢弃；
+- 返回 `true/false`；被更新请求取代时返回 `false`，调用方不得据此显示错误。

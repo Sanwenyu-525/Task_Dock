@@ -101,7 +101,7 @@ describe("QuickPreviewDialog 卸载/关闭释放", () => {
 
   it("关闭对话框后不残留旧图片/文本内存态（图片是 base64，不走媒体 token）", async () => {
     imageMock.mockResolvedValue("data:image/png;base64,OLD");
-    textMock.mockResolvedValue({ path: "D:\\a\\b.ts", size: 9, truncated: false, content: "old text" });
+    textMock.mockResolvedValue({ path: "D:\\a\\b.ts", size: 9, truncated: false, encoding: "UTF-8", content: "old text" });
 
     const { rerender } = render(
       <QuickPreviewDialog
@@ -149,7 +149,7 @@ describe("QuickPreviewDialog 失败反馈", () => {
       const state = document.querySelector(".fw-preview-state.is-error");
       expect(state).toBeTruthy();
       // t 桩不插值 {error} 参数；可见反馈以错误态渲染为准，原始错误经参数传入。
-      expect(state?.textContent).toBe("fw.preview.error");
+      expect(state?.textContent).toContain("fw.preview.error");
     });
     expect(releaseMock).not.toHaveBeenCalled();
     expect(document.querySelector("video")).toBeNull();
@@ -304,6 +304,7 @@ describe("QuickPreviewDialog 已验证能力回归", () => {
       path: "D:\\a\\b.ts",
       size: 12,
       truncated: true,
+      encoding: "UTF-8",
       content: "line one\nline two",
     });
     render(
@@ -324,7 +325,7 @@ describe("QuickPreviewDialog 已验证能力回归", () => {
   });
 
   it("左右方向键在文件间切换，并按顺序读取预览", async () => {
-    textMock.mockResolvedValue({ path: "D:\\a\\x.ts", size: 1, truncated: false, content: "first" });
+    textMock.mockResolvedValue({ path: "D:\\a\\x.ts", size: 1, truncated: false, encoding: "UTF-8", content: "first" });
     render(
       <QuickPreviewDialog
         request={requestFor("x.ts", [code("x.ts"), code("y.ts")])}

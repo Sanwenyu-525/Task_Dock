@@ -1842,6 +1842,7 @@ pub fn run() {
             commands::file_workspace::fs_preview_image,
             commands::file_workspace::fs_read_text,
             commands::file_workspace::fs_preview_media_url,
+            commands::file_workspace::fs_read_binary,
             commands::file_workspace::fs_release_preview_url,
             commands::file_workspace::fs_copy_paths,
             commands::file_workspace::fs_move_paths,
