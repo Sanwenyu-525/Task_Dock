@@ -53,9 +53,7 @@ import {
 
 import DropdownMenu from "../ui/DropdownMenu";
 import { ConfirmDialog, Dialog } from "../ui/Dialog";
-import PointerMenu from "../ui/PointerMenu";
 import Popover from "../ui/Popover";
-import { centerPopupInViewport } from "../ui/positioning";
 import "./files.css";
 import { useLocale } from "../../hooks/useLocale";
 import { errorMessage } from "../../lib/errors";
@@ -232,8 +230,12 @@ export function drawerCenterOverride(
   size: { width: number; height: number } = { width: 280, height: 320 },
 ): { left: number; top: number } | null {
   if (!open || anchor !== null) return null;
-  // 居中与四边夹取统一走定位核心，业务不再自己写 min/max。
-  return centerPopupInViewport(size, viewport);
+  const maxLeft = Math.max(8, viewport.width - size.width - 8);
+  const maxTop = Math.max(8, viewport.height - size.height - 8);
+  return {
+    left: Math.min(maxLeft, Math.max(8, Math.round((viewport.width - size.width) / 2))),
+    top: Math.min(maxTop, Math.max(8, Math.round((viewport.height - size.height) / 2))),
+  };
 }
 
 /**
@@ -442,6 +444,12 @@ export function SplitWithDivider({
   const firstStyle = horizontal
     ? { width: `calc(${bounds.value * 100}% - 8px)` }
     : { height: `calc(${bounds.value * 100}% - 8px)` };
+  const menuPosition = ratioMenu
+    ? {
+        left: Math.min(ratioMenu.x, Math.max(8, window.innerWidth - 176)),
+        top: Math.min(ratioMenu.y, Math.max(8, window.innerHeight - 210)),
+      }
+    : null;
 
   return (
     <div ref={ref} className={`fw-split fw-split-${node.direction}`}>
@@ -515,32 +523,27 @@ export function SplitWithDivider({
           {ratioHint && <span className="fw-divider-ratio">{ratioHint}</span>}
         </span>
       </div>
-         {ratioMenu && (
-          <PointerMenu
-            open
-            x={ratioMenu.x}
-            y={ratioMenu.y}
-            label={t("fw.divider.ratioMenu")}
-            onClose={() => setRatioMenu(null)}
-            className="fw-divider-menu"
-            minWidth={168}
-            // 焦点必须留在分割线：方向键继续调比例、Enter 复位、Escape 关闭菜单，
-            // 因此这里不抢焦点、不循环 Tab（业务特例，见定位规范 §11）。
-            trapFocus={false}
-          >
-            {[0.25, 1 / 3, 0.5, 2 / 3, 0.75].map((ratio) => (
-              <button
-                key={ratio}
-                type="button"
-                role="menuitem"
-                onClick={() => applyRatio(ratio)}
-                className={Math.abs(node.ratio - ratio) < 0.005 ? "is-current" : ""}
-              >
-                {Math.round(ratio * 100)} : {Math.round((1 - ratio) * 100)}
-              </button>
-            ))}
-          </PointerMenu>
-        )}
+         {ratioMenu && menuPosition && (
+        <div
+          className="fw-divider-menu"
+          role="menu"
+          aria-label={t("fw.divider.ratioMenu")}
+          style={{ left: menuPosition.left, top: menuPosition.top }}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          {[0.25, 1 / 3, 0.5, 2 / 3, 0.75].map((ratio) => (
+            <button
+              key={ratio}
+              type="button"
+              role="menuitem"
+              onClick={() => applyRatio(ratio)}
+              className={Math.abs(node.ratio - ratio) < 0.005 ? "is-current" : ""}
+            >
+              {Math.round(ratio * 100)} : {Math.round((1 - ratio) * 100)}
+            </button>
+          ))}
+        </div>
+      )}
       <div className="fw-split-child fw-split-child-second">
         <SplitRender
           node={node.second}
