@@ -701,6 +701,27 @@ describe("remapTabPaths 路径映射", () => {
     expect(state().remapTabPaths("D:\\Projects\\A", "D:\\New")).toBe(0);
     expect(state().remapTabPaths("", "D:\\x")).toBe(0);
   });
+
+  it("remapTabPathsBatch：一次更新多项，父子同时移动时子项优先不被父级覆盖", () => {
+    const pane = state().activePaneId;
+    state().openInPane(pane, "D:\\Root\\Parent\\Child", "newTab");
+    const before = state().snapshot().stateData.panes[0].tabs[0];
+
+    const affected = state().remapTabPathsBatch([
+      { from: "D:\\Root\\Parent", to: "D:\\Moved\\Parent" },
+      { from: "D:\\Root\\Parent\\Child", to: "D:\\Moved\\Child" },
+    ]);
+
+    const tab = state().snapshot().stateData.panes[0].tabs[0];
+    // 子项自己的映射优先（按 from 长度降序），不会被父级映射二次改写。
+    expect(tab.path).toBe("D:\\Moved\\Child");
+    expect(tab.openedPath).toBe("D:\\Moved\\Child");
+    expect(affected).toBe(1);
+    expect(tab.tabId).toBe(before.tabId);
+    // 空映射/重复 from 不产生额外影响。
+    expect(state().remapTabPathsBatch([])).toBe(0);
+    expect(state().remapTabPathsBatch([{ from: "", to: "D:\\x" }])).toBe(0);
+  });
 });
 
 // ── 会话字段持久化与迁移 ────────────────────────────────────────────────

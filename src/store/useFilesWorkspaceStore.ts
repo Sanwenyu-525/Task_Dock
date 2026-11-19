@@ -324,6 +324,11 @@ export interface FilesWorkspaceActions {
    * 同步为新路径（精确匹配 + 子路径 + Windows 大小写不敏感）。返回受影响标签数。
    */
   remapTabPaths: (oldPath: string, newPath: string) => number;
+  /**
+   * 批量路径映射（目录移动一次可能涉及多项）：一次状态更新 + 一次持久化，
+   * 避免循环调用 remapTabPaths 触发多次全量落盘。返回受影响标签数。
+   */
+  remapTabPathsBatch: (mappings: ReadonlyArray<{ from: string; to: string }>) => number;
   /** 与相邻窗格交换位置（保持标签）。 */
   swapPane: (paneId: string) => void;
   /** 任意两区域位置互换（布局编辑模式：拖动区域 A 到区域 B 中心）。 */
@@ -1089,15 +1094,28 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
       return closing.length;
     },
 
-    remapTabPaths: (oldPath, newPath) => {
-      const oldP = normalizePath(oldPath);
-      const newP = normalizePath(newPath);
-      if (!oldP || !newP) return 0;
+    remapTabPaths: (oldPath, newPath) => get().remapTabPathsBatch([{ from: oldPath, to: newPath }]),
+
+    remapTabPathsBatch: (mappings) => {
+      // 预归一化并剔除空映射；同一个 from 只保留最后一个（后写入的移动结果为准）。
+      const normalized = new Map<string, string>();
+      for (const m of mappings) {
+        const from = normalizePath(m.from);
+        const to = normalizePath(m.to);
+        if (from && to) normalized.set(from.toLowerCase(), to);
+      }
+      if (normalized.size === 0) return 0;
+      const entries = [...normalized.entries()];
+      // 按 from 长度降序：父目录先映射会让子路径也命中同一条，导致子项的真实新路径
+      // 被父级映射覆盖；从最具体的子路径开始匹配，已被映射过的路径不再二次改写。
+      entries.sort((a, b) => b[0].length - a[0].length);
       // 精确匹配用 samePath（大小写不敏感）；子路径用 isSubPath（自带分量边界，
       // D:\Projects\A 不会误匹配 D:\Projects\AB）；后缀沿用原路径大小写。
       const mapPath = (p: string): string => {
-        if (samePath(p, oldP)) return newP;
-        if (isSubPath(oldP, p)) return newP + p.slice(oldP.length);
+        for (const [fromLower, to] of entries) {
+          if (p.toLowerCase() === fromLower) return to;
+          if (isSubPath(fromLower, p)) return to + p.slice(fromLower.length);
+        }
         return p;
       };
       const s = get();

@@ -22,6 +22,7 @@ import {
   ArrowUp,
   ChevronDown,
   ChevronRight,
+  Check,
   GripVertical,
   List as ListIcon,
   LayoutGrid,
@@ -47,6 +48,7 @@ import {
 } from "lucide-react";
 
 import DropdownMenu from "../ui/DropdownMenu";
+import PointerMenu from "../ui/PointerMenu";
 import { ConfirmDialog, Dialog } from "../ui/Dialog";
 import FileList from "./FileList";
 import { useLocale } from "../../hooks/useLocale";
@@ -146,7 +148,7 @@ interface PendingOp {
   path?: string;
 }
 
-/** 自由定位菜单：复用 DropdownMenu 基元，用零尺寸固定定位触发器自动展开。 */
+/** 自由定位菜单：指针坐标经 PointerMenu 统一收敛，视觉复用 DropdownMenu 的菜单词汇。 */
 function FreeMenu({
   x,
   y,
@@ -169,47 +171,40 @@ function FreeMenu({
   menuLabel: string;
   onClose: () => void;
 }) {
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const fired = useRef(false);
-  useEffect(() => {
-    if (fired.current) return;
-    fired.current = true;
-    triggerRef.current?.click();
-  }, []);
-  const anchorStyle: React.CSSProperties = {
-    position: "fixed",
-    left: x,
-    top: y,
-    width: 0,
-    height: 0,
-    opacity: 0,
-    pointerEvents: "none",
-    border: 0,
-    padding: 0,
-  };
+  const firstEnabled = items.findIndex((item) => !item.disabled);
   return (
-    <DropdownMenu
-      menuLabel={menuLabel}
-      placement="bottom-start"
-      trigger={({ ref, onClick, onKeyDown }) => (
+    <PointerMenu open x={x} y={y} label={menuLabel} onClose={onClose} className="ui-menu">
+      {items.map((item, index) => (
         <button
-          ref={(el) => {
-            triggerRef.current = el;
-            if (typeof ref === "function") ref(el);
-          }}
+          key={item.key}
           type="button"
-          aria-hidden="true"
-          tabIndex={-1}
-          style={anchorStyle}
-          onClick={onClick}
-          onKeyDown={onKeyDown}
-        />
-      )}
-      items={items}
-      onOpenChange={(open) => {
-        if (!open) onClose();
-      }}
-    />
+          role={item.radio ? "menuitemradio" : "menuitem"}
+          aria-checked={item.radio ? !!item.checked : undefined}
+          /* 原生 disabled 按钮在部分 AT 下不播报禁用原因；显式暴露 aria-disabled，
+             与 DropdownMenu 的菜单项语义保持一致。 */
+          aria-disabled={item.disabled || undefined}
+          className={`ui-menu-item ${item.checked ? "is-checked" : ""} ${item.danger ? "is-danger" : ""} ${
+            item.disabled ? "is-disabled" : ""
+          }`}
+          disabled={item.disabled}
+          {...(index === firstEnabled ? { "data-autofocus": true } : {})}
+          onClick={() => {
+            onClose();
+            item.onSelect?.();
+          }}
+        >
+          {item.icon ? <span className="ui-menu-icon">{item.icon}</span> : null}
+          <span className="ui-menu-text">
+            <span className="ui-menu-label">{item.label}</span>
+          </span>
+          {item.radio ? (
+            <span className="ui-menu-trailing" aria-hidden="true">
+              {item.checked ? <Check size={14} strokeWidth={2.5} /> : null}
+            </span>
+          ) : null}
+        </button>
+      ))}
+    </PointerMenu>
   );
 }
 
