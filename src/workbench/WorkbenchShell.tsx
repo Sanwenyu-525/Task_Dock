@@ -99,6 +99,8 @@ import { useTransferStore } from "../store/useTransferStore";
 import TransferPanel from "../components/transfer/TransferPanel";
 import TransferDrawer from "../components/transfer/TransferDrawer";
 import { updateContext } from "../lib/crossTab/transferClient";
+import { resolvePanelMode } from "../lib/crossTab/panelState";
+import { initializeCrossTabModules, disposeCrossTabModules } from "../lib/crossTab/initialize";
 import { useFilesWorkspaceStore } from "../store/useFilesWorkspaceStore";
 import { useHotkeysRuntime } from "../store/useHotkeysStore";
 import { useGlobalSearchStore } from "../store/useGlobalSearchStore";
@@ -1639,10 +1641,50 @@ export default function WorkbenchShell() {
 
   const trayOpen = useTransferStore((s) => s.panel.visible);
   const trayWidth = useTransferStore((s) => s.panel.width);
-  const trayDockVisible = trayOpen && !compact;
+  const trayPinned = useTransferStore((s) => s.panel.pinned);
+  const panelMode = useTransferStore((s) => s.panelMode);
+  // 固定列与抽屉互斥：只有「固定 + 容器够宽 + 非窄窗」才是固定列。
+  // TransferDrawer 在同一次渲染里按同一个 mode 判断，绝不会两个实例同时挂载。
+  const trayDockVisible = trayOpen && panelMode === "dock";
   const contextVisible = detailOpen && !compact && !trayDockVisible;
 
-  // 当前模块 / 文件目录写入跨窗口上下文：只用于推荐目标，绝不据此自动写入。
+  // 形态只由实测容器宽度决定（不读 window.innerWidth）：项目已有窗口档位负责
+  // 「窗口 chrome」，这里量的是工作台真实内容容器，侧栏/详情栏宽度变化也算进去。
+  useEffect(() => {
+    const node = rootRef.current;
+    const apply = (measured: number) => {
+      // 窄窗档位（<1100）优先：此时三栏会把主内容挤到不可用，直接按抽屉处理。
+      const available = compact ? 0 : measured;
+      const mode = resolvePanelMode({
+        host: "workbench",
+        pinned: trayPinned,
+        availableWidth: available,
+      });
+      useTransferStore.getState().setPanelMode(mode);
+    };
+    if (!node || typeof ResizeObserver === "undefined") {
+      apply(window.innerWidth);
+      return;
+    }
+    const measure = () => {
+      const width = node.getBoundingClientRect().width;
+      if (width > 0) apply(width);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [compact, trayPinned]);
+
+  // 跨 Tab 模块注册（动作表 / 事件总线）在本窗口启动时装一次；两个窗口的 JS
+  // 模块状态互相隔离，所以主窗口与完整工作台都必须执行。注册本身幂等。
+  useEffect(() => {
+    initializeCrossTabModules();
+    return () => disposeCrossTabModules();
+  }, []);
+
+  // 当前模块 / 项目 / 文件目录写入跨窗口上下文：只用于推荐目标，绝不据此自动写入。
+  // 上下文按窗口隔离（Rust 侧按窗口 label 各存一份），两个窗口不会互相覆盖。
   useEffect(() => {
     const pane = useFilesWorkspaceStore.getState();
     const current = pane.panes[pane.activePaneId];
@@ -1650,10 +1692,14 @@ export default function WorkbenchShell() {
       route === "files"
         ? current?.tabs.find((tab) => tab.tabId === current.activeTabId)?.path ?? ""
         : "";
-    void updateContext({ module: route, directory }).catch(() => {
-      // 上下文是增强能力：后端暂不可用时不影响主流程。
+    void updateContext({
+      module: route,
+      directory,
+      projectId: selectedId ?? "",
+    }).catch(() => {
+      // 上下文是增强能力：后端暂不可用时不阻断主导航。
     });
-  }, [route]);
+  }, [route, selectedId]);
 
   // 页面级详情栏宿主：右栏关闭或窄窗降级时节点卸载，ref 回调自动回到 null，
   // 页面据此不再投送详情（不需要每页各写一遍 detailOpen 判断）。用 state 而不是
@@ -1741,6 +1787,10 @@ export default function WorkbenchShell() {
 
   const toggleContext = useCallback(() => {
     const next = !detailOpen;
+    // 右侧只有一个栏位：打开详情就收起固定列工作篮，避免两个右侧栏同时挤压主内容。
+    if (next && useTransferStore.getState().panelMode === "dock") {
+      useTransferStore.getState().closePanel();
+    }
     setDetailOpen(next);
     void setWorkbenchDetailOpen(next).catch((e) =>
       toastErrorRef.current("workbench.layoutSaveFailed", e),
@@ -2642,8 +2692,8 @@ export default function WorkbenchShell() {
           </WorkbenchDetailHostProvider>
         </div>
 
-        {/* 窄窗 / 主窗口统一抽屉形态：覆盖而非挤压主内容。 */}
-        <TransferDrawer />
+        {/* 窄窗 / 未固定工作台统一抽屉形态：覆盖而非挤压主内容。 */}
+        <TransferDrawer host="workbench" />
 
         <footer className="wb-statusbar" role="contentinfo">
           {agentSessionCount !== null && (

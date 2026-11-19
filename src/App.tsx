@@ -25,6 +25,7 @@ import MobilePairingDialog from "./components/mobile/MobilePairingDialog";
 import OnboardingOverlay from "./components/onboarding/OnboardingOverlay";
 import ClipboardDrawer from "./components/clipboard/ClipboardDrawer";
 import TransferDrawer from "./components/transfer/TransferDrawer";
+import { initializeCrossTabModules, disposeCrossTabModules } from "./lib/crossTab/initialize";
 import TaskContextDrawer from "./components/context/TaskContextDrawer";
 import Toast from "./components/Toast";
 import TooltipLayer from "./components/ui/TooltipLayer";
@@ -142,6 +143,13 @@ export default function App() {
   useEffect(() => {
     if (!capsuleMode) measureTitlebarHeight();
   }, [capsuleMode]);
+
+  // 跨 Tab 动作表 / 事件总线：不同 WebView 的 JS 模块状态互相隔离，
+  // 主窗口也必须各自完成注册，否则工作篮里的「创建任务」等动作在这里不可用。
+  useEffect(() => {
+    initializeCrossTabModules();
+    return () => disposeCrossTabModules();
+  }, []);
 
   // 启动显示门：后端在「上次退出为停靠态」时先把窗口裁成 1×1 空白区域再 show，
   // 避免先露出完整主窗口再缩成胶囊。停靠恢复由 `useEdgeSnap` 在区域生效后放行；

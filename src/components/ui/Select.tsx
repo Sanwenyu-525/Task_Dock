@@ -39,8 +39,8 @@ export interface SelectProps<T extends string = string> {
   placement?: Placement;
   /** 触发按钮宽度策略 */
   block?: boolean;
-  /** 列表目标最小宽度（px）：按最长选项文本 + 勾选标记 + 内边距声明；
-   *  默认跟随触发器宽度，仅在可用宽度内生效（极窄窗口不会因此越界） */
+  /** 列表目标最小宽度（px）：只在极少数需要额外留白的场景使用。
+   *  默认策略是「严格等于触发按钮宽度」（exact-match），长选项在内部省略。 */
   menuMinWidth?: number;
 }
 
@@ -190,7 +190,10 @@ export default function Select<T extends string = string>({
           {selected ? (
             <>
               {selected.icon ? <span className="ui-select-icon">{selected.icon}</span> : null}
-              <span className="ui-select-label">{selected.label}</span>
+              {/* 宽度已锁定为触发按钮宽度：长文案在按钮内省略，title 提供完整值 */}
+              <span className="ui-select-label" title={selected.label}>
+                {selected.label}
+              </span>
               {selected.hint ? <span className="ui-select-hint">{selected.hint}</span> : null}
             </>
           ) : (
@@ -206,7 +209,7 @@ export default function Select<T extends string = string>({
         anchorRef={anchorRef}
         placement={resolvedPlacement}
         alignment={!placement && align === "auto" ? "auto" : undefined}
-        matchWidth
+        widthMode="exact-match"
         style={menuMinWidth ? ({ "--menu-min-w": `${menuMinWidth}px` } as CSSProperties) : undefined}
         className="ui-select-popover"
         role="listbox"
@@ -230,6 +233,7 @@ export default function Select<T extends string = string>({
                 className={`ui-option ${isSelected ? "is-selected" : ""} ${isActive ? "is-active" : ""} ${
                   o.disabled ? "is-disabled" : ""
                 }`}
+                title={o.hint ? `${o.label} · ${o.hint}` : o.label}
                 onMouseDown={(e) => e.preventDefault()}
                 onMouseEnter={() => !o.disabled && setActiveIndex(i)}
                 onClick={() => commit(i)}

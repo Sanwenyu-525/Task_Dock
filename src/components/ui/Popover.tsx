@@ -45,6 +45,14 @@ import {
   type PopupSide,
 } from "./positioning";
 
+/**
+ * 宽度策略：
+ * - `content`：按内容自然计算（普通操作菜单）；
+ * - `min-match`：不小于触发按钮（旧的 `matchWidth` 语义，内容更宽时继续变宽）；
+ * - `exact-match`：严格等于触发按钮宽度（选择型下拉；内容超长在内部省略）。
+ */
+export type PopoverWidthMode = "content" | "min-match" | "exact-match";
+
 export interface PopoverProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -59,7 +67,12 @@ export interface PopoverProps {
   className?: string;
   /** 注册到弹层栈的层级，决定 Escape 优先级；null = 不参与（提示条等瞬时层） */
   layer?: OverlayKind | null;
-  /** 浮层最小宽度跟随锚点 */
+  /**
+   * 宽度策略。未给出时按旧的 `matchWidth` 推断（false → content / true → min-match）。
+   * 新增代码请直接写 `widthMode`，避免「以为匹配了、其实只是最小宽度」。
+   */
+  widthMode?: PopoverWidthMode;
+  /** @deprecated 等价于 `widthMode="min-match"`；需要与按钮等宽请用 exact-match。 */
   matchWidth?: boolean;
   offsetPx?: number;
   /** 与窗口边缘的最小留白（默认 8） */
@@ -102,6 +115,7 @@ export default function Popover({
   alignment,
   className,
   layer = "menu",
+  widthMode,
   matchWidth = false,
   offsetPx = 6,
   collisionPadding = 8,
@@ -126,17 +140,27 @@ export default function Popover({
   // 由此可判定「菜单在对话框内部」，Escape 才能先关菜单再关对话框。
   const hostRef = useRef<HTMLDivElement | null>(null);
 
+  const resolvedWidthMode: PopoverWidthMode = widthMode ?? (matchWidth ? "min-match" : "content");
   const config = useMemo(
     () => ({
       offset: offsetPx,
       collisionPadding,
-      matchAnchorWidth: matchWidth,
+      matchAnchorWidth: resolvedWidthMode === "min-match",
+      exactAnchorWidth: resolvedWidthMode === "exact-match",
       minWidth,
       maxWidth,
       maxHeight,
       allowFlip,
     }),
-    [offsetPx, collisionPadding, matchWidth, minWidth, maxWidth, maxHeight, allowFlip],
+    [
+      offsetPx,
+      collisionPadding,
+      resolvedWidthMode,
+      minWidth,
+      maxWidth,
+      maxHeight,
+      allowFlip,
+    ],
   );
 
   // 显式 side/alignment 优先；否则拆解 placement。center 在 floating-ui 里是裸 side。
@@ -195,6 +219,15 @@ export default function Popover({
           el.style.setProperty("--popover-min-w", `${Math.max(0, limits.minWidth)}px`);
           if (maxWidth !== undefined) {
             el.style.setProperty("--popover-width-cap", `${Math.max(0, maxWidth)}px`);
+          }
+          // 严格匹配锚点宽：宽度写进变量，CSS 侧把 min/max 一起锁死，
+          // 内容（长选项 / hint / 图标）再宽也只能在弹层内部省略。
+          if (limits.width !== undefined) {
+            el.style.setProperty("--popover-exact-w", `${limits.width}px`);
+            el.dataset.popupWidth = "exact";
+          } else {
+            el.style.removeProperty("--popover-exact-w");
+            delete el.dataset.popupWidth;
           }
           // 可观测性：测试与排障可读最终尺寸上限，不必反推 CSS。
           el.dataset.popupMaxWidth = String(limits.maxWidth);

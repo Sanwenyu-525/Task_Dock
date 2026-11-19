@@ -1926,10 +1926,27 @@ export interface TaskReminderLink {
 export type CaptureKind = "task" | "idea" | "text" | "todo" | "link";
 
 /** 草稿（单行表 active）：窗口隐藏/退出后可恢复。 */
+/**
+ * 快速捕获图片附件（元数据）。图片本体在应用数据目录
+ * `capture-attachments/{images,thumbs}`，数据库只存路径与尺寸；
+ * 前端拿到的显示 URL 都是按需读取的 data URL。
+ */
+export interface CaptureAttachment {
+  id: string;
+  mime: string;
+  byte_size: number;
+  width: number | null;
+  height: number | null;
+  /** 粘贴顺序（0 起） */
+  position: number;
+}
+
 export interface CaptureDraft {
   kind: CaptureKind;
   content: string;
   updated_at: string;
+  /** 草稿期间粘贴的图片；正文为空但有附件时草稿仍然有效。 */
+  attachments: CaptureAttachment[];
 }
 
 /** 捕获窗口初始状态：草稿 + 上次类型 + 未处理条目数。 */
@@ -1956,6 +1973,8 @@ export interface CaptureItem {
   source: string | null;
   created_at: string;
   updated_at: string;
+  /** 图片附件（按粘贴顺序）；旧记录为空数组。 */
+  attachments: CaptureAttachment[];
 }
 
 /** 提交载荷：client_id 供后端幂等去重（失败重试必须复用同一个）。 */
@@ -1965,6 +1984,8 @@ export interface SubmitCaptureInput {
   content: string;
   url?: string;
   note?: string;
+  /** 草稿附件 ID：与正文同事务转成条目附件（失败整体回滚，图片不丢）。 */
+  attachment_ids?: string[];
 }
 
 export interface SubmitCaptureResult {
@@ -1979,6 +2000,12 @@ export interface SubmitCaptureResult {
 /** quick_capture_save_draft 返回值：返回即视为已落库。 */
 export interface CaptureDraftSaved {
   saved_at: string;
+}
+
+/** 隐藏快速捕获窗口的结果：already_hidden 表示重复关闭/本来就不可见。 */
+export interface QuickCaptureHideResult {
+  hidden: boolean;
+  already_hidden: boolean;
 }
 
 /** 打开快速捕获窗口（已打开时只聚焦，不切换为隐藏）。 */
@@ -3205,6 +3232,12 @@ export interface DiagnosticsStatus {
   skippedLines: number;
   degraded: boolean;
   lastError?: string;
+  /**
+   * 最近一次写失败的分类：
+   * `disk_full` / `permission_denied` / `file_locked` / `unknown`。
+   * 三种可处置故障需要用户做不同的事（清盘 / 改目录权限 / 关掉占用进程）。
+   */
+  lastFailureKind?: string | null;
 }
 
 export interface DiagnosticExportResult {
@@ -3896,7 +3929,18 @@ export interface FsTextPreview {
   path: string;
   size: number;
   truncated: boolean;
+  /** 实际解码口径（UTF-8 / UTF-8 BOM / UTF-16 LE / UTF-16 BE / UTF-8 (lossy)）。 */
+  encoding: string;
   content: string;
+}
+
+/** 原始字节只读预览（图片原图 / PDF）；超限时只含前缀字节。 */
+export interface FsBinaryPreview {
+  path: string;
+  size: number;
+  truncated: boolean;
+  mime: string;
+  base64: string;
 }
 
 /**

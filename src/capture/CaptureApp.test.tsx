@@ -64,6 +64,11 @@ const bridge = vi.hoisted(() => {
     quickCaptureSetLastType: vi.fn(),
     quickCaptureSubmit: vi.fn(),
     quickCaptureHide: vi.fn(),
+    quickCaptureFocus: vi.fn(),
+    quickCaptureAddAttachment: vi.fn(),
+    quickCaptureRemoveAttachment: vi.fn(),
+    quickCaptureAttachmentThumb: vi.fn(),
+    quickCaptureAttachmentPreview: vi.fn(),
     quickCaptureVoiceStart: vi.fn(),
     quickCaptureVoiceStop: vi.fn(),
     quickCaptureOpenSpeechSettings: vi.fn(),
@@ -99,6 +104,20 @@ const bridge = vi.hoisted(() => {
 vi.mock("../lib/bridge", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/bridge")>();
   return { ...actual, ...bridge };
+});
+
+vi.mock("./captureImages", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./captureImages")>();
+  return {
+    ...actual,
+    prepareImageAttachment: vi.fn(async () => ({
+      base64: "UE5H",
+      mime: "image/png" as const,
+      width: 640,
+      height: 360,
+      bytes: 1024,
+    })),
+  };
 });
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -154,10 +173,31 @@ beforeEach(() => {
   bridge.quickCaptureSaveDraft.mockResolvedValue({ saved_at: "2026-11-03T04:05:00" });
   bridge.quickCaptureSetLastType.mockResolvedValue(undefined);
   bridge.quickCaptureSubmit.mockImplementation(async (input: SubmitInputLike) => okSubmit(input));
-  bridge.quickCaptureHide.mockResolvedValue(undefined);
+  bridge.quickCaptureHide.mockResolvedValue({ hidden: true, already_hidden: false });
+  bridge.quickCaptureFocus.mockResolvedValue(true);
+  bridge.quickCaptureAddAttachment.mockImplementation(async (_data: string, mime: string) => ({
+    id: `att-${bridge.quickCaptureAddAttachment.mock.calls.length}`,
+    mime,
+    byte_size: 1024,
+    width: 640,
+    height: 360,
+    position: 0,
+  }));
+  bridge.quickCaptureRemoveAttachment.mockResolvedValue(undefined);
+  bridge.quickCaptureAttachmentThumb.mockResolvedValue("data:image/png;base64,thumb");
+  bridge.quickCaptureAttachmentPreview.mockResolvedValue("data:image/png;base64,preview");
   bridge.quickCaptureVoiceStart.mockResolvedValue({ language: "zh-CN" });
   bridge.quickCaptureVoiceStop.mockResolvedValue([]);
   bridge.quickCaptureOpenSpeechSettings.mockResolvedValue(undefined);
+  // jsdom 不实现对象 URL：截图占位依赖它
+  Object.defineProperty(URL, "createObjectURL", {
+    configurable: true,
+    value: vi.fn(() => `blob:capture-${Math.random().toString(36).slice(2, 8)}`),
+  });
+  Object.defineProperty(URL, "revokeObjectURL", {
+    configurable: true,
+    value: vi.fn(),
+  });
   delete document.documentElement.dataset.theme;
   delete document.documentElement.dataset.preset;
 });
@@ -709,5 +749,169 @@ describe("CaptureApp / 头部拖拽", () => {
     expect(heading.hasAttribute("data-tauri-drag-region")).toBe(true);
     const closeButton = screen.getByRole("button", { name: "关闭快速捕获" });
     expect(closeButton.hasAttribute("data-tauri-drag-region")).toBe(false);
+  });
+});
+
+// ── 图片粘贴 ───────────────────────────────────────────────────
+
+function imageFile(name = "shot.png", type = "image/png", size = 2048): File {
+  return new File([new Uint8Array(size)], name, { type });
+}
+
+/** 构造一次真实的 paste 事件（jsdom 的 ClipboardEvent 不支持 init.clipboardData）。 */
+function pasteInto(el: HTMLElement, options: { files?: File[]; text?: string }): Event {
+  const files = options.files ?? [];
+  const data = {
+    items: files.map((file) => ({
+      kind: "file",
+      type: file.type,
+      getAsFile: () => file,
+    })),
+    files,
+    getData: () => options.text ?? "",
+  };
+  const event = new Event("paste", { bubbles: true, cancelable: true });
+  Object.defineProperty(event, "clipboardData", { value: data });
+  fireEvent(el, event);
+  return event;
+}
+
+/** 等占位替换成后端返回的正式附件（key 从 pending:* 变成真实 ID）。 */
+async function waitForAttachmentReady() {
+  await waitFor(() => expect(bridge.quickCaptureAddAttachment).toHaveBeenCalled());
+  await waitFor(() =>
+    expect(document.querySelector(".capture-attachment.is-saving")).toBeNull(),
+  );
+}
+
+describe("CaptureApp / 图片粘贴", () => {
+  it("粘贴图片后落库并显示缩略图，不是只存在内存里", async () => {
+    await renderCapture();
+    pasteInto(textarea(), { files: [imageFile()] });
+    await waitFor(() => expect(bridge.quickCaptureAddAttachment).toHaveBeenCalledTimes(1));
+    expect(await screen.findByRole("button", { name: "查看第 1 张图片大图" })).toBeTruthy();
+    expect(screen.getByText("1 / 8")).toBeTruthy();
+    expect(URL.createObjectURL).toHaveBeenCalled();
+  });
+
+  it("纯文本粘贴保持原生行为：不拦截、不请求图片接口", async () => {
+    await renderCapture();
+    const event = pasteInto(textarea(), { text: "纯文本" });
+    expect(event.defaultPrevented).toBe(false);
+    expect(bridge.quickCaptureAddAttachment).not.toHaveBeenCalled();
+  });
+
+  it("同时包含文本与图片时，文字不丢、图片也入库", async () => {
+    await renderCapture();
+    pasteInto(textarea(), { files: [imageFile()], text: "来自表格" });
+    await waitFor(() => expect(textarea().value).toBe("来自表格"));
+    await waitFor(() => expect(bridge.quickCaptureAddAttachment).toHaveBeenCalledTimes(1));
+  });
+
+  it("不支持的图片类型给出明确错误，已输入文字不被清空", async () => {
+    await renderCapture();
+    fireEvent.change(textarea(), { target: { value: "已有文字" } });
+    pasteInto(textarea(), { files: [imageFile("anim.gif", "image/gif")] });
+    expect(await screen.findByText(/只支持 PNG/)).toBeTruthy();
+    expect(textarea().value).toBe("已有文字");
+    expect(bridge.quickCaptureAddAttachment).not.toHaveBeenCalled();
+  });
+
+  it("后端保存失败时移除占位并提示原因，不静默吞掉", async () => {
+    bridge.quickCaptureAddAttachment.mockRejectedValueOnce(new Error("磁盘已满"));
+    await renderCapture();
+    pasteInto(textarea(), { files: [imageFile()] });
+    expect(await screen.findByText(/图片导入失败：磁盘已满/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "查看第 1 张图片大图" })).toBeNull();
+  });
+
+  it("移除图片调用后端删除，并释放对象 URL", async () => {
+    await renderCapture();
+    pasteInto(textarea(), { files: [imageFile()] });
+    await waitForAttachmentReady();
+    const remove = await screen.findByRole("button", { name: "移除第 1 张图片" });
+    fireEvent.click(remove);
+    await waitFor(() => expect(bridge.quickCaptureRemoveAttachment).toHaveBeenCalledWith("att-1"));
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "查看第 1 张图片大图" })).toBeNull(),
+    );
+    expect(URL.revokeObjectURL).toHaveBeenCalled();
+  });
+
+  it("保存时把附件 ID 一起提交，成功后不再调用删除", async () => {
+    await renderCapture();
+    pasteInto(textarea(), { files: [imageFile()] });
+    await waitForAttachmentReady();
+    fireEvent.change(textarea(), { target: { value: "看图" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(bridge.quickCaptureSubmit).toHaveBeenCalled());
+    const input = bridge.quickCaptureSubmit.mock.calls[0][0] as SubmitInputLike & {
+      attachment_ids?: string[];
+    };
+    expect(input.attachment_ids).toEqual(["att-1"]);
+    expect(bridge.quickCaptureRemoveAttachment).not.toHaveBeenCalled();
+  });
+
+  it("只有图片没有文字也能保存（正文用 [图片] 占位）", async () => {
+    await renderCapture();
+    pasteInto(textarea(), { files: [imageFile()] });
+    await waitForAttachmentReady();
+    const save = screen.getByRole("button", { name: "保存" }) as HTMLButtonElement;
+    expect(save.disabled).toBe(false);
+    fireEvent.click(save);
+    await waitFor(() => expect(bridge.quickCaptureSubmit).toHaveBeenCalled());
+    const input = bridge.quickCaptureSubmit.mock.calls[0][0] as SubmitInputLike;
+    expect(input.content).toBe("[图片]");
+  });
+
+  it("草稿恢复时把已落库的附件一起恢复（缩略图来自后端）", async () => {
+    bridge.quickCaptureState.mockResolvedValue({
+      draft: {
+        kind: "text",
+        content: "上次没写完",
+        updated_at: "2026-11-19T05:00:00Z",
+        attachments: [
+          { id: "att-old", mime: "image/png", byte_size: 2048, width: 10, height: 10, position: 0 },
+        ],
+      },
+      last_type: "text",
+      inbox_count: 0,
+    });
+    await renderCapture();
+    await waitFor(() => expect(bridge.quickCaptureAttachmentThumb).toHaveBeenCalledWith("att-old"));
+    expect(await screen.findByRole("button", { name: "查看第 1 张图片大图" })).toBeTruthy();
+    expect(textarea().value).toBe("上次没写完");
+  });
+
+  it("Escape 先关闭大图预览，不关闭窗口", async () => {
+    await renderCapture();
+    pasteInto(textarea(), { files: [imageFile()] });
+    await waitForAttachmentReady();
+    fireEvent.click(await screen.findByRole("button", { name: "查看第 1 张图片大图" }));
+    expect(await screen.findByRole("dialog", { name: "图片预览" })).toBeTruthy();
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "图片预览" })).toBeNull());
+    expect(bridge.quickCaptureHide).not.toHaveBeenCalled();
+  });
+});
+
+describe("CaptureApp / 关闭可靠性", () => {
+  it("隐藏失败时不静默：保留窗口并提示原因", async () => {
+    bridge.quickCaptureHide.mockRejectedValueOnce(new Error("窗口句柄失效"));
+    await renderCapture();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(await screen.findByText(/无法关闭窗口：窗口句柄失效/)).toBeTruthy();
+    // 仍然可以再次尝试：第二次点击 X 会重新发起隐藏
+    bridge.quickCaptureHide.mockResolvedValueOnce({ hidden: true, already_hidden: false });
+    fireEvent.click(screen.getByRole("button", { name: "关闭快速捕获" }));
+    await waitFor(() => expect(bridge.quickCaptureHide).toHaveBeenCalledTimes(2));
+  });
+
+  it("连点关闭只发一次隐藏请求（幂等）", async () => {
+    await renderCapture();
+    const closeBtn = screen.getByRole("button", { name: "关闭快速捕获" });
+    fireEvent.click(closeBtn);
+    fireEvent.click(closeBtn);
+    await waitFor(() => expect(bridge.quickCaptureHide).toHaveBeenCalledTimes(1));
   });
 });

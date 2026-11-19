@@ -15,7 +15,10 @@ import workbenchCss from "../workbench/workbench.css?raw";
 import projectPanelSource from "../workbench/ProjectWorkspacePanel.tsx?raw";
 import buildStatusSource from "../workbench/WorkbenchBuildStatus.tsx?raw";
 import buildRsSource from "../../src-tauri/build.rs?raw";
+import globalSearchCss from "../components/global-search/global-search.css?raw";
+import globalSearchDialogSource from "../components/global-search/GlobalSearchDialog.tsx?raw";
 import {
+  SEARCH_METRICS,
   WINDOW_METRICS,
   WINDOW_TIERS,
   shouldCollapseWorkbenchDetail,
@@ -199,5 +202,42 @@ describe("构建元数据来源契约（2026-11-17）", () => {
     expect(buildStatusSource).not.toContain("rev-parse");
     expect(systemSource).toContain("pub fn app_runtime_git_info");
     expect(systemSource).toContain("option_env!(\"TASK_DOCK_GIT_COMMIT_FULL\")");
+  });
+});
+
+describe("全局搜索几何同源", () => {
+  it("CSS Token 与 SEARCH_METRICS 一致", () => {
+    const expected: Record<string, number> = {
+      "--layout-search-max": SEARCH_METRICS.fieldMax,
+      "--layout-search-basis": SEARCH_METRICS.fieldBasis,
+      "--layout-search-panel-max": SEARCH_METRICS.panelMax,
+    };
+    for (const [token, value] of Object.entries(expected)) {
+      expect(cssToken(appCss, token), `${token} 必须在 :root 声明`).toBe(`${value}px`);
+    }
+  });
+
+  it("顶栏字段用 Token 约束宽度，不再写死 520px", () => {
+    // 基础块负责 max-width；容器查询里只覆盖 flex-basis，不应重复声明上限。
+    const blocks = workbenchCss.match(/\.wb-search-field\s*\{[^}]*\}/g) ?? [];
+    const base = blocks.find((block) => block.includes("max-width"));
+    expect(base, "必须有声明 max-width 的基础块").toBeTruthy();
+    expect(base).toContain("var(--layout-search-max");
+    // 只约束搜索字段自身：520px 仍可能被其它容器查询阈值使用。
+    for (const block of blocks) {
+      expect(block).not.toContain("max-width: 520px");
+    }
+  });
+
+  it("结果面板（模态/下拉）用同一 Token，且不与字段等宽", () => {
+    expect(globalSearchCss).toContain("var(--layout-search-panel-max");
+    // 560 只允许出现在高度上限（max-height），宽度上限必须走 Token
+    expect(globalSearchCss).not.toMatch(/width:\s*min\(560px/);
+    expect(SEARCH_METRICS.panelMax).toBeGreaterThan(SEARCH_METRICS.fieldMax);
+  });
+
+  it("GlobalSearchDialog 的 maxWidth 使用共享常量", () => {
+    expect(globalSearchDialogSource).toContain("maxWidth={SEARCH_METRICS.panelMax}");
+    expect(globalSearchDialogSource).not.toContain("maxWidth={560}");
   });
 });

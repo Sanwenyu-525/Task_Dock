@@ -23,6 +23,7 @@ import {
   GLOBAL_SEARCH_CATEGORY_LABELS,
   type GlobalSearchCategoryFilter,
 } from "../../lib/globalSearchBridge";
+import { SEARCH_METRICS } from "../../lib/layoutMetrics";
 import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
 import { useGlobalSearchShortcut } from "../../hooks/useGlobalSearchShortcut";
 import useImeComposition from "../../hooks/useImeComposition";
@@ -429,7 +430,7 @@ export function GlobalSearchDialog({
           anchorRef={anchorRef}
           placement="bottom-start"
           offsetPx={6}
-          maxWidth={560}
+          maxWidth={SEARCH_METRICS.panelMax}
           maxHeight={520}
           className="gs-popover"
           role="dialog"

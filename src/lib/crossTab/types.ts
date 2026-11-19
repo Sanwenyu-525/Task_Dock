@@ -97,11 +97,32 @@ export interface TransferPage {
   total: number;
 }
 
+export interface TransferRejection {
+  title: string;
+  code: string;
+  message: string;
+}
+
 export interface TransferAddReport {
   items: TransferItem[];
   duplicates: number;
-  rejected: Array<{ title: string; code: string; message: string }>;
+  rejected: TransferRejection[];
 }
+
+/**
+ * `add()` 的完整结果：UI 必须能区分「全部成功 / 部分成功 / 全部失败」，
+ * 不能把后端 rejected 丢掉只显示绿色成功提示。
+ */
+export interface TransferAddResult {
+  /** 真正新增（不含重复命中）。 */
+  added: number;
+  duplicates: number;
+  rejected: TransferRejection[];
+  items: TransferItem[];
+}
+
+/** 一次加入操作的结果分类（纯函数，便于测试）。 */
+export type AddOutcome = "success" | "partial" | "failed";
 
 export interface TransferCounts {
   total: number;

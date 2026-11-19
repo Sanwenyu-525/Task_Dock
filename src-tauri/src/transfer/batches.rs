@@ -18,6 +18,8 @@ use super::{BatchEntry, TransferBatch, TransferTarget, MAX_BATCH_HISTORY, MAX_FA
 pub struct NewBatch<'a> {
     pub target: &'a TransferTarget,
     pub operation: &'a str,
+    /// 初始状态：`preparing` 表示批次已建立但任务尚未全部提交。
+    pub status: &'a str,
     pub total: usize,
     pub plan: serde_json::Value,
     pub job_ids: Vec<String>,
@@ -48,7 +50,7 @@ pub fn create(db: &Db, new: NewBatch<'_>) -> AppResult<String> {
                 new.target.module,
                 new.target.target_ref,
                 new.operation,
-                if new.job_ids.is_empty() { "failed" } else { "running" },
+                new.status,
                 new.total as i64,
                 job_ids_json,
                 plan_json,
@@ -70,6 +72,33 @@ pub fn create(db: &Db, new: NewBatch<'_>) -> AppResult<String> {
         )?;
         tx.commit()?;
         Ok(id)
+    })
+}
+
+/// 任务全部提交成功后回填 jobIds 并切换状态（预建批次的第二步）。
+pub fn attach_jobs(db: &Db, id: &str, job_ids: &[String], status: &str, message: &str) -> AppResult<()> {
+    let job_ids_json = serde_json::to_string(job_ids).unwrap_or_else(|_| "[]".into());
+    db.with_conn(|conn| {
+        let changed = conn.execute(
+            "UPDATE transfer_batches SET job_ids_json = ?2, status = ?3, error_message = ?4,
+             updated_at = ?5 WHERE id = ?1",
+            params![id, job_ids_json, status, message, now_iso()],
+        )?;
+        if changed == 0 {
+            return Err(AppError::NotFound("批次不存在".into()));
+        }
+        Ok(())
+    })
+}
+
+/// 撤销状态机：available / partial / running / used / unavailable。
+pub fn set_undo_state(db: &Db, id: &str, state: &str) -> AppResult<()> {
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE transfer_batches SET undo_state = ?2, updated_at = ?3 WHERE id = ?1",
+            params![id, state, now_iso()],
+        )?;
+        Ok(())
     })
 }
 
@@ -111,13 +140,7 @@ pub fn update(db: &Db, id: &str, update: BatchUpdate<'_>) -> AppResult<()> {
 }
 
 pub fn mark_undo_used(db: &Db, id: &str) -> AppResult<()> {
-    db.with_conn(|conn| {
-        conn.execute(
-            "UPDATE transfer_batches SET undo_state = 'used', updated_at = ?2 WHERE id = ?1",
-            params![id, now_iso()],
-        )?;
-        Ok(())
-    })
+    set_undo_state(db, id, "used")
 }
 
 pub struct BatchRow {
@@ -185,6 +208,7 @@ pub fn row_to_batch(row: BatchRow) -> TransferBatch {
     let undo_reason = match row.undo_state.as_str() {
         "available" => "可撤销：本批次生成/复制的文件可移入回收站".to_string(),
         "partial" => "部分可撤销：仅新建/复制的文件可移入回收站，移动的源文件不恢复".to_string(),
+        "running" => "正在撤销：等待文件任务真实完成".to_string(),
         "used" => "已撤销".to_string(),
         _ => match row.undo_kind.as_str() {
             "none" => "该操作没有可撤销的新文件".to_string(),

@@ -36,6 +36,7 @@ const previewTransfer = vi.fn();
 
 vi.mock("../../lib/bridge", () => ({
   clipboardView: vi.fn().mockResolvedValue({ items: [], total_items: 0 }),
+  fsStat: vi.fn().mockResolvedValue([]),
 }));
 vi.mock("../../lib/crossTab/transferClient", () => ({
   DEFAULT_OPTIONS: {
@@ -58,6 +59,8 @@ vi.mock("../../lib/crossTab/transferClient", () => ({
   removeItems: vi.fn(),
   pinItem: vi.fn(),
   clearTemporary: vi.fn(),
+  getItem: vi.fn(),
+  reorderItems: vi.fn(),
   updateContext: vi.fn().mockResolvedValue({}),
 }));
 vi.mock("../../lib/crossTab/eventBus", () => ({
@@ -102,7 +105,9 @@ beforeEach(() => {
     loading: false,
     error: null,
     panel: { visible: true, pinned: true, width: 320, suggestionsEnabled: true },
+    panelMode: "dock",
     activeBatch: null,
+    lastRemoved: null,
   });
 });
 
@@ -113,12 +118,34 @@ describe("TransferPanel", () => {
     expect(screen.getByText("尚未选择目标目录")).toBeTruthy();
   });
 
+  it("没有选中项时也提供全选入口（不是只有选中后才出现）", async () => {
+    render(<TransferPanel variant="dock" onClose={() => undefined} />);
+    await screen.findByText("测试条目");
+    expect(screen.getByLabelText("全选当前列表")).toBeTruthy();
+    expect(screen.getByText("反选")).toBeTruthy();
+    expect(screen.getByText("清除选择")).toBeTruthy();
+  });
+
+  it("同一窗口第二个面板实例不渲染（单实例守卫）", async () => {
+    const { container } = render(
+      <>
+        <TransferPanel variant="dock" onClose={() => undefined} />
+        <TransferPanel variant="drawer" onClose={() => undefined} />
+      </>,
+    );
+    await screen.findByText("测试条目");
+    expect(container.querySelectorAll(".tp-panel")).toHaveLength(1);
+  });
+
   it("选择条目后发送前必须先出预览，而不是直接执行", async () => {
     localStorage.setItem("taskdock.transfer.target.v1", "D:\\tmp");
     render(<TransferPanel variant="dock" onClose={() => undefined} />);
     await screen.findByText("测试条目");
-    await userEvent.click(screen.getByLabelText("测试条目"));
-    await userEvent.click(screen.getByRole("button", { name: /发送到文件工作区/ }));
+    await userEvent.click(screen.getAllByLabelText("测试条目")[0]);
+    const send = screen.getByRole("button", { name: /发送到文件工作区/ }) as HTMLButtonElement;
+    // 目标目录需要先通过后端校验，按钮才会启用（不是无条件可点）。
+    await waitFor(() => expect(send.disabled).toBe(false));
+    await userEvent.click(send);
     await waitFor(() => expect(previewTransfer).toHaveBeenCalledTimes(1));
     expect(await screen.findByText("发送预览")).toBeTruthy();
   });

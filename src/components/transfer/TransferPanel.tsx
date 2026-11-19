@@ -1,9 +1,12 @@
 //! 全局工作篮面板（工作台固定列 / 主窗口与窄窗抽屉共用）。
 //!
-//! 只做展示与交互编排：条目读写走 `useTransferStore`，发送前预览与执行走后端
-//! `transfer_preview` / `transfer_execute`，不在组件里复制任何文件操作逻辑。
+//! 只做展示与交互编排：条目读写走 `useTransferStore`，发送前预览与执行走
+//! `TransferConfirmDialog`（快照一致性由它保证），不在组件里复制任何文件操作逻辑。
+//!
+//! 单实例：一个窗口同一时间只允许一个 `TransferPanel` 挂载。固定列与抽屉的互斥
+//! 由 `panelMode` 决定，这里是第二道守卫（防止调用方同时渲染两个入口）。
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Archive,
   Check,
@@ -30,19 +33,29 @@ import type { ClipboardItem } from "../../lib/contracts/models";
 import { errorMessage } from "../../lib/errors";
 import { Dialog } from "../ui/Dialog";
 import DropdownMenu, { type DropdownMenuItem } from "../ui/DropdownMenu";
-import Select from "../ui/Select";
 import { useOverlayLayer } from "../ui/overlay";
 import { useLocale } from "../../hooks/useLocale";
 import { useUiStore } from "../../store/useUiStore";
 import { useTransferStore } from "../../store/useTransferStore";
 import { useFilesWorkspaceStore } from "../../store/useFilesWorkspaceStore";
 import { addClipboardItemsToTray } from "../../lib/crossTab/modules/clipboard";
+import { resolvePathInputs } from "../../lib/crossTab/fileKinds";
+import { rejectionLines } from "../../lib/crossTab/addResult";
+import { fsStat } from "../../lib/bridge";
 import { CREATE_TASK_ACTION_ID } from "../../lib/crossTab/modules/tasks";
-import { executeAction, getAction } from "../../lib/crossTab/actionRegistry";
+import { ADD_TO_TRAY_ACTION } from "../../lib/crossTab/modules/tray";
+import { executeAction, getAction, resolveAvailableActions } from "../../lib/crossTab/actionRegistry";
 import * as client from "../../lib/crossTab/transferClient";
-import { TRANSFER_EVENTS, subscribe } from "../../lib/crossTab/eventBus";
-import type { TransferOptions, TransferPreview, TransferTarget } from "../../lib/crossTab/types";
-import { pickFolder } from "../../lib/filesWorkspace/folderPicker";
+import type {
+  TransferAddResult,
+  TransferOptions,
+  TransferRejection,
+  TransferTarget,
+} from "../../lib/crossTab/types";
+import type { Notify } from "./ActionDispatcher";
+import SendToMenu from "./SendToMenu";
+import TargetPicker from "./TargetPicker";
+import TransferConfirmDialog from "./TransferConfirmDialog";
 import "./transfer.css";
 
 const TARGET_KEY = "taskdock.transfer.target.v1";
@@ -71,6 +84,9 @@ const TYPE_FILTERS: Array<{ id: string; labelKey: string; types: string[] }> = [
   { id: "url", labelKey: "transfer.filterUrl", types: ["url"] },
   { id: "entity", labelKey: "transfer.filterEntity", types: ["task", "project", "planning", "knowledge", "capture", "clipboard"] },
 ];
+
+/** 托盘内排序的拖拽类型（只在本面板内消费，不对外承诺）。 */
+const TRAY_DRAG_MIME = "application/x-taskdock-tray-item";
 
 function itemIcon(type: string) {
   switch (type) {
@@ -106,12 +122,16 @@ function previewText(entry: { content: string; payload: Record<string, unknown> 
   return "";
 }
 
+/** 单实例守卫：同一窗口第二个面板实例直接不渲染。 */
+let mountedPanels = 0;
+
 interface TransferPanelProps {
   variant: "dock" | "drawer";
+  host?: "main" | "workbench";
   onClose: () => void;
 }
 
-export default function TransferPanel({ variant, onClose }: TransferPanelProps) {
+export default function TransferPanel({ variant, host = "workbench", onClose }: TransferPanelProps) {
   const { t } = useLocale();
   const showToast = useUiStore((s) => s.showToast);
   const items = useTransferStore((s) => s.items);
@@ -124,13 +144,13 @@ export default function TransferPanel({ variant, onClose }: TransferPanelProps) 
   const busy = useTransferStore((s) => s.busy);
   const loading = useTransferStore((s) => s.loading);
   const error = useTransferStore((s) => s.error);
+  const lastRemoved = useTransferStore((s) => s.lastRemoved);
 
   const [tab, setTab] = useState<"tray" | "clipboard">("tray");
   const [target, setTarget] = useState(readTarget);
-  const [preview, setPreview] = useState<TransferPreview | null>(null);
+  const [targetValid, setTargetValid] = useState(false);
+  const [targetMessage, setTargetMessage] = useState("");
   const [previewOpen, setPreviewOpen] = useState(false);
-  const [previewing, setPreviewing] = useState(false);
-  const [previewError, setPreviewError] = useState("");
   const [sendOptions, setSendOptions] = useState<TransferOptions>(client.DEFAULT_OPTIONS);
   const panelRef = useRef<HTMLElement>(null);
   const [clipItems, setClipItems] = useState<ClipboardItem[]>([]);
@@ -140,52 +160,54 @@ export default function TransferPanel({ variant, onClose }: TransferPanelProps) 
   const [clipError, setClipError] = useState("");
   const [limit, setLimit] = useState(80);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [addReport, setAddReport] = useState<TransferAddResult | null>(null);
+  const [reportOpen, setReportOpen] = useState(false);
+  const [batchDetailOpen, setBatchDetailOpen] = useState(false);
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
+  const dragIdRef = useRef<string | null>(null);
+
+  const [ownsInstance] = useState(() => {
+    mountedPanels += 1;
+    return mountedPanels === 1;
+  });
+  useEffect(() => {
+    return () => {
+      mountedPanels = Math.max(0, mountedPanels - 1);
+    };
+  }, []);
 
   const filesPanes = useFilesWorkspaceStore((s) => s.panes);
   const filesActivePaneId = useFilesWorkspaceStore((s) => s.activePaneId);
   const filesSelectionMap = useFilesWorkspaceStore((s) => s.selection);
   const filesSelection = useMemo(
-    () =>
-      filesPanes[filesActivePaneId]
-        ? (filesSelectionMap[filesActivePaneId]?.paths ?? [])
-        : [],
+    () => (filesPanes[filesActivePaneId] ? (filesSelectionMap[filesActivePaneId]?.paths ?? []) : []),
     [filesPanes, filesActivePaneId, filesSelectionMap],
   );
 
   // 抽屉形态注册到统一弹层栈：Escape 只关工作篮，不直接隐藏窗口。
   useOverlayLayer("drawer", variant === "drawer", onClose, panelRef);
 
-  useEffect(() => {
-    void useTransferStore.getState().refresh();
-    void client.getContext().then((next) => {
-      useTransferStore.getState().setContext(next);
-      if (!readTarget() && next.directory) {
-        setTarget(next.directory);
-        writeTarget(next.directory);
-      }
-    });
-    const unsubContext = subscribe(
-      TRANSFER_EVENTS.contextChanged,
-      (payload) => {
-        useTransferStore.getState().setContext(payload as typeof context);
-      },
-      "transfer-panel",
-    );
-    const unsubBatch = subscribe(
-      TRANSFER_EVENTS.batchChanged,
-      () => {
-        void useTransferStore.getState().refresh();
-      },
-      "transfer-panel",
-    );
-    return () => {
-      unsubContext();
-      unsubBatch();
-    };
-  }, []);
+  const notify: Notify = useCallback(
+    (message, kind = "info") => showToast(message, { kind }),
+    [showToast],
+  );
 
   useEffect(() => {
-    if (tab !== "clipboard") return;
+    if (!ownsInstance) return;
+    // 首次加载一次；dock / drawer 切换导致的重挂载不会重复请求后端。
+    void useTransferStore.getState().ensureLoaded();
+  }, [ownsInstance]);
+
+  // 目标目录：没有持久化值时跟随当前上下文目录（只做推荐，不自动写入）。
+  useEffect(() => {
+    if (!ownsInstance || !context.directory) return;
+    if (readTarget()) return;
+    setTarget(context.directory);
+    writeTarget(context.directory);
+  }, [ownsInstance, context.directory]);
+
+  useEffect(() => {
+    if (!ownsInstance || tab !== "clipboard") return;
     let alive = true;
     const timer = window.setTimeout(() => {
       setClipLoading(true);
@@ -207,7 +229,7 @@ export default function TransferPanel({ variant, onClose }: TransferPanelProps) 
       alive = false;
       window.clearTimeout(timer);
     };
-  }, [tab, clipQuery]);
+  }, [ownsInstance, tab, clipQuery]);
 
   const visible = useMemo(() => {
     const rows = items.filter((item) => item.status !== "sent" || item.pinned);
@@ -215,7 +237,19 @@ export default function TransferPanel({ variant, onClose }: TransferPanelProps) 
   }, [items, limit]);
 
   const selectedCount = selection.length;
+  const selectedItems = useMemo(
+    () => items.filter((item) => selection.includes(item.id)),
+    [items, selection],
+  );
   const allVisibleSelected = visible.length > 0 && visible.every((item) => selection.includes(item.id));
+  const allClipSelected = clipItems.length > 0 && clipItems.every((item) => clipSelected.includes(item.id));
+
+  const selectedTextItems = useMemo(
+    () => items.filter((item) => selection.includes(item.id) && item.content.trim().length > 0),
+    [items, selection],
+  );
+
+  const sendTarget: TransferTarget | null = target.trim() ? { module: "files", ref: target } : null;
 
   function toggleType(id: string) {
     const filterDef = TYPE_FILTERS.find((entry) => entry.id === id);
@@ -223,178 +257,122 @@ export default function TransferPanel({ variant, onClose }: TransferPanelProps) 
     useTransferStore.getState().setItemTypes(filterDef.types);
   }
 
-  const selectedTextItems = useMemo(
-    () => items.filter((item) => selection.includes(item.id) && item.content.trim().length > 0),
-    [items, selection],
-  );
-
-  const taskAction = getAction(CREATE_TASK_ACTION_ID);
-  const canCreateTask = Boolean(
-    taskAction &&
-      selectedCount > 0 &&
-      items
-        .filter((item) => selection.includes(item.id))
-        .every((item) => taskAction.supportedItemTypes.includes(item.itemType)),
-  );
-
-  async function createTaskFromSelection() {
-    const action = getAction(CREATE_TASK_ACTION_ID);
-    if (!action) {
-      showToast(t("transfer.actionUnavailable"), { kind: "warning" });
+  function reportAdd(result: TransferAddResult) {
+    setAddReport(result);
+    const rejected = result.rejected.length;
+    if (result.added === 0) {
+      // 全部失败：绝不显示绿色成功提示。
+      setReportOpen(true);
+      notify(
+        rejected > 0
+          ? t("transfer.addOutcomeFailed", { rejected, duplicates: result.duplicates })
+          : t("transfer.addFailedAll", { count: rejected }),
+        "error",
+      );
       return;
     }
-    const selectedItems = items.filter((item) => selection.includes(item.id));
-    const result = await executeAction(CREATE_TASK_ACTION_ID, {
-      items: selectedItems,
-      context: useTransferStore.getState().context,
-    });
-    showToast(result.message, { kind: result.ok ? "success" : "error" });
-    if (result.ok) useTransferStore.getState().clearSelection();
+    if (rejected > 0 || result.duplicates > 0) {
+      notify(
+        t("transfer.addOutcomePartial", {
+          added: result.added,
+          duplicates: result.duplicates,
+          rejected,
+        }),
+        "warning",
+      );
+      if (rejected > 0) setReportOpen(true);
+      return;
+    }
+    notify(t("transfer.added", { count: result.added }), "success");
   }
 
-  async function copySelectedText() {
-    if (selectedTextItems.length === 0) return;
-    const ok = await copyText(selectedTextItems.map((item) => item.content).join("\n\n"));
-    showToast(ok ? t("transfer.copied", { count: selectedTextItems.length }) : t("transfer.copyFailed"), {
-      kind: ok ? "success" : "error",
-    });
+  function failedReport(rejections: TransferRejection[]): TransferAddResult {
+    return { added: 0, duplicates: 0, rejected: rejections, items: [] };
+  }
+
+  async function addPaths(paths: string[], sourceModule: string) {
+    if (paths.length === 0) return;
+    try {
+      const resolved = await resolvePathInputs(paths, fsStat, sourceModule);
+      if (resolved.inputs.length === 0) {
+        reportAdd(failedReport(resolved.rejected));
+        return;
+      }
+      const result = await useTransferStore.getState().add(resolved.inputs);
+      reportAdd({
+        ...result,
+        rejected: [...resolved.rejected, ...result.rejected],
+      });
+    } catch (e) {
+      notify(errorMessage(e), "error");
+    }
   }
 
   async function addFilesSelection() {
-    if (filesSelection.length === 0) return;
-    try {
-      const report = await useTransferStore.getState().add(
-        filesSelection.map((path) => ({
-          itemType: "file",
-          sourceModule: "files",
-          sourceId: path,
-          title: path.split(/[\\/]/).filter(Boolean).pop() ?? path,
-          description: path,
-          payload: { path },
-        })),
-      );
-      showToast(t("transfer.added", { count: report.added }), { kind: "success" });
-      if (report.duplicates > 0) {
-        showToast(t("transfer.duplicates", { count: report.duplicates }), { kind: "info" });
-      }
-    } catch (e) {
-      showToast(errorMessage(e), { kind: "error" });
-    }
+    await addPaths(filesSelection, "files");
   }
 
   async function addClipboardSelected() {
     if (clipSelected.length === 0) return;
     try {
-      const { report, failed } = await addClipboardItemsToTray(clipSelected);
-      if (report) {
-        showToast(t("transfer.added", { count: report.items.length }), { kind: "success" });
-        if (report.duplicates > 0) {
-          showToast(t("transfer.duplicates", { count: report.duplicates }), { kind: "info" });
-        }
+      const { report, rejected } = await addClipboardItemsToTray(clipSelected);
+      if (!report) {
+        reportAdd(failedReport(rejected));
+        return;
       }
-      if (failed.length > 0) {
-        showToast(t("transfer.addFailed", { count: failed.length }), { kind: "warning" });
-      }
+      reportAdd({
+        added: report.items.length,
+        duplicates: report.duplicates,
+        rejected: [...rejected, ...(report.rejected ?? [])],
+        items: report.items,
+      });
       await useTransferStore.getState().refresh();
       setClipSelected([]);
     } catch (e) {
-      showToast(errorMessage(e), { kind: "error" });
+      notify(errorMessage(e), "error");
     }
   }
 
-  async function chooseTarget() {
-    const result = await pickFolder({ title: t("transfer.chooseTarget") });
-    if (result.status === "ok") {
-      setTarget(result.path);
-      writeTarget(result.path);
-      void client.updateContext({ directory: result.path });
-    } else if (result.status === "invalid") {
-      showToast(`${t("transfer.targetInvalid")} ${result.message ?? result.reason}`, { kind: "error" });
-    }
-  }
-
-  async function useFilesWorkspaceDir() {
-    const pane = useFilesWorkspaceStore.getState().panes[useFilesWorkspaceStore.getState().activePaneId];
-    const dir = pane?.tabs.find((x) => x.tabId === pane.activeTabId)?.path;
-    if (!dir) {
-      showToast(t("transfer.targetMissing"), { kind: "warning" });
-      return;
-    }
-    setTarget(dir);
-    writeTarget(dir);
-    void client.updateContext({ directory: dir });
-  }
-
-  async function openPreview(options: TransferOptions = sendOptions) {
-    if (selectedCount === 0) return;
-    if (!target.trim()) {
-      showToast(t("transfer.targetRequired"), { kind: "warning" });
-      return;
-    }
-    setPreviewing(true);
-    setPreviewError("");
-    try {
-      const validation = await client.validateTarget({ module: "files", ref: target });
-      if (!validation.valid) {
-        setPreview(null);
-        setPreviewError(validation.message || t("transfer.targetInvalid"));
-        setPreviewOpen(true);
-        return;
-      }
-      const result = await client.previewTransfer(
-        selection,
-        { module: "files", ref: target },
-        options,
-      );
-      setPreview(result);
-      setPreviewOpen(true);
-    } catch (e) {
-      setPreview(null);
-      setPreviewError(errorMessage(e));
-      setPreviewOpen(true);
-    } finally {
-      setPreviewing(false);
-    }
-  }
-
-  async function confirmSend() {
-    if (!preview || !preview.targetValid) return;
-    const targetRef: TransferTarget = { module: "files", ref: preview.targetRef };
-    setPreviewOpen(false);
-    try {
-      const batch = await useTransferStore.getState().send(selection, targetRef, sendOptions);
-      showToast(t("transfer.started", { count: batch.total }), { kind: "success" });
-      useTransferStore.getState().clearSelection();
-    } catch (e) {
-      showToast(errorMessage(e), { kind: "error" });
-    }
+  function handleTargetChange(path: string) {
+    setTarget(path);
+    writeTarget(path);
+    if (path) void client.updateContext({ directory: path });
   }
 
   async function removeSelected() {
     if (selectedCount === 0) return;
     try {
       const removed = await useTransferStore.getState().remove(selection);
-      showToast(t("transfer.removed", { count: removed }), { kind: "success" });
+      notify(t("transfer.removedUndoable", { count: removed }), "info");
     } catch (e) {
-      showToast(errorMessage(e), { kind: "error" });
+      notify(errorMessage(e), "error");
+    }
+  }
+
+  async function undoRemove() {
+    try {
+      const restored = await useTransferStore.getState().undoRemove();
+      notify(t("transfer.restored", { count: restored }), restored > 0 ? "success" : "warning");
+    } catch (e) {
+      notify(errorMessage(e), "error");
     }
   }
 
   async function clearTemporary() {
     try {
       const removed = await useTransferStore.getState().clearTemporary();
-      showToast(t("transfer.cleared", { count: removed }), { kind: "success" });
+      notify(t("transfer.cleared", { count: removed }), "success");
     } catch (e) {
-      showToast(errorMessage(e), { kind: "error" });
+      notify(errorMessage(e), "error");
     }
   }
 
   async function retryBatch() {
     try {
       const next = await useTransferStore.getState().retry();
-      if (next) showToast(t("transfer.retried"), { kind: "success" });
+      if (next) notify(t("transfer.retried"), "success");
     } catch (e) {
-      showToast(errorMessage(e), { kind: "error" });
+      notify(errorMessage(e), "error");
     }
   }
 
@@ -402,15 +380,111 @@ export default function TransferPanel({ variant, onClose }: TransferPanelProps) 
     if (!activeBatch) return;
     try {
       const result = await useTransferStore.getState().undo(activeBatch.id);
-      showToast(result.message, { kind: result.moved > 0 ? "success" : "warning" });
+      notify(result.message, result.ok ? "success" : "warning");
     } catch (e) {
-      showToast(errorMessage(e), { kind: "error" });
+      notify(errorMessage(e), "error");
     }
   }
 
-  function patchOptions(patch: Partial<TransferOptions>) {
-    setSendOptions((prev) => ({ ...prev, ...patch }));
+  function togglePinned() {
+    useTransferStore.getState().togglePinnedPanel();
+    const next = useTransferStore.getState();
+    if (!next.panel.pinned) {
+      notify(t("transfer.pinDisabledWidth"), "info");
+      return;
+    }
+    if (host === "main") {
+      notify(t("transfer.pinMainWindow"), "info");
+      return;
+    }
+    if (next.panelMode === "dock") notify(t("transfer.pinEnabled"), "success");
+    else notify(t("transfer.pinDisabledWidth"), "info");
   }
+
+  async function createTaskFromSelection() {
+    const action = getAction(CREATE_TASK_ACTION_ID);
+    if (!action) {
+      notify(t("transfer.actionUnavailable"), "warning");
+      return;
+    }
+    const result = await executeAction(CREATE_TASK_ACTION_ID, {
+      items: selectedItems,
+      context: useTransferStore.getState().context,
+    });
+    notify(result.message, result.ok ? "success" : "error");
+    if (result.ok) useTransferStore.getState().clearSelection();
+  }
+
+  async function copySelectedText() {
+    if (selectedTextItems.length === 0) return;
+    const ok = await copyText(selectedTextItems.map((item) => item.content).join("\n\n"));
+    notify(
+      ok ? t("transfer.copied", { count: selectedTextItems.length }) : t("transfer.copyFailed"),
+      ok ? "success" : "error",
+    );
+  }
+
+  // ── 拖拽：托盘内排序（真实接收端）+ 外部文本/链接投放 ────────────────
+  function moveDraggedBefore(draggedId: string, targetId: string | null) {
+    const order = visible.map((item) => item.id).filter((id) => id !== draggedId);
+    const index = targetId ? order.indexOf(targetId) : order.length;
+    order.splice(index < 0 ? order.length : index, 0, draggedId);
+    void useTransferStore.getState().reorder(order);
+  }
+
+  function handleRowDrop(event: React.DragEvent, targetId: string | null) {
+    const internal = dragIdRef.current;
+    dragIdRef.current = null;
+    setDropTargetId(null);
+    if (internal) {
+      event.preventDefault();
+      moveDraggedBefore(internal, targetId);
+      return;
+    }
+    const text = event.dataTransfer.getData("text/uri-list") || event.dataTransfer.getData("text/plain");
+    if (!text.trim()) {
+      notify(t("transfer.dropUnsupported"), "warning");
+      return;
+    }
+    event.preventDefault();
+    const urls = text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith("#"));
+    const isUrl = urls.length > 0 && urls.every((line) => /^https?:\/\//i.test(line));
+    const inputs = isUrl
+      ? urls.map((url) => ({
+          itemType: "url" as const,
+          sourceModule: "manual" as const,
+          sourceId: url,
+          title: url,
+          content: url,
+          payload: { url },
+        }))
+      : [
+          {
+            itemType: "text" as const,
+            sourceModule: "manual" as const,
+            sourceId: "",
+            title: text.split(/\r?\n/)[0]?.slice(0, 80) || t("transfer.untitled"),
+            content: text,
+            payload: {},
+          },
+        ];
+    void useTransferStore
+      .getState()
+      .add(inputs)
+      .then(reportAdd)
+      .catch((e) => notify(errorMessage(e), "error"));
+  }
+
+  const canCreateTask = useMemo(() => {
+    const action = getAction(CREATE_TASK_ACTION_ID);
+    if (!action || selectedCount === 0) return false;
+    return resolveAvailableActions(selectedItems, useTransferStore.getState().context).some(
+      (entry) => entry.actionId === CREATE_TASK_ACTION_ID,
+    );
+  }, [selectedCount, selectedItems]);
 
   const moreItems: DropdownMenuItem[] = [];
   if (canCreateTask) {
@@ -452,9 +526,14 @@ export default function TransferPanel({ variant, onClose }: TransferPanelProps) 
     });
   }
 
-  const batchDone = activeBatch ? activeBatch.ok + activeBatch.failed + activeBatch.skipped : 0;  const batchProgress = activeBatch && activeBatch.total > 0
-    ? Math.round((batchDone / activeBatch.total) * 100)
-    : 0;
+  // 进度单位 = 条目（合并文本也按条目计），并做上限收敛，绝不超过 100%。
+  const batchDone = activeBatch ? activeBatch.ok + activeBatch.failed + activeBatch.skipped : 0;
+  const batchProgress =
+    activeBatch && activeBatch.total > 0
+      ? Math.min(100, Math.round((batchDone / activeBatch.total) * 100))
+      : 0;
+
+  if (!ownsInstance) return null;
 
   return (
     <aside ref={panelRef} className={`tp-panel tp-${variant}`} aria-label={t("transfer.title")}>
@@ -473,8 +552,8 @@ export default function TransferPanel({ variant, onClose }: TransferPanelProps) 
             className="icon-btn sm"
             aria-label={panel.pinned ? t("transfer.unpinPanel") : t("transfer.pinPanel")}
             aria-pressed={panel.pinned}
-            data-tip={t("transfer.pinPanelHint")}
-            onClick={() => useTransferStore.getState().togglePinnedPanel()}
+            data-tip={panel.pinned ? t("transfer.pinPanelHint") : t("transfer.pinPanelHint")}
+            onClick={togglePinned}
           >
             {panel.pinned ? <Pin size={13} /> : <PinOff size={13} />}
           </button>
@@ -567,13 +646,58 @@ export default function TransferPanel({ variant, onClose }: TransferPanelProps) 
                 );
               })}
             </div>
+            <div className="tp-selection-bar">
+              <label className="tp-check-all">
+                <input
+                  type="checkbox"
+                  checked={allVisibleSelected}
+                  aria-label={t("transfer.selectAll")}
+                  onChange={(event) =>
+                    event.target.checked
+                      ? useTransferStore.getState().selectAllVisible()
+                      : useTransferStore.getState().clearSelection()
+                  }
+                />
+                {t("transfer.selectAll")}
+              </label>
+              <button type="button" className="tp-link" onClick={() => useTransferStore.getState().invertSelection()}>
+                {t("transfer.selectInvert")}
+              </button>
+              <button
+                type="button"
+                className="tp-link"
+                disabled={selectedCount === 0}
+                onClick={() => useTransferStore.getState().clearSelection()}
+              >
+                {t("transfer.clearSelection")}
+              </button>
+            </div>
           </div>
+
+          {lastRemoved && lastRemoved.items.length > 0 && (
+            <div className="tp-undo-bar" role="status">
+              <span>{t("transfer.removedUndoable", { count: lastRemoved.items.length })}</span>
+              <div className="tp-undo-actions">
+                <button type="button" className="tp-link" onClick={() => void undoRemove()}>
+                  {t("transfer.undoRemove")}
+                </button>
+                <button
+                  type="button"
+                  className="icon-btn sm"
+                  aria-label={t("transfer.dismiss")}
+                  onClick={() => useTransferStore.getState().dismissRemoved()}
+                >
+                  <X size={11} />
+                </button>
+              </div>
+            </div>
+          )}
 
           {activeBatch && (
             <div className={`tp-batch is-${batchTone(activeBatch.status)}`} aria-live="polite">
               <div className="tp-batch-head">
                 <span>
-                  {activeBatch.status === "running" ? (
+                  {activeBatch.status === "running" || activeBatch.status === "pending" ? (
                     <Loader2 size={13} className="tp-spin" aria-hidden="true" />
                   ) : (
                     <Check size={13} aria-hidden="true" />
@@ -593,19 +717,35 @@ export default function TransferPanel({ variant, onClose }: TransferPanelProps) 
                   <X size={12} />
                 </button>
               </div>
-              <div className="tp-progress" role="progressbar" aria-valuenow={batchProgress} aria-valuemin={0} aria-valuemax={100}>
+              <div
+                className="tp-progress"
+                role="progressbar"
+                aria-valuenow={batchProgress}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuetext={`${batchProgress}%`}
+              >
                 <span style={{ width: `${batchProgress}%` }} />
               </div>
               {activeBatch.message && <p className="tp-batch-msg">{activeBatch.message}</p>}
               <div className="tp-batch-actions">
+                <button type="button" className="btn sm" onClick={() => setBatchDetailOpen(true)}>
+                  {t("transfer.batchDetail")}
+                </button>
                 {activeBatch.failed > 0 && (
                   <button type="button" className="btn sm" onClick={() => void retryBatch()} disabled={busy}>
                     {t("transfer.retryFailed")}
                   </button>
                 )}
                 {(activeBatch.undoState === "available" || activeBatch.undoState === "partial") && (
-                  <button type="button" className="btn sm" onClick={() => void undoBatch()} data-tip={activeBatch.undoReason}>
-                    {t("transfer.undo")}
+                  <button
+                    type="button"
+                    className="btn sm"
+                    onClick={() => void undoBatch()}
+                    disabled={busy}
+                    data-tip={activeBatch.undoReason}
+                  >
+                    {busy ? <Loader2 size={11} className="tp-spin" /> : null} {t("transfer.undo")}
                   </button>
                 )}
               </div>
@@ -624,18 +764,45 @@ export default function TransferPanel({ variant, onClose }: TransferPanelProps) 
               <p className="tp-hint">{t("transfer.emptyTrayHint")}</p>
             </div>
           ) : (
-            <ul className="tp-list" role="listbox" aria-multiselectable="true" aria-label={t("transfer.trayTab")}>
+            <ul
+              className="tp-list"
+              role="listbox"
+              aria-multiselectable="true"
+              aria-label={t("transfer.trayTab")}
+              data-tip={t("transfer.dragHint")}
+              onDragOver={(event) => {
+                if (event.dataTransfer.types.includes("text/plain") || dragIdRef.current) {
+                  event.preventDefault();
+                }
+              }}
+              onDrop={(event) => handleRowDrop(event, null)}
+            >
               {visible.map((item) => (
                 <li
                   key={item.id}
-                  className={`tp-row${selection.includes(item.id) ? " is-selected" : ""}${item.pinned ? " is-pinned" : ""}${!item.available ? " is-unavailable" : ""}`}
+                  className={`tp-row${selection.includes(item.id) ? " is-selected" : ""}${
+                    item.pinned ? " is-pinned" : ""
+                  }${!item.available ? " is-unavailable" : ""}${dropTargetId === item.id ? " is-drop-target" : ""}`}
                   draggable
                   onDragStart={(event) => {
-                    event.dataTransfer.setData(
-                      "application/x-taskdock-transfer",
-                      JSON.stringify({ itemIds: [item.id], source: "tray" }),
-                    );
-                    event.dataTransfer.effectAllowed = "copy";
+                    dragIdRef.current = item.id;
+                    event.dataTransfer.effectAllowed = "move";
+                    // 只设内部协议：不要把条目 id 当作 text/plain 漏给外部应用。
+                    event.dataTransfer.setData(TRAY_DRAG_MIME, item.id);
+                  }}
+                  onDragEnd={() => {
+                    dragIdRef.current = null;
+                    setDropTargetId(null);
+                  }}
+                  onDragOver={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    if (dropTargetId !== item.id) setDropTargetId(item.id);
+                  }}
+                  onDragLeave={() => setDropTargetId((current) => (current === item.id ? null : current))}
+                  onDrop={(event) => {
+                    event.stopPropagation();
+                    handleRowDrop(event, item.id);
                   }}
                 >
                   <input
@@ -653,9 +820,13 @@ export default function TransferPanel({ variant, onClose }: TransferPanelProps) 
                     data-tip={t("transfer.previewHint")}
                     onClick={() => setExpandedId(expandedId === item.id ? null : item.id)}
                   >
-                    <span className="tp-row-title" data-tip={item.title}>{item.title || item.description || item.id}</span>
+                    <span className="tp-row-title" data-tip={item.title}>
+                      {item.title || item.description || item.id}
+                    </span>
                     <span className="tp-row-sub" data-tip={item.description}>
-                      {item.errorMessage || item.description || item.itemType}
+                      {!item.available && item.unavailableReason
+                        ? `${t("transfer.status.expired")} · ${item.unavailableReason}`
+                        : item.errorMessage || item.description || item.itemType}
                     </span>
                     {expandedId === item.id && (
                       <span className="tp-row-preview">
@@ -693,6 +864,34 @@ export default function TransferPanel({ variant, onClose }: TransferPanelProps) 
                 onChange={(event) => setClipQuery(event.target.value)}
               />
             </label>
+            <div className="tp-selection-bar">
+              <label className="tp-check-all">
+                <input
+                  type="checkbox"
+                  checked={allClipSelected}
+                  aria-label={t("transfer.selectAll")}
+                  onChange={(event) =>
+                    setClipSelected(event.target.checked ? clipItems.map((entry) => entry.id) : [])
+                  }
+                />
+                {t("transfer.selectAll")}
+              </label>
+              <button
+                type="button"
+                className="tp-link"
+                onClick={() =>
+                  setClipSelected((current) => {
+                    const selected = new Set(current);
+                    return clipItems.map((entry) => entry.id).filter((id) => !selected.has(id));
+                  })
+                }
+              >
+                {t("transfer.selectInvert")}
+              </button>
+              <button type="button" className="tp-link" disabled={clipSelected.length === 0} onClick={() => setClipSelected([])}>
+                {t("transfer.clearSelection")}
+              </button>
+            </div>
           </div>
           {clipError && <p className="tp-error">{clipError}</p>}
           {clipLoading ? (
@@ -748,192 +947,129 @@ export default function TransferPanel({ variant, onClose }: TransferPanelProps) 
       )}
 
       <footer className="tp-foot">
-        <div className="tp-target">
-          <span className="tp-target-label">{t("transfer.target")}</span>
+        <TargetPicker
+          value={target}
+          onChange={handleTargetChange}
+          onNotify={notify}
+          onValidityChange={(valid, message) => {
+            setTargetValid(valid);
+            setTargetMessage(message);
+          }}
+        />
+        <div className="tp-foot-actions">
           <button
             type="button"
-            className={`tp-target-value${target ? "" : " is-empty"}`}
-            data-tip={target || t("transfer.targetNone")}
-            onClick={() => void chooseTarget()}
+            className="btn sm"
+            onClick={() => {
+              const pane = useFilesWorkspaceStore.getState().panes[useFilesWorkspaceStore.getState().activePaneId];
+              const dir = pane?.tabs.find((x) => x.tabId === pane.activeTabId)?.path;
+              if (!dir) {
+                notify(t("transfer.targetMissing"), "warning");
+                return;
+              }
+              handleTargetChange(dir);
+            }}
+            data-tip={t("transfer.useFilesDirHint")}
           >
-            <Folder size={12} aria-hidden="true" />
-            <span className="tp-ellipsis">{target || t("transfer.targetNone")}</span>
-          </button>
-        </div>
-        <div className="tp-foot-actions">
-          <button type="button" className="btn sm" onClick={() => void useFilesWorkspaceDir()} data-tip={t("transfer.useFilesDirHint")}>
             {t("transfer.useFilesDir")}
           </button>
           <button type="button" className="btn sm" onClick={() => void removeSelected()} disabled={selectedCount === 0}>
             <Trash2 size={12} aria-hidden="true" /> {t("transfer.remove")}
           </button>
+          <SendToMenu
+            items={selectedItems}
+            context={useTransferStore.getState().context}
+            target={sendTarget}
+            onNotify={notify}
+            onSendToFiles={() => setPreviewOpen(true)}
+            disabled={selectedCount === 0}
+            label={t("transfer.sendMenu")}
+            side="top"
+            alignment="end"
+            excludeActionIds={[ADD_TO_TRAY_ACTION]}
+          />
           <button
             type="button"
             className="btn sm primary"
-            onClick={() => void openPreview()}
-            disabled={selectedCount === 0 || !target || busy || previewing}
+            onClick={() => setPreviewOpen(true)}
+            disabled={selectedCount === 0 || !target || !targetValid || busy}
+            data-tip={!targetValid && target ? targetMessage : undefined}
           >
-            {previewing ? <Loader2 size={12} className="tp-spin" /> : <Send size={12} aria-hidden="true" />}{" "}
-            {t("transfer.sendToFiles")}
+            <Send size={12} aria-hidden="true" /> {t("transfer.sendToFiles")}
           </button>
         </div>
-        {selectedCount > 0 && (
-          <div className="tp-select-all">
-            <label>
-              <input
-                type="checkbox"
-                checked={allVisibleSelected}
-                onChange={(event) =>
-                  event.target.checked
-                    ? useTransferStore.getState().selectAllVisible()
-                    : useTransferStore.getState().clearSelection()
-                }
-              />{" "}
-              {t("transfer.selectAll")}
-            </label>
-            <button type="button" className="tp-link" onClick={() => useTransferStore.getState().clearSelection()}>
-              {t("transfer.clearSelection")}
-            </button>
-          </div>
-        )}
-        <input type="hidden" value={target} readOnly />
+        {selectedCount === 0 && visible.length > 0 && <p className="tp-hint">{t("transfer.emptySelectionHint")}</p>}
       </footer>
 
-      <Dialog
+      <TransferConfirmDialog
         open={previewOpen}
         onClose={() => setPreviewOpen(false)}
-        title={t("transfer.previewTitle")}
-        size="md"
+        ids={selection}
+        target={sendTarget}
+        options={sendOptions}
+        onOptionsChange={setSendOptions}
+        onNotify={notify}
+        onExecuted={() => useTransferStore.getState().clearSelection()}
+      />
+
+      <Dialog
+        open={reportOpen && addReport !== null}
+        onClose={() => setReportOpen(false)}
+        title={t("transfer.rejectedTitle")}
+        size="sm"
         footer={
-          <>
-            <button type="button" className="btn" onClick={() => setPreviewOpen(false)}>
-              {t("common.cancel")}
-            </button>
-            <button
-              type="button"
-              className="btn"
-              disabled={previewing || !preview}
-              onClick={() => void openPreview(sendOptions)}
-            >
-              {t("transfer.repreview")}
-            </button>
-            <button
-              type="button"
-              className="btn primary"
-              disabled={!preview?.targetValid || previewing}
-              onClick={() => void confirmSend()}
-            >
-              {t("transfer.confirmSend")}
-            </button>
-          </>
+          <button type="button" className="btn" onClick={() => setReportOpen(false)}>
+            {t("common.close")}
+          </button>
         }
       >
-        {previewError ? (
-          <p className="tp-error">{previewError}</p>
-        ) : preview ? (
-          <div className="tp-preview">
-            <p className="tp-preview-target">
-              {t("transfer.previewTarget")} <code>{preview.targetRef}</code>
-            </p>
-            <div className="tp-preview-options">
-              <label>
-                <span>{t("transfer.optionTextFormat")}</span>
-                <Select
-                  value={sendOptions.textFormat}
-                  options={[
-                    { value: "txt", label: t("transfer.optionTxt") },
-                    { value: "md", label: t("transfer.optionMarkdown") },
-                  ]}
-                  onChange={(value) => patchOptions({ textFormat: value as TransferOptions["textFormat"] })}
-                  ariaLabel={t("transfer.optionTextFormat")}
-                  block
-                  size="sm"
-                />
-              </label>
-              <label>
-                <span>{t("transfer.optionTextMode")}</span>
-                <Select
-                  value={sendOptions.textMode}
-                  options={[
-                    { value: "separate", label: t("transfer.optionSeparate") },
-                    { value: "merge", label: t("transfer.optionMerge") },
-                  ]}
-                  onChange={(value) => patchOptions({ textMode: value as TransferOptions["textMode"] })}
-                  ariaLabel={t("transfer.optionTextMode")}
-                  block
-                  size="sm"
-                />
-              </label>
-              <label>
-                <span>{t("transfer.optionFileOperation")}</span>
-                <Select
-                  value={sendOptions.fileOperation}
-                  options={[
-                    { value: "copy", label: t("transfer.optionCopy") },
-                    { value: "move", label: t("transfer.optionMove") },
-                  ]}
-                  onChange={(value) => patchOptions({ fileOperation: value as TransferOptions["fileOperation"] })}
-                  ariaLabel={t("transfer.optionFileOperation")}
-                  block
-                  size="sm"
-                />
-              </label>
-              <label>
-                <span>{t("transfer.optionUrlMode")}</span>
-                <Select
-                  value={sendOptions.urlMode}
-                  options={[
-                    { value: "url", label: t("transfer.optionUrlFile") },
-                    { value: "markdown", label: t("transfer.optionUrlMarkdown") },
-                  ]}
-                  onChange={(value) => patchOptions({ urlMode: value as TransferOptions["urlMode"] })}
-                  ariaLabel={t("transfer.optionUrlMode")}
-                  block
-                  size="sm"
-                />
-              </label>
-              <label>
-                <span>{t("transfer.optionConflict")}</span>
-                <Select
-                  value={sendOptions.conflict}
-                  options={[
-                    { value: "rename", label: t("transfer.optionRename") },
-                    { value: "skip", label: t("transfer.optionSkip") },
-                    { value: "overwrite", label: t("transfer.optionOverwrite") },
-                  ]}
-                  onChange={(value) => patchOptions({ conflict: value as TransferOptions["conflict"] })}
-                  ariaLabel={t("transfer.optionConflict")}
-                  block
-                  size="sm"
-                />
-              </label>
-            </div>
-            <p className="tp-preview-hint">{t("transfer.repreviewHint")}</p>
-            <div className="tp-preview-grid">
-              <span>{t("transfer.previewText")}<b>{preview.counts.text + preview.counts.richtext}</b></span>
-              <span>{t("transfer.previewImage")}<b>{preview.counts.image}</b></span>
-              <span>{t("transfer.previewFile")}<b>{preview.counts.file + preview.counts.directory}</b></span>
-              <span>{t("transfer.previewUrl")}<b>{preview.counts.url}</b></span>
-              <span>{t("transfer.previewFiles")}<b>{preview.plannedFiles}</b></span>
-              <span>{t("transfer.previewUnsupported")}<b>{preview.counts.unsupported}</b></span>
-            </div>
-            {preview.conflicts.length > 0 && (
-              <p className="tp-preview-warn">
-                {t("transfer.previewConflicts", { count: preview.conflicts.length })}
-              </p>
+        {addReport && (
+          <div className="tp-report">
+            <p className="tp-hint">{t("transfer.rejectedHint")}</p>
+            <ul className="tp-preview-list">
+              {rejectionLines(addReport.rejected).map((line) => (
+                <li key={line}>{line}</li>
+              ))}
+            </ul>
+            {addReport.duplicates > 0 && (
+              <p className="tp-hint">{t("transfer.duplicates", { count: addReport.duplicates })}</p>
             )}
-            {preview.unsupported.length > 0 && (
-              <ul className="tp-preview-list">
-                {preview.unsupported.slice(0, 5).map((entry) => (
-                  <li key={entry.itemId}>{entry.title}：{entry.reason}</li>
-                ))}
-              </ul>
-            )}
-            {preview.warnings.map((warning) => (
-              <p key={warning} className="tp-preview-warn">{warning}</p>
-            ))}
           </div>
-        ) : null}
+        )}
+      </Dialog>
+
+      <Dialog
+        open={batchDetailOpen && activeBatch !== null}
+        onClose={() => setBatchDetailOpen(false)}
+        title={t("transfer.batchDetail")}
+        size="md"
+        footer={
+          <button type="button" className="btn" onClick={() => setBatchDetailOpen(false)}>
+            {t("common.close")}
+          </button>
+        }
+      >
+        {activeBatch && (
+          <div className="tp-report">
+            <ul className="tp-batch-entries">
+              {activeBatch.entries.map((entry, index) => (
+                <li key={`${entry.itemId}-${index}`} className={`is-${entry.status}`}>
+                  <span className="tp-batch-entry-label" data-tip={entry.label}>
+                    {entry.label}
+                  </span>
+                  <span className={`tp-status is-${entry.status === "sent" ? "sent" : entry.status === "skipped" ? "expired" : "failed"}`}>
+                    {entry.status === "sent"
+                      ? t("transfer.status.sent")
+                      : entry.status === "skipped"
+                        ? t("transfer.optionSkip")
+                        : t("transfer.status.failed")}
+                  </span>
+                  {entry.message && <span className="tp-batch-entry-msg">{entry.message}</span>}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </Dialog>
     </aside>
   );

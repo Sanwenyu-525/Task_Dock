@@ -12,6 +12,7 @@ use chrono::Utc;
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 
+use super::attachments::{self, CaptureAttachment, CaptureFiles};
 use crate::agents::now_iso;
 use crate::commands::tasks::{create_task_tx, TaskInput};
 use crate::db::Db;
@@ -65,6 +66,8 @@ pub struct CaptureItem {
     pub source: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// 图片附件元数据（按粘贴顺序）；旧记录为空数组。
+    pub attachments: Vec<CaptureAttachment>,
 }
 
 /// 单行草稿（`quick_capture_state` 恢复用）。
@@ -73,6 +76,8 @@ pub struct CaptureDraft {
     pub kind: String,
     pub content: String,
     pub updated_at: String,
+    /// 草稿期间粘贴的图片；正文为空但有附件时草稿仍然有效。
+    pub attachments: Vec<CaptureAttachment>,
 }
 
 /// 快速捕获窗口初始状态。
@@ -93,6 +98,10 @@ pub struct SubmitCaptureInput {
     pub url: Option<String>,
     #[serde(default)]
     pub note: Option<String>,
+    /// 草稿附件的 ID 列表：与正文一起在提交事务内转成条目附件。
+    /// 旧前端不传视为无附件（向后兼容）。
+    #[serde(default)]
+    pub attachment_ids: Vec<String>,
 }
 
 /// 提交结果。
@@ -146,6 +155,7 @@ struct ValidatedSubmit {
     content: String,
     url: Option<String>,
     note: Option<String>,
+    attachment_ids: Vec<String>,
 }
 
 fn validate_submit(input: SubmitCaptureInput) -> AppResult<ValidatedSubmit> {
@@ -175,12 +185,28 @@ fn validate_submit(input: SubmitCaptureInput) -> AppResult<ValidatedSubmit> {
     }
     let url = normalize_opt(input.url, MAX_URL, "链接")?;
     let note = normalize_opt(input.note, MAX_NOTE, "备注")?;
+    // 附件 ID：去空、去重（同一张图重复提交只挂一次），数量与附件模块同口径。
+    let mut attachment_ids: Vec<String> = Vec::new();
+    for id in input.attachment_ids {
+        let id = id.trim().to_string();
+        if id.is_empty() || attachment_ids.contains(&id) {
+            continue;
+        }
+        attachment_ids.push(id);
+    }
+    if attachment_ids.len() > attachments::MAX_ATTACHMENTS {
+        return Err(AppError::Validation(format!(
+            "最多携带 {} 张图片",
+            attachments::MAX_ATTACHMENTS
+        )));
+    }
     Ok(ValidatedSubmit {
         client_id,
         kind,
         content,
         url,
         note,
+        attachment_ids,
     })
 }
 
@@ -286,27 +312,38 @@ fn row_to_item(r: &rusqlite::Row<'_>) -> rusqlite::Result<CaptureItem> {
         source: r.get(8)?,
         created_at: r.get(9)?,
         updated_at: r.get(10)?,
+        attachments: Vec::new(),
     })
 }
 
 fn find_by_id(conn: &rusqlite::Connection, id: &str) -> AppResult<Option<CaptureItem>> {
-    conn.query_row(
-        &format!("SELECT {ITEM_COLUMNS} FROM quick_capture_items WHERE id = ?1"),
-        rusqlite::params![id],
-        row_to_item,
-    )
-    .optional()
-    .map_err(AppError::from)
+    let mut item = conn
+        .query_row(
+            &format!("SELECT {ITEM_COLUMNS} FROM quick_capture_items WHERE id = ?1"),
+            rusqlite::params![id],
+            row_to_item,
+        )
+        .optional()
+        .map_err(AppError::from)?;
+    if let Some(found) = item.as_mut() {
+        found.attachments = attachments::list_for_item(conn, id)?;
+    }
+    Ok(item)
 }
 
 fn find_by_client(conn: &rusqlite::Connection, client_id: &str) -> AppResult<Option<CaptureItem>> {
-    conn.query_row(
-        &format!("SELECT {ITEM_COLUMNS} FROM quick_capture_items WHERE client_id = ?1"),
-        rusqlite::params![client_id],
-        row_to_item,
-    )
-    .optional()
-    .map_err(AppError::from)
+    let mut item = conn
+        .query_row(
+            &format!("SELECT {ITEM_COLUMNS} FROM quick_capture_items WHERE client_id = ?1"),
+            rusqlite::params![client_id],
+            row_to_item,
+        )
+        .optional()
+        .map_err(AppError::from)?;
+    if let Some(found) = item.as_mut() {
+        found.attachments = attachments::list_for_item(conn, &found.id)?;
+    }
+    Ok(item)
 }
 
 /// 唯一索引冲突判定（SQLITE_CONSTRAINT_UNIQUE = 2067）。
@@ -333,21 +370,45 @@ pub fn last_type(db: &Db) -> String {
 
 /// 窗口初始状态：草稿、上次类型、收集箱待处理数。
 pub fn state(db: &Db) -> AppResult<CaptureState> {
-    let draft = db.with_read(|conn| {
-        conn.query_row(
-            "SELECT kind, content, updated_at FROM quick_capture_draft WHERE id = 'active'",
-            [],
-            |r| {
-                Ok(CaptureDraft {
-                    kind: r.get(0)?,
-                    content: r.get(1)?,
-                    updated_at: r.get(2)?,
-                })
-            },
-        )
-        .optional()
-        .map_err(AppError::from)
+    let (draft, draft_attachments) = db.with_read(|conn| {
+        let draft = conn
+            .query_row(
+                "SELECT kind, content, updated_at FROM quick_capture_draft WHERE id = 'active'",
+                [],
+                |r| {
+                    Ok(CaptureDraft {
+                        kind: r.get(0)?,
+                        content: r.get(1)?,
+                        updated_at: r.get(2)?,
+                        attachments: Vec::new(),
+                    })
+                },
+            )
+            .optional()
+            .map_err(AppError::from)?;
+        let attachments = attachments::list_draft(conn)?;
+        Ok::<_, AppError>((draft, attachments))
     })?;
+    // 只粘了图、还没打字就关闭窗口：数据库没有草稿行，但图片仍然存在。
+    // 这里合成一条空正文草稿，保证再次唤起能恢复附件（不丢用户内容）。
+    let draft = match draft {
+        Some(mut draft) => {
+            draft.attachments = draft_attachments;
+            Some(draft)
+        }
+        None if !draft_attachments.is_empty() => {
+            let updated_at = db
+                .with_read(|conn| attachments::draft_latest_created_at(conn))?
+                .unwrap_or_else(now_iso);
+            Some(CaptureDraft {
+                kind: last_type(db),
+                content: String::new(),
+                updated_at,
+                attachments: draft_attachments,
+            })
+        }
+        None => None,
+    };
     let inbox_count = db.with_read(|conn| {
         let n: i64 = conn.query_row(
             "SELECT COUNT(*) FROM quick_capture_items WHERE status = 'inbox'",
@@ -365,6 +426,8 @@ pub fn state(db: &Db) -> AppResult<CaptureState> {
 
 /// 保存草稿：内容 trim 为空则清空草稿；否则单行 upsert（原始内容保留）。
 /// 返回 `saved_at`（前端据此显示「已保存」，不猜测）。
+///
+/// 有附件时即使正文为空也保留草稿行：否则「只粘一张图就关窗」会丢掉图片。
 pub fn save_draft(db: &Db, kind: &str, content: &str) -> AppResult<DraftSaved> {
     let kind = kind.trim();
     if !is_kind(kind) {
@@ -379,7 +442,8 @@ pub fn save_draft(db: &Db, kind: &str, content: &str) -> AppResult<DraftSaved> {
     }
     let now = now_iso();
     db.with_conn(|conn| {
-        if trimmed.is_empty() {
+        let has_attachments = attachments::draft_count(conn)? > 0;
+        if trimmed.is_empty() && !has_attachments {
             conn.execute("DELETE FROM quick_capture_draft WHERE id = 'active'", [])?;
         } else {
             conn.execute(
@@ -397,12 +461,14 @@ pub fn save_draft(db: &Db, kind: &str, content: &str) -> AppResult<DraftSaved> {
     Ok(DraftSaved { saved_at: now })
 }
 
-/// 清空草稿（用户显式丢弃）。
-pub fn clear_draft(db: &Db) -> AppResult<()> {
+/// 清空草稿（用户显式丢弃）：连同草稿附件一起删除。
+pub fn clear_draft(db: &Db, files: &CaptureFiles) -> AppResult<()> {
     db.with_conn(|conn| {
         conn.execute("DELETE FROM quick_capture_draft WHERE id = 'active'", [])?;
-        Ok(())
-    })
+        Ok::<_, AppError>(())
+    })?;
+    attachments::clear_draft(db, files)?;
+    Ok(())
 }
 
 /// 记录上次选择的类型（只写设置，不写草稿）。
@@ -482,6 +548,16 @@ pub fn submit(db: &Db, input: SubmitCaptureInput) -> AppResult<SubmitCaptureResu
                 rusqlite::params![tid, now, id],
             )?;
         }
+        // 附件与正文同事务转正：任一附件已失效（被删除/已被另一次提交转走）就整体
+        // 回滚，草稿与图片都留在原处，用户重试不会丢图。
+        if !v.attachment_ids.is_empty() {
+            let moved = attachments::transfer_to_item(&tx, &v.attachment_ids, &id)?;
+            if moved != v.attachment_ids.len() {
+                return Err(AppError::Conflict(
+                    "图片附件已失效，请重新粘贴后再保存".into(),
+                ));
+            }
+        }
         // 提交成功才清草稿（同一事务，失败时草稿保留供重试）
         tx.execute("DELETE FROM quick_capture_draft WHERE id = 'active'", [])?;
         let item = find_by_id(&tx, &id)?
@@ -518,6 +594,14 @@ pub fn list(
         for row in rows {
             items.push(row?);
         }
+        // 整页附件一次查完（避免每行一次查询）
+        let ids: Vec<String> = items.iter().map(|i| i.id.clone()).collect();
+        let mut grouped = attachments::list_for_items(conn, &ids)?;
+        for item in &mut items {
+            if let Some(list) = grouped.remove(&item.id) {
+                item.attachments = list;
+            }
+        }
         Ok(items)
     })
 }
@@ -544,17 +628,23 @@ pub fn mark_handled(db: &Db, id: &str) -> AppResult<CaptureItem> {
 }
 
 /// 删除收集箱条目（已 converted 的条目删除不影响已建任务）。
-pub fn delete(db: &Db, id: &str) -> AppResult<()> {
-    db.with_conn(|conn| {
-        let n = conn.execute(
+/// 关联的图片在同一个事务里删行、提交后删文件：行与文件不会出现「半删」。
+pub fn delete(db: &Db, id: &str, files: &CaptureFiles) -> AppResult<()> {
+    let removed_files = db.with_conn(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        let n = tx.execute(
             "DELETE FROM quick_capture_items WHERE id = ?1",
             rusqlite::params![id],
         )?;
         if n == 0 {
             return Err(AppError::NotFound(format!("捕获记录不存在: {}", id)));
         }
-        Ok(())
-    })
+        let attachments = attachments::take_item_attachments(&tx, id)?;
+        tx.commit()?;
+        Ok::<_, AppError>(attachments)
+    })?;
+    attachments::remove_files(files, &removed_files);
+    Ok(())
 }
 
 /// 把收集箱条目转为任务：任务与状态回写同事务；已 converted 幂等返回。
@@ -600,6 +690,11 @@ mod tests {
         (dir, db)
     }
 
+    /// 与临时目录配套的附件目录（删除/清空草稿需要它来回收文件）。
+    fn files_for(dir: &std::path::Path) -> CaptureFiles {
+        CaptureFiles::new(dir.join("attachments")).expect("创建附件目录失败")
+    }
+
     fn cleanup(dir: &std::path::Path) {
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -611,7 +706,16 @@ mod tests {
             content: content.into(),
             url: None,
             note: None,
+            attachment_ids: Vec::new(),
         }
+    }
+
+    /// 生成一张最小合法 PNG 的 base64（用于附件集成测试）。
+    fn png_base64(width: u32, height: u32) -> String {
+        use base64::Engine as _;
+        let rgba = vec![0x80u8; (width * height * 4) as usize];
+        let png = crate::clipboard::image::encode_png(&rgba, width, height).expect("编码 PNG");
+        base64::engine::general_purpose::STANDARD.encode(png)
     }
 
     fn count_rows(db: &Db, table: &str) -> i64 {
@@ -798,7 +902,8 @@ mod tests {
         assert!(!cleared.saved_at.is_empty());
         assert!(state(&db).expect("状态").draft.is_none());
         // clear_draft 幂等
-        clear_draft(&db).expect("清空应成功");
+        let files = files_for(&dir);
+        clear_draft(&db, &files).expect("清空应成功");
         assert!(state(&db).expect("状态").draft.is_none());
         // 提交成功在事务内清草稿
         save_draft(&db, "text", "待提交").expect("保存草稿");
@@ -832,11 +937,12 @@ mod tests {
         assert_eq!(again.task_id.as_deref(), Some(tid.as_str()));
         assert_eq!(count_rows(&db, "tasks"), 1, "不得重复建任务");
 
-        delete(&db, &idea.id).expect("删除应成功");
-        let err = delete(&db, &idea.id).unwrap_err();
+        let files = files_for(&dir);
+        delete(&db, &idea.id, &files).expect("删除应成功");
+        let err = delete(&db, &idea.id, &files).unwrap_err();
         assert!(matches!(err, AppError::NotFound(_)), "重复删除应 NotFound");
         // 删除 converted 条目不删除任务
-        delete(&db, &link.id).expect("删除应成功");
+        delete(&db, &link.id, &files).expect("删除应成功");
         assert_eq!(count_rows(&db, "tasks"), 1);
         drop(db);
         cleanup(&dir);
@@ -913,4 +1019,144 @@ mod tests {
         drop(db);
         cleanup(&dir);
     }
+
+    // ── 图片附件与草稿/提交联动（v80）──────────────────────────
+
+    #[test]
+    fn draft_with_only_images_survives_and_restores() {
+        let (dir, db) = temp_db("att-draft");
+        let files = files_for(&dir);
+        let a = attachments::add(&db, &files, &png_base64(4, 4), "image/png").expect("添加图片");
+        // 没有任何正文：save_draft 不能把草稿行删掉，否则图片无法恢复
+        save_draft(&db, "task", "").expect("保存空草稿");
+        let st = state(&db).expect("状态");
+        let draft = st.draft.expect("有附件时草稿必须存在");
+        assert_eq!(draft.content, "");
+        assert_eq!(draft.attachments.len(), 1);
+        assert_eq!(draft.attachments[0].id, a.id);
+        // 正常正文 + 附件
+        save_draft(&db, "task", "买菜").expect("保存正文");
+        let draft = state(&db).expect("状态").draft.expect("草稿");
+        assert_eq!(draft.content, "买菜");
+        assert_eq!(draft.attachments.len(), 1);
+        // 显式清空草稿：附件行与文件一起回收
+        clear_draft(&db, &files).expect("清空");
+        assert!(state(&db).expect("状态").draft.is_none());
+        assert!(!files.image_abs(&a.id).exists());
+        drop(db);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn submit_moves_draft_attachments_onto_the_item() {
+        let (dir, db) = temp_db("att-submit");
+        let files = files_for(&dir);
+        let a = attachments::add(&db, &files, &png_base64(4, 4), "image/png").expect("添加");
+        save_draft(&db, "text", "带图的想法").expect("保存草稿");
+        let mut inp = input("att-client", "text", "带图的想法");
+        inp.attachment_ids = vec![a.id.clone()];
+        let r = submit(&db, inp).expect("提交");
+        assert_eq!(r.status, "inbox");
+        let items = list(&db, None, None, None).expect("列表");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].attachments.len(), 1);
+        assert_eq!(items[0].attachments[0].id, a.id);
+        assert!(files.image_abs(&a.id).is_file(), "转正后原图仍在");
+        assert!(state(&db).expect("状态").draft.is_none(), "提交后草稿清空");
+        // 再读一次：附件归属已从草稿转到条目
+        let item = list(&db, None, None, None).expect("列表")[0].clone();
+        assert_eq!(item.attachments.len(), 1);
+        drop(db);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn duplicate_submit_never_duplicates_attachments() {
+        let (dir, db) = temp_db("att-dup");
+        let files = files_for(&dir);
+        let a = attachments::add(&db, &files, &png_base64(4, 4), "image/png").expect("添加");
+        let mut inp = input("att-dup-client", "text", "图");
+        inp.attachment_ids = vec![a.id.clone()];
+        let first = submit(&db, inp.clone()).expect("首次提交");
+        let again = submit(&db, inp).expect("重复提交");
+        assert!(again.duplicate);
+        assert_eq!(again.id, first.id);
+        let items = list(&db, None, None, None).expect("列表");
+        assert_eq!(items.len(), 1, "不得新增条目");
+        assert_eq!(items[0].attachments.len(), 1, "不得重复挂附件");
+        // 文件只有一个
+        let count = std::fs::read_dir(files.root.join("images")).unwrap().count();
+        assert_eq!(count, 1);
+        drop(db);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn submit_with_stale_attachment_rolls_back_and_keeps_draft() {
+        let (dir, db) = temp_db("att-stale");
+        let files = files_for(&dir);
+        let a = attachments::add(&db, &files, &png_base64(4, 4), "image/png").expect("添加");
+        save_draft(&db, "text", "正文").expect("草稿");
+        // 用户在另一个入口删掉了这张图（或已提交过）：ID 失效
+        attachments::remove_draft(&db, &files, &a.id).expect("删除附件");
+        let mut inp = input("att-stale-client", "text", "正文");
+        inp.attachment_ids = vec![a.id.clone()];
+        let err = submit(&db, inp).expect_err("附件失效应失败");
+        assert!(matches!(err, AppError::Conflict(_)));
+        assert_eq!(count_rows(&db, "quick_capture_items"), 0, "整体回滚");
+        assert!(state(&db).expect("状态").draft.is_some(), "草稿保留供重试");
+        drop(db);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn failed_task_submit_keeps_attachments_as_draft() {
+        let (dir, db) = temp_db("att-rollback");
+        let files = files_for(&dir);
+        let a = attachments::add(&db, &files, &png_base64(4, 4), "image/png").expect("添加");
+        save_draft(&db, "task", "长标题").expect("草稿");
+        // 标题超长 → 建任务失败 → 整个事务回滚，附件仍属于草稿
+        let long_title = "长".repeat(MAX_TITLE + 1);
+        let mut inp = input("att-rollback-client", "task", &long_title);
+        inp.attachment_ids = vec![a.id.clone()];
+        assert!(submit(&db, inp).is_err());
+        let draft = state(&db).expect("状态").draft.expect("草稿保留");
+        assert_eq!(draft.attachments.len(), 1, "提交失败不得丢图");
+        assert!(files.image_abs(&a.id).is_file());
+        drop(db);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn deleting_item_removes_attachment_rows_and_files() {
+        let (dir, db) = temp_db("att-delete");
+        let files = files_for(&dir);
+        let a = attachments::add(&db, &files, &png_base64(4, 4), "image/png").expect("添加");
+        let mut inp = input("att-del-client", "idea", "带图");
+        inp.attachment_ids = vec![a.id.clone()];
+        let item = submit(&db, inp).expect("提交");
+        delete(&db, &item.id, &files).expect("删除条目");
+        assert_eq!(count_rows(&db, "quick_capture_attachments"), 0);
+        assert!(!files.image_abs(&a.id).exists());
+        assert!(!files.thumb_abs(&a.id).exists());
+        drop(db);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn attachments_survive_mark_handled_and_convert() {
+        let (dir, db) = temp_db("att-ops");
+        let files = files_for(&dir);
+        let a = attachments::add(&db, &files, &png_base64(4, 4), "image/png").expect("添加");
+        let mut inp = input("att-ops-client", "idea", "带图");
+        inp.attachment_ids = vec![a.id.clone()];
+        let item = submit(&db, inp).expect("提交");
+        let handled = mark_handled(&db, &item.id).expect("已处理");
+        assert_eq!(handled.attachments.len(), 1, "已处理记录仍能看原图");
+        let converted = convert_to_task(&db, &item.id).expect("转任务");
+        assert_eq!(converted.attachments.len(), 1, "已转任务仍能看原图");
+        drop(db);
+        cleanup(&dir);
+    }
+
 }

@@ -190,3 +190,82 @@ fn preview_reports_target_and_planned_files_without_writing() {
     fs::remove_dir_all(&dir).ok();
 }
 
+
+#[test]
+fn file_and_directory_types_must_match_real_filesystem() {
+    use std::fs;
+    let dir = std::env::temp_dir().join(format!("taskdock-type-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&dir).unwrap();
+    let file_path = dir.join("a.txt");
+    fs::write(&file_path, "x").unwrap();
+    let db = db();
+
+    let as_file = TransferItemInput {
+        id: None,
+        item_type: "file".into(),
+        source_module: "files".into(),
+        source_id: file_path.to_string_lossy().to_string(),
+        title: "a.txt".into(),
+        description: String::new(),
+        content: String::new(),
+        payload: serde_json::json!({ "path": file_path.to_string_lossy() }),
+        pinned: false,
+    };
+    let report = store::add_items(&db, vec![as_file]).unwrap();
+    assert_eq!(report.items.len(), 1, "普通文件应作为 file 加入");
+
+    let as_dir = TransferItemInput {
+        id: None,
+        item_type: "directory".into(),
+        source_module: "files".into(),
+        source_id: file_path.to_string_lossy().to_string(),
+        title: "a.txt".into(),
+        description: String::new(),
+        content: String::new(),
+        payload: serde_json::json!({ "path": file_path.to_string_lossy() }),
+        pinned: false,
+    };
+    let mismatch = store::add_items(&db, vec![as_dir]).unwrap();
+    assert!(mismatch.items.is_empty());
+    assert_eq!(mismatch.rejected.len(), 1);
+    assert!(mismatch.rejected[0].message.contains("形态不一致"));
+
+    let real_dir = TransferItemInput {
+        id: None,
+        item_type: "directory".into(),
+        source_module: "files".into(),
+        source_id: dir.to_string_lossy().to_string(),
+        title: "dir".into(),
+        description: String::new(),
+        content: String::new(),
+        payload: serde_json::json!({ "path": dir.to_string_lossy() }),
+        pinned: false,
+    };
+    let dir_report = store::add_items(&db, vec![real_dir]).unwrap();
+    assert_eq!(dir_report.items.len(), 1, "目录应作为 directory 加入");
+    assert_eq!(dir_report.items[0].item_type, "directory");
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn missing_path_is_rejected_at_add_time_with_code() {
+    let db = db();
+    let missing = std::env::temp_dir()
+        .join(format!("taskdock-missing-{}", uuid::Uuid::new_v4()))
+        .join("nope.txt");
+    let input = TransferItemInput {
+        id: None,
+        item_type: "file".into(),
+        source_module: "files".into(),
+        source_id: missing.to_string_lossy().to_string(),
+        title: "nope.txt".into(),
+        description: String::new(),
+        content: String::new(),
+        payload: serde_json::json!({ "path": missing.to_string_lossy() }),
+        pinned: false,
+    };
+    let report = store::add_items(&db, vec![input]).unwrap();
+    assert!(report.items.is_empty(), "不存在的路径不能进入工作篮");
+    assert_eq!(report.rejected.len(), 1);
+    assert_eq!(report.rejected[0].code, "TRANSFER_SOURCE_MISSING");
+}

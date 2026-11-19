@@ -755,6 +755,13 @@ pub fn run() {
             let settings = db::Settings::load(&db).unwrap_or_else(|e| {
                 tracing::warn!(
                     "启动时读取设置失败，使用默认值（剪贴板等模块将按默认关闭）: {}",
+            // 快速捕获图片附件：独立托管目录 data_dir/capture-attachments，
+            // 与剪贴板资产分属不同生命周期（删除捕获记录不能影响剪贴板历史）。
+            let capture_files = Arc::new(
+                quick_capture::attachments::CaptureFiles::new(data_dir.join("capture-attachments"))
+                    .expect("快速捕获附件目录初始化失败"),
+            );
+            handle.manage(capture_files);
                     e
                 );
                 Default::default()
@@ -946,6 +953,11 @@ pub fn run() {
                 // 拖拽期间 `window_shape::apply` 会跳过回读与 DWM 写入（逐帧写会让
                 // DWM 反复重新合成，表现为拖动中整窗透明）。松手时由磁力层的
                 // `WM_EXITSIZEMOVE` 调 `flush_deferred`，通过本回调一次性补做校准。
+                        if let Some(state) = ctx_handle
+                            .try_state::<Arc<transfer::context::ContextState>>()
+                        {
+                            state.forget(&window_label);
+                        }
                 let win_for_flush = win.clone();
                 window_shape::register_apply_hook(Box::new(move || {
                     let _ = window_shape::apply(&win_for_flush);
@@ -1761,6 +1773,11 @@ pub fn run() {
             commands::shelf::shelf_list,
             commands::shelf::shelf_get_item,
             commands::shelf::shelf_stats,
+            quick_capture::quick_capture_focus,
+            quick_capture::quick_capture_add_attachment,
+            quick_capture::quick_capture_remove_attachment,
+            quick_capture::quick_capture_attachment_thumb,
+            quick_capture::quick_capture_attachment_preview,
             commands::shelf::shelf_groups,
             commands::shelf::shelf_group_create,
             commands::shelf::shelf_group_rename,

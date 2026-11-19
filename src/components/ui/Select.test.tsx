@@ -4,7 +4,7 @@
 //! Select 基元：键盘、鼠标、滚动、ARIA 与焦点恢复。
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import Select from "./Select";
@@ -29,6 +29,20 @@ function Harness({ onChange }: { onChange?: (v: string) => void }) {
       }}
     />
   );
+}
+
+function rect(width: number, height: number): DOMRect {
+  return {
+    x: 0,
+    y: 0,
+    width,
+    height,
+    top: 0,
+    left: 0,
+    right: width,
+    bottom: height,
+    toJSON: () => ({}),
+  } as DOMRect;
 }
 
 afterEach(cleanup);
@@ -268,5 +282,63 @@ describe("Select 基元", () => {
     popover = document.querySelector(".ui-select-popover") as HTMLElement;
     expect(popover).not.toBeNull();
     expect(popover.style.getPropertyValue("--menu-min-w")).toBe("146px");
+  });
+});
+
+describe("Select 宽度策略", () => {
+  it("展开后弹层严格等于触发按钮宽度，长选项在内部省略而不是撑宽", async () => {
+    const spy = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: HTMLElement) {
+        if (this.classList?.contains("ui-select-trigger")) return rect(184, 30);
+        if (this.classList?.contains("ui-popover-host")) return rect(184, 220);
+        return rect(0, 0);
+      });
+    const clientWidth = Object.getOwnPropertyDescriptor(
+      document.documentElement,
+      "clientWidth",
+    );
+    const clientHeight = Object.getOwnPropertyDescriptor(
+      document.documentElement,
+      "clientHeight",
+    );
+    Object.defineProperty(document.documentElement, "clientWidth", {
+      configurable: true,
+      value: 1024,
+    });
+    Object.defineProperty(document.documentElement, "clientHeight", {
+      configurable: true,
+      value: 768,
+    });
+    try {
+      const user = userEvent.setup();
+      render(<Harness />);
+      const trigger = screen.getByRole("combobox", { name: "来源筛选" });
+      await user.click(trigger);
+      const host = document.querySelector(".ui-popover-host") as HTMLElement;
+      await waitFor(() => expect(host.dataset.popupWidth).toBe("exact"));
+      expect(host.style.getPropertyValue("--popover-exact-w")).toBe("184px");
+      // 选项 title 提供完整文字（宽度锁死后只能省略）
+      const option = screen.getByRole("option", { name: /Codex/ });
+      expect(option.getAttribute("title")).toContain("Codex");
+    } finally {
+      spy.mockRestore();
+      if (clientWidth) {
+        Object.defineProperty(document.documentElement, "clientWidth", clientWidth);
+      } else {
+        delete (document.documentElement as unknown as { clientWidth?: number }).clientWidth;
+      }
+      if (clientHeight) {
+        Object.defineProperty(document.documentElement, "clientHeight", clientHeight);
+      } else {
+        delete (document.documentElement as unknown as { clientHeight?: number }).clientHeight;
+      }
+    }
+  });
+
+  it("触发器已选文案带 title，便于查看被省略的完整值", () => {
+    render(<Harness />);
+    const label = document.querySelector(".ui-select-label") as HTMLElement;
+    expect(label.getAttribute("title")).toBe("Codex");
   });
 });

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-//! 面板状态：持久化、宽度收敛、形态判定与跨窗口同步。
+//! 面板状态：持久化、宽度收敛、形态判定（宿主 + 固定 + 容器宽度）与跨窗口同步。
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -31,6 +31,43 @@ describe("panelState", () => {
     expect(mod.resolvePanelMode(1200)).toBe("dock");
     expect(mod.resolvePanelMode(1080)).toBe("dock");
     expect(mod.resolvePanelMode(1079)).toBe("drawer");
+  });
+
+  it("取消固定后即使容器够宽也只能是抽屉", async () => {
+    const mod = await import("./panelState");
+    expect(
+      mod.resolvePanelMode({ host: "workbench", pinned: false, availableWidth: 1600 }),
+    ).toBe("drawer");
+  });
+
+  it("主窗口永远是抽屉（没有工作台内容容器）", async () => {
+    const mod = await import("./panelState");
+    expect(mod.resolvePanelMode({ host: "main", pinned: true, availableWidth: 2000 })).toBe("drawer");
+    expect(mod.resolvePanelMode({ host: "main", pinned: false, availableWidth: 2000 })).toBe("drawer");
+  });
+
+  it("工作台 + 固定 + 宽度不足时退回抽屉", async () => {
+    const mod = await import("./panelState");
+    expect(
+      mod.resolvePanelMode({ host: "workbench", pinned: true, availableWidth: 900 }),
+    ).toBe("drawer");
+    expect(
+      mod.resolvePanelMode({ host: "workbench", pinned: true, availableWidth: 1080 }),
+    ).toBe("dock");
+  });
+
+  it("形态是运行时值：不写入 localStorage，只通知订阅者", async () => {
+    const mod = await import("./panelState");
+    const seen: string[] = [];
+    const off = mod.subscribePanelMode((mode) => seen.push(mode));
+    mod.setPanelMode("dock");
+    mod.setPanelMode("dock");
+    mod.setPanelMode("drawer");
+    off();
+    mod.setPanelMode("dock");
+    expect(seen).toEqual(["dock", "drawer"]);
+    const stored = JSON.parse(localStorage.getItem("taskdock.transfer.panel.v1") ?? "{}");
+    expect(stored.mode).toBeUndefined();
   });
 
   it("同窗口订阅在状态变化时收到最新值，退订后不再收到", async () => {

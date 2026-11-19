@@ -179,6 +179,126 @@
     color: var(--text-tertiary);
   }
 
+  /* ── 图片附件（v80）──────────────────────────────────────
+     卡片里只占一行 44×38 缩略图：不改变条目高度节奏，也不挤压正文。
+     超过 4 张显示「+N」，右栏详情用更大的 72×60 并允许换行。 */
+  .inbox-attachments {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .inbox-attachment {
+    flex: none;
+    width: 44px;
+    height: 38px;
+    padding: 0;
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    background: var(--surface-raised);
+    overflow: hidden;
+    cursor: zoom-in;
+    transition: border-color 120ms;
+  }
+
+  .inbox-attachment:hover {
+    border-color: var(--accent);
+  }
+
+  .inbox-attachment:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+
+  .inbox-attachment img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  .inbox-attachment.is-pending {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-tertiary);
+    cursor: default;
+  }
+
+  .inbox-attachment-more {
+    flex: none;
+    min-width: 30px;
+    height: 38px;
+    padding: 0 6px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    background: var(--control-face);
+    color: var(--text-secondary);
+    font: inherit;
+    font-size: 10.5px;
+    cursor: pointer;
+  }
+
+  .inbox-attachment-more:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .inbox-attachments.is-detail {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .inbox-attachments.is-detail .inbox-attachment {
+    width: 72px;
+    height: 60px;
+    border-radius: 8px;
+  }
+
+  .inbox-attachments.is-detail .inbox-attachment-more {
+    height: 60px;
+  }
+
+  /* 大图预览：面板只给图片留白，不再套一层卡片内边距 */
+  .inbox-image-dialog .ui-dialog-body {
+    padding: 0;
+    background: var(--surface-base);
+  }
+
+  .inbox-image-stage {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 200px;
+    max-height: min(62vh, 520px);
+    overflow: hidden;
+  }
+
+  .inbox-image-stage img {
+    display: block;
+    max-width: 100%;
+    max-height: min(62vh, 520px);
+    object-fit: contain;
+  }
+
+  .inbox-image-hint {
+    font-size: 11.5px;
+    color: var(--text-tertiary);
+  }
+
+  .inbox-image-hint.is-error {
+    color: var(--c-danger);
+  }
+
+  .inbox-image-nav {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    width: 100%;
+  }
+
   @container wb-content (max-width: 700px) {
     .inbox-panel.has-detail .inbox-body {
       padding-bottom: 4px;

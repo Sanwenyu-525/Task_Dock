@@ -2,15 +2,21 @@
 //!
 //! 设计要点（对应 PLAN 第 2、4、5 节）：
 //! - **窗口复用**：`capture` 窗口在 `tauri.conf.json` 声明、启动即创建并隐藏，
-//!   唤起只做定位 + show + focus，隐藏只做 hide——不存在反复创建/销毁的
+//!   唤起只做定位 + show + 激活，隐藏只做 hide——不存在反复创建/销毁的
 //!   WebView 泄漏，隐藏后也没有任何轮询或定时器。
+//! - **显示时序**：`tao` 的 `set_visible` 经主线程队列异步生效，紧跟其后的
+//!   `set_focus()` 会读到「尚不可见」而直接返回（旧实现在这里丢焦点）。现在显示
+//!   流程分三步：排队 show → 有界等待 `IsWindowVisible` → 直接 Win32 激活并核实
+//!   前台句柄；不再依赖 `set_focus()` 的时序，也不用 tao 的 ALT 模拟。
+//! - **生命周期**：隐藏/显示/激活/失焦由 `lifecycle` 状态机判定（纯函数、可单测）。
+//!   只有真正进入过 `Active` 的窗口，后续失焦才自动隐藏；顶层窗口把焦点交给自己的
+//!   WebView2 子窗口时会收到 `Focused(false)`，但窗口仍在前台——这种情况不隐藏。
 //! - **定位**：记录唤起前的真实前台窗口（仅运行时内存，绝不落库），优先在
 //!   它所在显示器的工作区居中；取不到退回光标所在显示器，再退回主显示器。
 //!   工作区为物理像素（已排除任务栏），逻辑尺寸 × scale_factor 换算；
 //!   工作区比窗口还小时先缩小窗口，保证整体不越界（多显示器/多 DPI 均收敛）。
-//! - **焦点**：`Focused(false)` 先通知前端落草稿再隐藏，不抢回焦点；显式关闭
-//!   （Escape / 关闭按钮 / 热键 toggle）恢复唤起前的前台窗口，单次尽力而为，
-//!   失败静默（Windows 前台锁拒绝时不弹错误、不循环重试）。
+//! - **焦点恢复**：显式关闭（Escape / 关闭按钮 / 热键 toggle）恢复唤起前的前台
+//!   窗口，单次尽力而为；失焦隐藏路径绝不抢焦点。
 //! - **退出**：`request_exit` 中若窗口可见，emit `capture-flush-draft` 并最多
 //!   等待 300ms（前端 `quick_capture_save_draft` 成功即 ack），不拖慢常规退出。
 //! - **正文安全**：命令不打印捕获正文，错误信息也不回显正文。
@@ -26,8 +32,12 @@ use crate::db::Db;
 use crate::error::{AppError, AppResult};
 use crate::navigation::window_manager;
 
+pub mod attachments;
+pub mod lifecycle;
 pub mod store;
 pub mod voice;
+
+use lifecycle::{Action, LifecycleState, Phase, Signal};
 
 /// 窗口 label（与 tauri.conf.json / capabilities/capture.json 一致）。
 pub const WINDOW_LABEL: &str = "capture";
@@ -50,13 +60,19 @@ const CAPTURE_RADIUS: f64 = 16.0;
 pub const FLUSH_WAIT_MS: u64 = 300;
 /// 等待草稿 ack 的轮询步长（毫秒）。
 const FLUSH_POLL_MS: u64 = 10;
+/// 等待窗口真正可见的上限（毫秒）：`show()` 只是把请求排进主线程队列。
+const REVEAL_WAIT_MS: u64 = 400;
+/// 激活后核实前台句柄的上限（毫秒）：只做一次有界核实，不循环抢焦点。
+const FOCUS_VERIFY_MS: u64 = 240;
+/// 有界核实的轮询步长（毫秒）。
+const FOCUS_POLL_MS: u64 = 15;
 
 /// 唤起前的前台窗口句柄（仅运行时内存，绝不落库；隐藏后清空）。
 static PREV_FOREGROUND: Mutex<Option<isize>> = Mutex::new(None);
-/// 是否正在执行 hide：防止 hide 触发的 `Focused(false)` 递归。
-static HIDING: AtomicBool = AtomicBool::new(false);
 /// 退出前草稿是否已落盘（`quick_capture_save_draft` 成功后置位）。
 static DRAFT_FLUSHED: AtomicBool = AtomicBool::new(false);
+/// 窗口生命周期（单窗口，进程内唯一）。
+static LIFECYCLE: Mutex<LifecycleState> = Mutex::new(LifecycleState::initial());
 
 fn capture_window(app: &AppHandle) -> Option<tauri::WebviewWindow> {
     app.get_webview_window(WINDOW_LABEL)
@@ -64,6 +80,40 @@ fn capture_window(app: &AppHandle) -> Option<tauri::WebviewWindow> {
 
 fn prev_foreground() -> std::sync::MutexGuard<'static, Option<isize>> {
     PREV_FOREGROUND.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn lifecycle() -> std::sync::MutexGuard<'static, LifecycleState> {
+    LIFECYCLE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// 当前阶段（诊断/事件判定用快照）。
+pub fn phase() -> Phase {
+    lifecycle().phase
+}
+
+/// 推进生命周期并返回动作。
+fn advance(signal: Signal) -> Action {
+    let mut guard = lifecycle();
+    let (next, action) = lifecycle::step(*guard, signal);
+    if next != *guard {
+        tracing::debug!(
+            from = ?guard.phase,
+            to = ?next.phase,
+            signal = ?signal,
+            attempts = next.attempts,
+            "快速捕获生命周期"
+        );
+    }
+    *guard = next;
+    action
+}
+
+fn hwnd_of(win: &tauri::WebviewWindow) -> Option<isize> {
+    win.hwnd().ok().map(|h| h.0 as isize)
+}
+
+fn is_foreground(hwnd: isize) -> bool {
+    hwnd != 0 && window_manager::foreground_window() == hwnd
 }
 
 // ── 定位（纯函数，可单测）──────────────────────────────────
@@ -149,107 +199,207 @@ pub struct QuickCaptureShowResult {
     pub focus_error: Option<String>,
 }
 
+/// 隐藏结果：前端据此区分「已收起」与「本来就不可见」，并可以对失败给出反馈。
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuickCaptureHideResult {
+    pub hidden: bool,
+    pub already_hidden: bool,
+}
+
 /// 热键入口（Ctrl+Shift+Space）：
-/// - 已可见且已聚焦 → 收起（toggle）；
-/// - 已可见但未聚焦 → 只聚焦，不重建；
-/// - 隐藏 → 记录前台窗口、定位、show + focus。
+/// - 已在前台 → 收起（toggle）；
+/// - 已可见但不在前台 → 只做激活，不重建、不收起；
+/// - 隐藏 → 走与「快速记录」相同的显示路径。
 pub fn toggle(app: &AppHandle) {
     let Some(win) = capture_window(app) else {
         tracing::warn!(window = WINDOW_LABEL, "快速捕获窗口不存在，忽略热键");
         return;
     };
     if win.is_visible().unwrap_or(false) {
-        if win.is_focused().unwrap_or(false) {
-            hide_capture(app, true);
+        if hwnd_of(&win).is_some_and(is_foreground) {
+            if let Err(e) = hide_capture(app, true) {
+                tracing::warn!("快速捕获收起失败: {e}");
+            }
             return;
         }
-        let _ = win.set_focus();
-        let _ = app.emit_to(WINDOW_LABEL, SUMMONED_EVENT, ());
-        return;
     }
-    if let Err(e) = show(app) {
-        tracing::warn!("快速捕获窗口显示失败: {e}");
-    }
+    // 激活/显示要等待窗口可见（有界），放到异步任务，不阻塞热键回调。
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = show(&handle).await {
+            tracing::warn!("快速捕获窗口显示失败: {e}");
+        }
+    });
 }
 
-/// 显式打开快速捕获窗口（收集箱「+ 快速记录」等入口）：
-/// 已可见时只聚焦，不因再次点击而收起；未可见时走与热键相同的定位/恢复草稿路径。
-pub fn show(app: &AppHandle) -> AppResult<QuickCaptureShowResult> {
+/// 显示并在有界时间内尝试激活。
+///
+/// 已可见时只补充激活（不重建、不收起）；显示失败如实返回错误，激活失败只影响
+/// `focused` 字段——窗口仍然可见可用，前端提示用户点击输入区继续。
+pub async fn show(app: &AppHandle) -> AppResult<QuickCaptureShowResult> {
     let win = capture_window(app).ok_or_else(|| AppError::NotFound("快速捕获窗口不存在".into()))?;
-    if win.is_visible().unwrap_or(false) {
+    let already_visible = win.is_visible().unwrap_or(false);
+    // 本轮显示是否已获得一次激活预算（由生命周期状态机发放）
+    let mut visible_action = Action::None;
+
+    if !already_visible {
+        // 记录唤起前的真实前台窗口（仅运行时内存；无效/本进程时为 None）
+        *prev_foreground() = window_manager::foreground_hwnd();
+        // Hidden → Showing：重置本轮激活预算（不在此处激活，等窗口真正可见）
+        let _ = advance(Signal::Show);
+        if let Some(area) = target_area(app) {
+            let (x, y, w, h) = place_capture(&area, (WINDOW_WIDTH, WINDOW_HEIGHT));
+            // 尺寸只在需要时设置，避免每次唤起都触发前端 resize
+            let current = win
+                .outer_size()
+                .ok()
+                .map(|s| (s.width as i32, s.height as i32));
+            if current != Some((w, h)) {
+                let _ = win.set_size(PhysicalSize::new(w as u32, h as u32));
+            }
+            let _ = win.set_position(PhysicalPosition::new(x, y));
+            tracing::debug!(x, y, w, h, "快速捕获窗口定位");
+        }
+        // 区域必须在每次显示前按最终尺寸重算：尺寸变化会重置窗口区域，
+        // 不重算会让原生阴影/裁剪沿用上一帧的圆角矩形。
+        crate::window_shape::apply_with_radius(&win, CAPTURE_RADIUS);
         let _ = win.unminimize();
-        let focus_error = win.set_focus().err().map(|e| e.to_string());
-        let focused = win.is_focused().unwrap_or(false);
+        // 只有 show 失败才算「窗口打开失败」；定位/尺寸失败仍尝试显示并如实报告焦点状态。
+        win.show().map_err(AppError::Tauri)?;
+        // 先通知前端恢复草稿/聚焦，再等窗口可见：DOM 焦点与原生激活互不依赖。
         let _ = app.emit_to(WINDOW_LABEL, SUMMONED_EVENT, ());
-        return Ok(QuickCaptureShowResult {
-            visible: true,
-            focused,
-            focus_error: if focused {
-                None
-            } else {
-                Some(focus_error.unwrap_or_else(|| "系统前台锁阻止窗口自动聚焦".into()))
-            },
-        });
+    } else {
+        // 已可见：Show 在可见阶段等价于一次补激活（受预算限制）。
+        visible_action = advance(Signal::Show);
+        let _ = win.unminimize();
+        let _ = app.emit_to(WINDOW_LABEL, SUMMONED_EVENT, ());
     }
 
-    // 记录唤起前的真实前台窗口（仅运行时内存；无效/本进程时为 None）
-    *prev_foreground() = window_manager::foreground_hwnd();
-    if let Some(area) = target_area(app) {
-        let (x, y, w, h) = place_capture(&area, (WINDOW_WIDTH, WINDOW_HEIGHT));
-        // 尺寸只在需要时设置，避免每次唤起都触发前端 resize
-        let current = win
-            .outer_size()
-            .ok()
-            .map(|s| (s.width as i32, s.height as i32));
-        if current != Some((w, h)) {
-            let _ = win.set_size(PhysicalSize::new(w as u32, h as u32));
-        }
-        let _ = win.set_position(PhysicalPosition::new(x, y));
-        tracing::debug!(x, y, w, h, "快速捕获窗口定位");
+    let hwnd = hwnd_of(&win);
+    let Some(hwnd) = hwnd else {
+        return Ok(QuickCaptureShowResult {
+            visible: true,
+            focused: false,
+            focus_error: Some("无法获取窗口句柄，请点击输入区继续输入".into()),
+        });
+    };
+
+    if !already_visible {
+        // 等真正可见：tao 的 show 是主线程队列异步生效的。
+        reveal_wait(hwnd, Duration::from_millis(REVEAL_WAIT_MS)).await;
+        visible_action = advance(Signal::Revealed);
     }
-    // 区域必须在每次显示前按最终尺寸重算：尺寸变化会重置窗口区域，
-    // 不重算会让原生阴影/裁剪沿用上一帧的圆角矩形。
-    crate::window_shape::apply_with_radius(&win, CAPTURE_RADIUS);
-    let _ = win.unminimize();
-    // 只有 show 失败才算「窗口打开失败」；定位/尺寸失败仍尝试显示并如实报告焦点状态。
-    win.show().map_err(|e| AppError::Tauri(e))?;
-    let focus_error = win.set_focus().err().map(|e| e.to_string());
-    let focused = win.is_focused().unwrap_or(false);
-    let _ = app.emit_to(WINDOW_LABEL, SUMMONED_EVENT, ());
+
+    // 只在状态机发放了预算时才真正调用 SetForegroundWindow（每轮最多 2 次）。
+    let focused = if visible_action == Action::AttemptActivation {
+        activate_and_verify(hwnd).await
+    } else {
+        is_foreground(hwnd)
+    };
+    if focused {
+        advance(Signal::FocusGained);
+    }
     Ok(QuickCaptureShowResult {
         visible: true,
         focused,
         focus_error: if focused {
             None
         } else {
-            Some(focus_error.unwrap_or_else(|| "系统前台锁阻止窗口自动聚焦".into()))
+            Some("系统未允许自动聚焦，请点击输入区继续输入".into())
         },
     })
 }
 
-/// 隐藏捕获窗口。
+/// 发一次激活请求并做有界核实（**不**推进生命周期，调用方负责领取预算）。
 ///
-/// `restore_focus = true` 时，仅当隐藏前前台确实是捕获窗口（用户从窗口内
-/// 显式关闭/按热键收起）才把焦点还给唤起前的前台窗口；失焦隐藏路径传 false，
-/// 用户已经切到别的应用，绝不抢焦点。恢复失败静默（Windows 前台锁）。
-pub fn hide_capture(app: &AppHandle, restore_focus: bool) {
-    let Some(win) = capture_window(app) else {
-        return;
+/// 预算由生命周期状态机控制（每轮显示最多 `MAX_ACTIVATION_ATTEMPTS` 次），
+/// 因此这里即使被重复调用也不会无界抢焦点。
+async fn activate_and_verify(hwnd: isize) -> bool {
+    if is_foreground(hwnd) {
+        return true;
+    }
+    // 激活请求本身是极快的同步 Win32 调用；核实靠有界轮询，不在命令线程长阻塞。
+    let accepted = window_manager::activate_window_now(hwnd);
+    if !accepted && !is_foreground(hwnd) {
+        return false;
+    }
+    let deadline = Instant::now() + Duration::from_millis(FOCUS_VERIFY_MS);
+    while Instant::now() < deadline {
+        if is_foreground(hwnd) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(FOCUS_POLL_MS)).await;
+    }
+    is_foreground(hwnd)
+}
+
+/// 有界等待窗口真正可见（`IsWindowVisible`）：只用于 show 之后的一次确认。
+async fn reveal_wait(hwnd: isize, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if window_visible(hwnd) {
+            return;
+        }
+        if Instant::now() >= deadline {
+            tracing::warn!("快速捕获窗口在限定时间内未确认可见，继续尝试激活");
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(FOCUS_POLL_MS)).await;
+    }
+}
+
+#[cfg(windows)]
+fn window_visible(hwnd: isize) -> bool {
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::WindowsAndMessaging::IsWindowVisible;
+    unsafe { IsWindowVisible(hwnd as HWND) != 0 }
+}
+
+#[cfg(not(windows))]
+fn window_visible(_hwnd: isize) -> bool {
+    true
+}
+
+/// 隐藏捕获窗口（幂等）。
+///
+/// `restore_focus = true`（用户主动关闭/热键收起）时，仅当隐藏前前台确实是捕获
+/// 窗口才把焦点还给唤起前的前台窗口；自动失焦隐藏传 false，绝不抢焦点。
+/// 重复调用（已经隐藏 / 正在隐藏）返回 `already_hidden = true`，不会重复执行。
+pub fn hide_capture(app: &AppHandle, restore_focus: bool) -> AppResult<QuickCaptureHideResult> {
+    let win = capture_window(app).ok_or_else(|| AppError::NotFound("快速捕获窗口不存在".into()))?;
+    let action = advance(if restore_focus {
+        Signal::Dismiss
+    } else {
+        Signal::FocusLost
+    });
+    let Action::Hide { restore_focus } = action else {
+        // 已经隐藏 / 正在关闭：幂等返回，不重复 hide、不重复恢复焦点
+        return Ok(QuickCaptureHideResult {
+            hidden: false,
+            already_hidden: true,
+        });
     };
     if !win.is_visible().unwrap_or(false) {
-        return;
+        advance(Signal::Hidden);
+        return Ok(QuickCaptureHideResult {
+            hidden: false,
+            already_hidden: true,
+        });
     }
     // 隐藏即释放麦克风：即使前端来不及 stop，听写会话也不在后台空转。
     if let Some(voice) = app.try_state::<Arc<voice::VoiceInput>>() {
         voice.stop_async();
     }
     // 必须在 hide 之前判断：hide 之后前台必然易主，按字面判断永远不会成立。
-    let capture_hwnd = win.hwnd().ok().map(|h| h.0 as isize).unwrap_or(0);
-    let was_foreground = capture_hwnd != 0 && window_manager::foreground_window() == capture_hwnd;
+    let was_foreground = hwnd_of(&win).is_some_and(is_foreground);
 
-    HIDING.store(true, Ordering::SeqCst);
-    let _ = win.hide();
-    HIDING.store(false, Ordering::SeqCst);
+    win.hide().map_err(|e| {
+        // hide 失败：回滚到可用状态，让用户还能看到窗口并再次尝试关闭。
+        advance(Signal::Hidden);
+        AppError::Tauri(e)
+    })?;
+    advance(Signal::Hidden);
 
     let prev = prev_foreground().take();
     if restore_focus && was_foreground {
@@ -261,9 +411,13 @@ pub fn hide_capture(app: &AppHandle, restore_focus: bool) {
         }
     }
     let _ = app.emit_to(WINDOW_LABEL, HIDDEN_EVENT, ());
+    Ok(QuickCaptureHideResult {
+        hidden: true,
+        already_hidden: false,
+    })
 }
 
-/// 启动时挂接捕获窗口事件（只注册一次）：失焦落草稿后隐藏、关闭改为隐藏。
+/// 启动时挂接捕获窗口事件（只注册一次）：真实失焦隐藏、关闭改为隐藏。
 pub fn init(app: &AppHandle) {
     let Some(win) = capture_window(app) else {
         tracing::warn!(window = WINDOW_LABEL, "快速捕获窗口未创建，跳过事件挂接");
@@ -282,20 +436,32 @@ pub fn init(app: &AppHandle) {
     let handle = app.clone();
     let shape_win = win.clone();
     win.on_window_event(move |event| match event {
+        tauri::WindowEvent::Focused(true) => {
+            advance(Signal::FocusGained);
+        }
         tauri::WindowEvent::Focused(false) => {
-            // hide 自身触发的失焦：忽略（HIDING 期间由 hide_capture 统一处理）
-            if HIDING.load(Ordering::SeqCst) {
-                return;
-            }
             let Some(win) = capture_window(&handle) else {
                 return;
             };
             if !win.is_visible().unwrap_or(false) {
                 return;
             }
+            // WebView2 子窗口接管焦点时，顶层窗口会收到 WM_KILLFOCUS（tao 抛
+            // Focused(false)），但窗口仍在前台、仍能输入。只看生命周期会在
+            // Showing/AwaitingFocus 阶段拦住它；这里再用前台句柄做一次事实核对，
+            // 避免「点一下输入框窗口就消失」。
+            if hwnd_of(&win).is_some_and(is_foreground) {
+                return;
+            }
+            // 生命周期闸门：只有进入过 Active 之后的真实失焦才自动隐藏。
+            if !lifecycle().auto_hide_allowed() {
+                return;
+            }
             // 先通知前端落草稿，再隐藏；不抢回焦点（用户已切走）
             let _ = handle.emit_to(WINDOW_LABEL, FLUSH_DRAFT_EVENT, ());
-            hide_capture(&handle, false);
+            if let Err(e) = hide_capture(&handle, false) {
+                tracing::warn!("快速捕获失焦隐藏失败: {e}");
+            }
         }
         tauri::WindowEvent::Resized(_) => {
             // 系统缩放/工作区过小时窗口尺寸会被钳制；每次尺寸变化重算区域，
@@ -305,7 +471,9 @@ pub fn init(app: &AppHandle) {
         tauri::WindowEvent::CloseRequested { api, .. } => {
             // 窗口常驻复用：关闭 = 隐藏并恢复原前台窗口，不销毁 WebView
             api.prevent_close();
-            hide_capture(&handle, true);
+            if let Err(e) = hide_capture(&handle, true) {
+                tracing::warn!("快速捕获关闭失败: {e}");
+            }
         }
         _ => {}
     });
@@ -363,8 +531,11 @@ pub fn quick_capture_save_draft(
 }
 
 #[tauri::command]
-pub fn quick_capture_clear_draft(db: State<'_, Arc<Db>>) -> AppResult<()> {
-    store::clear_draft(&db)
+pub fn quick_capture_clear_draft(
+    db: State<'_, Arc<Db>>,
+    files: State<'_, Arc<attachments::CaptureFiles>>,
+) -> AppResult<()> {
+    store::clear_draft(&db, &files)
 }
 
 #[tauri::command]
@@ -412,8 +583,12 @@ pub fn quick_capture_mark_handled(
 }
 
 #[tauri::command]
-pub fn quick_capture_delete(db: State<'_, Arc<Db>>, id: String) -> AppResult<()> {
-    store::delete(&db, &id)
+pub fn quick_capture_delete(
+    db: State<'_, Arc<Db>>,
+    files: State<'_, Arc<attachments::CaptureFiles>>,
+    id: String,
+) -> AppResult<()> {
+    store::delete(&db, &id, &files)
 }
 
 #[tauri::command]
@@ -435,16 +610,88 @@ pub fn quick_capture_convert_to_task(
     Ok(item)
 }
 
-/// 显式打开快速捕获窗口（收集箱「+ 快速记录」）：已打开时聚焦，不切换为隐藏。
+/// 显式打开快速捕获窗口（收集箱「+ 快速记录」）：已打开时补充激活，不切换为隐藏。
 #[tauri::command]
-pub fn quick_capture_show(app: AppHandle) -> AppResult<QuickCaptureShowResult> {
-    show(&app)
+pub async fn quick_capture_show(app: AppHandle) -> AppResult<QuickCaptureShowResult> {
+    show(&app).await
 }
 
-/// 前端主动隐藏（Escape/关闭按钮）：恢复唤起前的前台窗口。
+/// 只做激活（前端在窗口已显示但未获得键盘焦点时调用，例如用户点击输入区）。
 #[tauri::command]
-pub fn quick_capture_hide(app: AppHandle) {
-    hide_capture(&app, true);
+pub async fn quick_capture_focus(app: AppHandle) -> AppResult<bool> {
+    let win = capture_window(&app).ok_or_else(|| AppError::NotFound("快速捕获窗口不存在".into()))?;
+    let hwnd =
+        hwnd_of(&win).ok_or_else(|| AppError::Unavailable("无法获取窗口句柄".into()))?;
+    if !win.is_visible().unwrap_or(false) {
+        return Ok(false);
+    }
+    let focused = if advance(Signal::Activate) == Action::AttemptActivation {
+        activate_and_verify(hwnd).await
+    } else {
+        is_foreground(hwnd)
+    };
+    if focused {
+        advance(Signal::FocusGained);
+    }
+    Ok(focused)
+}
+
+/// 前端主动隐藏（Escape/关闭按钮/保存成功）：恢复唤起前的前台窗口。
+/// 失败如实返回错误，前端给出可理解反馈，不静默吞掉。
+#[tauri::command]
+pub fn quick_capture_hide(app: AppHandle) -> AppResult<QuickCaptureHideResult> {
+    hide_capture(&app, true)
+}
+
+// ── 图片附件命令 ───────────────────────────────────────────
+
+/// 添加一张粘贴图片（前端已在 canvas 侧转成 PNG 并限制尺寸）。
+///
+/// 解码/编码放到 blocking 线程池：2MB 的截图解码 + 缩略图约几十毫秒，
+/// 不应占用 IPC/主线程。
+#[tauri::command]
+pub async fn quick_capture_add_attachment(
+    db: State<'_, Arc<Db>>,
+    files: State<'_, Arc<attachments::CaptureFiles>>,
+    data_base64: String,
+    mime: String,
+) -> AppResult<attachments::CaptureAttachment> {
+    let db = Arc::clone(&db);
+    let files = Arc::clone(&files);
+    tauri::async_runtime::spawn_blocking(move || {
+        attachments::add(&db, &files, &data_base64, &mime)
+    })
+    .await
+    .map_err(|e| AppError::Unavailable(format!("图片处理线程异常: {e}")))?
+}
+
+#[tauri::command]
+pub fn quick_capture_remove_attachment(
+    db: State<'_, Arc<Db>>,
+    files: State<'_, Arc<attachments::CaptureFiles>>,
+    id: String,
+) -> AppResult<()> {
+    attachments::remove_draft(&db, &files, &id)
+}
+
+/// 缩略图 data URL（列表与草稿预览；按 ID 回查数据库，路径不来自前端）。
+#[tauri::command]
+pub fn quick_capture_attachment_thumb(
+    db: State<'_, Arc<Db>>,
+    files: State<'_, Arc<attachments::CaptureFiles>>,
+    id: String,
+) -> AppResult<Option<String>> {
+    attachments::thumb_data_url(&db, &files, &id)
+}
+
+/// 原图 data URL（大图预览）。
+#[tauri::command]
+pub fn quick_capture_attachment_preview(
+    db: State<'_, Arc<Db>>,
+    files: State<'_, Arc<attachments::CaptureFiles>>,
+    id: String,
+) -> AppResult<Option<String>> {
+    attachments::preview_data_url(&db, &files, &id)
 }
 
 /// 启动语音输入（听写模式）：成功后在 capture 窗口收到 capture-voice-* 事件。
@@ -552,5 +799,52 @@ mod tests {
         // 前端按 focusError 读取；snake_case 会让提示文案拿不到原因。
         assert_eq!(value["focusError"], "foreground lock");
         assert!(value.get("focus_error").is_none());
+    }
+
+    #[test]
+    fn hide_result_serializes_as_camel_case() {
+        let value = serde_json::to_value(QuickCaptureHideResult {
+            hidden: true,
+            already_hidden: false,
+        })
+        .unwrap();
+        assert_eq!(value["hidden"], true);
+        assert_eq!(value["alreadyHidden"], false);
+    }
+
+    /// 前端点关闭按钮时可能连点两次：第二次必须是幂等的 already_hidden，
+    /// 不能重复 hide、也不能把焦点恢复执行两遍。
+    #[test]
+    fn lifecycle_repeated_dismiss_is_idempotent() {
+        let mut state = LifecycleState::initial();
+        for signal in [
+            Signal::Show,
+            Signal::Revealed,
+            Signal::FocusGained,
+            Signal::Dismiss,
+        ] {
+            state = lifecycle::step(state, signal).0;
+        }
+        let (next, action) = lifecycle::step(state, Signal::Dismiss);
+        assert_eq!(next.phase, Phase::Closing);
+        assert_eq!(action, Action::None);
+    }
+
+    /// 窗口显示但系统拒绝聚焦：保持可见，直到用户显式关闭。
+    #[test]
+    fn awaiting_focus_never_auto_hides() {
+        let mut state = LifecycleState::initial();
+        for signal in [Signal::Show, Signal::Revealed] {
+            state = lifecycle::step(state, signal).0;
+        }
+        for _ in 0..5 {
+            let (next, action) = lifecycle::step(state, Signal::FocusLost);
+            state = next;
+            assert_eq!(action, Action::None);
+        }
+        assert_eq!(state.phase, Phase::AwaitingFocus);
+        let (next, action) = lifecycle::step(state, Signal::Dismiss);
+        assert_eq!(next.phase, Phase::Closing);
+        assert_eq!(action, Action::Hide { restore_focus: true });
     }
 }

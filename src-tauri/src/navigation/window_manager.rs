@@ -404,6 +404,14 @@ pub fn focus_window(hwnd: isize) -> Result<FocusOutcome, FocusError> {
     focus_window_impl(hwnd)
 }
 
+/// 立即请求把窗口激活到前台（不等待核实、不轮询、不模拟按键）。
+///
+/// 返回 `true` 表示系统接受了激活请求（或窗口已在前台）。调用方若需要
+/// 「已确认在前台」，自行做有界核实；不要在命令线程里长等待。
+pub fn activate_window_now(hwnd: isize) -> bool {
+    imp::activate_window_now_impl(hwnd)
+}
+
 /// 单个窗口的关闭结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CloseWindowOutcome {
@@ -1039,6 +1047,72 @@ mod imp {
         related
     }
 
+    /// 前台锁定后的正规激活路径：把**本线程**的输入队列临时挂到当前前台线程，
+    /// 再 BringWindowToTop + SetForegroundWindow 重试。
+    ///
+    /// 旧实现按下 ALT（keybd_event）骗取前台资格，可能打开菜单并干扰用户输入；
+    /// AttachThreadInput 不注入任何按键。目标窗口可能属于另一个线程（窗口创建在
+    /// 消息循环线程），只挂调用线程并不能把前台资格传给目标线程，必须同时挂过去。
+    pub(super) fn force_foreground(h: HWND) -> bool {
+        unsafe {
+            if IsWindow(h) == 0 {
+                return false;
+            }
+            let fg = GetForegroundWindow();
+            let mut fg_pid: u32 = 0;
+            let fg_thread = if fg != std::ptr::null_mut() {
+                GetWindowThreadProcessId(fg, &mut fg_pid)
+            } else {
+                0
+            };
+            let cur_thread = GetCurrentThreadId();
+            let mut target_pid: u32 = 0;
+            let target_thread = GetWindowThreadProcessId(h, &mut target_pid);
+            let mut attached_cur = false;
+            let mut attached_target = false;
+            if fg_thread != 0 && fg_thread != cur_thread {
+                attached_cur = AttachThreadInput(cur_thread, fg_thread, 1) != 0;
+            }
+            if fg_thread != 0
+                && target_thread != 0
+                && target_thread != fg_thread
+                && target_thread != cur_thread
+            {
+                attached_target = AttachThreadInput(target_thread, fg_thread, 1) != 0;
+            }
+            BringWindowToTop(h);
+            let ok = SetForegroundWindow(h);
+            if attached_target {
+                AttachThreadInput(target_thread, fg_thread, 0);
+            }
+            if attached_cur {
+                AttachThreadInput(cur_thread, fg_thread, 0);
+            }
+            ok != 0
+        }
+    }
+
+    /// 立即请求把窗口提到前台（不等待核实、不轮询）。
+    ///
+    /// 与 `focus_window_impl` 的区别：不恢复最小化、不做有界等待，只负责发出
+    /// 激活请求并如实返回是否被系统接受。调用方（快速捕获）在异步侧做短时核实，
+    /// 避免在命令线程里阻塞近 1 秒。
+    pub(super) fn activate_window_now_impl(hwnd: isize) -> bool {
+        unsafe {
+            let h = hwnd as HWND;
+            if IsWindow(h) == 0 {
+                return false;
+            }
+            if GetForegroundWindow() == h {
+                return true;
+            }
+            if SetForegroundWindow(h) != 0 {
+                return true;
+            }
+            force_foreground(h)
+        }
+    }
+
     pub(super) fn focus_window_impl(hwnd: isize) -> Result<FocusOutcome, FocusError> {
         let h = hwnd as HWND;
         unsafe {
@@ -1056,46 +1130,8 @@ mod imp {
                     return Err(FocusError::RestoreFailed);
                 }
             }
-            if SetForegroundWindow(h) == 0 {
-                // 前台锁定：把**本线程**的输入队列临时挂到当前前台线程，再
-                // BringWindowToTop + SetForegroundWindow 重试。旧实现按下 ALT
-                // 键（keybd_event）骗取资格，可能打开菜单并干扰用户正在输入；
-                // AttachThreadInput 不注入任何按键，属于系统正规激活路径。
-                let fg = GetForegroundWindow();
-                let mut fg_pid: u32 = 0;
-                let fg_thread = if fg != std::ptr::null_mut() {
-                    GetWindowThreadProcessId(fg, &mut fg_pid)
-                } else {
-                    0
-                };
-                let cur_thread = GetCurrentThreadId();
-                // 目标窗口可能属于另一个线程（创建在消息循环线程）：只挂调用线程
-                // 到前台线程并不能把前台资格传给目标线程，必须同时把目标线程也挂过去。
-                let mut target_pid: u32 = 0;
-                let target_thread = GetWindowThreadProcessId(h, &mut target_pid);
-                let mut attached_cur = false;
-                let mut attached_target = false;
-                if fg_thread != 0 && fg_thread != cur_thread {
-                    attached_cur = AttachThreadInput(cur_thread, fg_thread, 1) != 0;
-                }
-                if fg_thread != 0
-                    && target_thread != 0
-                    && target_thread != fg_thread
-                    && target_thread != cur_thread
-                {
-                    attached_target = AttachThreadInput(target_thread, fg_thread, 1) != 0;
-                }
-                BringWindowToTop(h);
-                let ok = SetForegroundWindow(h);
-                if attached_target {
-                    AttachThreadInput(target_thread, fg_thread, 0);
-                }
-                if attached_cur {
-                    AttachThreadInput(cur_thread, fg_thread, 0);
-                }
-                if ok == 0 {
-                    return Err(FocusError::ForegroundDenied);
-                }
+            if SetForegroundWindow(h) == 0 && !force_foreground(h) {
+                return Err(FocusError::ForegroundDenied);
             }
             // 核实：前台切换有动画延迟，短暂轮询
             let deadline = Instant::now() + FOCUS_VERIFY_TIMEOUT;
@@ -1431,6 +1467,9 @@ mod imp {
     }
     pub(super) fn focus_window_impl(_hwnd: isize) -> Result<FocusOutcome, FocusError> {
         Err(FocusError::ForegroundDenied)
+    }
+    pub(super) fn activate_window_now_impl(_hwnd: isize) -> bool {
+        false
     }
     pub(super) fn close_windows_impl(_windows: &[WindowInfo]) -> Vec<CloseWindowOutcome> {
         Vec::new()

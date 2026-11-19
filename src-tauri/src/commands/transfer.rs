@@ -161,18 +161,20 @@ pub fn transfer_undo(app: AppHandle, batch_id: String) -> AppResult<BatchUndoRes
 
 #[tauri::command]
 pub fn transfer_context_get(
+    window: tauri::WebviewWindow,
     state: State<'_, Arc<context::ContextState>>,
 ) -> AppResult<TransferContext> {
-    Ok(state.get())
+    Ok(state.get(window.label()))
 }
 
 #[tauri::command]
 pub fn transfer_context_update(
     app: AppHandle,
+    window: tauri::WebviewWindow,
     state: State<'_, Arc<context::ContextState>>,
     patch: TransferContext,
 ) -> AppResult<TransferContext> {
-    let next = state.update(patch);
+    let next = state.update(window.label(), patch);
     context::publish(&app, &next);
     Ok(next)
 }
@@ -180,9 +182,10 @@ pub fn transfer_context_update(
 #[tauri::command]
 pub fn transfer_context_clear(
     app: AppHandle,
+    window: tauri::WebviewWindow,
     state: State<'_, Arc<context::ContextState>>,
 ) -> AppResult<TransferContext> {
-    let next = state.clear();
+    let next = state.clear(window.label());
     context::publish(&app, &next);
     Ok(next)
 }

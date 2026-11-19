@@ -240,7 +240,7 @@ impl TransferTarget {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TransferOptions {
     #[serde(default = "default_conflict")]

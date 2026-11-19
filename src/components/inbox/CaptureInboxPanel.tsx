@@ -42,6 +42,7 @@ import {
   useWorkbenchDetailHost,
 } from "../../workbench/pageDetail";
 import "./inbox-workspace.css";
+import CaptureAttachmentStrip from "./CaptureAttachmentStrip";
 
 const KIND_LABELS: Record<CaptureKind, string> = {
   task: "任务",
@@ -70,7 +71,8 @@ const DELETE_CONFIRM_MS = 3000;
 /** 列表项的可访问名：类型 + 内容摘要，保证读屏能区分同类条目 */
 function itemLabel(item: CaptureItem): string {
   const summary = item.content.replace(/\s+/g, " ").trim().slice(0, 24);
-  return `${KIND_LABELS[item.kind]}：${summary}${item.content.length > 24 ? "…" : ""}`;
+  const images = item.attachments.length > 0 ? `，${item.attachments.length} 张图片` : "";
+  return `${KIND_LABELS[item.kind]}：${summary}${item.content.length > 24 ? "…" : ""}${images}`;
 }
 
 export default function CaptureInboxPanel() {
@@ -479,6 +481,7 @@ export default function CaptureInboxPanel() {
                       <p className="inbox-content">{item.content}</p>
                       {item.kind === "link" && item.note && <p className="inbox-note">{item.note}</p>}
                     </button>
+                    <CaptureAttachmentStrip attachments={item.attachments} />
                     <div className="inbox-actions">
                       <button
                         type="button"
@@ -611,6 +614,7 @@ export default function CaptureInboxPanel() {
           />
           <p className="inbox-detail-content">{selectedItem.content}</p>
           {selectedItem.note && <p className="inbox-detail-note">{selectedItem.note}</p>}
+          <CaptureAttachmentStrip attachments={selectedItem.attachments} variant="detail" />
           <p className="inbox-detail-hint">
             行内操作保持可用；右栏用于在长列表中确认内容与状态，不替代条目上的处理动作。
           </p>

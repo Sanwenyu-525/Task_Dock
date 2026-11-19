@@ -237,7 +237,7 @@ export default function Combobox<T extends string = string>({
         anchorRef={anchorRef}
         placement={resolvedPlacement}
         alignment={!placement && align === "auto" ? "auto" : undefined}
-        matchWidth
+        widthMode="exact-match"
         className="ui-combobox-popover"
         role="listbox"
         id={listId}
@@ -257,6 +257,7 @@ export default function Combobox<T extends string = string>({
                 className={`ui-option ${isSelected ? "is-selected" : ""} ${i === activeIndex ? "is-active" : ""} ${
                   o.disabled ? "is-disabled" : ""
                 }`}
+                title={o.hint ? `${o.label} · ${o.hint}` : o.label}
                 onMouseDown={(e) => e.preventDefault()}
                 onMouseEnter={() => setActiveIndex(i)}
                 onClick={() => commit(i)}

@@ -59,6 +59,7 @@ function makeItem(overrides: Partial<CaptureItem> = {}): CaptureItem {
     source: "quick-capture",
     created_at: new Date(Date.now() - 5 * 60_000).toISOString(),
     updated_at: new Date(Date.now() - 5 * 60_000).toISOString(),
+    attachments: [],
     ...overrides,
   };
 }

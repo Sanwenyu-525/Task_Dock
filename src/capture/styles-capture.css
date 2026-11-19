@@ -43,6 +43,7 @@ body {
 
 /* ── 卡片骨架 ─────────────────────────────────────────────── */
 .capture-shell {
+  position: relative;
   box-sizing: border-box;
   width: 100vw;
   height: 100vh;
@@ -491,6 +492,299 @@ body {
   outline-offset: 2px;
 }
 
+/* ── 键盘焦点提示 ───────────────────────────────────────────
+   窗口被系统前台锁拒绝激活时，键盘输入不会进入 WebView；
+   给出可点击的补救入口，而不是让用户以为「窗口坏了」。 */
+.capture-focus-hint {
+  /* 放在反馈行里：不新增一行高度（640×360 下多一行会把底栏挤出去） */
+  flex: none;
+  max-width: 46%;
+  padding: 1px 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 10.5px;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.capture-focus-hint:hover {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+.capture-focus-hint:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* ── 图片附件条 ─────────────────────────────────────────────
+   单行、可横向滚动；缩略图固定 48×44，不挤压正文与底部操作。
+   总高度 52px 以内，正文区仍保有最小高度（640×360 下实测）。 */
+.capture-attachments {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 48px;
+  padding: 6px 6px 2px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+.capture-attachments::-webkit-scrollbar {
+  height: 6px;
+}
+
+.capture-attachments::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 6px;
+}
+
+.capture-attachment {
+  position: relative;
+  flex: none;
+  width: 48px;
+  height: 44px;
+}
+
+.capture-attachment-open {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--surface-raised);
+  overflow: hidden;
+  cursor: zoom-in;
+  transition: border-color 120ms;
+}
+
+.capture-attachment-open:hover {
+  border-color: var(--accent);
+}
+
+.capture-attachment-open:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.capture-attachment-open img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.capture-attachment.is-saving .capture-attachment-open img {
+  opacity: 0.55;
+}
+
+.capture-attachment-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  color: var(--text-tertiary);
+}
+
+.capture-attachment-badge {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--surface-base) 40%, transparent);
+}
+
+.capture-attachment-remove {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--surface-overlay);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color 120ms, border-color 120ms;
+}
+
+.capture-attachment-remove:hover:not(:disabled) {
+  color: var(--c-danger);
+  border-color: var(--c-danger);
+}
+
+.capture-attachment-remove:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.capture-attachment-remove:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.capture-attachment-count {
+  flex: none;
+  margin-left: auto;
+  padding-left: 6px;
+  font-size: 10px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+/* 「添加图片」与麦克风同尺寸，避免反馈行在两种入口间跳动 */
+.capture-image-add {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: var(--control-face);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: border-color 120ms, color 120ms;
+}
+
+.capture-image-add:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.capture-image-add:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.capture-image-add:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* ── 大图预览（窗口内模态层）──────────────────────────────── */
+.capture-preview {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  padding: 12px;
+  border-radius: var(--radius-capture, 16px);
+  background: var(--surface-base);
+  border: 1px solid var(--window-border);
+  animation: capture-preview-in 120ms ease-out both;
+}
+
+.capture-preview-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.capture-preview-stage img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 10px;
+  box-shadow: var(--window-edge);
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.capture-preview-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.capture-preview-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding-top: 10px;
+}
+
+.capture-preview-count {
+  min-width: 56px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.capture-preview-nav,
+.capture-preview-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: var(--control-face);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.capture-preview-nav:hover:not(:disabled),
+.capture-preview-close:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.capture-preview-nav:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.capture-preview-nav:focus-visible,
+.capture-preview-close:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.capture-preview-close {
+  margin-left: 6px;
+}
+
+@keyframes capture-preview-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
 /* ── 动效（一次性，无常驻） ───────────────────────────────── */
 @keyframes capture-enter {
   from {
@@ -511,8 +805,14 @@ body {
   .capture-kind,
   .capture-suggest,
   .capture-mic,
-  .capture-submit {
+  .capture-submit,
+  .capture-image-add,
+  .capture-attachment-open,
+  .capture-attachment-remove {
     transition: none !important;
+  }
+  .capture-preview {
+    animation: none !important;
   }
   .capture-voice-bars i {
     animation: none !important;

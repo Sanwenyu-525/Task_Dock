@@ -13,7 +13,9 @@
   }
 
   .gs-panel {
-    width: min(560px, 100%);
+    /* 面板宽度与顶栏字段分开：比字段宽，才能让结果标题与分类按钮完整显示；
+       上限与 GlobalSearchDialog 的 maxWidth、`--layout-search-panel-max` 同源。 */
+    width: min(var(--layout-search-panel-max, 472px), 100%);
     max-height: min(70vh, 560px);
     display: flex;
     flex-direction: column;
@@ -31,7 +33,7 @@
     overflow: hidden;
     /* 面板的目标宽度：实际宽度还会被基元的「本次可用宽」上限收敛，
        因此靠近右缘时会整体收窄，而不是把右侧内容横向裁掉。 */
-    width: min(560px, calc(100vw - 32px));
+    width: min(var(--layout-search-panel-max, 472px), calc(100vw - 32px));
   }
 
   /* 下拉面板：宽度比字段更宽以保证结果标题/片段可读，但必须跟随外壳宽度。 */

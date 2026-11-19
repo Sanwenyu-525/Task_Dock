@@ -269,6 +269,64 @@ describe("resolvePopupPlacement", () => {
   });
 });
 
+describe("constrainPopupSize / 严格匹配锚点宽度", () => {
+  it("exactAnchorWidth：宽度等于锚点，min/max 同时锁死", () => {
+    const limits = constrainPopupSize({
+      anchorWidth: 180,
+      availableWidth: 800,
+      availableHeight: 600,
+      config: { exactAnchorWidth: true, maxWidth: 480 },
+    });
+    expect(limits.width).toBe(180);
+    expect(limits.minWidth).toBe(180);
+    expect(limits.maxWidth).toBe(180);
+  });
+
+  it("exactAnchorWidth：锚点比可用宽还宽时收敛到可用宽（不溢出）", () => {
+    const limits = constrainPopupSize({
+      anchorWidth: 900,
+      availableWidth: 320,
+      availableHeight: 600,
+      config: { exactAnchorWidth: true },
+    });
+    expect(limits.width).toBe(320);
+    expect(limits.maxWidth).toBe(320);
+  });
+
+  it("exactAnchorWidth：调用方 maxWidth 更小时以 maxWidth 为准", () => {
+    const limits = constrainPopupSize({
+      anchorWidth: 420,
+      availableWidth: 800,
+      availableHeight: 600,
+      config: { exactAnchorWidth: true, maxWidth: 300 },
+    });
+    expect(limits.width).toBe(300);
+  });
+
+  it("exactAnchorWidth：锚点宽度未知（0）时退回内容宽度，不写死 0", () => {
+    const limits = constrainPopupSize({
+      anchorWidth: 0,
+      availableWidth: 800,
+      availableHeight: 600,
+      config: { exactAnchorWidth: true, maxWidth: 480 },
+    });
+    expect(limits.width).toBeUndefined();
+    expect(limits.maxWidth).toBe(480);
+  });
+
+  it("matchAnchorWidth（旧语义）只抬下限，不锁宽度", () => {
+    const limits = constrainPopupSize({
+      anchorWidth: 180,
+      availableWidth: 800,
+      availableHeight: 600,
+      config: { matchAnchorWidth: true, maxWidth: 480 },
+    });
+    expect(limits.width).toBeUndefined();
+    expect(limits.minWidth).toBe(180);
+    expect(limits.maxWidth).toBe(480);
+  });
+});
+
 describe("constrainPopupSize", () => {
   it("minWidth 被收到 maxWidth 以内：不越界优先于「和触发器一样宽」", () => {
     const limits = constrainPopupSize({

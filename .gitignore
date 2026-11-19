@@ -73,3 +73,6 @@ visual-audit.err
 # 结构化结果（meta/load/stimulus JSON，含 p50/p95、计数、退出码）仍归档 docs/performance/results/
 docs/performance/results/DIAG-*-app.log
 docs/performance/results/DIAG-*.jsonl
+
+# pdfjs-dist 运行时静态资源（由 vite.config 调用 scripts/pdfjs-assets.mjs 从依赖同步）
+public/pdfjs/

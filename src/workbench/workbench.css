@@ -1659,9 +1659,11 @@ body.wb-resizing {
 .wb-search-field {
   /* 顶栏里搜索是第二主控件：过窄会让占位文案被截成半句、与快捷键标签重叠
      （1180 窗口下实测）。底线 132px，空间不足时由容器查询先隐藏快捷键标签；
-     宽窗允许增长但封顶 520px，避免搜索条占满整行、动作组被挤到最右留下大段空白。 */
-  flex: 1 1 320px;
-  max-width: 520px;
+     宽窗允许增长但封顶 `--layout-search-max`（≈392px）：再宽就会挤压项目选择器、
+     创建按钮与窗口控制，并让右侧留出大段空白。三个数字与
+     `src/lib/layoutMetrics.ts` 的 SEARCH_METRICS 同源。 */
+  flex: 1 1 var(--layout-search-basis, 268px);
+  max-width: var(--layout-search-max, 392px);
   min-width: var(--layout-search-min, 132px);
   display: flex;
   align-items: center;
@@ -2831,7 +2833,8 @@ body.wb-resizing {
 }
 .wb-search-field {
   /* 搜索是第二主控件：可缩到 132px（图标 + 半句占位），再窄就换档位 */
-  flex: 1 1 320px;
+  flex: 1 1 var(--layout-search-basis, 268px);
+  max-width: var(--layout-search-max, 392px);
   min-width: var(--layout-search-min, 132px);
 }
 .wb-search-trigger,

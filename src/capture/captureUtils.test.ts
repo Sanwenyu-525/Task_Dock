@@ -95,6 +95,12 @@ describe("captureUtils / 提交校验", () => {
     expect(validateCapture("idea", "   \n  ")).toBe("内容不能为空");
   });
 
+  it("只有图片时允许提交；图片数量不参与字符校验", () => {
+    expect(validateCapture("task", "", 1)).toBeNull();
+    expect(validateCapture("idea", "   ", 3)).toBeNull();
+    expect(validateCapture("task", "", 0)).toBe("内容不能为空");
+  });
+
   it("超过内容上限拒绝", () => {
     const tooLong = "a".repeat(CONTENT_MAX + 1);
     expect(validateCapture("text", tooLong)).toBe(`内容最多 ${CONTENT_MAX} 字`);
@@ -152,6 +158,24 @@ describe("captureUtils / 提交载荷", () => {
       content: "一段没有链接的备注",
       note: "一段没有链接的备注",
     });
+  });
+
+  it("附件 ID 一起提交；只有图片时正文用占位文案", () => {
+    expect(composeSubmitInput("text", "  ", "cid-5", ["a1"])).toEqual({
+      client_id: "cid-5",
+      kind: "text",
+      content: "[图片]",
+      attachment_ids: ["a1"],
+    });
+    expect(composeSubmitInput("idea", "", "cid-6", ["a1", "a2"]).content).toBe("[图片 ×2]");
+    expect(composeSubmitInput("task", "看图", "cid-7", ["a1"])).toEqual({
+      client_id: "cid-7",
+      kind: "task",
+      content: "看图",
+      attachment_ids: ["a1"],
+    });
+    // 无附件时不写空数组，保持旧载荷形状
+    expect(composeSubmitInput("task", "看图", "cid-8")).not.toHaveProperty("attachment_ids");
   });
 
   it("备注长度按上限截断（后端另有校验兜底）", () => {

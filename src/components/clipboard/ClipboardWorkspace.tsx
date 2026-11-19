@@ -1107,15 +1107,15 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
     if (selectedItems.length === 0) return;
     setBusy("tray");
     try {
-      const { report, failed } = await addClipboardItemsToTray([...selectedItems]);
+      const { report, rejected } = await addClipboardItemsToTray([...selectedItems]);
       if (report) {
         showToast(`已加入工作篮 ${report.items.length} 项`, { kind: "success" });
         if (report.duplicates > 0) {
           showToast(`其中 ${report.duplicates} 项已在工作篮中，未重复加入`, { kind: "warning" });
         }
       }
-      if (failed.length > 0) {
-        showToast(`${failed.length} 项读取失败：${failed[0].message}`, { kind: "error" });
+      if (rejected.length > 0) {
+        showToast(`${rejected.length} 项未被加入：${rejected[0].message}`, { kind: "error" });
       }
       useTransferStore.getState().openPanel();
     } catch (e) {

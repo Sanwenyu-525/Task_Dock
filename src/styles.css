@@ -180,6 +180,12 @@
   --layout-topbar-context-w: 210px;
   --layout-topbar-context-min: 150px;
   --layout-search-min: 132px;
+  /* 全局搜索几何（与 `src/lib/layoutMetrics.ts` 的 SEARCH_METRICS 一致，
+     `layoutMetrics.test.ts` 校验）。字段与结果面板分开：字段不挤压顶栏控件，
+     面板保证结果标题/分类按钮完整显示。 */
+  --layout-search-max: 392px;
+  --layout-search-basis: 268px;
+  --layout-search-panel-max: 472px;
   color-scheme: light;
 }
 

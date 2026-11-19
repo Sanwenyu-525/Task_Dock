@@ -37,7 +37,10 @@ export interface PopupPositionConfig {
   alignment?: PopupAlignment;
   offset?: number;
   collisionPadding?: number;
+  /** 最小宽度不小于锚点（旧的 matchWidth 语义） */
   matchAnchorWidth?: boolean;
+  /** 严格等于锚点宽度：选择型下拉必须与触发按钮外部宽度一致 */
+  exactAnchorWidth?: boolean;
   minWidth?: number;
   maxWidth?: number;
   maxHeight?: number;
@@ -84,6 +87,11 @@ export interface PopupSizeLimits {
   minWidth: number;
   maxWidth: number;
   maxHeight: number;
+  /**
+   * 仅在「严格匹配锚点宽度」时给出：弹层最终宽度（已收敛到可用宽与 maxWidth 内）。
+   * 调用方据此写 `--popover-exact-w`，内容再长也只能省略，不能把弹层撑宽。
+   */
+  width?: number;
 }
 
 export interface PointerMenuPosition {
@@ -427,10 +435,32 @@ export function constrainPopupSize(input: {
       ? config.maxWidth
       : availableWidth;
   const maxWidth = Math.floor(Math.max(0, Math.min(configuredMaxWidth, availableWidth)));
+  const anchorWidth = Math.max(0, finite(input.anchorWidth ?? 0));
+  // 严格匹配：宽度 = 锚点宽，并且不得越过本次可用宽 / 调用方上限。
+  // 两侧夹取后的值同时作为 min/max：内容再宽也只能在内部省略。
+  if (config.exactAnchorWidth && anchorWidth > 0 && maxWidth > 0) {
+    const exact = Math.floor(Math.min(anchorWidth, maxWidth));
+    return {
+      minWidth: exact,
+      maxWidth: exact,
+      maxHeight: Math.floor(
+        Math.max(
+          0,
+          Math.min(
+            config.maxHeight !== undefined && Number.isFinite(config.maxHeight)
+              ? config.maxHeight
+              : availableHeight,
+            availableHeight,
+          ),
+        ),
+      ),
+      width: exact,
+    };
+  }
   const requestedMin = Math.max(
     0,
     finite(config.minWidth ?? 0),
-    config.matchAnchorWidth ? Math.max(0, finite(input.anchorWidth ?? 0)) : 0,
+    config.matchAnchorWidth ? anchorWidth : 0,
   );
   const minWidth = Math.floor(Math.min(requestedMin, maxWidth));
   const configuredMaxHeight =

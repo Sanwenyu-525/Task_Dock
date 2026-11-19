@@ -26,6 +26,8 @@ const MIME = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
   ".svg": "image/svg+xml",
+  ".wav": "audio/wav",
+  ".mp4": "video/mp4",
   ".woff2": "font/woff2",
   ".ico": "image/x-icon",
 };

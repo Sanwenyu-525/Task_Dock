@@ -79,10 +79,24 @@ export function suggestKind(content: string): CaptureKind | null {
 }
 
 // ── 提交校验 ───────────────────────────────────────────────────
-/** 返回错误文案；null 表示通过。规则与后端一致（内容 1..4000、链接 ≤2048）。 */
-export function validateCapture(kind: CaptureKind, rawContent: string): string | null {
+/** 只有图片没有文字时的占位正文（后端要求正文非空，任务也需要标题）。 */
+export function fallbackContentForImages(imageCount: number): string {
+  return imageCount > 1 ? `[图片 ×${imageCount}]` : "[图片]";
+}
+
+/**
+ * 返回错误文案；null 表示通过。规则与后端一致（内容 1..4000、链接 ≤2048）。
+ * `imageCount > 0` 时允许「只有图片、没有文字」：正文用可读占位补足。
+ */
+export function validateCapture(
+  kind: CaptureKind,
+  rawContent: string,
+  imageCount = 0,
+): string | null {
   const content = rawContent.trim();
-  if (!content) return "内容不能为空";
+  if (!content) {
+    return imageCount > 0 ? null : "内容不能为空";
+  }
   if (rawContent.length > CONTENT_MAX) return `内容最多 ${CONTENT_MAX} 字`;
   if (kind === "link") {
     const url = extractFirstUrl(content);
@@ -103,13 +117,18 @@ export function composeSubmitInput(
   kind: CaptureKind,
   rawContent: string,
   clientId: string,
+  attachmentIds: readonly string[] = [],
 ): SubmitCaptureInput {
-  const content = rawContent.trim();
+  const trimmed = rawContent.trim();
+  const content =
+    trimmed || (attachmentIds.length > 0 ? fallbackContentForImages(attachmentIds.length) : "");
+  const attachmentPart =
+    attachmentIds.length > 0 ? { attachment_ids: [...attachmentIds] } : {};
   if (kind !== "link") {
-    return { client_id: clientId, kind, content };
+    return { client_id: clientId, kind, content, ...attachmentPart };
   }
   const found = extractFirstUrl(content);
-  const input: SubmitCaptureInput = { client_id: clientId, kind, content };
+  const input: SubmitCaptureInput = { client_id: clientId, kind, content, ...attachmentPart };
   if (found) {
     input.url = ensureUrlScheme(found);
     const note = content.replace(found, " ").replace(/\s+/g, " ").trim();

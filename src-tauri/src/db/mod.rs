@@ -2123,6 +2123,9 @@ CREATE INDEX idx_novel_chapters_volume
     // 项目中枢（v78）：项目根收敛、目标/能力/交付物/版本/事件/任务关联。
     crate::project_hub::schema::MIGRATION_78,
     // 全局跨 Tab 联动（v79）：工作篮条目/正文/批次 + 通用实体关联，纯新增表。
+    crate::transfer::schema::MIGRATION_79,
+    // 快速捕获图片附件（v80）：草稿与收集箱条目共用的图片元数据。
+    crate::quick_capture::attachments::MIGRATION_80,
     // 文件导入授权（v81）：目录策略 / 待审核请求 / 导入幂等声明。
     // 默认无策略 = 待审核，文件导入不再等价本机用户。
     crate::agent_access::schema::MIGRATION_81,
