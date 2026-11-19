@@ -51,7 +51,7 @@ pub fn agent_access_status(db: State<'_, Arc<Db>>) -> AppResult<Value> {
             "items": agents,
         },
         "recent_activity": recent,
-        "watch": { "running": watch::running() },
+        "watch": watch::status(),
     }))
 }
 
@@ -84,11 +84,90 @@ pub fn agent_access_export(db: State<'_, Arc<Db>>) -> AppResult<Value> {
 pub fn agent_access_scan(db: State<'_, Arc<Db>>) -> AppResult<Value> {
     let row = workspace::active(&db)?
         .ok_or_else(|| AppError::NotFound("工作空间尚未初始化".into()))?;
-    let principal = Principal {
-        source: Source::File,
-        ..local()
-    };
-    Ok(serde_json::to_value(file_sync::scan(&db, &principal, &row)?)?)
+    // UI 手动扫描：身份是可信任本机，但目录策略与后台扫描完全一致，
+    // 未授权文件只会进入待审核队列（人工批准走 agent_access_import_approve）。
+    Ok(serde_json::to_value(file_sync::scan(&db, &local(), &row)?)?)
+}
+
+/// 待审核的导入请求（只读）。默认只看 pending。
+#[tauri::command]
+pub fn agent_access_import_requests(
+    db: State<'_, Arc<Db>>,
+    status: Option<String>,
+) -> AppResult<Value> {
+    Ok(serde_json::to_value(file_sync::list_import_requests(
+        &db,
+        status.as_deref().filter(|s| !s.is_empty()),
+    )?)?)
+}
+
+#[tauri::command]
+pub fn agent_access_import_approve(
+    db: State<'_, Arc<Db>>,
+    request_id: String,
+    note: Option<String>,
+) -> AppResult<Value> {
+    let message = file_sync::approve_import(
+        &db,
+        &local(),
+        &request_id,
+        note.as_deref().unwrap_or(""),
+    )?;
+    Ok(json!({ "message": message }))
+}
+
+#[tauri::command]
+pub fn agent_access_import_reject(
+    db: State<'_, Arc<Db>>,
+    request_id: String,
+    reason: Option<String>,
+) -> AppResult<Value> {
+    file_sync::reject_import(&db, &local(), &request_id, reason.as_deref().unwrap_or(""))?;
+    Ok(json!({ "ok": true }))
+}
+
+/// 目录级导入策略（默认无策略 = 待审核）。
+#[tauri::command]
+pub fn agent_access_import_policies(db: State<'_, Arc<Db>>) -> AppResult<Value> {
+    let row = workspace::active(&db)?
+        .ok_or_else(|| AppError::NotFound("工作空间尚未初始化".into()))?;
+    Ok(serde_json::to_value(
+        super::permissions::list_import_authorizations(&db, &row.id)?,
+    )?)
+}
+
+#[tauri::command]
+pub fn agent_access_import_policy_set(
+    db: State<'_, Arc<Db>>,
+    rel_dir: String,
+    mode: String,
+    agent_row_id: Option<String>,
+    capabilities: Option<Vec<String>>,
+    project_id: Option<String>,
+) -> AppResult<Value> {
+    let row = workspace::active(&db)?
+        .ok_or_else(|| AppError::NotFound("工作空间尚未初始化".into()))?;
+    let mode = super::permissions::ImportMode::parse(&mode)
+        .ok_or_else(|| AppError::Validation("mode 必须是 off|review|trusted".into()))?;
+    let auth = super::permissions::upsert_import_authorization(
+        &db,
+        &row.id,
+        &rel_dir,
+        mode,
+        agent_row_id.as_deref().filter(|v| !v.is_empty()),
+        capabilities.as_deref().unwrap_or(&[]),
+        project_id.as_deref().unwrap_or(""),
+    )?;
+    Ok(serde_json::to_value(auth)?)
+}
+
+#[tauri::command]
+pub fn agent_access_import_policy_remove(
+    db: State<'_, Arc<Db>>,
+    authorization_id: String,
+) -> AppResult<Value> {
+    super::permissions::remove_import_authorization(&db, &authorization_id)?;
+    Ok(json!({ "ok": true }))
 }
 
 #[tauri::command]
@@ -99,6 +178,15 @@ pub fn agent_access_sync_status(db: State<'_, Arc<Db>>) -> AppResult<Value> {
 #[tauri::command]
 pub fn agent_access_conflicts(db: State<'_, Arc<Db>>) -> AppResult<Value> {
     Ok(serde_json::to_value(file_sync::list_conflicts(&db)?)?)
+}
+
+/// 单条冲突详情：包含外部文件内容与允许的解决方式，供右侧面板展示。
+#[tauri::command]
+pub fn agent_access_conflict_detail(
+    db: State<'_, Arc<Db>>,
+    conflict_id: String,
+) -> AppResult<Value> {
+    file_sync::conflict_detail(&db, &conflict_id)
 }
 
 #[tauri::command]

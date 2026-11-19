@@ -60,23 +60,41 @@ taskdock context get --project <id>
 taskdock context search <query> [--budget N] [--json]
 taskdock context export --format markdown|json [--out <path>]
 
-taskdock agent list [--json]
-taskdock agent register --agent-id <id> --name <name> [--vendor V] [--json]   # 需 local
-taskdock agent handoff list [--status pending|accepted|completed] [--json]
+taskdock agent registry [--json]       # 已注册 Agent 列表（别名：agent list）
+taskdock agent activity [--agent <id>] [--interface cli|mcp|rest|file] [--limit N] [--json]
+taskdock agent handoff list [--status pending|accepted|completed] [--project <id>] [--json]
 taskdock agent handoff get <handoff_id> [--json]
-taskdock agent handoff create --to <agent_id> --summary S [--task <id>] [--project <id>]
+taskdock agent handoff create --to <agent_id> --summary S [--task-id <id>] [--project <id>]
                               [--completed-file f] [--pending-file f] [--next-file f] [--json]
-taskdock agent report submit --summary S --result completed|partial|blocked|failed
-                              [--handoff <id>] [--task <id>] [--json]
+taskdock agent handoff accept <handoff_id> --base-revision N [--json]
+taskdock agent handoff reject <handoff_id> --base-revision N --reason <文本> [--json]
+taskdock agent handoff complete <handoff_id> --base-revision N [--json]
+taskdock agent report create --summary S --result completed|partial|blocked|failed
+                              [--handoff <id>] [--task-id <id>] [--json]
+taskdock agent report list [--agent <id>] [--handoff <id>] [--json]
 
-taskdock search <keyword> [--kinds task,project,plan,knowledge,decision] [--limit N] [--json]
+taskdock search <keyword> [--kind task|knowledge|decision|project] [--limit N] [--json]
 
 taskdock sync status [--json]
-taskdock sync pull [--json]          # 扫描可导入目录并导入（需写能力）
-taskdock sync push [--json]          # 立即导出脏资源
+taskdock sync init [--path <绝对目录>] [--name <名称>] [--json]
+taskdock sync export [--json]         # 立即导出脏资源（别名：sync push）
+taskdock sync scan [--json]           # 扫描可导入目录并导入（别名：sync pull）
 taskdock sync conflicts [--json]
-taskdock sync resolve <conflict_id> --action keep-db|keep-file|dismiss [--force] [--json]
+taskdock sync resolve <conflict_id> --resolution db|file|dismiss [--json]
 ```
+
+> v81 对齐说明：旧文档里的 `sync pull` / `sync push` / `agent list` / `--action keep-db|keep-file`
+> 与实现漂移，现已统一到上表的真实命令；旧写法保留**兼容别名**（`pull`→`scan`、`push`→`export`、
+> `list`→`registry`、`--action keep-db|keep-file|dismiss`→`--resolution db|file|dismiss`）。
+> 冲突解决方式与 UI / REST 完全一致：`db` / `file` / `dismiss`。
+
+## 3.1 命令注册表与文档契约（v81）
+
+- `agent_access::cli::COMMANDS` 是命令真源（命令组、子命令、说明）；
+- `describe_cli_commands()` 输出人类可读清单（诊断/帮助用）；
+- `check_cli_documentation_contract(USAGE)` 校验帮助文本覆盖注册表，缺命令即失败（有单测锁定）；
+- `validate_cli_arguments()` 在解析后检查残留 `--xxx`：未知参数 → `USAGE`（退出码 2），
+  不再静默忽略拼错的参数。
 
 ## 4. 输出协议
 

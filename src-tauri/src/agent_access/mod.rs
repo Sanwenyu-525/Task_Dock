@@ -22,6 +22,8 @@ pub mod schema;
 pub mod service;
 pub mod store;
 pub mod sync;
+#[cfg(test)]
+mod tests;
 pub mod watch;
 pub mod workspace;
 
@@ -103,9 +105,52 @@ impl ActorKind {
     }
 }
 
+/// 请求主体的**身份**。与 `Source`（从哪个入口进来）正交：
+/// 同一个入口可能是不同身份，例如本机 UI 与后台监听都从文件系统读，但只有
+/// UI 是可信本机用户；文件导入既不是本机用户也不是已认证 Agent。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Identity {
+    /// 可信本机用户（UI、未设 token 的本机 CLI）。可以做内部特权操作。
+    LocalHuman,
+    /// 经 Token 认证的 Agent（MCP / REST / 带 token 的 CLI）。
+    RegisteredAgent,
+    /// 来自共享目录的外部文件。默认没有任何写权限，必须显式授权。
+    FileImport,
+    /// TaskDock 内部维护任务（监听线程、导出、清理）。
+    SystemInternal,
+}
+
+impl Identity {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Identity::LocalHuman => "local_human",
+            Identity::RegisteredAgent => "registered_agent",
+            Identity::FileImport => "file_import",
+            Identity::SystemInternal => "system",
+        }
+    }
+}
+
+/// 文件导入的**显式授权上下文**。存在不代表全权：能力集合与项目范围都受限。
+/// 只有本机用户在 UI 中显式授权，或人工批准单次导入后才会生成。
+#[derive(Clone, Debug)]
+pub struct ImportGrant {
+    /// `agent_import_policies.id`；人工批准单次导入时为 `manual-approval`。
+    pub authorization_id: String,
+    /// 允许的写能力（大小写与 `Capability` 一致）。
+    pub capabilities: Vec<crate::mcp::permissions::Capability>,
+    /// 仅允许该项目；空串表示不限制项目（仍受能力集合限制）。
+    pub project_id: String,
+    /// 绑定的已注册 Agent（此时该 Agent 的真实授权仍会再校验一次）。
+    pub agent_row_id: Option<String>,
+    pub approved_by: String,
+}
+
 /// 一次请求的操作主体。
 #[derive(Clone, Debug)]
 pub struct Principal {
+    /// 身份（决定是否可信），不要用 `source` 推断。
+    pub identity: Identity,
     /// `mcp_agents.id`；本机用户为 None
     pub agent_row_id: Option<String>,
     /// `mcp_agents.agent_id`；本机用户为空串
@@ -116,42 +161,107 @@ pub struct Principal {
     pub session_key: String,
     /// 强制只读（`TASKDOCK_CLI_READONLY`）
     pub read_only: bool,
+    /// 文件导入的授权上下文；None 表示未授权（任何写操作都会被拒绝）。
+    pub import: Option<ImportGrant>,
 }
 
 impl Principal {
+    /// 可信本机用户。`source` 只描述入口，不再代表权限。
     pub fn local(source: Source) -> Self {
         Self {
+            identity: Identity::LocalHuman,
             agent_row_id: None,
             agent_id: String::new(),
             actor_kind: ActorKind::Human,
             source,
             session_key: format!("local-{}", short_id()),
             read_only: false,
+            import: None,
         }
     }
 
     pub fn agent(agent_row_id: String, agent_id: String, source: Source) -> Self {
         Self {
+            identity: Identity::RegisteredAgent,
             agent_row_id: Some(agent_row_id),
             agent_id,
             actor_kind: ActorKind::Agent,
             source,
             session_key: format!("agent-{}", short_id()),
             read_only: false,
+            import: None,
         }
     }
 
-    /// 审计/导出使用的身份标签。
+    /// 未授权的文件导入主体：身份明确为 FileImport，权限上下文为空。
+    pub fn file_import(claimed_agent_id: &str) -> Self {
+        Self {
+            identity: Identity::FileImport,
+            agent_row_id: None,
+            agent_id: claimed_agent_id.to_string(),
+            actor_kind: ActorKind::Human,
+            source: Source::File,
+            session_key: format!("file-{}", short_id()),
+            read_only: false,
+            import: None,
+        }
+    }
+
+    /// 已获显式授权的文件导入（目录策略或人工单次批准）。
+    pub fn file_import_granted(grant: ImportGrant, claimed_agent_id: &str) -> Self {
+        Self {
+            identity: Identity::FileImport,
+            agent_row_id: grant.agent_row_id.clone(),
+            agent_id: claimed_agent_id.to_string(),
+            actor_kind: ActorKind::Human,
+            source: Source::File,
+            session_key: format!("file-{}", short_id()),
+            read_only: false,
+            import: Some(grant),
+        }
+    }
+
+    /// TaskDock 内部维护任务。
+    pub fn system(source: Source) -> Self {
+        Self {
+            identity: Identity::SystemInternal,
+            agent_row_id: None,
+            agent_id: String::new(),
+            actor_kind: ActorKind::System,
+            source,
+            session_key: format!("system-{}", short_id()),
+            read_only: false,
+            import: None,
+        }
+    }
+
+    /// 审计/导出使用的身份标签。文件导入必须能与已注册 Agent 区分。
     pub fn label(&self) -> String {
-        match self.actor_kind {
-            ActorKind::Agent => self.agent_id.clone(),
-            ActorKind::Human => "local".to_string(),
-            ActorKind::System => "system".to_string(),
+        match self.identity {
+            Identity::RegisteredAgent => self.agent_id.clone(),
+            Identity::LocalHuman => "local".to_string(),
+            Identity::SystemInternal => "system".to_string(),
+            Identity::FileImport => {
+                if self.agent_id.trim().is_empty() {
+                    "file:unverified".to_string()
+                } else {
+                    format!("file:{}", self.agent_id)
+                }
+            }
         }
     }
 
     pub fn is_agent(&self) -> bool {
-        self.actor_kind == ActorKind::Agent
+        self.identity == Identity::RegisteredAgent
+    }
+
+    pub fn is_file_import(&self) -> bool {
+        self.identity == Identity::FileImport
+    }
+
+    /// 只有显式可信本机身份才拥有内部特权；不再用 `!is_agent()` 推断。
+    pub fn is_trusted_local(&self) -> bool {
+        matches!(self.identity, Identity::LocalHuman | Identity::SystemInternal)
     }
 }
 

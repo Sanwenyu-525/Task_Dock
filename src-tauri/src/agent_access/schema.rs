@@ -283,6 +283,66 @@ CREATE INDEX idx_arc_expires ON agent_request_cache(expires_at);
 "#,
 );
 
+pub const MIGRATION_81: (i64, &str) = (
+    81,
+    r#"
+-- v81（文件导入授权）：把「可以写某个 Inbox」与「可以改 TaskDock 全部资源」分开。
+-- 1) 目录策略：默认无行 = 待审核；trusted 仍需能力集合 + 项目范围。
+CREATE TABLE IF NOT EXISTS agent_import_policies (
+  id TEXT PRIMARY KEY NOT NULL,
+  workspace_row_id TEXT NOT NULL REFERENCES agent_workspaces(id) ON DELETE CASCADE,
+  rel_dir TEXT NOT NULL DEFAULT '',
+  mode TEXT NOT NULL DEFAULT 'review' CHECK (mode IN ('off','review','trusted')),
+  agent_row_id TEXT REFERENCES mcp_agents(id) ON DELETE SET NULL,
+  capabilities TEXT NOT NULL DEFAULT '[]',
+  project_id TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (workspace_row_id, rel_dir)
+);
+CREATE INDEX IF NOT EXISTS idx_aip_ws ON agent_import_policies(workspace_row_id, rel_dir);
+
+-- 2) 待审核导入：只存元数据与摘要，正文仍在共享目录中，不复制进库。
+CREATE TABLE IF NOT EXISTS agent_import_requests (
+  id TEXT PRIMARY KEY NOT NULL,
+  workspace_row_id TEXT NOT NULL REFERENCES agent_workspaces(id) ON DELETE CASCADE,
+  rel_path TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  project_id TEXT NOT NULL DEFAULT '',
+  claimed_agent_id TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending','approved','rejected','imported','failed')),
+  reason TEXT NOT NULL DEFAULT '',
+  detail_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  decided_at TEXT,
+  decided_by TEXT NOT NULL DEFAULT '',
+  UNIQUE (workspace_row_id, rel_path)
+);
+CREATE INDEX IF NOT EXISTS idx_air_status ON agent_import_requests(workspace_row_id, status, created_at DESC);
+
+-- 3) 导入幂等声明：业务写入前先占位，成功置 ok，失败释放。
+--    仅按内容 Hash 去重会把「不同请求、相同内容」误判为同一操作，因此加入
+--    操作类型与请求身份（rel_path + kind + actor）。
+CREATE TABLE IF NOT EXISTS agent_import_claims (
+  id TEXT PRIMARY KEY NOT NULL,
+  workspace_row_id TEXT NOT NULL REFERENCES agent_workspaces(id) ON DELETE CASCADE,
+  claim_key TEXT NOT NULL,
+  rel_path TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  actor TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'inflight' CHECK (status IN ('inflight','ok')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (workspace_row_id, claim_key)
+);
+CREATE INDEX IF NOT EXISTS idx_aic_hash ON agent_import_claims(workspace_row_id, content_hash);
+"#,
+);
+
 #[cfg(test)]
 mod tests {
     use crate::db::Db;

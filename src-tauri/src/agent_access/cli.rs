@@ -21,7 +21,7 @@ use super::{
     sync as file_sync, workspace, ActorKind, Envelope, Meta, Page, Principal, Source,
 };
 
-const USAGE: &str = r#"Task Dock Agent CLI
+pub const USAGE: &str = r#"Task Dock Agent CLI
 
 用法:
   taskdock status [--json]
@@ -83,6 +83,68 @@ struct Outcome {
     data: Value,
     page: Option<Page>,
     human: String,
+}
+
+/// CLI 命令注册表（真源）。帮助文本、文档契约测试与参数校验都从这里派生，
+/// 避免「文档写一套、实现是另一套」。
+pub const COMMANDS: &[(&str, &str, &str)] = &[
+    ("status", "-", "接口/工作空间/数据库/版本总览"),
+    ("info", "-", "版本、路径、协议、schema"),
+    ("project", "list|get|current", "项目列表/详情/当前项目"),
+    ("task", "list|get|create|update|complete|search", "任务读写"),
+    ("plan", "list|current|get", "规划列表/当前/详情"),
+    ("knowledge", "bases|search|get|create|update", "知识检索与写入"),
+    ("decision", "list|get|create", "决策记录"),
+    ("context", "get|search|export", "上下文装配与导出"),
+    ("agent", "registry|activity|handoff|report", "Agent 身份、交接与报告"),
+    ("search", "-", "跨类型搜索"),
+    ("sync", "status|init|export|scan|conflicts|resolve", "文件同步与冲突"),
+];
+
+/// 供帮助输出与诊断使用的命令描述。
+pub fn describe_cli_commands() -> Vec<String> {
+    COMMANDS
+        .iter()
+        .map(|(group, sub, summary)| {
+            if *sub == "-" {
+                format!("taskdock {group} — {summary}")
+            } else {
+                format!("taskdock {group} {sub} — {summary}")
+            }
+        })
+        .collect()
+}
+
+/// 文档契约：帮助文本必须覆盖注册表里的每个命令组与子命令。
+/// 文档与实现漂移时（新增命令忘了写帮助）立刻失败。
+pub fn check_cli_documentation_contract(usage: &str) -> Result<(), String> {
+    let mut missing = Vec::new();
+    for (group, sub, _) in COMMANDS {
+        if !usage.contains(&format!("taskdock {group} ")) && !usage.contains(&format!("taskdock {group}\n")) {
+            missing.push(format!("taskdock {group}"));
+        }
+        if *sub == "-" {
+            continue;
+        }
+        for one in sub.split('|') {
+            if !usage.contains(&format!("taskdock {group} {one}")) {
+                missing.push(format!("taskdock {group} {one}"));
+            }
+        }
+    }
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("CLI 帮助缺少命令: {}", missing.join(", ")))
+    }
+}
+
+/// 未知参数校验：解析后仍残留 `--xxx` 说明用户传了不存在的参数。
+fn validate_cli_arguments(args: &[String]) -> AppResult<()> {
+    if let Some(unknown) = args.iter().find(|a| a.starts_with("--")) {
+        return Err(usage_err(&format!("未知参数 {unknown}")));
+    }
+    Ok(())
 }
 
 fn take_flag(args: &mut Vec<String>, name: &str) -> Option<String> {
@@ -293,6 +355,17 @@ fn filter_fields(data: Value, fields: &[String]) -> Value {
 }
 
 fn execute(db: &Db, principal: &Principal, cli: &Cli, mut args: Vec<String>) -> AppResult<Outcome> {
+    let outcome = execute_inner(db, principal, cli, &mut args)?;
+    validate_cli_arguments(&args)?;
+    Ok(outcome)
+}
+
+fn execute_inner(
+    db: &Db,
+    principal: &Principal,
+    cli: &Cli,
+    args: &mut Vec<String>,
+) -> AppResult<Outcome> {
     if args.is_empty() {
         return Err(usage_err("缺少命令组（status|info|project|task|plan|knowledge|decision|context|agent|search|sync）"));
     }
@@ -360,7 +433,7 @@ fn execute(db: &Db, principal: &Principal, cli: &Cli, mut args: Vec<String>) -> 
                 })
             }
             "get" => {
-                let id = require_positional(&mut args, "project_id")?;
+                let id = require_positional(args, "project_id")?;
                 let detail = service::get_project(db, principal, &id)?;
                 Ok(Outcome {
                     human: serde_json::to_string_pretty(&detail)?,
@@ -398,7 +471,7 @@ fn execute(db: &Db, principal: &Principal, cli: &Cli, mut args: Vec<String>) -> 
                         args.push(kw);
                     }
                 }
-                let filter = task_filter(&mut args)?;
+                let filter = task_filter(args)?;
                 let (tasks, page) =
                     service::list_tasks(db, principal, filter, cli.limit, cli.offset)?;
                 let human = tasks
@@ -413,7 +486,7 @@ fn execute(db: &Db, principal: &Principal, cli: &Cli, mut args: Vec<String>) -> 
                 })
             }
             "get" => {
-                let id = require_positional(&mut args, "task_id")?;
+                let id = require_positional(args, "task_id")?;
                 let task = service::fetch_task(db, principal, &id)?;
                 Ok(Outcome {
                     human: serde_json::to_string_pretty(&task)?,
@@ -422,21 +495,21 @@ fn execute(db: &Db, principal: &Principal, cli: &Cli, mut args: Vec<String>) -> 
                 })
             }
             "create" => {
-                let title = take_flag(&mut args, "--title")
+                let title = take_flag(args, "--title")
                     .ok_or_else(|| usage_err("task create 需要 --title"))?;
                 let input = service::TaskCreateInput {
                     title,
-                    description: take_flag(&mut args, "--description").unwrap_or_default(),
-                    priority: take_flag(&mut args, "--priority")
+                    description: take_flag(args, "--description").unwrap_or_default(),
+                    priority: take_flag(args, "--priority")
                         .and_then(|v| v.parse::<u8>().ok()),
-                    category: take_flag(&mut args, "--category"),
+                    category: take_flag(args, "--category"),
                     tags: {
-                        let tags = take_all(&mut args, "--tag");
+                        let tags = take_all(args, "--tag");
                         if tags.is_empty() { None } else { Some(tags) }
                     },
-                    due_at: take_flag(&mut args, "--due"),
-                    remind_at: take_flag(&mut args, "--remind"),
-                    advance_minutes: take_flag(&mut args, "--advance-minutes")
+                    due_at: take_flag(args, "--due"),
+                    remind_at: take_flag(args, "--remind"),
+                    advance_minutes: take_flag(args, "--advance-minutes")
                         .and_then(|v| v.parse::<i64>().ok()),
                 };
                 let task = service::create_task(db, principal, input)?;
@@ -447,25 +520,25 @@ fn execute(db: &Db, principal: &Principal, cli: &Cli, mut args: Vec<String>) -> 
                 })
             }
             "update" => {
-                let id = require_positional(&mut args, "task_id")?;
+                let id = require_positional(args, "task_id")?;
                 let patch = service::TaskPatch {
-                    title: take_flag(&mut args, "--title"),
-                    description: take_flag(&mut args, "--description"),
-                    priority: take_flag(&mut args, "--priority")
+                    title: take_flag(args, "--title"),
+                    description: take_flag(args, "--description"),
+                    priority: take_flag(args, "--priority")
                         .and_then(|v| v.parse::<u8>().ok()),
-                    category: take_flag(&mut args, "--category"),
+                    category: take_flag(args, "--category"),
                     tags: {
-                        let tags = take_all(&mut args, "--tag");
+                        let tags = take_all(args, "--tag");
                         if tags.is_empty() { None } else { Some(tags) }
                     },
-                    due_at: take_flag(&mut args, "--due"),
-                    clear_due_at: take_flag(&mut args, "--clear-due").is_some(),
-                    remind_at: take_flag(&mut args, "--remind"),
-                    clear_remind_at: take_flag(&mut args, "--clear-remind").is_some(),
-                    advance_minutes: take_flag(&mut args, "--advance-minutes")
+                    due_at: take_flag(args, "--due"),
+                    clear_due_at: take_flag(args, "--clear-due").is_some(),
+                    remind_at: take_flag(args, "--remind"),
+                    clear_remind_at: take_flag(args, "--clear-remind").is_some(),
+                    advance_minutes: take_flag(args, "--advance-minutes")
                         .and_then(|v| v.parse::<i64>().ok()),
                 };
-                let base = take_flag(&mut args, "--base-revision")
+                let base = take_flag(args, "--base-revision")
                     .and_then(|v| v.parse::<i64>().ok());
                 let task = service::update_task(db, principal, &id, patch, base)?;
                 Ok(Outcome {
@@ -475,8 +548,8 @@ fn execute(db: &Db, principal: &Principal, cli: &Cli, mut args: Vec<String>) -> 
                 })
             }
             "complete" => {
-                let id = require_positional(&mut args, "task_id")?;
-                let base = take_flag(&mut args, "--base-revision")
+                let id = require_positional(args, "task_id")?;
+                let base = take_flag(args, "--base-revision")
                     .and_then(|v| v.parse::<i64>().ok());
                 let task = service::complete_task(db, principal, &id, base)?;
                 Ok(Outcome {
@@ -489,7 +562,7 @@ fn execute(db: &Db, principal: &Principal, cli: &Cli, mut args: Vec<String>) -> 
         },
         "plan" => match sub.as_str() {
             "list" => {
-                let project = take_flag(&mut args, "--project");
+                let project = take_flag(args, "--project");
                 let (plans, page) = service::list_plans(
                     db,
                     principal,
@@ -528,7 +601,7 @@ fn execute(db: &Db, principal: &Principal, cli: &Cli, mut args: Vec<String>) -> 
                 None => Err(AppError::NotFound("没有进行中的规划".into())),
             },
             "get" => {
-                let id = require_positional(&mut args, "project_id")?;
+                let id = require_positional(args, "project_id")?;
                 let plan = service::get_plan(db, principal, &id)?;
                 Ok(Outcome {
                     human: serde_json::to_string_pretty(&plan)?,
@@ -553,8 +626,8 @@ fn execute(db: &Db, principal: &Principal, cli: &Cli, mut args: Vec<String>) -> 
                 })
             }
             "search" => {
-                let query = require_positional(&mut args, "关键词")?;
-                let kb_ids = take_all(&mut args, "--kb");
+                let query = require_positional(args, "关键词")?;
+                let kb_ids = take_all(args, "--kb");
                 let (hits, page) =
                     service::search_knowledge(db, principal, &query, &kb_ids, cli.limit, cli.offset)?;
                 let human = hits
@@ -569,7 +642,7 @@ fn execute(db: &Db, principal: &Principal, cli: &Cli, mut args: Vec<String>) -> 
                 })
             }
             "get" => {
-                let id = require_positional(&mut args, "document_id")?;
+                let id = require_positional(args, "document_id")?;
                 let doc = service::get_knowledge(db, principal, &id)?;
                 Ok(Outcome {
                     human: format!("# {}\n\n{}", doc.title, doc.content),
@@ -578,11 +651,11 @@ fn execute(db: &Db, principal: &Principal, cli: &Cli, mut args: Vec<String>) -> 
                 })
             }
             "create" => {
-                let title = take_flag(&mut args, "--title")
+                let title = take_flag(args, "--title")
                     .ok_or_else(|| usage_err("knowledge create 需要 --title"))?;
-                let content = match take_flag(&mut args, "--content") {
+                let content = match take_flag(args, "--content") {
                     Some(c) => c,
-                    None => match take_flag(&mut args, "--file") {
+                    None => match take_flag(args, "--file") {
                         Some(path) => std::fs::read_to_string(&path).map_err(|e| {
                             AppError::Validation(format!("读取 --file 失败: {e}"))
                         })?,
@@ -592,8 +665,8 @@ fn execute(db: &Db, principal: &Principal, cli: &Cli, mut args: Vec<String>) -> 
                 let input = service::KnowledgeCreateInput {
                     title,
                     content,
-                    kb_id: take_flag(&mut args, "--kb-id").or_else(|| take_flag(&mut args, "--kb")),
-                    kb_name: take_flag(&mut args, "--kb-name"),
+                    kb_id: take_flag(args, "--kb-id").or_else(|| take_flag(args, "--kb")),
+                    kb_name: take_flag(args, "--kb-name"),
                 };
                 let doc = service::create_knowledge(db, principal, input)?;
                 Ok(Outcome {
@@ -603,13 +676,13 @@ fn execute(db: &Db, principal: &Principal, cli: &Cli, mut args: Vec<String>) -> 
                 })
             }
             "update" => {
-                let id = require_positional(&mut args, "document_id")?;
-                let base = take_flag(&mut args, "--base-revision")
+                let id = require_positional(args, "document_id")?;
+                let base = take_flag(args, "--base-revision")
                     .and_then(|v| v.parse::<i64>().ok());
                 let patch = service::KnowledgePatch {
-                    title: take_flag(&mut args, "--title"),
-                    content: take_flag(&mut args, "--content").or_else(|| {
-                        take_flag(&mut args, "--file")
+                    title: take_flag(args, "--title"),
+                    content: take_flag(args, "--content").or_else(|| {
+                        take_flag(args, "--file")
                             .and_then(|p| std::fs::read_to_string(p).ok())
                     }),
                 };
@@ -624,8 +697,8 @@ fn execute(db: &Db, principal: &Principal, cli: &Cli, mut args: Vec<String>) -> 
         },
         "decision" => match sub.as_str() {
             "list" => {
-                let project = take_flag(&mut args, "--project");
-                let status = take_flag(&mut args, "--status");
+                let project = take_flag(args, "--project");
+                let status = take_flag(args, "--status");
                 let (items, page) = store::list_decisions(
                     db,
                     project.as_deref(),
@@ -645,7 +718,7 @@ fn execute(db: &Db, principal: &Principal, cli: &Cli, mut args: Vec<String>) -> 
                 })
             }
             "get" => {
-                let id = require_positional(&mut args, "decision_id")?;
+                let id = require_positional(args, "decision_id")?;
                 let decision = store::get_decision(db, &id)?;
                 Ok(Outcome {
                     human: serde_json::to_string_pretty(&decision)?,
@@ -655,20 +728,20 @@ fn execute(db: &Db, principal: &Principal, cli: &Cli, mut args: Vec<String>) -> 
             }
             "create" => {
                 perms::require(db, principal, Capability::DecisionsWrite, "")?;
-                let title = take_flag(&mut args, "--title")
+                let title = take_flag(args, "--title")
                     .ok_or_else(|| usage_err("decision create 需要 --title"))?;
-                let decision = take_flag(&mut args, "--decision")
+                let decision = take_flag(args, "--decision")
                     .ok_or_else(|| usage_err("decision create 需要 --decision"))?;
                 let input = store::DecisionInput {
                     title,
-                    project_id: take_flag(&mut args, "--project"),
+                    project_id: take_flag(args, "--project"),
                     project_kind: None,
-                    context: take_flag(&mut args, "--context").unwrap_or_default(),
+                    context: take_flag(args, "--context").unwrap_or_default(),
                     decision,
-                    consequences: take_flag(&mut args, "--consequences").unwrap_or_default(),
-                    alternatives: take_flag(&mut args, "--alternatives").unwrap_or_default(),
-                    tags: take_all(&mut args, "--tag"),
-                    status: take_flag(&mut args, "--status"),
+                    consequences: take_flag(args, "--consequences").unwrap_or_default(),
+                    alternatives: take_flag(args, "--alternatives").unwrap_or_default(),
+                    tags: take_all(args, "--tag"),
+                    status: take_flag(args, "--status"),
                 };
                 let created = store::create_decision(db, principal, input)?;
                 Ok(Outcome {
@@ -681,12 +754,12 @@ fn execute(db: &Db, principal: &Principal, cli: &Cli, mut args: Vec<String>) -> 
         },
         "context" => match sub.as_str() {
             "get" | "export" => {
-                let format = take_flag(&mut args, "--format").unwrap_or_else(|| "markdown".into());
+                let format = take_flag(args, "--format").unwrap_or_else(|| "markdown".into());
                 let req = context::ContextRequest {
-                    task: take_flag(&mut args, "--task"),
-                    task_id: take_flag(&mut args, "--task-id"),
-                    project_id: take_flag(&mut args, "--project"),
-                    budget_tokens: take_flag(&mut args, "--budget")
+                    task: take_flag(args, "--task"),
+                    task_id: take_flag(args, "--task-id"),
+                    project_id: take_flag(args, "--project"),
+                    budget_tokens: take_flag(args, "--budget")
                         .and_then(|v| v.parse::<u32>().ok()),
                     format: Some(format.clone()),
                     ..Default::default()
@@ -704,7 +777,7 @@ fn execute(db: &Db, principal: &Principal, cli: &Cli, mut args: Vec<String>) -> 
                 })
             }
             "search" => {
-                let query = require_positional(&mut args, "关键词")?;
+                let query = require_positional(args, "关键词")?;
                 let keywords = query
                     .split_whitespace()
                     .map(str::to_string)
@@ -745,9 +818,9 @@ fn execute(db: &Db, principal: &Principal, cli: &Cli, mut args: Vec<String>) -> 
                 })
             }
             "activity" => {
-                let agent = take_flag(&mut args, "--agent");
-                let interface = take_flag(&mut args, "--interface");
-                let since = take_flag(&mut args, "--since");
+                let agent = take_flag(args, "--agent");
+                let interface = take_flag(args, "--interface");
+                let since = take_flag(args, "--since");
                 let (items, page) = handoff::activity(
                     db,
                     principal,
@@ -784,8 +857,8 @@ fn execute(db: &Db, principal: &Principal, cli: &Cli, mut args: Vec<String>) -> 
                 };
                 match action.as_str() {
                     "list" => {
-                        let status = take_flag(&mut args, "--status");
-                        let project = take_flag(&mut args, "--project");
+                        let status = take_flag(args, "--status");
+                        let project = take_flag(args, "--project");
                         let (items, page) = handoff::list_handoffs(
                             db,
                             principal,
@@ -811,7 +884,7 @@ fn execute(db: &Db, principal: &Principal, cli: &Cli, mut args: Vec<String>) -> 
                         })
                     }
                     "get" => {
-                        let id = require_positional(&mut args, "handoff_id")?;
+                        let id = require_positional(args, "handoff_id")?;
                         let item = handoff::get_handoff(db, principal, &id)?;
                         Ok(Outcome {
                             human: serde_json::to_string_pretty(&item)?,
@@ -820,22 +893,22 @@ fn execute(db: &Db, principal: &Principal, cli: &Cli, mut args: Vec<String>) -> 
                         })
                     }
                     "create" => {
-                        let to = take_flag(&mut args, "--to")
+                        let to = take_flag(args, "--to")
                             .ok_or_else(|| usage_err("handoff create 需要 --to <agent_id>"))?;
-                        let summary = take_flag(&mut args, "--summary")
+                        let summary = take_flag(args, "--summary")
                             .ok_or_else(|| usage_err("handoff create 需要 --summary"))?;
                         let input = store::HandoffInput {
                             to_agent_id: to,
                             summary,
-                            task_id: take_flag(&mut args, "--task-id"),
-                            project_id: take_flag(&mut args, "--project"),
+                            task_id: take_flag(args, "--task-id"),
+                            project_id: take_flag(args, "--project"),
                             project_kind: None,
-                            completed_items: take_all(&mut args, "--done"),
-                            pending_items: take_all(&mut args, "--pending"),
+                            completed_items: take_all(args, "--done"),
+                            pending_items: take_all(args, "--pending"),
                             decisions: Vec::new(),
-                            files_changed: take_all(&mut args, "--file"),
-                            risks: take_all(&mut args, "--risk"),
-                            next_steps: take_all(&mut args, "--next"),
+                            files_changed: take_all(args, "--file"),
+                            risks: take_all(args, "--risk"),
+                            next_steps: take_all(args, "--next"),
                         };
                         let created = handoff::create_handoff(db, principal, input)?;
                         Ok(Outcome {
@@ -849,14 +922,14 @@ fn execute(db: &Db, principal: &Principal, cli: &Cli, mut args: Vec<String>) -> 
                         })
                     }
                     "accept" | "reject" | "complete" => {
-                        let id = require_positional(&mut args, "handoff_id")?;
-                        let base = take_flag(&mut args, "--base-revision")
+                        let id = require_positional(args, "handoff_id")?;
+                        let base = take_flag(args, "--base-revision")
                             .and_then(|v| v.parse::<i64>().ok())
                             .ok_or_else(|| usage_err("状态变更需要 --base-revision"))?;
                         let result = match action.as_str() {
                             "accept" => handoff::accept_handoff(db, principal, &id, base)?,
                             "reject" => {
-                                let reason = take_flag(&mut args, "--reason").unwrap_or_default();
+                                let reason = take_flag(args, "--reason").unwrap_or_default();
                                 handoff::reject_handoff(db, principal, &id, base, &reason)?
                             }
                             _ => handoff::complete_handoff(db, principal, &id, base)?,
@@ -877,8 +950,8 @@ fn execute(db: &Db, principal: &Principal, cli: &Cli, mut args: Vec<String>) -> 
                 };
                 match action.as_str() {
                     "list" => {
-                        let agent = take_flag(&mut args, "--agent");
-                        let handoff_id = take_flag(&mut args, "--handoff");
+                        let agent = take_flag(args, "--agent");
+                        let handoff_id = take_flag(args, "--handoff");
                         let (items, page) = handoff::list_reports(
                             db,
                             principal,
@@ -899,7 +972,7 @@ fn execute(db: &Db, principal: &Principal, cli: &Cli, mut args: Vec<String>) -> 
                         })
                     }
                     "get" => {
-                        let id = require_positional(&mut args, "report_id")?;
+                        let id = require_positional(args, "report_id")?;
                         let item = handoff::get_report(db, principal, &id)?;
                         Ok(Outcome {
                             human: serde_json::to_string_pretty(&item)?,
@@ -908,19 +981,19 @@ fn execute(db: &Db, principal: &Principal, cli: &Cli, mut args: Vec<String>) -> 
                         })
                     }
                     "create" => {
-                        let summary = take_flag(&mut args, "--summary")
+                        let summary = take_flag(args, "--summary")
                             .ok_or_else(|| usage_err("report create 需要 --summary"))?;
                         let input = store::ReportInput {
                             summary,
-                            result: take_flag(&mut args, "--result"),
-                            handoff_id: take_flag(&mut args, "--handoff"),
-                            project_id: take_flag(&mut args, "--project"),
-                            task_id: take_flag(&mut args, "--task-id"),
-                            completed_items: take_all(&mut args, "--done"),
-                            pending_items: take_all(&mut args, "--pending"),
-                            files_changed: take_all(&mut args, "--file"),
+                            result: take_flag(args, "--result"),
+                            handoff_id: take_flag(args, "--handoff"),
+                            project_id: take_flag(args, "--project"),
+                            task_id: take_flag(args, "--task-id"),
+                            completed_items: take_all(args, "--done"),
+                            pending_items: take_all(args, "--pending"),
+                            files_changed: take_all(args, "--file"),
                             evidence: Vec::new(),
-                            risks: take_all(&mut args, "--risk"),
+                            risks: take_all(args, "--risk"),
                         };
                         let out = handoff::create_report(db, principal, input)?;
                         Ok(Outcome {
@@ -935,8 +1008,8 @@ fn execute(db: &Db, principal: &Principal, cli: &Cli, mut args: Vec<String>) -> 
             other => Err(usage_err(&format!("未知子命令 agent {other}"))),
         },
         "search" => {
-            let query = require_positional(&mut args, "关键词")?;
-            let kinds = take_all(&mut args, "--kind");
+            let query = require_positional(args, "关键词")?;
+            let kinds = take_all(args, "--kind");
             let items = service::search_all(db, principal, &query, &kinds, cli.limit)?;
             let human = items
                 .iter()
@@ -966,8 +1039,8 @@ fn execute(db: &Db, principal: &Principal, cli: &Cli, mut args: Vec<String>) -> 
                 })
             }
             "init" => {
-                let path = take_flag(&mut args, "--path");
-                let name = take_flag(&mut args, "--name");
+                let path = take_flag(args, "--path");
+                let name = take_flag(args, "--name");
                 let row = workspace::init(db, path.as_deref(), name.as_deref())?;
                 let report = projection::export_all(db, &row)?;
                 let data = json!({
@@ -983,7 +1056,7 @@ fn execute(db: &Db, principal: &Principal, cli: &Cli, mut args: Vec<String>) -> 
                     page: None,
                 })
             }
-            "export" => {
+            "export" | "push" => {
                 let row = workspace::active(db)?
                     .ok_or_else(|| AppError::NotFound("工作空间尚未初始化".into()))?;
                 let report = projection::export_all(db, &row)?;
@@ -999,22 +1072,22 @@ fn execute(db: &Db, principal: &Principal, cli: &Cli, mut args: Vec<String>) -> 
                     page: None,
                 })
             }
-            "scan" => {
+            // 兼容别名：旧文档里的 pull/push 分别对应 scan/export。
+            "scan" | "pull" => {
                 let row = workspace::active(db)?
                     .ok_or_else(|| AppError::NotFound("工作空间尚未初始化".into()))?;
-                let scan_principal = if principal.is_agent() {
-                    principal.clone()
-                } else {
-                    Principal {
-                        source: Source::File,
-                        ..principal.clone()
-                    }
-                };
-                let report = file_sync::scan(db, &scan_principal, &row)?;
+                // 扫描身份就是调用者：本机 CLI = 可信本机；带 token 的 Agent 会被拒绝
+                // （文件导入不能由 Agent 触发，避免自授权循环）。
+                let report = file_sync::scan(db, principal, &row)?;
                 Ok(Outcome {
                     human: format!(
-                        "扫描 {}，导入 {}，跳过 {}，失败 {}，冲突 {}",
-                        report.scanned, report.imported, report.skipped, report.failed, report.conflicts
+                        "扫描 {}，导入 {}，待批准 {}，跳过 {}，失败 {}，冲突 {}",
+                        report.scanned,
+                        report.imported,
+                        report.pending_review,
+                        report.skipped,
+                        report.failed,
+                        report.conflicts
                     ),
                     data: serde_json::to_value(&report)?,
                     page: None,
@@ -1034,9 +1107,26 @@ fn execute(db: &Db, principal: &Principal, cli: &Cli, mut args: Vec<String>) -> 
                 })
             }
             "resolve" => {
-                let id = require_positional(&mut args, "conflict_id")?;
-                let resolution = take_flag(&mut args, "--resolution")
-                    .ok_or_else(|| usage_err("sync resolve 需要 --resolution db|file|dismiss"))?;
+                let id = require_positional(args, "conflict_id")?;
+                // 新协议：--resolution db|file|dismiss；兼容旧写法 --action keep-db|keep-file|dismiss。
+                let resolution = match take_flag(args, "--resolution") {
+                    Some(value) if !value.trim().is_empty() => value,
+                    _ => match take_flag(args, "--action") {
+                        Some(value) => match value.trim() {
+                            "keep-db" => "db".to_string(),
+                            "keep-file" => "file".to_string(),
+                            "dismiss" => "dismiss".to_string(),
+                            other => {
+                                return Err(usage_err(&format!(
+                                    "resolution 必须是 db|file|dismiss（当前 {other}）"
+                                )))
+                            }
+                        },
+                        None => {
+                            return Err(usage_err("sync resolve 需要 --resolution db|file|dismiss"))
+                        }
+                    },
+                };
                 let item = file_sync::resolve_conflict(db, principal, &id, &resolution)?;
                 Ok(Outcome {
                     human: format!("冲突 {} → {}", item.id, item.status),

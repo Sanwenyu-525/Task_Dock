@@ -68,7 +68,6 @@ pub fn create_handoff(
     principal: &Principal,
     input: store::HandoffInput,
 ) -> AppResult<HandoffCreated> {
-    perms::require(db, principal, Capability::HandoffsWrite, "")?;
     let summary = input.summary.trim().to_string();
     if summary.is_empty() {
         return Err(validation("交接摘要不能为空"));
@@ -88,6 +87,7 @@ pub fn create_handoff(
         Some("planning") | Some("workspace") => project_kind_for(db, &project_id)?,
         _ => project_kind_for(db, &project_id)?,
     };
+    perms::require(db, principal, Capability::HandoffsWrite, &project_id)?;
     let target = resolve_target_agent(db, &input.to_agent_id)?;
     let (from_row, from_id) = principal_agent_snapshot(principal);
     let id = uuid::Uuid::new_v4().to_string();
@@ -149,7 +149,11 @@ pub fn list_handoffs(
     limit: u32,
     offset: u32,
 ) -> AppResult<(Vec<store::Handoff>, Page)> {
-    perms::require(db, principal, Capability::HandoffsRead, "")?;
+    match (principal.is_agent(), project_id) {
+        (true, Some(pid)) => perms::require(db, principal, Capability::HandoffsRead, pid)?,
+        (true, None) => perms::require(db, principal, Capability::HandoffsRead, "")?,
+        _ => {}
+    }
     if let Some(status) = status {
         if !matches!(status, "pending" | "accepted" | "rejected" | "completed" | "cancelled") {
             return Err(validation(format!("非法交接状态: {status}")));
@@ -159,8 +163,24 @@ pub fn list_handoffs(
 }
 
 pub fn get_handoff(db: &Db, principal: &Principal, id: &str) -> AppResult<store::Handoff> {
-    perms::require(db, principal, Capability::HandoffsRead, "")?;
-    store::get_handoff(db, id)
+    let handoff = store::get_handoff(db, id)?;
+    ensure_handoff_access(db, principal, &handoff, Capability::HandoffsRead)?;
+    Ok(handoff)
+}
+
+/// 交接自身的项目范围校验。项目为空的交接只对全局授权可见。
+fn ensure_handoff_access(
+    db: &Db,
+    principal: &Principal,
+    handoff: &store::Handoff,
+    capability: Capability,
+) -> AppResult<()> {
+    match principal.identity {
+        super::Identity::RegisteredAgent => {
+            perms::require(db, principal, capability, &handoff.project_id)
+        }
+        _ => Ok(()),
+    }
 }
 
 fn transition(
@@ -171,7 +191,9 @@ fn transition(
     base_revision: i64,
     reason: Option<&str>,
 ) -> AppResult<store::Handoff> {
-    perms::require(db, principal, Capability::HandoffsWrite, "")?;
+    let current = store::get_handoff(db, id)?;
+    ensure_handoff_access(db, principal, &current, Capability::HandoffsWrite)?;
+    authorize_handoff_transition(principal, &current, next)?;
     let handoff = store::set_handoff_status(db, principal, id, next, base_revision, reason)?;
     store::log_activity(
         db,
@@ -197,22 +219,64 @@ fn transition(
     Ok(handoff)
 }
 
+/// 交接状态迁移的操作者约束。必须与状态机同时生效：
+/// - pending → accepted / rejected：只能目标 Agent（本机协调者可代为处理）；
+/// - accepted → completed：目标 Agent；
+/// - cancelled：创建方或本机协调者；
+/// - 其他 Agent 一律拒绝，不论其是否持有 HandoffsWrite。
+pub fn authorize_handoff_transition(
+    principal: &Principal,
+    handoff: &store::Handoff,
+    next: &str,
+) -> AppResult<()> {
+    if principal.is_trusted_local() {
+        return Ok(());
+    }
+    if !principal.is_agent() {
+        return Err(AppError::Forbidden("当前身份不能变更交接状态".into()));
+    }
+    let me = principal.agent_id.trim();
+    let is_target = !me.is_empty() && handoff.to_agent_id == me;
+    let is_creator = !me.is_empty() && handoff.from_agent_id == me;
+    match next {
+        "accepted" | "rejected" => {
+            if is_target {
+                Ok(())
+            } else {
+                Err(AppError::Forbidden(format!(
+                    "该交接目标为 {}，当前 Agent 无权接收或拒绝",
+                    handoff.to_agent_id
+                )))
+            }
+        }
+        "completed" => {
+            if is_target {
+                Ok(())
+            } else {
+                Err(AppError::Forbidden(format!(
+                    "只有目标 Agent {} 可以完成该交接",
+                    handoff.to_agent_id
+                )))
+            }
+        }
+        "cancelled" => {
+            if is_creator {
+                Ok(())
+            } else {
+                Err(AppError::Forbidden("只有创建方可以取消该交接".into()))
+            }
+        }
+        other => Err(validation(format!("非法交接状态: {other}"))),
+    }
+}
+
 pub fn accept_handoff(
     db: &Db,
     principal: &Principal,
     id: &str,
     base_revision: i64,
 ) -> AppResult<store::Handoff> {
-    // 只允许目标 Agent 接收（本机用户作为协调者可以代为接收）。
-    let current = store::get_handoff(db, id)?;
-    if principal.is_agent() {
-        if current.to_agent_id != principal.agent_id {
-            return Err(AppError::Validation(format!(
-                "该交接目标为 {}，当前 Agent 无权接收",
-                current.to_agent_id
-            )));
-        }
-    }
+    // 目标身份校验统一在 `transition` → `authorize_handoff_transition`。
     transition(db, principal, id, "accepted", base_revision, None)
 }
 
@@ -249,7 +313,6 @@ pub fn create_report(
     principal: &Principal,
     input: store::ReportInput,
 ) -> AppResult<ReportOut> {
-    perms::require(db, principal, Capability::HandoffsWrite, "")?;
     let summary = input.summary.trim().to_string();
     if summary.is_empty() {
         return Err(validation("报告摘要不能为空"));
@@ -270,13 +333,39 @@ pub fn create_report(
     if !matches!(result.as_str(), "completed" | "partial" | "blocked" | "failed") {
         return Err(validation(format!("非法 result: {result}")));
     }
-    if let Some(handoff_id) = input.handoff_id.as_deref() {
-        store::get_handoff(db, handoff_id)?;
-    }
+    let handoff = match input.handoff_id.as_deref() {
+        Some(handoff_id) => {
+            let handoff = store::get_handoff(db, handoff_id)?;
+            ensure_handoff_access(db, principal, &handoff, Capability::HandoffsWrite)?;
+            Some(handoff)
+        }
+        None => None,
+    };
     let project_id = input.project_id.unwrap_or_default();
     if !project_id.is_empty() {
         project_kind_for(db, &project_id)?;
     }
+    if let Some(handoff) = &handoff {
+        if !handoff.project_id.is_empty()
+            && !project_id.is_empty()
+            && handoff.project_id != project_id
+        {
+            return Err(validation(format!(
+                "报告项目 {} 与交接项目 {} 不一致",
+                project_id, handoff.project_id
+            )));
+        }
+    }
+    // 报告必须归属于交接的项目，避免用空项目绕过范围限制。
+    let effective_project = if project_id.is_empty() {
+        handoff
+            .as_ref()
+            .map(|item| item.project_id.clone())
+            .unwrap_or_default()
+    } else {
+        project_id.clone()
+    };
+    perms::require(db, principal, Capability::HandoffsWrite, &effective_project)?;
     let (agent_row, agent_id) = principal_agent_snapshot(principal);
     let id = uuid::Uuid::new_v4().to_string();
     let now = crate::agents::now_iso();
@@ -336,12 +425,24 @@ pub fn list_reports(
     limit: u32,
     offset: u32,
 ) -> AppResult<(Vec<store::WorkReport>, Page)> {
-    perms::require(db, principal, Capability::HandoffsRead, "")?;
-    store::list_reports(db, agent_id, handoff_id, limit, offset)}
+    if let Some(handoff_id) = handoff_id {
+        let handoff = store::get_handoff(db, handoff_id)?;
+        ensure_handoff_access(db, principal, &handoff, Capability::HandoffsRead)?;
+    } else {
+        perms::require(db, principal, Capability::HandoffsRead, "")?;
+    }
+    store::list_reports(db, agent_id, handoff_id, limit, offset)
+}
 
 pub fn get_report(db: &Db, principal: &Principal, id: &str) -> AppResult<store::WorkReport> {
-    perms::require(db, principal, Capability::HandoffsRead, "")?;
-    store::get_report(db, id)
+    let report = store::get_report(db, id)?;
+    if let Some(handoff_id) = report.handoff_id.as_deref() {
+        let handoff = store::get_handoff(db, handoff_id)?;
+        ensure_handoff_access(db, principal, &handoff, Capability::HandoffsRead)?;
+    } else {
+        perms::require(db, principal, Capability::HandoffsRead, &report.project_id)?;
+    }
+    Ok(report)
 }
 
 // ── Agent 注册表 ─────────────────────────────────────────────────

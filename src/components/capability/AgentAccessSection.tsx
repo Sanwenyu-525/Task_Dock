@@ -2,6 +2,11 @@
 //!
 //! 只做「接入状态 / 活动 / 交接 / 同步 / 权限」的展示与操作入口；
 //! 所有读写都经 Tauri 命令进入统一 service 层，UI 不直接碰数据库或文件。
+//!
+//! 契约要点（v81）：
+//! - 冲突解决方式与 Rust 端枚举一致（db / file / dismiss），且**作用于选中的那条冲突**；
+//! - 工作报告来自 `agent_access_reports`，不再误用活动流；
+//! - 文件导入默认「待批准」，本机用户逐条批准后才写入业务表。
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -20,6 +25,7 @@ import {
   agentAccessActivity,
   agentAccessAgents,
   agentAccessConfigInfo,
+  agentAccessConflictDetail,
   agentAccessConflicts,
   agentAccessContext,
   agentAccessExport,
@@ -27,15 +33,23 @@ import {
   agentAccessHandoffs,
   agentAccessHandoffDetail,
   agentAccessHandoffTransition,
+  agentAccessImportApprove,
+  agentAccessImportPolicies,
+  agentAccessImportPolicyRemove,
+  agentAccessImportPolicySet,
+  agentAccessImportReject,
+  agentAccessImportRequests,
   agentAccessInit,
   agentAccessPermissions,
   agentAccessResolveConflict,
+  agentAccessReports,
   agentAccessRevoke,
   agentAccessScan,
   agentAccessStatus,
   agentAccessSyncStatus,
   fsReveal,
   type AgentAccessData,
+  type ConflictResolution,
 } from "../../lib/bridge";
 import { errorMessage } from "../../lib/errors";
 import { useLocale } from "../../hooks/useLocale";
@@ -53,6 +67,29 @@ const SUB_TABS: readonly { id: SubTab; key: string; icon: typeof Activity }[] = 
   { id: "permissions", key: "agent.subtab.permissions", icon: Users },
 ];
 
+/** 写能力：授权前必须让用户知道它能改数据。 */
+const WRITE_CAPABILITIES = new Set([
+  "tasks.write",
+  "notes.write",
+  "knowledge.write",
+  "decisions.write",
+  "handoffs.write",
+]);
+
+const CAPABILITY_FAMILIES: readonly { key: string; label: string }[] = [
+  { key: "tasks", label: "任务" },
+  { key: "knowledge", label: "知识" },
+  { key: "decisions", label: "决策" },
+  { key: "handoffs", label: "交接" },
+  { key: "projects", label: "项目" },
+  { key: "plans", label: "规划" },
+  { key: "context", label: "上下文" },
+  { key: "skills", label: "技能" },
+  { key: "notes", label: "笔记" },
+  { key: "workflows", label: "工作流" },
+  { key: "workspace", label: "文件工作区" },
+];
+
 function asRow(value: unknown): Row {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Row) : {};
 }
@@ -67,7 +104,8 @@ function text(value: unknown): string {
   return "";
 }
 
-function pick(row: Row, ...keys: string[]): unknown {
+function pick(row: Row | null | undefined, ...keys: string[]): unknown {
+  if (!row) return undefined;
   for (const key of keys) {
     if (row[key] !== undefined && row[key] !== null) return row[key];
   }
@@ -93,8 +131,12 @@ export default function AgentAccessSection() {
   const [handoffs, setHandoffs] = useState<Row[]>([]);
   const [reports, setReports] = useState<Row[]>([]);
   const [conflicts, setConflicts] = useState<Row[]>([]);
+  const [selectedConflictId, setSelectedConflictId] = useState<string>("");
+  const [conflictDetail, setConflictDetail] = useState<Row | null>(null);
+  const [resolution, setResolution] = useState<ConflictResolution>("db");
   const [sync, setSync] = useState<AgentAccessData>({});
   const [agents, setAgents] = useState<Row[]>([]);
+  const [agentQuery, setAgentQuery] = useState<string>("");
   const [selectedAgent, setSelectedAgent] = useState<string>("");
   const [permissions, setPermissions] = useState<AgentAccessData>({});
   const [capability, setCapability] = useState<string>("tasks.read");
@@ -103,7 +145,11 @@ export default function AgentAccessSection() {
   const [detail, setDetail] = useState<Row | null>(null);
   const [detailRevision, setDetailRevision] = useState<number>(0);
   const [reason, setReason] = useState<string>("");
-  const [resolution, setResolution] = useState<string>("keep_local");
+  const [importRequests, setImportRequests] = useState<Row[]>([]);
+  const [importPolicies, setImportPolicies] = useState<Row[]>([]);
+  const [policyDir, setPolicyDir] = useState<string>("inbox");
+  const [policyMode, setPolicyMode] = useState<"off" | "review" | "trusted">("review");
+  const [policyCapability, setPolicyCapability] = useState<string>("tasks.write");
   const [contextProject, setContextProject] = useState<string>("");
   const [contextTask, setContextTask] = useState<string>("");
   const [contextMarkdown, setContextMarkdown] = useState<string>("");
@@ -118,20 +164,39 @@ export default function AgentAccessSection() {
   const syncStatus = asRow(sync.workspace);
   const initialized = Boolean(pick(workspace, "workspaceId", "workspace_id"));
 
+  const refreshConflicts = useCallback(async () => {
+    const next = await agentAccessConflicts();
+    const rows = asRows(next);
+    setConflicts(rows);
+    return rows;
+  }, []);
+
   const loadAll = useCallback(async () => {
     setError(null);
     try {
-      const [nextStatus, nextConfig, nextSync, nextConflicts, nextAgents] = await Promise.all([
+      const [
+        nextStatus,
+        nextConfig,
+        nextSync,
+        nextConflicts,
+        nextAgents,
+        nextRequests,
+        nextPolicies,
+      ] = await Promise.all([
         agentAccessStatus(),
         agentAccessConfigInfo(),
         agentAccessSyncStatus(),
         agentAccessConflicts(),
         agentAccessAgents(),
+        agentAccessImportRequests(),
+        agentAccessImportPolicies(),
       ]);
       setStatus(nextStatus);
       setConfig(nextConfig);
       setSync(nextSync);
       setConflicts(asRows(nextConflicts));
+      setImportRequests(asRows(nextRequests));
+      setImportPolicies(asRows(nextPolicies));
       const agentRows = asRows(nextAgents);
       setAgents(agentRows);
       setSelectedAgent((previous) =>
@@ -157,7 +222,7 @@ export default function AgentAccessSection() {
             offset: 0,
           });
           setHandoffs(asRows(page.items));
-          const reportPage = await agentAccessActivity({ limit: 50, offset: 0 });
+          const reportPage = await agentAccessReports({ limit: 50, offset: 0 });
           setReports(asRows(reportPage.items));
         }
       } catch (e) {
@@ -230,6 +295,7 @@ export default function AgentAccessSection() {
       "  Authorization: Bearer <agent token>",
       "",
       "Files: read the workspace tree; write ONLY inbox/, tasks/inbox/, knowledge/inbox/.",
+      "File writes are review-by-default: approve them in the Sync tab.",
       "Remote access is disabled; loopback only.",
     ].join("\n");
   }, [workspace, rest]);
@@ -271,6 +337,43 @@ export default function AgentAccessSection() {
     if (id) await openDetail(id);
   };
 
+  /** 选择一条冲突并读取详情（文件内容、两侧版本、所需能力）。 */
+  const selectConflict = async (id: string) => {
+    setSelectedConflictId(id);
+    setConflictDetail(null);
+    if (!id) return;
+    try {
+      const detailPayload = await agentAccessConflictDetail(id);
+      setConflictDetail(asRow(detailPayload));
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  };
+
+  const resolveSelectedConflict = async () => {
+    if (!selectedConflictId) return;
+    await run(
+      () => agentAccessResolveConflict(selectedConflictId, resolution),
+      "agent.msg.resolved",
+    );
+    await refreshConflicts();
+    const still = conflicts.find((item) => text(pick(item, "id")) === selectedConflictId);
+    if (still) {
+      await selectConflict(selectedConflictId);
+    } else {
+      setSelectedConflictId("");
+      setConflictDetail(null);
+    }
+  };
+
+  const approveImport = async (requestId: string) => {
+    await run(() => agentAccessImportApprove(requestId), "agent.msg.approved");
+  };
+
+  const rejectImport = async (requestId: string) => {
+    await run(() => agentAccessImportReject(requestId, reason), "agent.msg.rejected");
+  };
+
   const runContext = async () => {
     setBusy(true);
     setError(null);
@@ -288,6 +391,42 @@ export default function AgentAccessSection() {
       setBusy(false);
     }
   };
+
+  const filteredAgents = useMemo(() => {
+    const query = agentQuery.trim().toLowerCase();
+    if (!query) return agents;
+    return agents.filter((item) => {
+      const haystack = [
+        text(pick(item, "agentId", "agent_id")),
+        text(pick(item, "displayName", "display_name")),
+        text(pick(item, "id")),
+      ]
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(query);
+    });
+  }, [agents, agentQuery]);
+
+  const grantsByFamily = useMemo(() => {
+    const map = new Map<string, Row[]>();
+    for (const grant of grants) {
+      const cap = text(pick(grant, "capability"));
+      const family = cap.split(".")[0] || "other";
+      const bucket = map.get(family) ?? [];
+      bucket.push(grant);
+      map.set(family, bucket);
+    }
+    return map;
+  }, [grants]);
+
+  const restState = text(pick(rest, "state")) || "stopped";
+  const handoffStatus = text(pick(detail, "status"));
+  const canAccept = handoffStatus === "pending";
+  const canReject = handoffStatus === "pending";
+  const canComplete = handoffStatus === "accepted";
+  const pendingReviewCount = importRequests.filter(
+    (item) => text(pick(item, "status")) === "pending",
+  ).length;
 
   return (
     <div className="cap-section agent-access">
@@ -342,9 +481,10 @@ export default function AgentAccessSection() {
               </dd>
               <dt>{t("agent.kv.watch")}</dt>
               <dd>
-                {watch.running ? t("agent.state.on") : t("agent.state.off")}
+                {watch.running ? t("agent.state.running") : t("agent.state.off")}
                 {" · "}
                 {Boolean(pick(config, "watch_enabled")) ? t("agent.state.on") : t("agent.state.off")}
+                {text(pick(watch, "last_error")) ? ` · ${text(pick(watch, "last_error"))}` : ""}
               </dd>
               <dt>{t("agent.kv.cli")}</dt>
               <dd>
@@ -353,8 +493,14 @@ export default function AgentAccessSection() {
               </dd>
               <dt>{t("agent.kv.rest")}</dt>
               <dd>
-                {rest.running ? t("agent.state.running") : t("agent.state.off")} ·{" "}
+                {restState === "listening"
+                  ? t("agent.state.running")
+                  : restState === "failed"
+                    ? t("agent.state.error")
+                    : t("agent.state.stopped")}
+                {" · "}
                 {text((pick(rest, "base_url") as string)) || "-"}
+                {text(pick(rest, "last_error")) ? ` · ${text(pick(rest, "last_error"))}` : ""}
               </dd>
               <dt>{t("agent.kv.mcp")}</dt>
               <dd>{Boolean(pick(config, "mcp_enabled")) ? t("agent.state.on") : t("agent.state.off")}</dd>
@@ -544,6 +690,25 @@ export default function AgentAccessSection() {
                 </tbody>
               </table>
             )}
+            <div className="cap-card-title">{t("agent.kv.reports")}</div>
+            {reports.length === 0 ? (
+              <p className="cap-muted">{t("agent.empty.reports")}</p>
+            ) : (
+              <ul className="agent-access-list">
+                {reports.map((item, index) => (
+                  <li key={`${text(pick(item, "id"))}-${index}`}>
+                    <span className="agent-access-time">
+                      {short(pick(item, "createdAt", "created_at"), 19)}
+                    </span>
+                    <span>{text(pick(item, "agentId", "agent_id")) || t("agent.localUser")}</span>
+                    <span title={text(pick(item, "summary"))}>
+                      {short(pick(item, "summary"), 60)}
+                    </span>
+                    <span className="cap-muted">{text(pick(item, "result"))}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
 
           <div className="cap-card">
@@ -574,7 +739,7 @@ export default function AgentAccessSection() {
                   <button
                     type="button"
                     className="btn sm primary"
-                    disabled={busy}
+                    disabled={busy || !canAccept}
                     onClick={() => void transition("accept")}
                   >
                     {t("agent.btn.accept")}
@@ -582,7 +747,7 @@ export default function AgentAccessSection() {
                   <button
                     type="button"
                     className="btn sm"
-                    disabled={busy}
+                    disabled={busy || !canComplete}
                     onClick={() => void transition("complete")}
                   >
                     {t("agent.btn.complete")}
@@ -590,7 +755,7 @@ export default function AgentAccessSection() {
                   <button
                     type="button"
                     className="btn sm"
-                    disabled={busy}
+                    disabled={busy || !canReject}
                     onClick={() => void transition("reject")}
                   >
                     {t("agent.btn.reject")}
@@ -618,10 +783,14 @@ export default function AgentAccessSection() {
               <dd>{text(pick(syncStatus, "rootPath", "root_path")) || "-"}</dd>
               <dt>{t("agent.kv.pending")}</dt>
               <dd>{text(pick(sync, "pendingImports", "pending_imports")) || "0"}</dd>
+              <dt>{t("agent.kv.pendingReview")}</dt>
+              <dd>{pendingReviewCount}</dd>
               <dt>{t("agent.kv.conflicts")}</dt>
               <dd>{text(pick(sync, "conflicts")) || "0"}</dd>
               <dt>{t("agent.kv.lastScan")}</dt>
               <dd>{short(pick(syncStatus, "lastScanAt", "last_scan_at"), 19) || "-"}</dd>
+              <dt>{t("agent.kv.lastError")}</dt>
+              <dd>{text(pick(sync, "last_error", "lastError")) || "-"}</dd>
             </dl>
             <div className="agent-access-actions">
               <button
@@ -644,50 +813,195 @@ export default function AgentAccessSection() {
           </div>
 
           <div className="cap-card">
+            <div className="cap-card-title">{t("agent.title.importReview")}</div>
+            {importRequests.length === 0 ? (
+              <p className="cap-muted">{t("agent.empty.imports")}</p>
+            ) : (
+              <ul className="agent-access-list">
+                {importRequests.map((item) => (
+                  <li key={text(pick(item, "id"))}>
+                    <span title={text(pick(item, "rel_path", "relPath"))}>
+                      {short(pick(item, "rel_path", "relPath"), 40)}
+                    </span>
+                    <span className="cap-muted">
+                      {text(pick(item, "kind"))} · {text(pick(item, "status"))}
+                    </span>
+                    <span className="cap-muted">{text(pick(item, "reason"))}</span>
+                    {text(pick(item, "status")) === "pending" ? (
+                      <>
+                        <button
+                          type="button"
+                          className="btn sm primary"
+                          disabled={busy}
+                          onClick={() => void approveImport(text(pick(item, "id")))}
+                        >
+                          {t("agent.btn.approve")}
+                        </button>
+                        <button
+                          type="button"
+                          className="btn sm"
+                          disabled={busy}
+                          onClick={() => void rejectImport(text(pick(item, "id")))}
+                        >
+                          {t("agent.btn.rejectFile")}
+                        </button>
+                      </>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div className="cap-card-title">{t("agent.title.importPolicy")}</div>
+            <div className="agent-access-form">
+              <input
+                className="agent-access-input"
+                value={policyDir}
+                onChange={(event) => setPolicyDir(event.target.value)}
+                placeholder={t("agent.ph.policyDir")}
+                aria-label={t("agent.ph.policyDir")}
+              />
+              <Select
+                value={policyMode}
+                onChange={(value) => setPolicyMode(value as "off" | "review" | "trusted")}
+                options={[
+                  { value: "review", label: t("agent.policy.review") },
+                  { value: "trusted", label: t("agent.policy.trusted") },
+                  { value: "off", label: t("agent.policy.off") },
+                ]}
+                size="sm"
+                ariaLabel={t("agent.title.importPolicy")}
+              />
+              <Select
+                value={policyCapability}
+                onChange={(value) => setPolicyCapability(value)}
+                options={[
+                  { value: "tasks.write", label: "tasks.write" },
+                  { value: "knowledge.write", label: "knowledge.write" },
+                  { value: "decisions.write", label: "decisions.write" },
+                  { value: "handoffs.write", label: "handoffs.write" },
+                ]}
+                size="sm"
+                ariaLabel={t("agent.field.capability")}
+              />
+              <button
+                type="button"
+                className="btn sm primary"
+                disabled={busy || !policyDir.trim()}
+                onClick={() =>
+                  void run(
+                    () =>
+                      agentAccessImportPolicySet({
+                        relDir: policyDir.trim(),
+                        mode: policyMode,
+                        capabilities: [policyCapability],
+                      }),
+                    "agent.msg.policySaved",
+                  )
+                }
+              >
+                {t("agent.btn.savePolicy")}
+              </button>
+            </div>
+            {importPolicies.length === 0 ? (
+              <p className="cap-muted">{t("agent.empty.policies")}</p>
+            ) : (
+              <ul className="agent-access-list">
+                {importPolicies.map((item) => (
+                  <li key={text(pick(item, "id"))}>
+                    <span>{text(pick(item, "rel_dir", "relDir")) || "/"}</span>
+                    <span className="cap-muted">{text(pick(item, "mode"))}</span>
+                    <span className="cap-muted">{listText(pick(item, "capabilities"))}</span>
+                    <button
+                      type="button"
+                      className="btn sm"
+                      disabled={busy}
+                      onClick={() =>
+                        void run(
+                          () => agentAccessImportPolicyRemove(text(pick(item, "id"))),
+                          "agent.msg.policyRemoved",
+                        )
+                      }
+                    >
+                      {t("agent.btn.removePolicy")}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          <div className="cap-card agent-access-conflicts">
             <div className="cap-card-title">{t("agent.title.conflicts")}</div>
             {conflicts.length === 0 ? (
               <p className="cap-muted">{t("agent.empty.conflicts")}</p>
             ) : (
               <>
                 <ul className="agent-access-list">
-                  {conflicts.map((item) => (
-                    <li key={text(pick(item, "id"))}>
-                      <span>{short(pick(item, "relPath", "rel_path"), 44)}</span>
-                      <span className="cap-muted">
-                        {text(pick(item, "kind"))} · {short(pick(item, "createdAt", "created_at"), 19)}
-                      </span>
-                    </li>
-                  ))}
+                  {conflicts.map((item) => {
+                    const id = text(pick(item, "id"));
+                    return (
+                      <li
+                        key={id}
+                        className={`agent-access-clickable${id === selectedConflictId ? " active" : ""}`}
+                        onClick={() => void selectConflict(id)}
+                      >
+                        <span>{short(pick(item, "relPath", "rel_path"), 44)}</span>
+                        <span className="cap-muted">
+                          {text(pick(item, "resource_kind", "resourceKind"))} ·{" "}
+                          {text(pick(item, "status"))}
+                        </span>
+                      </li>
+                    );
+                  })}
                 </ul>
-                <div className="agent-access-form">
-                  <Select
-                    value={resolution}
-                    onChange={(value) => setResolution(value)}
-                    options={[
-                      { value: "keep_local", label: t("agent.resolve.keepLocal") },
-                      { value: "accept_external", label: t("agent.resolve.acceptExternal") },
-                    ]}
-                    size="sm"
-                    ariaLabel={t("agent.title.conflicts")}
-                  />
-                  <button
-                    type="button"
-                    className="btn sm"
-                    disabled={busy}
-                    onClick={() =>
-                      void run(
-                        () =>
-                          agentAccessResolveConflict(
-                            text(pick(conflicts[0] ?? {}, "id")),
-                            resolution,
-                          ),
-                        "agent.msg.resolved",
-                      )
-                    }
-                  >
-                    {t("agent.btn.resolve")}
-                  </button>
-                </div>
+                <div className="cap-card-title">{t("agent.title.conflictDetail")}</div>
+                {!conflictDetail ? (
+                  <p className="cap-muted">{t("agent.empty.conflictDetail")}</p>
+                ) : (
+                  <>
+                    <dl className="cap-kv">
+                      <dt>{t("agent.col.resource")}</dt>
+                      <dd>
+                        {text(pick(conflictDetail, "resource_kind", "resourceKind"))} ·{" "}
+                        {text(pick(conflictDetail, "resource_id", "resourceId")) || "-"}
+                      </dd>
+                      <dt>{t("agent.col.dbRevision")}</dt>
+                      <dd>{text(pick(conflictDetail, "db_revision", "dbRevision")) || "-"}</dd>
+                      <dt>{t("agent.col.fileRevision")}</dt>
+                      <dd>{text(pick(conflictDetail, "file_revision", "fileRevision")) || "-"}</dd>
+                      <dt>{t("agent.col.file")}</dt>
+                      <dd>{text(pick(conflictDetail, "rel_path", "relPath")) || "-"}</dd>
+                    </dl>
+                    {text(pick(conflictDetail, "file_content", "fileContent")) ? (
+                      <pre className="agent-access-pre">
+                        {short(pick(conflictDetail, "file_content", "fileContent"), 1200)}
+                      </pre>
+                    ) : (
+                      <p className="cap-muted">{t("agent.empty.conflictFile")}</p>
+                    )}
+                    <div className="agent-access-form">
+                      <Select
+                        value={resolution}
+                        onChange={(value) => setResolution(value as ConflictResolution)}
+                        options={[
+                          { value: "db", label: t("agent.resolve.db") },
+                          { value: "file", label: t("agent.resolve.file") },
+                          { value: "dismiss", label: t("agent.resolve.dismiss") },
+                        ]}
+                        size="sm"
+                        ariaLabel={t("agent.title.conflicts")}
+                      />
+                      <button
+                        type="button"
+                        className="btn sm primary"
+                        disabled={busy || !selectedConflictId}
+                        onClick={() => void resolveSelectedConflict()}
+                      >
+                        {t("agent.btn.resolve")}
+                      </button>
+                    </div>
+                  </>
+                )}
               </>
             )}
           </div>
@@ -698,7 +1012,16 @@ export default function AgentAccessSection() {
         <div className="agent-access-grid two">
           <div className="cap-card">
             <div className="cap-card-title">{t("agent.title.agents")}</div>
-            {agents.length === 0 ? (
+            <div className="agent-access-form">
+              <input
+                className="agent-access-input"
+                value={agentQuery}
+                onChange={(event) => setAgentQuery(event.target.value)}
+                placeholder={t("agent.ph.agentSearch")}
+                aria-label={t("agent.ph.agentSearch")}
+              />
+            </div>
+            {filteredAgents.length === 0 ? (
               <EmptyState title={t("agent.empty.agents")} hint={t("agent.hint.createAgent")} />
             ) : (
               <table className="agent-access-table">
@@ -710,7 +1033,7 @@ export default function AgentAccessSection() {
                   </tr>
                 </thead>
                 <tbody>
-                  {agents.map((item) => (
+                  {filteredAgents.map((item) => (
                     <tr
                       key={text(pick(item, "id"))}
                       className={`agent-access-clickable${text(pick(item, "id")) === selectedAgent ? " active" : ""}`}
@@ -761,35 +1084,52 @@ export default function AgentAccessSection() {
                     {t("agent.btn.grant")}
                   </button>
                 </div>
+                {WRITE_CAPABILITIES.has(capability) ? (
+                  <p className="cap-muted agent-access-warning">{t("agent.hint.writeGrant")}</p>
+                ) : null}
                 {grants.length === 0 ? (
                   <p className="cap-muted">{t("agent.empty.grants")}</p>
                 ) : (
-                  <ul className="agent-access-list">
-                    {grants.map((grant) => (
-                      <li key={`${text(grant.capability)}-${text(grant.resourceId)}`}>
-                        <span>{text(grant.capability)}</span>
-                        <span className="cap-muted">{text(grant.resourceId) || "global"}</span>
-                        <button
-                          type="button"
-                          className="btn sm"
-                          disabled={busy}
-                          onClick={() =>
-                            void run(
-                              () =>
-                                agentAccessRevoke(
-                                  selectedAgent,
-                                  text(grant.capability),
-                                  text(grant.resourceId),
-                                ),
-                              "agent.msg.revoked",
-                            )
-                          }
-                        >
-                          {t("agent.btn.revoke")}
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
+                  CAPABILITY_FAMILIES.map((family) => {
+                    const bucket = grantsByFamily.get(family.key) ?? [];
+                    if (bucket.length === 0) return null;
+                    return (
+                      <div key={family.key} className="agent-access-grant-group">
+                        <div className="cap-card-title">{family.label}</div>
+                        <ul className="agent-access-list">
+                          {bucket.map((grant) => {
+                            const cap = text(pick(grant, "capability"));
+                            const scope = text(pick(grant, "resourceId", "resource_id"));
+                            return (
+                              <li key={`${cap}-${scope}`}>
+                                <span className={WRITE_CAPABILITIES.has(cap) ? "is-write" : ""}>
+                                  {cap}
+                                </span>
+                                <span className="cap-muted">{scope || "global"}</span>
+                                <button
+                                  type="button"
+                                  className="btn sm"
+                                  disabled={busy}
+                                  onClick={() => {
+                                    const target = `${cap} · ${scope || "global"}`;
+                                    if (!window.confirm(`${t("agent.hint.confirmRevoke")}\n${target}`)) {
+                                      return;
+                                    }
+                                    void run(
+                                      () => agentAccessRevoke(selectedAgent, cap, scope),
+                                      "agent.msg.revoked",
+                                    );
+                                  }}
+                                >
+                                  {t("agent.btn.revoke")}
+                                </button>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      </div>
+                    );
+                  })
                 )}
                 {reports.length > 0 ? (
                   <p className="cap-muted">
@@ -804,4 +1144,3 @@ export default function AgentAccessSection() {
     </div>
   );
 }
-

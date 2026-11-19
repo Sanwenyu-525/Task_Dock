@@ -75,3 +75,43 @@ untracked ──export──▶ in_sync ──外部修改──▶ modified_ext
 - 每次 tick：`scan_once`（只读目录遍历 + 有界文件数）→ `export_dirty`（仅脏资源）。
 - 退出时置取消标志并 join（≤2s），不留孤儿线程。
 - 错误只记录并降频（连续失败 3 次后间隔翻倍，最多 5 分钟）。
+
+## 8. 导入判定与幂等（v81 修订）
+
+### 8.1 导入判定链
+
+```
+scan() 逐文件：
+  1) 解析（JSON 信封 / Markdown front matter）
+  2) kind → 真实写能力（resolve_import_capability）
+  3) 目标项目（显式 project_id > payload.project_id > 任务所属项目）
+  4) authorize_file_import() → Allowed / NeedsReview / Rejected
+  5) Allowed：占幂等声明 → import_document()（再校验能力与项目范围）→ 置 ok → 归档 _imported/
+     NeedsReview：登记 agent_import_requests（保留文件在 Inbox）
+     Rejected：记录原因 → 归档 _rejected/
+```
+
+后台监听（`watch.rs`）与 UI 手动扫描（`commands::agent_access_scan`）走**同一条链**；
+人工批准走 `approve_import()`（一次性 `ImportGrant`，只含该 kind 的能力）。
+
+### 8.2 幂等键
+
+`claim_key = sha256(rel_path | kind | content_hash | actor)`：请求身份 + 操作类型 + 请求标识。
+只看内容 Hash 会把「不同文件、相同内容」误判为同一操作，因此不使用。
+
+### 8.3 冲突解决契约
+
+| 传输值 | 含义 | 前置校验 |
+|---|---|---|
+| `db` | 保留 TaskDock 数据，删除外部文件 | 冲突属于当前工作空间、状态为 open |
+| `file` | 接受外部文件（以当前 revision 重新导入） | 上述校验 + 文件 hash 未变 + 类型一致 + 目标仍存在 + **重新校验权限** |
+| `dismiss` | 仅关闭冲突记录，文件保留 | 上述基础校验 |
+
+其他取值一律 `VALIDATION`（前端只允许 `db | file | dismiss`）。
+文件读取失败或数据库写入失败时**不得**把冲突标记为已解决。
+
+### 8.4 监听状态
+
+`watch::status()` 暴露 `running / interval_secs / last_tick_at / last_ok_at / last_error`；
+`sync::status()` 暴露 `pending_imports / conflicts / pending_reviews / last_error`。
+20s 轮询保留为可靠兜底，未引入文件系统事件监听。

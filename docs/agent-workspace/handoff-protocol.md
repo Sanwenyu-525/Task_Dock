@@ -81,3 +81,22 @@ pending ──accept──▶ accepted ──complete──▶ completed
 - 一条交接同一时刻只属于一个 `to_agent`；转交需先 `cancel` 再新建（保留历史）。
 - 两个 Agent 同时 `accept`：后到者收到 409（首个成功者推进 revision）。
 - 交接与任务的关系是弱引用：任务被删除不删除交接（`task_id` 保留用于追溯）。
+
+## 6. 操作者身份约束（v81 修订）
+
+状态机之外新增**操作者**约束，统一在 `handoff::authorize_handoff_transition()` 生效
+（`transition()` 在写库前调用，`accept/reject/complete` 共用）：
+
+| 迁移 | 允许的操作者 |
+|---|---|
+| pending → accepted | 目标 Agent，或本机协调者（`LocalHuman`） |
+| pending → rejected | 目标 Agent，或本机协调者 |
+| accepted → completed | 目标 Agent，或本机协调者 |
+| → cancelled | 创建方，或本机协调者 |
+| 其他 | 一律拒绝（`FORBIDDEN`） |
+
+范围约束：
+- 读/写交接按**项目范围**判定（`HandoffsRead/Write` + `resource_id=project_id`）；
+  项目为空的交接只对全局授权可见。
+- 工作报告必须挂到**可访问**的交接上；报告项目与交接项目不一致时拒绝；
+- 报告不写空项目绕过范围限制。

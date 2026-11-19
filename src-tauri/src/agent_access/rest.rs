@@ -10,7 +10,6 @@
 
 use std::collections::HashMap;
 use std::convert::Infallible;
-use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -80,13 +79,32 @@ pub const ROUTES: &[(&str, &str, &str)] = &[
     ("POST", "/api/v1/sync/scan", "立即扫描导入目录"),
 ];
 
+/// 真实运行状态。与「配置期望运行」分开：`enabled=true` 不代表正在监听。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RestRuntimeStatus {
+    Stopped,
+    Starting,
+    Listening,
+    Failed,
+    Stopping,
+}
+
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct RestStatus {
     pub enabled: bool,
     pub running: bool,
+    pub state: RestRuntimeStatus,
+    /// 实际生效端口；未监听时回退为配置端口。
     pub port: u16,
+    pub configured_port: u16,
+    pub bound_port: Option<u16>,
     pub base_url: String,
     pub openapi_url: String,
+    pub last_error: Option<String>,
+    pub started_at: Option<String>,
+    pub request_count: u64,
+    pub rejected_count: u64,
     pub remote_allowed: bool,
 }
 
@@ -100,14 +118,33 @@ struct RestState {
     port: u16,
     shutdown: Arc<Notify>,
     rate: Mutex<RateState>,
-    requests: AtomicU64,
-    rejected: AtomicU64,
 }
 
 struct RunningRest {
     port: u16,
     shutdown: Arc<Notify>,
     task: tauri::async_runtime::JoinHandle<()>,
+    /// 监听任务退出标记（任务被 abort 时由 Drop 兜底置位）。
+    finished: Arc<AtomicU64>,
+}
+
+/// 监听任务的生命周期标记：无论正常退出还是被 abort，Drop 都会置位，
+/// 让 `stop()` 不必依赖 `JoinHandle::is_finished`（Tauri 的句柄没有该方法）。
+struct ListenerDone(Arc<AtomicU64>);
+
+impl Drop for ListenerDone {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[derive(Clone, Debug)]
+struct RuntimeState {
+    status: RestRuntimeStatus,
+    configured_port: u16,
+    bound_port: Option<u16>,
+    last_error: Option<String>,
+    started_at: Option<String>,
 }
 
 fn slot() -> &'static Mutex<Option<RunningRest>> {
@@ -115,43 +152,144 @@ fn slot() -> &'static Mutex<Option<RunningRest>> {
     SLOT.get_or_init(|| Mutex::new(None))
 }
 
+fn runtime() -> &'static Mutex<RuntimeState> {
+    static RUNTIME: OnceLock<Mutex<RuntimeState>> = OnceLock::new();
+    RUNTIME.get_or_init(|| {
+        Mutex::new(RuntimeState {
+            status: RestRuntimeStatus::Stopped,
+            configured_port: 0,
+            bound_port: None,
+            last_error: None,
+            started_at: None,
+        })
+    })
+}
+
+fn counters() -> &'static (AtomicU64, AtomicU64) {
+    static COUNTERS: OnceLock<(AtomicU64, AtomicU64)> = OnceLock::new();
+    COUNTERS.get_or_init(|| (AtomicU64::new(0), AtomicU64::new(0)))
+}
+
+fn runtime_snapshot() -> RuntimeState {
+    runtime()
+        .lock()
+        .map(|guard| guard.clone())
+        .unwrap_or(RuntimeState {
+            status: RestRuntimeStatus::Failed,
+            configured_port: 0,
+            bound_port: None,
+            last_error: Some("REST 运行时状态锁不可用".into()),
+            started_at: None,
+        })
+}
+
 pub fn status(db: &Db) -> RestStatus {
     let settings = Settings::load(db).ok();
     let enabled = settings.as_ref().map(|s| s.agent_api_enabled).unwrap_or(false);
     let configured_port = settings.map(|s| s.agent_api_port).unwrap_or(47911);
-    let running = slot().lock().map(|g| g.is_some()).unwrap_or(false);
-    let port = slot()
-        .lock()
-        .ok()
-        .and_then(|g| g.as_ref().map(|r| r.port))
-        .unwrap_or(configured_port);
+    let runtime = runtime_snapshot();
+    // 真实监听必须以「持有任务句柄 + 状态为 listening」同时成立。
+    let listening = runtime.status == RestRuntimeStatus::Listening
+        && runtime.bound_port.is_some()
+        && slot().lock().map(|g| g.is_some()).unwrap_or(false);
+    let port = if listening {
+        runtime.bound_port.unwrap_or(configured_port)
+    } else {
+        configured_port
+    };
     RestStatus {
         enabled,
-        running,
+        running: listening,
+        state: if listening {
+            RestRuntimeStatus::Listening
+        } else {
+            runtime.status
+        },
         port,
+        configured_port: runtime.configured_port.max(configured_port),
+        bound_port: if listening { runtime.bound_port } else { None },
         base_url: format!("http://127.0.0.1:{port}{BASE_PATH}"),
         openapi_url: format!("http://127.0.0.1:{port}{BASE_PATH}/openapi.json"),
+        last_error: runtime.last_error,
+        started_at: if listening { runtime.started_at } else { None },
+        request_count: counters().0.load(Ordering::Relaxed),
+        rejected_count: counters().1.load(Ordering::Relaxed),
         remote_allowed: false,
     }
 }
 
 /// 按设置应用启停（设置保存、启动恢复时调用）。
+/// - 关闭 → stopped；
+/// - 开启且未运行 → start；
+/// - 开启且端口变化 → 先停旧监听，再绑新端口；
+/// - 绑定失败 → 返回明确错误，同时把真实状态置为 failed（配置保持原样）。
 pub fn apply(db: Arc<Db>) -> AppResult<RestStatus> {
     let settings = Settings::load(&db)?;
+    let desired = settings.agent_api_port;
     let running = slot().lock().map(|g| g.is_some()).unwrap_or(false);
-    if settings.agent_api_enabled && !running {
-        start(db.clone(), settings.agent_api_port)?;
-    } else if !settings.agent_api_enabled && running {
-        stop();
-    }
-    Ok(status(&db))
-}
-
-pub fn start(db: Arc<Db>, port: u16) -> AppResult<RestStatus> {
-    if slot().lock().map(|g| g.is_some()).unwrap_or(false) {
+    if !settings.agent_api_enabled {
+        if running {
+            stop();
+        } else if let Ok(mut rt) = runtime().lock() {
+            rt.status = RestRuntimeStatus::Stopped;
+            rt.bound_port = None;
+            rt.started_at = None;
+        }
         return Ok(status(&db));
     }
+    if running {
+        let bound = runtime_snapshot().bound_port;
+        if bound == Some(desired) {
+            return Ok(status(&db));
+        }
+        stop();
+    }
+    start(db.clone(), desired)
+}
+
+/// 启动：**先同步绑定端口**，成功后才登记 listening。
+/// 并发 start 由 slot 锁串行化；重复 start 同一端口直接返回当前状态。
+pub fn start(db: Arc<Db>, port: u16) -> AppResult<RestStatus> {
+    if port == 0 {
+        return Err(AppError::Validation("REST 端口不能为 0".into()));
+    }
+    if slot().lock().map(|g| g.is_some()).unwrap_or(false) {
+        let bound = runtime_snapshot().bound_port;
+        if bound == Some(port) {
+            return Ok(status(&db));
+        }
+        return Err(AppError::Conflict(format!(
+            "REST 已在端口 {} 监听；请先停止再切换端口",
+            bound.unwrap_or(0)
+        )));
+    }
+    let listener = match std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)) {
+        Ok(listener) => listener,
+        Err(err) => {
+            if let Ok(mut rt) = runtime().lock() {
+                rt.status = RestRuntimeStatus::Failed;
+                rt.configured_port = port;
+                rt.bound_port = None;
+                rt.last_error = Some(format!("端口 {port} 绑定失败: {err}"));
+                rt.started_at = None;
+            }
+            return Err(AppError::Unavailable(format!(
+                "Agent REST 端口 {port} 绑定失败: {err}"
+            )));
+        }
+    };
+    listener.set_nonblocking(true).map_err(|err| {
+        AppError::Unavailable(format!("设置监听非阻塞失败: {err}"))
+    })?;
+    if let Ok(mut rt) = runtime().lock() {
+        rt.status = RestRuntimeStatus::Starting;
+        rt.configured_port = port;
+        rt.bound_port = None;
+        rt.last_error = None;
+        rt.started_at = None;
+    }
     let shutdown = Arc::new(Notify::new());
+    let finished = Arc::new(AtomicU64::new(0));
     let state = Arc::new(RestState {
         db: db.clone(),
         port,
@@ -160,40 +298,82 @@ pub fn start(db: Arc<Db>, port: u16) -> AppResult<RestStatus> {
             window: Instant::now(),
             count: 0,
         }),
-        requests: AtomicU64::new(0),
-        rejected: AtomicU64::new(0),
     });
-    let task = tauri::async_runtime::spawn(run_listener(state));
-    let mut guard = slot()
-        .lock()
-        .map_err(|_| AppError::Unavailable("REST 监听锁不可用".into()))?;
-    *guard = Some(RunningRest {
-        port,
-        shutdown,
-        task,
-    });
+    // `from_std` 必须在运行时内调用，因此转换放在任务内部；绑定已在上面完成。
+    let task = tauri::async_runtime::spawn(run_listener(listener, state, finished.clone()));
+    {
+        let mut guard = slot()
+            .lock()
+            .map_err(|_| AppError::Unavailable("REST 监听锁不可用".into()))?;
+        *guard = Some(RunningRest {
+            port,
+            shutdown,
+            task,
+            finished,
+        });
+    }
+    if let Ok(mut rt) = runtime().lock() {
+        rt.status = RestRuntimeStatus::Listening;
+        rt.bound_port = Some(port);
+        rt.last_error = None;
+        rt.started_at = Some(crate::agents::now_iso());
+    }
     tracing::info!("Agent REST 监听 127.0.0.1:{port}{BASE_PATH}");
-    // `status` 需要再次读取 slot；这里必须先释放锁，否则同一线程自死锁，
-    // 启动流程会停在 REST 初始化之后（MCP bridge 等后续模块永远不执行）。
-    drop(guard);
     Ok(status(&db))
 }
 
+/// 停止：发起关闭 → 等待任务结束（有界）→ 释放端口 → 清理状态。
 pub fn stop() {
-    if let Ok(mut guard) = slot().lock() {
-        if let Some(running) = guard.take() {
-            running.shutdown.notify_waiters();
-            running.task.abort();
+    let handle = slot().lock().ok().and_then(|mut g| g.take());
+    let Some(handle) = handle else {
+        if let Ok(mut rt) = runtime().lock() {
+            if rt.status != RestRuntimeStatus::Failed {
+                rt.status = RestRuntimeStatus::Stopped;
+            }
+            rt.bound_port = None;
+            rt.started_at = None;
         }
+        return;
+    };
+    if let Ok(mut rt) = runtime().lock() {
+        rt.status = RestRuntimeStatus::Stopping;
+    }
+    handle.shutdown.notify_waiters();
+    handle.task.abort();
+    // tauri 2 的 async_runtime::JoinHandle 没有 is_finished()：
+    // 用「监听端口是否已释放」作为任务真正结束的信号，仍保持 2 秒有界等待。
+    let port = runtime().lock().ok().and_then(|rt| rt.bound_port);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+        if let Some(port) = port {
+            if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+                break;
+            }
+        }
+    }
+    if let Ok(mut rt) = runtime().lock() {
+        rt.status = RestRuntimeStatus::Stopped;
+        rt.bound_port = None;
+        rt.started_at = None;
     }
 }
 
-async fn run_listener(state: Arc<RestState>) {
-    let addr = SocketAddr::from(([127, 0, 0, 1], state.port));
-    let listener = match TcpListener::bind(addr).await {
-        Ok(l) => l,
+async fn run_listener(
+    listener: std::net::TcpListener,
+    state: Arc<RestState>,
+    finished: Arc<AtomicU64>,
+) {
+    let _done = ListenerDone(finished);
+    let listener = match TcpListener::from_std(listener) {
+        Ok(listener) => listener,
         Err(err) => {
-            tracing::error!("Agent REST 绑定失败 127.0.0.1:{}: {err}", state.port);
+            tracing::error!("Agent REST 监听句柄转换失败: {err}");
+            if let Ok(mut rt) = runtime().lock() {
+                rt.status = RestRuntimeStatus::Failed;
+                rt.last_error = Some(format!("监听句柄转换失败: {err}"));
+                rt.bound_port = None;
+            }
             return;
         }
     };
@@ -290,9 +470,9 @@ fn rate_check(state: &RestState) -> bool {
 
 async fn handle(req: Request<Incoming>, state: Arc<RestState>) -> Response<Full<Bytes>> {
     let request_id = format!("rest-{}", uuid::Uuid::new_v4().simple());
-    state.requests.fetch_add(1, Ordering::Relaxed);
+    counters().0.fetch_add(1, Ordering::Relaxed);
     if req.headers().contains_key("origin") {
-        state.rejected.fetch_add(1, Ordering::Relaxed);
+        counters().1.fetch_add(1, Ordering::Relaxed);
         return plain(
             StatusCode::FORBIDDEN,
             json!({ "success": false, "error": { "code": "FORBIDDEN", "message": "浏览器跨域请求被拒绝（本地 API 仅允许命令行 Agent）" } }),
@@ -305,12 +485,12 @@ async fn handle(req: Request<Incoming>, state: Arc<RestState>) -> Response<Full<
     let principal = match authenticate(&state, &req) {
         Ok(p) => p,
         Err(resp) => {
-            state.rejected.fetch_add(1, Ordering::Relaxed);
+            counters().1.fetch_add(1, Ordering::Relaxed);
             return resp;
         }
     };
     if !rate_check(&state) {
-        state.rejected.fetch_add(1, Ordering::Relaxed);
+        counters().1.fetch_add(1, Ordering::Relaxed);
         return plain(
             StatusCode::TOO_MANY_REQUESTS,
             json!({ "success": false, "error": { "code": "RATE_LIMITED", "message": "超过每分钟 120 次限制", "retryable": true } }),
@@ -784,11 +964,9 @@ async fn dispatch(
         ("POST", ["sync", "scan"]) => {
             let row = workspace::active(db)?
                 .ok_or_else(|| AppError::NotFound("工作空间尚未初始化".into()))?;
-            let scan_principal = Principal {
-                source: Source::File,
-                ..principal.clone()
-            };
-            Ok((serde_json::to_value(file_sync::scan(db, &scan_principal, &row)?)?, None))
+            // 调用者身份原样传入：REST 都是已认证 Agent，会被扫描入口拒绝。
+            // 文件导入只能由本机用户/后台监听触发，避免「Agent 授权自己」。
+            Ok((serde_json::to_value(file_sync::scan(db, principal, &row)?)?, None))
         }
         _ => Err(AppError::NotFound(format!("未知路由 {method} {path}"))),
     }

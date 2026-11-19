@@ -70,3 +70,64 @@ CLI 未提供 token 时，操作者是本机用户，等同于 UI：
 - Agent API 默认只监听 loopback。
 - 远程访问**未实现**；设置项存在但显示「未开放」，避免用户误以为已提供安全远程通道。
 - 任何未来实现都必须：独立开关、独立端口、强制 TLS、独立授权、默认关闭。
+
+## 8. 文件导入身份与授权（v81 修订）
+
+> 本节取代「文件来源等同本机用户」的旧假设。旧实现里 `Source::File` 被当成
+> `Principal::local(...)`，导致「能写某个 Inbox 目录」等价于「可修改 TaskDock 全部资源」。
+> 现在 **来源不是身份**：`Identity` 才是。
+
+### 8.1 四种身份
+
+| 身份 | 构造 | 内部特权 | 说明 |
+|---|---|---|---|
+| `LocalHuman` | `Principal::local(Source::Ui/Cli)` | 有 | 可信本机用户，UI 与未带 token 的本机 CLI |
+| `RegisteredAgent` | `Principal::agent(row_id, agent_id, source)` | 无 | 经 Token 认证的 Agent（MCP/REST/带 token 的 CLI） |
+| `FileImport` | `Principal::file_import(...)` | 无 | 共享目录里的外部文件；**默认没有任何写权限** |
+| `SystemInternal` | `Principal::system(Source::File)` | 有（仅内部维护） | 监听线程、导出等内部任务；同样不能替文件授权 |
+
+判定入口统一在 `permissions::require` / `require_any_read`：只对 `LocalHuman` 与 `SystemInternal`
+直接放行；`FileImport` 必须携带**显式授权上下文**（`ImportGrant`），否则一律 FORBIDDEN。
+
+### 8.2 导入授权上下文（`ImportGrant`）
+
+| 字段 | 含义 |
+|---|---|
+| `authorization_id` | `agent_import_policies.id`；人工单次批准为 `manual-approval` |
+| `capabilities` | 允许的写能力集合（`tasks.write` / `knowledge.write` / `decisions.write` / `handoffs.write`） |
+| `project_id` | 非空时只允许该项目 |
+| `agent_row_id` | 绑定到某个已注册 Agent 时，该 Agent 的真实授权仍会再校验一次 |
+| `approved_by` | `policy` 或审批人标签 |
+
+### 8.3 目录策略（`agent_import_policies`）
+
+| 模式 | 行为 |
+|---|---|
+| 无策略行 | **默认待审核**：只登记 `agent_import_requests`，不写业务表 |
+| `off` | 明确拒绝该目录，文件移入 `_rejected/` |
+| `review` | 待审核，等本机用户逐条批准 |
+| `trusted` | 自动导入，但仍受能力集合与项目范围限制 |
+
+`resolve_import_capability(kind)` 给出 kind → 真实写能力的映射；**禁止**用 `TasksWrite`
+代表所有写权限。
+
+### 8.4 判定结果
+
+`authorize_file_import()` 返回三态，全部可审计：
+
+| 结果 | 含义 | 业务表 |
+|---|---|---|
+| `Allowed(principal)` | 允许执行（受限主体） | 写入 |
+| `NeedsReview{reason}` | 等待人工批准 | 不写入，文件保留在 Inbox |
+| `Rejected{reason}` | 明确拒绝 | 不写入，文件移入 `_rejected/` |
+
+### 8.5 身份不可伪造
+
+- 文件里写的 `agent_id` 只是**声明**，不是凭据：目录未绑定 Agent 时永远不会被当作该 Agent；
+- 目录绑定了 Agent A 时，文件声明 Agent B 会被拒绝（`Rejected`）；
+- 绑定 Agent 被撤销后，后续导入立即失败。
+
+### 8.6 OS 级边界（不可由本模块提供）
+
+同一 OS 用户下，普通文件与 CLI **无法**形成强隔离边界。需要真正隔离的 Agent 应运行在受限
+OS 用户或沙箱中；本模块只保证「不因目录可写而越权修改 TaskDock 资源」。

@@ -142,6 +142,43 @@
   font-size: 11px;
 }
 
+/* 写能力提醒：授权前明确告知会改数据。 */
+.capability-panel .agent-access-warning {
+  font-size: 11px;
+  color: var(--status-warning, #b8860b);
+  background: var(--status-warning-soft, rgba(184, 134, 11, 0.08));
+  border: 1px solid var(--status-warning-border, var(--border-subtle));
+  border-radius: calc(var(--radius-card) - 4px);
+  padding: 5px 8px;
+  margin: 0;
+}
+
+/* 授权按能力族分组，避免一长串同质条目。 */
+.capability-panel .agent-access-grant-group {
+  margin-top: 8px;
+  min-width: 0;
+}
+
+.capability-panel .agent-access-grant-group .cap-card-title {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-bottom: 2px;
+}
+
+.capability-panel .agent-access-list .is-write {
+  color: var(--status-warning, #b8860b);
+  font-weight: 600;
+}
+
+/* 冲突区：列表 + 详情同栏，窄窗下自动单列。 */
+.capability-panel .agent-access-conflicts {
+  min-width: 0;
+}
+
+.capability-panel .agent-access-conflicts .agent-access-list li.active {
+  background: var(--accent-soft);
+}
+
 .capability-panel .agent-access-error,
 .capability-panel .agent-access-notice {
   padding: 6px 10px;

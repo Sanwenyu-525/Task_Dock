@@ -1299,8 +1299,34 @@ export const agentAccessExport = () => invoke<AgentAccessData>("agent_access_exp
 export const agentAccessScan = () => invoke<AgentAccessData>("agent_access_scan", {});
 export const agentAccessSyncStatus = () => invoke<AgentAccessData>("agent_access_sync_status", {});
 export const agentAccessConflicts = () => invoke<AgentAccessData>("agent_access_conflicts", {});
-export const agentAccessResolveConflict = (conflictId: string, resolution: string) =>
-  invoke<AgentAccessData>("agent_access_resolve_conflict", { conflictId, resolution });
+/**
+ * 冲突解决方式。与 Rust `sync::resolve_conflict` 的枚举严格一致：
+ * db = 保留 TaskDock 数据，file = 接受外部文件，dismiss = 暂时忽略。
+ */
+export type ConflictResolution = "db" | "file" | "dismiss";
+export const agentAccessResolveConflict = (
+  conflictId: string,
+  resolution: ConflictResolution,
+) => invoke<AgentAccessData>("agent_access_resolve_conflict", { conflictId, resolution });
+export const agentAccessConflictDetail = (conflictId: string) =>
+  invoke<AgentAccessData>("agent_access_conflict_detail", { conflictId });
+export const agentAccessImportRequests = (params?: { status?: string }) =>
+  invoke<AgentAccessData>("agent_access_import_requests", params ?? {});
+export const agentAccessImportApprove = (requestId: string, note?: string) =>
+  invoke<AgentAccessData>("agent_access_import_approve", { requestId, note });
+export const agentAccessImportReject = (requestId: string, reason?: string) =>
+  invoke<AgentAccessData>("agent_access_import_reject", { requestId, reason });
+export const agentAccessImportPolicies = () =>
+  invoke<AgentAccessData>("agent_access_import_policies", {});
+export const agentAccessImportPolicySet = (params: {
+  relDir: string;
+  mode: "off" | "review" | "trusted";
+  agentRowId?: string;
+  capabilities?: string[];
+  projectId?: string;
+}) => invoke<AgentAccessData>("agent_access_import_policy_set", params);
+export const agentAccessImportPolicyRemove = (authorizationId: string) =>
+  invoke<AgentAccessData>("agent_access_import_policy_remove", { authorizationId });
 export const agentAccessActivity = (params: {
   agentId?: string;
   interface?: string;
