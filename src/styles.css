@@ -6691,6 +6691,75 @@ code {
   opacity: 1;
 }
 
+/* ── 分体复制（复制 + 目标窗口）──
+   2026-11-19：两枚独立按钮合成一块表面，主按钮仍是「直接复制」，
+   箭头仍是「打开目标窗口选择器」；hover/焦点只改变内部底色，不改变宽度。 */
+.clip-copy-split {
+  display: inline-flex;
+  align-items: stretch;
+  flex: none;
+  min-height: 24px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  /* 不裁切子按钮的 focus ring：键盘用户必须看得见焦点。 */
+  overflow: visible;
+}
+
+.clip-copy-split > .clip-copy-btn {
+  border: 0;
+  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+  background: transparent;
+  box-shadow: none;
+  min-height: 22px;
+  padding: 0 8px;
+}
+
+.clip-copy-split > .clip-copy-btn:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+
+.clip-copy-arrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  padding: 0;
+  border: 0;
+  border-left: 1px solid var(--border-subtle);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+
+.clip-copy-arrow:hover:not(:disabled),
+.clip-copy-arrow:focus-visible {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.clip-copy-arrow:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+/* 预览态标记：只在右栏正在展示时出现，和批量勾选是两个独立信号。 */
+.clip-preview-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: none;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
 .danger-ghost:hover {
   color: var(--status-error);
   background: color-mix(in srgb, var(--status-error) 12%, transparent);

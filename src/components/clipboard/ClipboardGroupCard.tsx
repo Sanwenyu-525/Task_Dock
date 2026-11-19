@@ -1,11 +1,15 @@
 //! 分组卡片：类型预览（截图封面/类型图标）、摘要、整组操作、详情与删除。
 //!
-//! 键盘边界：卡片根节点不是按钮，鼠标点空白区打开详情；键盘用户走卡片内
-//! 「详情」按钮，内部真实按钮的 Enter/Space 因此不会串到根节点触发详情。
+//! 2026-11-19 精修：
+//! - 删除与条目卡片一致，收回「更多操作」菜单（危险动作 + 说明），动作行只保留
+//!   整组复制、逐项粘贴与更多；不再有独立的「查看详情」重复入口。
+//! - 标题区改为真实按钮：鼠标点卡片空白仍打开详情，键盘用户有一个可见、可聚焦
+//!   的入口；内部按钮的 Enter/Space 不会串到根节点。
+//! - 卡片的顶部/正文/元数据/动作四段式与条目卡片同源，行内元数据贴底。
 
 import { useLayoutEffect, useRef } from "react";
 import {
-  CheckSquare, Copy, Files, Image as ImageIcon, Layers, Link2, Maximize2, MoreHorizontal,
+  CheckSquare, Copy, Files, Image as ImageIcon, Layers, Link2, MoreHorizontal,
   Pin, Play, Square, Star, Trash2, Type,
 } from "lucide-react";
 import type { ClipboardGroup, ClipboardItem } from "../../lib/bridge";
@@ -14,7 +18,7 @@ import {
   groupKindCounts, groupModeLabel, groupStatusLabel, linkSummary, urlDomain,
 } from "../../lib/clipboardUi";
 import type { ClipboardDensity } from "../../lib/clipboardDensity";
-import DropdownMenu from "../ui/DropdownMenu";
+import DropdownMenu, { type DropdownMenuItem } from "../ui/DropdownMenu";
 import { ClipboardThumb, useCompactViewport, useInViewport } from "./Media";
 
 const COVER_LIMIT = 3;
@@ -133,6 +137,16 @@ export default function ClipboardGroupCard({
       disabled: locked,
       onSelect: () => onToggle("favorite"),
     },
+    { key: "sep", separator: true, disabled: true } as DropdownMenuItem,
+    {
+      key: "delete",
+      label: "删除分组",
+      description: "条目仍保留在历史中",
+      icon: <Trash2 size={12} aria-hidden="true" />,
+      danger: true,
+      disabled: locked,
+      onSelect: onDelete,
+    },
   ];
 
   return (
@@ -196,21 +210,31 @@ export default function ClipboardGroupCard({
         )}
       </div>
 
-      <div className="clip-item-main">
-        <div className="clip-item-top">
+      <button
+        type="button"
+        className="clip-item-main clip-group-main"
+        aria-label={`打开分组详情：${group.name}`}
+        disabled={locked}
+        onClick={(e) => {
+          stop(e);
+          onDetail();
+        }}
+        onKeyDown={(e) => e.stopPropagation()}
+      >
+        <span className="clip-item-top">
           {group.status === "collecting" && (
             <span className="clip-badge live">{groupStatusLabel(group.status)}</span>
           )}
           {group.pinned && <Pin size={10} className="clip-flag" aria-label="已置顶" />}
           {group.favorite && <Star size={10} className="clip-flag favorite" aria-label="已收藏" />}
           <span className="clip-time">{clipboardTime(group.updated_at)}</span>
-        </div>
-        <div className="clip-group-name" data-tip={`分组名：${group.name}`}>
+        </span>
+        <span className="clip-group-name" data-tip={`分组名：${group.name}`}>
           {group.name}
-        </div>
-        {hasSummary && <div className="clip-preview clip-group-summary">{summary}</div>}
-        {/* 类型数量与模式属于次要信息，合并到一行弱化展示，避免顶部堆满标签 */}
-        <div className="clip-meta">
+        </span>
+        {hasSummary && <span className="clip-preview clip-group-summary">{summary}</span>}
+        {/* 类型数量与模式属于次要信息，统一贴底展示，避免顶部堆满标签 */}
+        <span className="clip-meta">
           <span>
             {composition.join(" · ") || `${group.item_count} 项`}
             {/* 尺寸只属于单图组；多图组的首图尺寸不能冒充整组尺寸 */}
@@ -218,8 +242,8 @@ export default function ClipboardGroupCard({
             {/* 自动/手动分组都显式标出：自动分组是后端行为，用户需要能分辨。 */}
             {` · ${groupModeLabel(group.mode)}分组`}
           </span>
-        </div>
-      </div>
+        </span>
+      </button>
 
       <div className="clip-actions" onClick={stop}>
         {linkMode && (
@@ -227,7 +251,16 @@ export default function ClipboardGroupCard({
             <Link2 size={11} /> 关联
           </button>
         )}
-        {/* 逐项粘贴在复制左侧：与工具面板截图组行的操作顺序一致。 */}
+        <button
+          className="btn sm clip-copy-btn"
+          data-tip="复制整组（富文本）"
+          aria-label="复制整组内容"
+          onClick={onCopyRich}
+          disabled={locked}
+        >
+          <Copy size={12} aria-hidden="true" /> 复制整组
+        </button>
+        {/* 逐项粘贴在复制右侧：与工具面板截图组行的操作顺序一致。 */}
         <button
           className="icon-btn sm"
           data-tip="逐项粘贴到当前窗口"
@@ -236,24 +269,6 @@ export default function ClipboardGroupCard({
           disabled={locked}
         >
           <Play size={12} />
-        </button>
-        <button
-          className="icon-btn sm"
-          data-tip="复制整组（富文本）"
-          aria-label="复制整组内容"
-          onClick={onCopyRich}
-          disabled={locked}
-        >
-          <Copy size={12} />
-        </button>
-        <button
-          className="icon-btn sm"
-          data-tip="查看分组详情"
-          aria-label="查看分组详情"
-          onClick={onDetail}
-          disabled={locked}
-        >
-          <Maximize2 size={12} />
         </button>
         <DropdownMenu
           trigger={({ ref, expanded, onClick, onKeyDown }) => (
@@ -273,21 +288,10 @@ export default function ClipboardGroupCard({
           )}
           items={moreItems}
           menuLabel={`分组更多操作：${group.name}`}
-          menuMinWidth={190}
+          menuMinWidth={208}
           placement="bottom-end"
           className="clip-group-menu"
         />
-        {/* 删除与普通操作分离：中间隔一段空白，避免误点 */}
-        <span className="clip-actions-sep" aria-hidden="true" />
-        <button
-          className="icon-btn sm danger-ghost"
-          data-tip="删除分组（保留条目）"
-          aria-label="删除分组"
-          onClick={onDelete}
-          disabled={locked}
-        >
-          <Trash2 size={12} />
-        </button>
       </div>
     </article>
   );

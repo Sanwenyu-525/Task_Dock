@@ -12,10 +12,12 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
-  AlertTriangle, ArrowUpDown, Clipboard, Copy, Eraser, Filter, FolderPlus, Info, Link2,
+  AlertTriangle, Archive, ArrowUpDown, ChevronDown, Clipboard, Copy, Eraser, Filter, FolderPlus, Info, Link2,
   ListChecks, Loader2, Merge, Pause, Pin, Play, RefreshCw, RotateCcw, Settings as SettingsIcon,
   Star, Trash2, X,
 } from "lucide-react";
+import { addClipboardItemsToTray } from "../../lib/crossTab/modules/clipboard";
+import { useTransferStore } from "../../store/useTransferStore";
 import WorkbenchPageHeader from "../../workbench/WorkbenchPageHeader";
 import WorkspaceSplit from "../../workbench/WorkspaceSplit";
 import {
@@ -68,6 +70,7 @@ import ClipboardItemDetail from "./ClipboardItemDetail";
 import { ClipboardHeroImage, clearClipboardMediaCache, forgetClipboardMedia } from "./Media";
 import {
   WorkbenchDetailFacts,
+  WorkbenchDetailHostProvider,
   WorkbenchPageDetail,
   useWorkbenchDetailHost,
 } from "../../workbench/pageDetail";
@@ -182,8 +185,27 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
   /** 主窗口 Tab 没有工作台外壳的右栏宿主；此时卡片主体回退到完整详情，避免「点了没反应」。 */
   const detailHost = useWorkbenchDetailHost();
   const hasRailHost = !!detailHost;
+  /** 外壳没有详情栏宿主时（主窗口 Tab / 非工作台路由），页面自己在宽窗口提供右栏。
+      用一条 ResizeObserver 判断页面可用宽度，不按窗口宽度硬编码；窄窗仍回退完整详情。 */
+  const [localRailWide, setLocalRailWide] = useState(false);
+  const [localRailHost, setLocalRailHost] = useState<HTMLElement | null>(null);
+  const pageRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = pageRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(([entry]) => {
+      setLocalRailWide(entry.contentRect.width >= 1180);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [isDrawer]);
+  /** 页面态：有外壳宿主，或宽窗口下可由页面自己渲染右栏；抽屉始终回退完整详情。 */
+  const canPreview = !isDrawer && (hasRailHost || localRailWide);
+  const pageDetailHost = hasRailHost ? detailHost : localRailHost;
   /** 选中条目的右栏预览：列表保持原位，详情在 WorkbenchPageDetail 中只读展示。 */
   const [previewId, setPreviewId] = useState<string | null>(null);
+  /** 左侧「时间与来源」高级筛选：默认展开，用户可按需折叠，主内容区随侧栏一起扩展。 */
+  const [advancedFiltersOpen, setAdvancedFiltersOpen] = useState(true);
   /**
    * 右栏预览的**完整内容**（列表只是压实后的预览，正文被截断）。
    * 每次选中一条才取一次，`alive` 代际保证快速换选时旧响应不覆盖新内容；
@@ -371,6 +393,25 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
   } | null>(null);
   /** 列表滚动状态的归属键：筛选或「历史/分组」视图一变，旧锚点与旧位置一律作废。 */
   const listFilterKey = `${section}|${filters.kind}|${filters.favorite ? "1" : "0"}|${filters.search.trim()}|${filters.sourceApp ?? ""}|${filters.recentDays ?? 0}|${filters.sort ?? "recent"}`;
+  /**
+   * 预览归属键：不含排序。筛选/视图一变，右侧内容就不再对应当前列表，
+   * 立即收起预览，避免右栏残留一条已被筛掉的记录；仅重排（排序）不打断预览。
+   */
+  const previewScopeKey = `${section}|${filters.kind}|${filters.favorite ? "1" : "0"}|${filters.search.trim()}|${filters.sourceApp ?? ""}|${filters.recentDays ?? 0}`;
+  const previewScopeRef = useRef(previewScopeKey);
+  useEffect(() => {
+    if (previewScopeRef.current === previewScopeKey) return;
+    previewScopeRef.current = previewScopeKey;
+    setPreviewId(null);
+  }, [previewScopeKey]);
+  // 删除/清空/保存导致条目离开当前列表（同一筛选内的数据刷新）时同步收起预览。
+  useEffect(() => {
+    if (!previewId || !view) return;
+    if (section !== "items" || !view.items.some((item) => item.id === previewId)) {
+      setPreviewId(null);
+    }
+  }, [previewId, section, view]);
+  const advancedFilterCount = (filters.recentDays ? 1 : 0) + (filters.sourceApp ? 1 : 0);
   const drawerRef = useRef<HTMLElement>(null);
 
   // 删除反馈链：执行中（等后端确认）→ 目标卡片离场 → 离场结束再静默补位。
@@ -1061,6 +1102,29 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
     });
   }
 
+  /** 批量加入全局工作篮：只读历史，不复制系统剪贴板监听。 */
+  async function onAddSelectedToTray() {
+    if (selectedItems.length === 0) return;
+    setBusy("tray");
+    try {
+      const { report, failed } = await addClipboardItemsToTray([...selectedItems]);
+      if (report) {
+        showToast(`已加入工作篮 ${report.items.length} 项`, { kind: "success" });
+        if (report.duplicates > 0) {
+          showToast(`其中 ${report.duplicates} 项已在工作篮中，未重复加入`, { kind: "warning" });
+        }
+      }
+      if (failed.length > 0) {
+        showToast(`${failed.length} 项读取失败：${failed[0].message}`, { kind: "error" });
+      }
+      useTransferStore.getState().openPanel();
+    } catch (e) {
+      showToast(`加入工作篮失败：${errorMessage(e)}`, { kind: "error" });
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function onLink(targetType: "item" | "group", targetId: string) {
     if (!linkTask) return;
     try {
@@ -1236,6 +1300,7 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
               key={item.id}
               item={item}
               selected={selectedItems.includes(item.id)}
+              previewed={canPreview && previewId === item.id}
               removing={!!exiting[item.id]}
               pending={pendingIds.includes(item.id)}
               linkMode={!!linkTask}
@@ -1248,7 +1313,7 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
               onPreview={
                 isDrawer
                   ? undefined
-                  : hasRailHost
+                  : canPreview
                     ? () => setPreviewId(item.id)
                     : () => setDetail({ kind: "item", id: item.id })
               }
@@ -1345,7 +1410,11 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
           icon={Clipboard}
           title="智能剪贴板"
           meta={headStatus}
-          subtitle="搜索、预览与复制历史；选中条目可在右侧查看完整内容"
+          subtitle={
+            canPreview
+              ? "搜索与筛选历史；点卡片在右侧预览，勾选可批量复制"
+              : "搜索与筛选历史；点卡片打开完整详情，勾选可批量复制"
+          }
           actions={<div className="clip-head-actions">{headActions}</div>}
         />
       )}
@@ -1399,7 +1468,10 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
       {!detail && (
         <>
           <div className="clip-toolbar">
-            <SearchField
+            {/* 搜索 + 排序 + 筛选导航属于同一组「查找」操作；窄窗整组换行，
+                搜索框仍拿到该行的最大可用宽度。 */}
+            <div className="clip-toolbar-query">
+              <SearchField
               className="clip-search"
               size="compact"
               inputRef={searchRef}
@@ -1465,8 +1537,11 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
                 <Filter size={13} aria-hidden="true" />
               </button>
             )}
-            {!isDrawer && (
-              <div className="clip-density-switch" role="group" aria-label="视图密度">
+            </div>
+            <div className="clip-toolbar-tools">
+              {!isDrawer && (
+                <div className="clip-toolbar-group">
+                  <div className="clip-density-switch" role="group" aria-label="视图密度">
                 {CLIPBOARD_DENSITY_OPTIONS.map((option) => (
                   <button
                     key={option.value}
@@ -1479,9 +1554,12 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
                     {option.label}
                   </button>
                 ))}
-              </div>
-            )}
-            <button
+                  </div>
+                </div>
+              )}
+              {!isDrawer && <span className="clip-toolbar-divider" aria-hidden="true" />}
+              <div className="clip-toolbar-group clip-toolbar-manage">
+                <button
               className={`btn sm ${batchMode ? "primary" : ""}`}
               aria-pressed={batchMode}
               aria-label={batchMode ? "退出批量管理" : "进入批量管理"}
@@ -1497,15 +1575,26 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
             </button>
             <button
               className="btn sm"
+              disabled={selectedItems.length === 0 || busy !== null}
+              onClick={() => void onAddSelectedToTray()}
+              data-tip="把选中的剪贴板内容加入全局工作篮，随后可批量发送到文件工作区"
+            >
+              {busy === "tray" ? <Loader2 size={13} className="spin" /> : <Archive size={13} aria-hidden="true" />} 加入工作篮
+            </button>
+            <button
+              className="btn sm"
               onClick={goSettings}
               data-tip="在设置中调整保留天数、数量上限、排除应用；立即清理"
             >
               <Eraser size={13} aria-hidden="true" /> 清理规则
             </button>
+              </div>
+            </div>
           </div>
         </>
       )}
 
+      <div className="clip-page-main">
       <WorkspaceSplit
         id="clipboard"
         sidebarLabel="剪贴板导航"
@@ -1558,6 +1647,28 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
               </div>
               {section === "items" && (
                 <>
+                  {/* 高级筛选（时间/来源）可折叠；折叠后侧栏更短，主内容区随
+                      WorkspaceSplit 一起拿回宽度。折叠不等于清除：已生效的筛选
+                      仍显示数量徽标，避免用户忘记当前范围。 */}
+                  <button
+                    type="button"
+                    className="clip-advanced-toggle"
+                    aria-expanded={advancedFiltersOpen}
+                    aria-controls="clipboard-advanced-filters"
+                    onClick={() => setAdvancedFiltersOpen((v) => !v)}
+                  >
+                    <span>时间与来源</span>
+                    {advancedFilterCount > 0 && (
+                      <em>{advancedFilterCount} 项已筛选</em>
+                    )}
+                    <ChevronDown
+                      size={12}
+                      className={advancedFiltersOpen ? "is-open" : ""}
+                      aria-hidden="true"
+                    />
+                  </button>
+                  {advancedFiltersOpen && (
+                    <div id="clipboard-advanced-filters" className="clip-advanced-filters">
                   <div className="clip-side-group" role="group" aria-label="记录时间">
                     <span className="clip-side-label">记录时间</span>
                     {TIME_RANGES.map((range) => (
@@ -1613,6 +1724,8 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
                       )}
                     />
                   </div>
+                    </div>
+                  )}
                 </>
               )}
               <button
@@ -1678,22 +1791,38 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
         )}
       </div>
       </WorkspaceSplit>
+      {!isDrawer && !hasRailHost && localRailWide && !detail && railItem && (
+        <aside className="wb-context clip-local-rail" ref={setLocalRailHost} aria-label="所选内容预览" />
+      )}
+      </div>
 
       {/* 右栏：所选内容预览。中央列表始终保留；完整详情仍由「详情」按钮进入，
           不改变原有详情页的编辑/跳转能力。
           2026-11-16：64px 缩略图改为 640px 预览规格 + 完整正文 + 文件清单，
           右栏本身可滚动（wb-context），长内容不撑破窗口。 */}
-      {!detail && railItem && (
+      {!detail && railItem && pageDetailHost && (
+        <WorkbenchDetailHostProvider host={pageDetailHost}>
         <WorkbenchPageDetail
           title="所选内容预览"
           actions={
-            <button
-              type="button"
-              className="btn sm"
-              onClick={() => setDetail({ kind: "item", id: railItem.id })}
-            >
-              完整详情
-            </button>
+            <div className="clip-rail-actions">
+              <button
+                type="button"
+                className="icon-btn sm"
+                data-tip="关闭预览（仅收起右栏，不影响批量选择）"
+                aria-label="关闭预览"
+                onClick={() => setPreviewId(null)}
+              >
+                <X size={12} aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                className="btn sm"
+                onClick={() => setDetail({ kind: "item", id: railItem.id })}
+              >
+                完整详情
+              </button>
+            </div>
           }
         >
           <div className="clip-rail-head">
@@ -1834,6 +1963,7 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
             )}
           </div>
         </WorkbenchPageDetail>
+        </WorkbenchDetailHostProvider>
       )}
 
       {!detail && section === "items" && batchMode && selectedItems.length === 0 && (
@@ -1979,7 +2109,7 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
           </section>
         </div>
       ) : (
-        <div className="clipboard-page" role="region" aria-label="智能剪贴板">
+        <div className="clipboard-page" role="region" aria-label="智能剪贴板" ref={pageRef}>
           {body}
         </div>
       )}

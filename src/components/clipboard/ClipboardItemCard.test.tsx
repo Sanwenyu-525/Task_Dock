@@ -1,15 +1,15 @@
 /**
  * @vitest-environment jsdom
  */
-//! 历史条目卡片（2026-11-16 大卡片重构）的结构与交互守卫。
+//! 历史条目卡片（2026-11-16 大卡片重构；2026-11-19 卡片精修）。
 //!
-//! 本轮把卡片从「整卡 role=button + 内部一堆按钮」改为：
-//! - 根节点 article：无 onClick / tabIndex / role=button（消除嵌套按钮与 Enter 双触发）；
+//! 本轮守卫：
+//! - 根节点 article：无 onClick / tabIndex / role=button；
 //! - 主预览入口是真按钮 `.clip-item-main`，图片是并列的真按钮 `.clip-hero`；
-//! - 辅助动作分两级：宽度足够的卡片把收藏/置顶/查看详情排进行内动作行；
-//!   窄卡、抽屉行与关联模式收回 DropdownMenu，删除始终留在菜单；
-//! - 密度只影响呈现：comfort（大图+多行正文）、compact（缩略图+少行）、
-//!   list / 抽屉（行布局）。
+//! - 复制 + 目标窗口合并为分体按钮，仍是两个独立动作；
+//! - 详情不再有第二个卡片内入口：主体 → 右栏 → 完整详情；
+//! - `previewed`（右栏正在展示）与 `selected`（批量勾选）互不覆盖；
+//! - 同一行等高、元数据贴底、标题两行等 CSS 契约在页面样式表中守卫。
 //!
 //! jsdom 不做布局，所以**列数、卡片高度、行数截断**这类结果用 `?raw` 读 CSS
 //! 断言规则存在且挂在正确的父级上；真实渲染由 Playwright 截图验收，不在这里冒充。
@@ -81,7 +81,7 @@ function renderCard(
   over: Partial<ClipboardItem> = {},
   density?: "comfort" | "compact" | "list",
   handlers: Partial<Handlers> = {},
-  opts: { pending?: boolean; removing?: boolean } = {},
+  opts: { pending?: boolean; removing?: boolean; selected?: boolean; previewed?: boolean } = {},
 ) {
   const fns = {
     onSelect: vi.fn(),
@@ -99,7 +99,8 @@ function renderCard(
   const { container } = render(
     <ClipboardItemCard
       item={makeItem(over)}
-      selected={false}
+      selected={opts.selected ?? false}
+      previewed={opts.previewed ?? false}
       linkMode={false}
       removing={opts.removing ?? false}
       pending={opts.pending ?? false}
@@ -160,7 +161,7 @@ describe("ClipboardItemCard 预览结构", () => {
 
     const title = body!.querySelector(".clip-title");
     expect(title).not.toBeNull();
-    expect(title!.textContent).toBe(LONG_TEXT.slice(0, 12));
+    expect(title!.textContent).toBe(LONG_TEXT.slice(0, 12).trim());
     expect(title!.getAttribute("data-tip")).toBe(`标题：${title!.textContent}`);
     // 标题在按钮内部：不再单独可聚焦（按钮内嵌可聚焦元素是非法结构）
     expect(title!.getAttribute("tabindex")).toBeNull();
@@ -221,7 +222,7 @@ describe("ClipboardItemCard 主预览按钮与误触隔离", () => {
     const user = userEvent.setup();
     const { card, fns } = renderCard({ title: "标题", preview: "正文" });
     const main = card.querySelector<HTMLButtonElement>(".clip-item-main")!;
-    expect(main.getAttribute("aria-label")).toContain("打开预览");
+    expect(main.getAttribute("aria-label")).toContain("打开右侧预览");
 
     await user.click(main);
     expect(fns.onPreview).toHaveBeenCalledTimes(1);
@@ -260,8 +261,55 @@ describe("ClipboardItemCard 主预览按钮与误触隔离", () => {
   });
 });
 
+describe("ClipboardItemCard 预览态与批量选中相互独立", () => {
+  it("预览态：左侧强调条 + 「预览中」标记，不写入批量选择状态", () => {
+    const { card, fns } = renderCard({ title: "正在右栏展示" }, "comfort", {}, { previewed: true });
+    expect(card.classList.contains("previewed")).toBe(true);
+    expect(card.classList.contains("selected")).toBe(false);
+    expect(card.querySelector(".clip-preview-tag")?.textContent).toContain("预览中");
+    const select = card.querySelector<HTMLButtonElement>('[aria-label="选择条目"]')!;
+    expect(select.getAttribute("aria-pressed")).toBe("false");
+    // 预览态是「右栏正在看这条」，不能顺带把条目加入批量操作。
+    expect(fns.onSelect).not.toHaveBeenCalled();
+    // 预览中的卡片仍然可以直接复制和打开目标窗口。
+    expect(card.querySelector<HTMLButtonElement>('[aria-label="复制"]')!.disabled).toBe(false);
+    expect(
+      card.querySelector<HTMLButtonElement>('[aria-label="复制或粘贴到目标窗口"]')!.disabled,
+    ).toBe(false);
+  });
+
+  it("批量选中：只显示勾选与选中底色，不出现「预览中」标签", () => {
+    const { card } = renderCard({ title: "被勾选" }, "comfort", {}, { selected: true });
+    expect(card.classList.contains("selected")).toBe(true);
+    expect(card.classList.contains("previewed")).toBe(false);
+    expect(card.querySelector(".clip-preview-tag")).toBeNull();
+    expect(card.querySelector<HTMLButtonElement>(".clip-check")!.getAttribute("aria-pressed")).toBe(
+      "true",
+    );
+  });
+
+  it("两种状态可以同时存在，互不覆盖", () => {
+    const { card } = renderCard({ title: "既被勾选又在预览" }, "comfort", {}, {
+      selected: true,
+      previewed: true,
+    });
+    expect(card.classList.contains("selected")).toBe(true);
+    expect(card.classList.contains("previewed")).toBe(true);
+    expect(card.querySelector(".clip-preview-tag")?.textContent).toContain("预览中");
+    expect(card.querySelector<HTMLButtonElement>(".clip-check")!.getAttribute("aria-pressed")).toBe(
+      "true",
+    );
+  });
+
+  it("没有右栏宿主时，主按钮文案回退为「打开完整详情」", () => {
+    const { card } = renderCard({}, "comfort", { onPreview: undefined as unknown as () => void });
+    const main = card.querySelector<HTMLButtonElement>(".clip-item-main")!;
+    expect(main.getAttribute("aria-label")).toContain("打开完整详情");
+  });
+});
+
 describe("ClipboardItemCard 更多操作菜单", () => {
-  it("宽卡片：收藏/置顶/查看详情常显在动作行，菜单里不重复、只留删除", async () => {
+  it("宽卡片：复制与收藏/置顶常显，菜单只留低频动作，不存在重复详情入口", async () => {
     const user = userEvent.setup();
     const { card, fns } = renderCard({ title: "待整理" }, "comfort");
 
@@ -277,9 +325,9 @@ describe("ClipboardItemCard 更多操作菜单", () => {
     await user.click(within(actions).getByRole("button", { name: "置顶" }));
     expect(fns.onToggle).toHaveBeenCalledWith("pinned");
 
-    await user.click(within(actions).getByRole("button", { name: "查看详情" }));
-    expect(fns.onDetail).toHaveBeenCalledTimes(1);
-    expect(fns.onPreview).not.toHaveBeenCalled();
+    // 卡片主体已经是预览入口，动作行不再有含义相同的「查看详情」。
+    expect(within(actions).queryByRole("button", { name: "查看详情" })).toBeNull();
+    expect(within(card).queryByRole("button", { name: "查看详情" })).toBeNull();
 
     await user.click(card.querySelector<HTMLButtonElement>('[aria-label="更多操作"]')!);
     const menu = await screen.findByRole("menu");
@@ -303,9 +351,10 @@ describe("ClipboardItemCard 更多操作菜单", () => {
     const user = userEvent.setup();
     await user.click(card.querySelector<HTMLButtonElement>('[aria-label="更多操作"]')!);
     const menu = await screen.findByRole("menu");
-    for (const name of [/^收藏$/, /^置顶$/, /查看详情/, /删除这条历史/]) {
+    for (const name of [/^收藏$/, /^置顶$/, /删除这条历史/]) {
       expect(within(menu).getByRole("menuitem", { name })).toBeTruthy();
     }
+    expect(within(menu).queryByRole("menuitem", { name: /查看详情/ })).toBeNull();
   });
 
   it("删除项标注「不会删除本地文件」并只调用删除", async () => {
@@ -343,7 +392,21 @@ describe("ClipboardItemCard 密度呈现", () => {
     expect(card.querySelector(".clip-item-main button")).toBeNull();
   });
 
-  it("舒适竖图：is-tall 让长截图获得更高的预览舞台", () => {
+  it("舒适图片：自动标题「截图 W×H」不重复显示；有真实文件名时保留标题", () => {
+    const auto = renderCard(
+      { kind: "image", title: "截图 1440×900", preview: "1440×900 · PNG", has_thumb: true },
+      "comfort",
+    );
+    expect(auto.card.querySelector(".clip-title")).toBeNull();
+    cleanup();
+    const named = renderCard(
+      { kind: "image", title: "设计稿-首页", preview: "", has_thumb: true },
+      "comfort",
+    );
+    expect(named.card.querySelector(".clip-title")?.textContent).toBe("设计稿-首页");
+  });
+
+  it("舒适竖图：is-tall 使用左侧纵向舞台，右侧正文与动作，不把整行拉成两倍高", () => {
     const { card } = renderCard(
       { kind: "image", has_thumb: true, image_width: 900, image_height: 1600 },
       "comfort",
@@ -464,44 +527,95 @@ describe("styles.css 预览截断契约", () => {
 });
 
 describe("clipboard-page.css 大卡片契约", () => {
-  it("舒适网格以 300px 为最小合理宽度，超宽封顶 4 列（不无限加小卡）", () => {
+  it("舒适网格以 300px 为最小合理宽度；列数完全交给容器宽度，不写死 4/5 列", () => {
     const grid = ruleBody(pageCss, ".clipboard-page .clip-list-grid");
     expect(grid).toMatch(/grid-template-columns:\s*repeat\(auto-fill,\s*minmax\(300px,\s*1fr\)\)/);
-    expect(pageCss).toContain("@container clip-page (min-width: 1320px)");
-    expect(pageCss).toMatch(/clip-density-comfort\s*\{[^}]*repeat\(4,\s*minmax\(0,\s*1fr\)\)/);
+    expect(grid).toMatch(/align-items:\s*stretch/);
+    // 1320/1920 这类「按窗口宽度硬塞」的列数规则已删除：内容区只有 1294/1614px，
+    // 那些断点永远不会命中，反而在 1920 窗口把 5 列锁成 4 列。
+    expect(pageCss).not.toMatch(/clip-list-grid\.clip-density-comfort[^}]*repeat\((4|5),/);
+    expect(pageCss).not.toMatch(/@container clip-page \(min-width: 1320px\)/);
+    expect(pageCss).not.toMatch(/@container clip-page \(min-width: 1920px\)/);
+    // 列表密度是单行密排：不能跟着页面态一起被等高拉伸。
+    const listGrid = ruleBody(pageCss, ".clipboard-page .clip-list-grid.clip-density-list");
+    expect(listGrid).toMatch(/align-items:\s*start/);
   });
 
-  it("舒适卡片模板：顶行/大图/正文/动作各占一行，动作行贴底", () => {
+  it("舒适卡片模板：顶行/大图/正文/动作各占一行，动作行贴底、稳定最小高度", () => {
     const card = ruleBody(pageCss, ".clipboard-page .clip-item.is-card");
     expect(card).toMatch(/grid-template-areas:/);
     expect(card).toMatch(/"top check"/);
     expect(card).toMatch(/"actions actions"/);
+    expect(card).toMatch(/grid-template-rows:\s*auto minmax\(0,\s*1fr\) auto/);
+    expect(card).toMatch(/min-height:\s*184px/);
     const heroCard = ruleBody(pageCss, ".clipboard-page .clip-item.is-card.is-hero");
     expect(heroCard).toMatch(/"hero hero"/);
     const actions = ruleBody(pageCss, ".clipboard-page .clip-item.is-card > .clip-actions");
     expect(actions).toMatch(/border-top:/);
     expect(actions).toMatch(/opacity:\s*1/);
+    // 元数据贴底：短正文留下的是正文区余量，来源/大小/次数不会浮在卡片中间。
+    const meta = ruleBody(pageCss, ".clipboard-page .clip-item.is-card .clip-meta");
+    expect(meta).toMatch(/margin-top:\s*auto/);
+    expect(meta).toMatch(/flex-wrap:\s*nowrap/);
   });
 
-  it("大图预览高度随容器宽度在 160–240px 之间，竖图单独加高，且完整展示不裁切", () => {
+  it("标题在舒适卡最多两行，紧凑/列表仍保持单行", () => {
+    const title = ruleBody(pageCss, ".clipboard-page .clip-item.is-card .clip-preview .clip-title");
+    expect(title).toMatch(/-webkit-line-clamp:\s*2/);
+    expect(title).toMatch(/white-space:\s*normal/);
+    const compact = ruleBody(
+      pageCss,
+      ".clipboard-page .clip-density-compact .clip-item .clip-preview .clip-title",
+    );
+    expect(compact).toMatch(/white-space:\s*nowrap/);
+    expect(compact).toMatch(/-webkit-line-clamp:\s*unset/);
+  });
+
+  it("大图预览：宽图 104–124px 舞台；竖图左侧纵向舞台 186–206px，完整展示不裁切", () => {
     const hero = ruleBody(pageCss, ".clipboard-page .clip-item.is-hero > .clip-hero");
-    expect(hero).toMatch(/height:\s*clamp\(160px,\s*18cqi,\s*240px\)/);
+    expect(hero).toMatch(/height:\s*clamp\(104px,\s*9cqi,\s*124px\)/);
     expect(hero).toMatch(/cursor:\s*zoom-in/);
-    const tall = ruleBody(pageCss, ".clipboard-page .clip-item.is-hero.is-tall > .clip-hero");
-    expect(tall).toMatch(/height:\s*clamp\(230px,\s*78cqi,\s*340px\)/);
+    const tall = ruleBody(pageCss, ".clipboard-page .clip-item.is-hero.is-tall");
+    expect(tall).toMatch(/grid-template-columns:\s*minmax\(128px,\s*42%\)/);
+    expect(tall).toMatch(/"hero main main"/);
+    expect(tall).toMatch(/min-height:\s*220px/);
+    const tallHero = ruleBody(pageCss, ".clipboard-page .clip-item.is-hero.is-tall > .clip-hero");
+    expect(tallHero).toMatch(/min-height:\s*186px/);
+    expect(tallHero).toMatch(/max-height:\s*206px/);
     const img = ruleBody(pageCss, ".clipboard-page .clip-hero-img");
     expect(img).toMatch(/object-fit:\s*contain/);
     expect(img).toMatch(/max-width:\s*100%/);
   });
 
-  it("三种密度的正文行数：舒适 3 行起，容器越宽越多；紧凑/列表 2 行", () => {
+  it("三种密度的正文行数：舒适最多 5 行；紧凑 2 行、列表 1 行", () => {
     expect(ruleBody(pageCss, ".clipboard-page .clip-density-comfort .clip-item")).toMatch(
       /--clip-text-lines:\s*3/,
     );
     expect(ruleBody(pageCss, ".clipboard-page .clip-density-compact .clip-item")).toMatch(
       /--clip-text-lines:\s*2/,
     );
-    expect(pageCss).toMatch(/@container clip-page \(min-width: 1320px\)[\s\S]*?--clip-text-lines:\s*6/);
+    expect(ruleBody(pageCss, ".clipboard-page .clip-density-list .clip-item")).toMatch(
+      /--clip-text-lines:\s*1/,
+    );
+    expect(pageCss).toMatch(
+      /@container clip-page \(min-width: 1000px\)[\s\S]*?--clip-text-lines:\s*5/,
+    );
+    // 6 行会把 1300px 容器里的长文本卡拉得比图片卡还高；本轮明确取消。
+    expect(pageCss).not.toMatch(/--clip-text-lines:\s*6/);
+  });
+
+  it("紧凑卡优先保住来源名，次数在窄卡隐藏，不把「截图工具」挤成「截」", () => {
+    const app = ruleBody(
+      pageCss,
+      ".clipboard-page .clip-density-compact .clip-item.is-card .clip-meta-app",
+    );
+    expect(app).toMatch(/max-width:\s*46%/);
+    expect(app).toMatch(/flex-shrink:\s*0/);
+    const use = ruleBody(
+      pageCss,
+      ".clipboard-page .clip-density-compact .clip-item.is-card .clip-meta-use",
+    );
+    expect(use).toMatch(/display:\s*none/);
   });
 });
 

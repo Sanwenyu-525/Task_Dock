@@ -259,9 +259,9 @@ describe("历史列表滚动稳定性", () => {
     await mount();
     scrollTo(600);
 
-    // 「查看详情」在宽度足够的卡片上是行内动作（窄卡才回「更多」菜单）：
-    // 直接点第 11 张卡片的按钮，避免误触复制/缩略图
-    await user.click(screen.getAllByRole("button", { name: "查看详情" })[10]);
+    // 卡片主体就是详情入口（2026-11-19 去掉动作行里重复的「查看详情」）：
+    // 直接点第 11 张卡片的 .clip-item-main，避免误触复制/缩略图
+    await user.click(document.querySelectorAll<HTMLButtonElement>(".clip-item-main")[10]);
     await waitFor(() => expect(screen.getByRole("button", { name: "返回列表" })).toBeTruthy());
     await user.click(screen.getByRole("button", { name: "返回列表" }));
     await waitFor(() => expect(document.querySelectorAll(".clip-item").length).toBeGreaterThan(20));

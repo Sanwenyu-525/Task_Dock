@@ -739,7 +739,7 @@ const shim = `
   });
   // ── 2026-11-16 大卡片走查夹具 ──
   // 覆盖 contain 的两个极端比例（长截图 / 超宽图）与多类型文件清单，
-  // 以及足够长的正文（舒适态 6 行截断是否真的收敛）。
+  // 以及足够长的正文（舒适态 5 行截断是否真的收敛）。
   const clipImgTall = clipExtra({
     id: "ci16", kind: "image", preview: "长截图 900×1600", title: "长截图 900×1600",
     w: 900, h: 1600, app: "SnippingTool.exe", win: "截屏", ago: 6, bytes: 182000,
@@ -753,19 +753,19 @@ const shim = `
     title: "验收报告：本轮改动的边界与结论",
     text: [
       "一、响应式：查询容器移到 .workspace-split-frame，修复容器查询自引用；窄窗改为上下分区，分隔条不再占位。",
-      "二、卡片：舒适态单卡至少 300px，图片预览 160–240px，正文 3–6 行；紧凑态 240px 起，列表态单列。",
+      "二、卡片：舒适态单卡至少 300px，图片预览 150–190px（竖图 200–230px），正文最多 5 行；紧凑态 240px 起，列表态单列。",
       "三、事件：卡片根节点不再是按钮，主预览改真实按钮，Enter 只触发一次；辅助动作统一进菜单。",
       "四、性能：640px 预览按可视区懒加载，48 条 LRU；192px 缩略图兜底；删除与清空同步失效缓存。",
       "五、待验：Windows 真机剪贴板链路、125%/150% DPI、超宽窗口列数上限仍以真实截图为准。",
-      "六、结论：前端单测与类型检查通过；集中构建与截图证据见 tmp/acceptance/clipboard-workbench-responsive。",
+      "六、结论：前端单测与类型检查通过；集中构建与截图证据见 tmp/acceptance/clipboard-ui-polish-20261119。",
     ].join("\\n"),
     preview: [
       "一、响应式：查询容器移到 .workspace-split-frame，修复容器查询自引用；窄窗改为上下分区，分隔条不再占位。",
-      "二、卡片：舒适态单卡至少 300px，图片预览 160–240px，正文 3–6 行；紧凑态 240px 起，列表态单列。",
+      "二、卡片：舒适态单卡至少 300px，图片预览 150–190px（竖图 200–230px），正文最多 5 行；紧凑态 240px 起，列表态单列。",
       "三、事件：卡片根节点不再是按钮，主预览改真实按钮，Enter 只触发一次；辅助动作统一进菜单。",
       "四、性能：640px 预览按可视区懒加载，48 条 LRU；192px 缩略图兜底；删除与清空同步失效缓存。",
       "五、待验：Windows 真机剪贴板链路、125%/150% DPI、超宽窗口列数上限仍以真实截图为准。",
-      "六、结论：前端单测与类型检查通过；集中构建与截图证据见 tmp/acceptance/clipboard-workbench-responsive。",
+      "六、结论：前端单测与类型检查通过；集中构建与截图证据见 tmp/acceptance/clipboard-ui-polish-20261119。",
     ].join("\\n"),
   });
   const clipFilesMany = clipExtra({
@@ -1813,8 +1813,9 @@ const shim = `
       case "clipboard_image":
         return "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='1600' height='900'><rect width='1600' height='900' fill='%23212a36'/><rect x='80' y='80' width='1440' height='740' fill='%23dce6f5'/><text x='120' y='180' font-size='64' fill='%23212a36'>preview image</text></svg>";
       case "clipboard_thumb":
-        // 走查截图缩略图用：给一张占位图（真实链路由后端按 item 返回 PNG data URL）
-        return "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='76'><rect width='120' height='76' fill='%2361789a'/><rect x='8' y='8' width='104' height='60' fill='%23dce6f5'/></svg>";
+        // 走查截图缩略图用：给一张「窗口截图」占位，确保紧凑/列表密度能看出
+        // 缩略图确实在渲染，而不是一块纯色。真实链路由后端按 item 返回 PNG data URL。
+        return "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='76'><rect width='120' height='76' fill='%23212a36'/><rect x='0' y='0' width='120' height='9' fill='%233a4658'/><circle cx='5' cy='4.5' r='1.6' fill='%23e06c75'/><circle cx='10' cy='4.5' r='1.6' fill='%23e5c07b'/><rect x='7' y='16' width='106' height='52' fill='%23dce6f5'/><rect x='15' y='26' width='42' height='4' fill='%2361789a'/><rect x='15' y='36' width='88' height='3' fill='%238fa3be'/><rect x='15' y='44' width='72' height='3' fill='%238fa3be'/><rect x='15' y='52' width='30' height='10' fill='%234f6ea5'/><rect x='52' y='52' width='30' height='10' fill='%237b93b5'/></svg>";
       // 工作台大卡片的 640px 预览规格（真实链路：后端按需生成 PNG 并落盘缓存）。
       // 必须按条目的真实宽高返回，否则走查无法判断宽图/长截图的 contain 是否生效。
       case "clipboard_preview": {

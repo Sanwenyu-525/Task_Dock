@@ -691,3 +691,36 @@ portal 到 body，注册弹层栈 modal 层：Escape 只关灯箱，z 序在抽�
 - 回归：`ClipboardLite.test.tsx` A5 新增前插保持身份、前删保持身份、跨页按 ID 找回、
   组删除退出、移出本组相邻回退、连续两次 revision、超出预载范围回到组首等 7 例；
   真机（通道 C，隔离实例）验证了前插保持同一图片 src、删除当前图片相邻回退提示。
+
+### 14.8 卡片秩序、预览态与操作收敛（2026-11-19 Round 3）
+
+- `.clip-list-grid` 改为同行 `stretch`：同一行由最高内容决定行高，卡片内部固定为
+  `top / main / actions` 三段（图片多 `hero` 行），正文区 `min-height:0` 吃掉余量，
+  元数据 `margin-top:auto` 贴底；列表密度单独 `align-items:start`，不被等高逻辑拉高。
+- 舒适标题最多 2 行；正文 3 行起、560px 4 行、1000px 5 行；紧凑 2 行、列表 1 行。标题与预览
+  重复（图片标题=预览、链接标题=域名、文件标题含数量）时不再渲染第二次。卡片基础最小高度
+  184px（紧凑 140px，大图 224px）；图片舞台宽图 `clamp(104px,9cqi,124px)`、竖图左侧纵向舞台
+  `186–206px`，仍 `object-fit:contain`；卡片间距 4px，动作区只留 4px 上内边距，避免短卡为
+  凑高度留下大块空洞，又不强行拉长正文。紧凑卡 247px 宽时隐藏「使用次数」，来源名保留完整
+  （次数仍在右栏/完整详情），避免「截图工具」被挤成「截」。
+  列数按 `.clip-page` 实际内容宽度：720（414）1 列、1024（718）2 列、1280（974）3 列、
+  1600（1294）4 列、1920（1614）5 列；删除旧的 1320/1920 强制列规则。
+- 卡片动作行去掉 `Maximize2` 详情入口：主体 → 右栏预览 → 右栏「完整详情」。复制仍为文字按钮，
+  目标窗口箭头合并为 `.clip-copy-split`，两者仍是独立动作、独立 aria-label。
+- 新增 `previewed`（右栏正在展示）与 `selected`（批量勾选）并列状态；`previewed` 只加左侧
+  强调条/描边/「预览中」标记。`previewId` 以不含排序的作用域键清理，筛选/搜索/分区变化与
+  条目删除都会收起右栏；排序不打断。右栏新增「关闭预览」。
+- 工具栏拆为查找 / 视图密度 / 管理三组；760px 以下整组换行。时间/来源收进可折叠的
+  「时间与来源」组，并显示已生效筛选数量；历史/分组加边界容器，收藏入口不在顶部与侧栏重复。
+- 分组卡主体改为真按钮，整组复制带文字，删除收进更多菜单；分组列数按内容宽度
+  760 / 1160 / 1600px 分 2 / 3 / 4 列（1600 内容区 1294 实测 3 列，1920 内容区 1614 实测 4 列）。
+- **右栏宿主与页面本地回退（2026-11-19 修复）**：`WorkbenchShell` 仍只在项目工作空间分支挂
+  `.wb-detail-slot`，剪贴板 `RouteSlot` 没有 `detailSlot`，`useWorkbenchDetailHost()` 返回 null。
+  本轮没有改共享外壳，而是在 `ClipboardWorkspace` 内用 `WorkbenchDetailHostProvider` + 与外壳
+  同款的 `.wb-context` 表面实现页面本地右栏：单个 `ResizeObserver` 观察 `.clipboard-page`
+  实际宽度，≥1180px 时启用（1600 窗口内容区扣右栏后 974px、3 列），窄窗仍回退完整详情，
+  不复制第二套检查器。07/08 已按真实右栏重拍。
+- 回归：`ClipboardItemCard.test.tsx`（39 项）、`ClipboardGroupCard.test.tsx`、
+  `ClipboardPanel.test.tsx`、`ClipboardWorkspace.scroll.test.tsx`、
+  `ClipboardGroupLightbox.test.tsx`、`Media.test.tsx`；真实渲染见
+  `docs/clipboard/14-2026-11-19-ui-polish-acceptance.md`。真机链路仍按验收路由单独执行。

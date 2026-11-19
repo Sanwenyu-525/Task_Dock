@@ -191,16 +191,18 @@ describe("ClipboardGroupCard 预览", () => {
       }),
     );
     expect(screen.getByRole("button", { name: "更多操作" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "删除分组" })).toBeTruthy();
-    // 高频入口直接可见：复制整组、逐项粘贴、详情
+    // 高频入口直接可见：复制整组与逐项粘贴；详情由卡片主体承担，动作行不再重复。
     expect(screen.getByRole("button", { name: "复制整组内容" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "逐项粘贴" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "查看分组详情" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "查看分组详情" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "删除分组" })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "更多操作" }));
     expect(await screen.findByText("复制文件路径（整组）")).toBeTruthy();
     expect(screen.getByText("置顶分组")).toBeTruthy();
     expect(screen.getByText("收藏分组")).toBeTruthy();
+    const del = screen.getByRole("menuitem", { name: /删除分组/ });
+    expect(del.textContent).toContain("条目仍保留在历史中");
   });
 
   it("文本组展示可辨识摘要与类型数量", () => {

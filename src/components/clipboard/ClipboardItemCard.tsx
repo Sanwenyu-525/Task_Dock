@@ -1,24 +1,22 @@
-//! 历史条目卡片：类型/预览/来源/时间 + 复制、收藏、置顶、详情、删除、关联。
+//! 历史条目卡片：类型/预览/来源/时间 + 复制、收藏、置顶、删除、关联。
 //!
-//! 2026-11-16 结构重排（工作台大卡片）：
-//! - 卡片根节点**不再**是 `role="button"`：它同时包含选择框、主预览按钮、复制与
-//!   更多菜单等真实按钮，嵌套按钮既违反 ARIA，也会让 Enter 同时触发「打开详情」
-//!   与「激活内部按钮」两个动作。
-//! - 主预览入口是一个真实 `<button class="clip-item-main">`，Enter/Space 只触发它
-//!   自己的 click，且键盘焦点永远落在可见控件上。
-//! - 图片改为独立的 `<button class="clip-hero">`（与正文按钮并列，不嵌套），
-//!   点击直接进灯箱；列表/抽屉态仍用小缩略图，不加载大图。
-//! - 辅助动作分两级（2026-11-17）：卡片宽度足够时，收藏/置顶/查看详情直接排进
-//!   底部动作行；窄卡、抽屉行布局与任务关联模式仍收进 DropdownMenu，菜单弹出
-//!   不改变卡片高度。删除是危险操作且带「不会删除本地文件」说明，始终留在菜单。
+//! 2026-11-19 第三轮精修：
+//! - 卡片内部固定为「顶行 → [大图] → 正文 → 动作」四段式；正文区吃掉行内剩余
+//!   高度，元数据贴底，动作行对齐，同一网格行的卡片因此能真正等高。
+//! - 删除卡片底部的「查看详情」图标：卡片主体打开右栏预览，右栏提供完整详情；
+//!   没有右栏宿主时主体自动回退完整详情，不再保留第二个同义入口。
+//! - 复制与目标窗口组成分体按钮（同一块表面、明确分隔），避免两枚独立按钮
+//!   看起来像两个互不相关的动作。
+//! - `previewed` 与 `selected` 是两条独立状态：前者表示右栏正在展示，后者表示
+//!   批量勾选；两者可同时存在，样式不互相覆盖。
 //!
 //! 三种密度只影响「呈现」：舒适（大图 + 多行正文）、紧凑（小图 + 少行）、
 //! 列表（单列行）。所有布局由 CSS Grid 区域决定，组件不做宽度测量。
 
 import { useLayoutEffect, useRef } from "react";
 import {
-  ArrowUpRight, CheckSquare, Code2, Copy, ExternalLink, Files, Globe,
-  Image as ImageIcon, Link2, Maximize2, MoreHorizontal, Pin, Square, Star, Trash2, Type,
+  ArrowUpRight, CheckSquare, Code2, Copy, Eye, ExternalLink, Files, Globe,
+  Image as ImageIcon, Link2, MoreHorizontal, Pin, Square, Star, Trash2, Type,
 } from "lucide-react";
 import type { ClipboardItem } from "../../lib/bridge";
 import {
@@ -50,6 +48,7 @@ function fileRowsForDensity(density?: ClipboardDensity): number {
 export default function ClipboardItemCard({
   item,
   selected,
+  previewed = false,
   linkMode,
   removing,
   pending,
@@ -67,6 +66,8 @@ export default function ClipboardItemCard({
 }: {
   item: ClipboardItem;
   selected: boolean;
+  /** 右栏正在展示这条内容；与 `selected`（批量勾选）互不覆盖。 */
+  previewed?: boolean;
   linkMode: boolean;
   /** 已删除、正在播放退出动画：动画结束后才会从列表移除 */
   removing: boolean;
@@ -95,8 +96,27 @@ export default function ClipboardItemCard({
   // 在途或正在离场：整卡冻结，任何再次操作都只会制造第二次删除或打开已消失的详情
   const locked = removing || pending;
   // 标题优先展示（自动生成或手动编辑）；有标题时预览降为次行弱化信息
-  const headline = item.title || "";
-  const showPreview = item.preview !== "" || !headline;
+  const headline = (item.title || "").trim();
+  const rawPreview = (item.preview || "").trim();
+  const isImage = item.kind === "image";
+  const files = item.file_paths;
+  const isFiles = item.kind === "files";
+  const link = item.kind === "url" ? linkSummary(item.preview) : null;
+  // 图片自动标题就是分辨率（截图 1280×720）：分辨率已在元数据里，卡面不再重复一行；
+  // 有真实文件名的图片仍显示标题。
+  const autoImageTitle = isImage && /^截图\s*\d+[×x]\d+$/i.test(headline);
+  // 链接标题恰好等于域名且 URL 没有更多路径时不重复；有路径仍要展示 URL 摘要。
+  const linkTitleIsDomain =
+    !!link && !!headline && !link.rest && link.domain.toLowerCase() === headline.toLowerCase();
+  // 标题已经重复表达了同一信息时不再多画一行：
+  // - 图片自动标题「截图 1280×720」与 preview 相同；
+  // - 链接标题本身就是域名（此时正文只保留域名 + 路径）；
+  // - 文件卡片的「3 个文件」由文件清单与标题共同表达。
+  const duplicatePreview =
+    (isImage && !!headline && rawPreview === headline) ||
+    linkTitleIsDomain ||
+    (isFiles && files.length > 0);
+  const showPreview = !duplicatePreview && (rawPreview !== "" || !headline);
   const cardRef = useRef<HTMLElement>(null);
   const [previewRef, viewportVisible] = useInViewport<HTMLElement>();
 
@@ -106,21 +126,19 @@ export default function ClipboardItemCard({
     if (removing && el) el.style.setProperty("--clip-exit-h", `${el.offsetHeight}px`);
   }, [removing]);
 
-  const isImage = item.kind === "image";
   // 卡片态：comfort/compact；list 与抽屉态都是「行」布局。
   const isCard = density === "comfort" || density === "compact";
   const hasHero = isImage && density === "comfort";
   const hasThumb = isImage && !hasHero;
-  // 竖图（长截图 / 手机截图）在固定 160–240px 的舞台里会被缩成一条窄带，
+  // 竖图（长截图 / 手机截图）在固定高度的舞台里会被缩成一条窄带，
   // 无法直接识别内容；给舒适卡一个更高舞台，宽图仍保持矮卡，避免无谓拉高。
   const isTallImage = hasHero && (item.image_height ?? 0) > (item.image_width ?? 0) * 1.2;
   // 大图只在进入视口后才请求 640px 预览；离场/删除中的卡片不需要。
   const heroEnabled = viewportVisible && !locked && item.has_thumb;
-  const link = item.kind === "url" ? linkSummary(item.preview) : null;
-  const files = item.file_paths;
   const fileRows = files.slice(0, fileRowsForDensity(density));
   const firstFileDir = files[0] ? fileDirName(files[0]) : "";
   const openMain = locked ? undefined : (onPreview ?? onDetail);
+  const openLabel = onPreview ? "打开右侧预览" : "打开完整详情";
 
   // 辅助动作是否内联：页面态卡片才有独立动作行（抽屉是行布局），任务关联模式
   // 还要放「关联」按钮，二者都保持收进菜单；宽度测量沿用分组卡片的同一 hook，
@@ -128,17 +146,9 @@ export default function ClipboardItemCard({
   const narrowCard = useCompactViewport(previewRef, AUX_ACTIONS_MIN_WIDTH);
   const inlineAux = density !== undefined && !linkMode && !narrowCard;
 
-  // 类型专属项先排（宽卡片辅助动作内联后，菜单也可能只剩它们 + 删除）。
+  // 类型专属项先排；删除单独留在菜单末尾。
+  // 图片大图与卡片主体预览都由大图/正文入口承担，不在菜单里再放同义项。
   const leadingItems: DropdownMenuItem[] = [
-    ...(isImage && onOpenImage
-      ? [{
-          key: "image",
-          label: "查看大图",
-          icon: <ImageIcon size={12} aria-hidden="true" />,
-          disabled: locked,
-          onSelect: onOpenImage,
-        }]
-      : []),
     ...(link && onOpenUrl
       ? [{
           key: "open-url",
@@ -148,7 +158,8 @@ export default function ClipboardItemCard({
           onSelect: onOpenUrl,
         }]
       : []),
-    // 收藏/置顶/详情在宽卡片已经内联，菜单里不重复出现；窄卡才作为兜底入口。
+    // 收藏/置顶在宽卡片已经内联；窄卡才作为兜底入口。详情不再出现在菜单里：
+    // 卡片主体 + 右栏「完整详情」已经是唯一入口链。
     ...(inlineAux
       ? []
       : [
@@ -167,13 +178,6 @@ export default function ClipboardItemCard({
             trailing: item.pinned ? <span className="clip-menu-state">已置顶</span> : undefined,
             disabled: locked,
             onSelect: () => onToggle("pinned"),
-          },
-          {
-            key: "detail",
-            label: "查看详情",
-            icon: <Maximize2 size={12} aria-hidden="true" />,
-            disabled: locked,
-            onSelect: onDetail,
           },
         ]),
   ];
@@ -202,7 +206,9 @@ export default function ClipboardItemCard({
       data-clip-id={item.id}
       className={`clip-item ${isCard ? "is-card" : "is-row"} ${hasHero ? "is-hero" : ""} ${
         hasThumb ? "is-thumb" : ""
-      } ${isTallImage ? "is-tall" : ""} ${selected ? "selected" : ""} ${removing ? "removing" : ""} ${pending ? "pending" : ""}`}
+      } ${isTallImage ? "is-tall" : ""} ${selected ? "selected" : ""} ${
+        previewed ? "previewed" : ""
+      } ${removing ? "removing" : ""} ${pending ? "pending" : ""}`}
       // 离场期间整棵子树不可交互：不能只靠 pointer-events，Tab 仍能把焦点
       // 送进 aria-hidden 的元素（无障碍违规）；inert 把内部控件全部隔离。
       inert={removing || undefined}
@@ -225,6 +231,11 @@ export default function ClipboardItemCard({
         <span className={`clip-kind kind-${item.kind}`}>
           <Icon size={11} /> {kindLabel(item.kind)}
         </span>
+        {previewed && (
+          <span className="clip-preview-tag" data-tip="当前右侧面板正在预览这条内容">
+            <Eye size={10} aria-hidden="true" /> 预览中
+          </span>
+        )}
         {item.pinned && <Pin size={10} className="clip-flag" aria-label="已置顶" />}
         {item.favorite && <Star size={10} className="clip-flag favorite" aria-label="已收藏" />}
         <span className="clip-time">{clipboardTime(item.last_seen_at)}</span>
@@ -259,11 +270,11 @@ export default function ClipboardItemCard({
         disabled={locked}
         aria-label={`${kindLabel(item.kind)}：${headline || item.preview || "空内容"}${
           src.app ? `；来源 ${src.app}${src.window ? ` · ${src.window}` : ""}` : ""
-        }${openMain ? "，打开预览" : ""}`}
+        }${openMain ? `，${openLabel}` : ""}`}
       >
         <span className="clip-preview">
           <span className="clip-preview-body">
-            {headline && (
+            {headline && !autoImageTitle && (
               <span className="clip-title" data-tip={`标题：${headline}`}>
                 {headline}
               </span>
@@ -285,22 +296,6 @@ export default function ClipboardItemCard({
               </span>
             )}
           </span>
-        </span>
-
-        {/* 来源只是辅助元数据：应用名 + 「窗口」标题，不抢标题与预览的层级。
-            窗口标题会被截断，完整内容与原始 exe 放进提示条。 */}
-        <span className="clip-meta">
-          <span className="clip-meta-app" title={src.appRaw || undefined}>
-            {src.app}
-          </span>
-          {src.window && (
-            <span className="clip-meta-window" data-tip={`窗口：${src.window}${src.appRaw ? `（来源进程 ${src.appRaw}）` : ""}`}>
-              <span className="clip-meta-window-tag">窗口</span>
-              {src.window}
-            </span>
-          )}
-          <span>{formatBytes(item.byte_size)}</span>
-          {item.copy_count > 0 && <span>使用 {item.copy_count} 次</span>}
         </span>
 
         {files.length > 0 && (
@@ -332,6 +327,28 @@ export default function ClipboardItemCard({
             <span className="clip-file-note">仅记录路径，删除历史不会删除本地文件</span>
           </span>
         )}
+
+        {/* 来源只是辅助元数据：应用名 + 窗口标题 + 大小/次数/分辨率统一贴底。
+            窗口标题在窄卡隐藏（完整值仍在主按钮 aria-label 与右栏中），
+            避免元数据换行把同一行卡片重新拉出参差。 */}
+        <span className="clip-meta">
+          <span className="clip-meta-app" title={src.appRaw || undefined}>
+            {src.app}
+          </span>
+          {src.window && density !== "compact" && !narrowCard && (
+            <span className="clip-meta-window" data-tip={`窗口：${src.window}${src.appRaw ? `（来源进程 ${src.appRaw}）` : ""}`}>
+              <span className="clip-meta-window-tag">窗口</span>
+              {src.window}
+            </span>
+          )}
+          <span className="clip-meta-facts">
+            {isImage && item.image_width && item.image_height && (
+              <span>{item.image_width}×{item.image_height}</span>
+            )}
+            <span>{formatBytes(item.byte_size)}</span>
+            {item.copy_count > 0 && <span className="clip-meta-use">使用 {item.copy_count} 次</span>}
+          </span>
+        </span>
       </button>
 
       <div className="clip-actions" onClick={stop}>
@@ -340,33 +357,35 @@ export default function ClipboardItemCard({
             <Link2 size={11} /> 关联
           </button>
         )}
-        {/* 复制是最高频操作：给文字标签，不与「更多」共用同一种小图标外观。 */}
-        <button
-          className="btn sm clip-copy-btn"
-          data-tip="复制到系统剪贴板"
-          aria-label="复制"
-          onClick={onCopy}
-          disabled={locked}
-        >
-          <Copy size={12} aria-hidden="true" />
-          复制
-        </button>
-        {/* 分体复制：主按钮保持「直接复制」不变，右侧箭头直接打开目标窗口选择器
-            （里面再选「复制并切换」或「粘贴到该窗口」）。只有一个动作就不该再套一层菜单。 */}
-        {onCopySwitch && (
+        {/* 复制是最高频操作：文字标签 + 同一块表面里的目标窗口箭头。
+            主按钮 = 直接复制；箭头 = 打开目标窗口选择器（复制并切换 / 粘贴）。 */}
+        <span className="clip-copy-split">
           <button
-            type="button"
-            className="icon-btn sm"
-            data-tip="复制或粘贴到目标窗口"
-            aria-label="复制或粘贴到目标窗口"
-            onClick={onCopySwitch}
+            className="btn sm clip-copy-btn"
+            data-tip="复制到系统剪贴板"
+            aria-label="复制"
+            onClick={onCopy}
             disabled={locked}
           >
-            <ArrowUpRight size={12} />
+            <Copy size={12} aria-hidden="true" />
+            复制
           </button>
-        )}
+          {onCopySwitch && (
+            <button
+              type="button"
+              className="clip-copy-arrow"
+              data-tip="复制或粘贴到目标窗口"
+              aria-label="复制或粘贴到目标窗口"
+              onClick={onCopySwitch}
+              disabled={locked}
+            >
+              <ArrowUpRight size={12} aria-hidden="true" />
+            </button>
+          )}
+        </span>
         {/* 空间足够时辅助动作直接常显：图标语义、状态反馈（aria-pressed + active）
-            与详情页同一口径；窄卡仍走「更多」菜单，不在两处重复同一动作。 */}
+            与详情页同一口径；窄卡仍走「更多」菜单，不在两处重复同一动作。
+            详情入口已从动作行移除：卡片主体 → 右栏预览 → 完整详情，一条链路。 */}
         {inlineAux && (
           <>
             <button
@@ -390,16 +409,6 @@ export default function ClipboardItemCard({
               disabled={locked}
             >
               <Pin size={12} aria-hidden="true" />
-            </button>
-            <button
-              type="button"
-              className="icon-btn sm"
-              data-tip="查看详情"
-              aria-label="查看详情"
-              onClick={onDetail}
-              disabled={locked}
-            >
-              <Maximize2 size={12} aria-hidden="true" />
             </button>
           </>
         )}

@@ -1,5 +1,6 @@
 /*
- * 智能剪贴板「页面态」布局（2026-11-14 统一工作台改造；2026-11-16 大卡片重构）。
+ * 智能剪贴板「页面态」布局（2026-11-14 统一工作台改造；2026-11-16 大卡片重构；
+ * 2026-11-19 第三轮 UI 精修）。
  *
  * 只服务 variant="page"（根元素 .clipboard-page）；抽屉根元素是
  * .clipboard-drawer，不含任何一条规则的前缀，形态零变化。
@@ -7,15 +8,38 @@
  * 前缀；颜色 / 圆角 / 阴影一律沿用既有语义 Token，不复制第二套皮肤。
  *
  * 宽窄判断用容器查询（容器是 .clip-body）：页面态占据工作台内容区，
- * 视口宽度 ≠ 面板可用宽度，媒体查询会在带侧栏的布局下误判。
+ * 视口宽度 ≠ 面板可用宽度，媒体查询会在带侧栏 + 右栏的布局下误判。
  * 抽屉态不建立容器，即使类名意外复用也不会命中 @container 规则。
  *
- * 2026-11-16 设计目标（大型工作台）：
- * - 卡片不再「越小越多」：舒适态单卡至少 300px，图片占据 160–240px（竖图更高）的
- *   独立预览区，正文 3–6 行；列数由可用宽度算出，超宽时封顶 4 列；
- * - 紧凑态 240px 起，保留缩略图但压缩正文；列表态单列密排，适合文字/文件；
- * - 卡片高度由网格行拉伸，底部动作行贴底 —— 悬停/菜单展开都不会让卡片跳高。
+ * 2026-11-19 设计目标（第三轮精修）：
+ * - 同一行等高、不同行可不同高：`.clip-list-grid` 用 stretch，卡片内部固定
+ *   top / main / actions（图片多 hero 行），正文区吃余量，元数据与动作贴底；
+ * - 舒适态单卡至少约 184px，宽图舞台 104–124px（竖图左侧 186–206px），正文最多 5 行；
+ *   列数完全由 `.clip-page` 的实际内容宽度决定：720（约 414px）1 列、1024（718px）2 列、
+ *   1280（974px）3 列、1600（1294px）4 列、1920（1614px）5 列，不按窗口宽度硬塞；
+ * - 紧凑态 240px 起，保留缩略图但正文 2 行；列表态单列密排，正文 1 行；
+ * - 悬停/菜单展开不改变卡片高度，动作行不因内容长短换基线。
  */
+
+/* 页面主区与可选右栏同一行：外壳有详情宿主时右栏由外壳承担；没有宿主且
+   页面足够宽时，页面用同一套 .wb-context 表面自己挂载右栏，不复制第二套检查器。 */
+.clipboard-page .clip-page-main {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+.clipboard-page .clip-page-main > .workspace-split-frame {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.clipboard-page .clip-local-rail {
+  flex: 0 0 var(--wb-detail-width, 320px);
+  width: var(--wb-detail-width, 320px);
+  min-width: 280px;
+}
 
 /* 主窗口的 .tab-content 仍沿用旧的可读性上限（560px），那是给纯文字 Tab 的；
    剪贴板是内容型工作台，必须吃掉可用宽度，否则 1600 窗口也只有一列卡片。
@@ -56,17 +80,23 @@
    一、列表网格与密度
    ────────────────────────────────────────────────────────────────
    列数 = 可用宽度能放下几个「最小合理宽度」，不写死 3 列：
-   - 舒适：300px 起（<560 单列，560–899 双列，900–1319 三列，≥1320 封顶 4 列）
-   - 紧凑：240px 起（同宽度多放 1 列）
-   - 列表：强制单列
-   ≥1320 的封顶是**上限**而不是断点：避免 1920/超宽窗口把卡片切成
-   一排 5–7 张小卡（那正是本轮要修掉的问题）。
+   - 舒适：300px 起；
+   - 紧凑：240px 起；
+   - 列表：强制单列。
+   实际列数由 auto-fill 计算：414px 内容区舒适 1 列、718px 2 列、1294px 4 列、
+   1614px 5 列，不按窗口宽度硬塞 4–5 列（那正是本轮要修掉的问题）。
    ════════════════════════════════════════════════════════════════ */
 .clipboard-page .clip-list-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: 10px;
-  /* 不强行拉齐行高：图片卡与短文字卡不必等高，否则短卡会被撑出一片空白。 */
+  /* 同一行等高、行与行之间允许不同高度：卡片内部用稳定的四段式结构
+     把多余空间收进正文区，动作行始终贴底，不再出现锯齿状底边。 */
+  align-items: stretch;
+}
+
+/* 列表密度是单行密排：行高由内容决定，不需要等高拉伸。 */
+.clipboard-page .clip-list-grid.clip-density-list {
   align-items: start;
 }
 
@@ -80,30 +110,29 @@
   gap: 5px;
 }
 
-@container clip-page (min-width: 1320px) {
-  .clipboard-page .clip-list-grid.clip-density-comfort {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
-  .clipboard-page .clip-list-grid.clip-density-compact {
-    grid-template-columns: repeat(5, minmax(0, 1fr));
-  }
-}
-
 /* 分组列表：同一套网格与卡片语言，分组自身仍是独立区块。 */
 .clipboard-page .clip-group-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 8px;
+  align-items: stretch;
 }
 
-@container clip-page (min-width: 900px) {
+/* 分组卡比条目卡宽：容器 760px 起两列、1160px 起三列、1600px 起四列。
+   1600 窗口内容约 1294px → 三列；1920 窗口内容约 1614px → 四列。 */
+@container clip-page (min-width: 760px) {
   .clipboard-page .clip-group-grid.clip-density-comfort {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
-@container clip-page (min-width: 1320px) {
+@container clip-page (min-width: 1160px) {
   .clipboard-page .clip-group-grid.clip-density-comfort {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+@container clip-page (min-width: 1600px) {
+  .clipboard-page .clip-group-grid.clip-density-comfort {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }
 
@@ -120,8 +149,14 @@
     "top check"
     "main main"
     "actions actions";
-  gap: 6px;
-  padding: 10px 12px 8px;
+  align-items: stretch;
+  gap: 4px;
+  padding: 8px 12px 6px;
+  /* 短内容卡片也有一个稳定的最小高度，避免一行全是短文本时整行过矮；
+     行内有图片卡时由最高卡决定，其余卡在内部把余量收进正文区。
+     184px 只保证操作区不被压扁；短文本卡不再为了凑 200px 留下大片空洞。 */
+  min-height: 184px;
+  box-sizing: border-box;
 }
 
 /* 有缩略图（紧凑态 / 无大图）：缩略图只占正文行，顶行不被挤窄。 */
@@ -133,6 +168,7 @@
     "thumb main main"
     "actions actions actions";
   gap: 6px 10px;
+  min-height: 148px;
 }
 
 /* 舒适态图片：整行大图。 */
@@ -143,6 +179,7 @@
     "hero hero"
     "main main"
     "actions actions";
+  min-height: 224px;
 }
 
 .clipboard-page .clip-item.is-card > .clip-check {
@@ -167,8 +204,98 @@
 }
 
 .clipboard-page .clip-item.is-card > .clip-item-main {
+  display: flex;
+  flex-direction: column;
   justify-content: flex-start;
+  align-items: stretch;
   gap: 4px;
+  min-height: 0;
+}
+
+/* 元数据贴底：短正文留下的是「正文区余量」，不会把来源/大小/次数
+   悬在卡片中间；同一行所有卡片的元数据因此落在同一条基线上。 */
+.clipboard-page .clip-item.is-card .clip-meta {
+  margin-top: auto;
+  flex-wrap: nowrap;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.clipboard-page .clip-item.is-row .clip-meta {
+  margin-top: auto;
+  flex-wrap: nowrap;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.clipboard-page .clip-meta-facts {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.clipboard-page .clip-item.is-card .clip-meta-app {
+  max-width: 34%;
+}
+
+.clipboard-page .clip-item.is-card .clip-meta-window {
+  max-width: 100%;
+}
+
+/* 正文区吃掉剩余高度，但不把内容拉到卡片边缘：超出的文件行/正文在
+   各自容器内裁掉，完整内容始终可通过右栏或完整详情查看。 */
+.clipboard-page .clip-item.is-card > .clip-item-main > .clip-preview {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.clipboard-page .clip-item.is-card > .clip-item-main > .clip-file-list {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* 标题最多两行：舒适卡承担识别任务，长标题不再被一行省略成无法辨认。 */
+.clipboard-page .clip-item.is-card .clip-preview .clip-title {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  white-space: normal;
+  text-overflow: clip;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.clipboard-page .clip-density-compact .clip-item .clip-preview .clip-title {
+  display: block;
+  -webkit-line-clamp: unset;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 列表密度保持单行标题，行高不因长标题变化。 */
+.clipboard-page .clip-density-list .clip-item .clip-preview .clip-title {
+  display: block;
+  -webkit-line-clamp: unset;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+
+/* 列表行正文与标题同排；正文只占一行，完整内容仍在右栏/详情。 */
+.clipboard-page .clip-density-list .clip-item .clip-preview .clip-text {
+  display: block;
+  -webkit-line-clamp: unset;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
 }
 
 /* 底部动作行：贴底、右对齐、一条细分隔线；高度固定，不随悬停变化 */
@@ -177,9 +304,9 @@
   margin-left: 0;
   justify-content: flex-end;
   gap: 4px;
-  padding-top: 6px;
+  padding-top: 4px;
   border-top: 1px solid var(--border-subtle);
-  /* 复制是最高频操作，常显；收藏/置顶/详情在空间足够时也常显（2026-11-17），
+  /* 复制是最高频操作，常显；收藏/置顶在空间足够时也常显（2026-11-19），
      窄卡或关联模式收回「更多」菜单后同样无需悬停才能看见。 */
   opacity: 1;
 }
@@ -189,6 +316,23 @@
   gap: 4px;
   padding: 0 8px;
   min-height: 24px;
+}
+
+/* 右栏预览态：左侧 2px 强调条 + 轻微描边；批量选中仍走 .selected 的
+   强调底色与勾选图标。两者同时存在时各自保留，不互相覆盖。 */
+.clipboard-page .clip-item.is-card.previewed,
+.clipboard-page .clip-group-card.previewed {
+  border-color: color-mix(in srgb, var(--accent) 46%, var(--border-subtle));
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.clipboard-page .clip-item.is-card.previewed.selected,
+.clipboard-page .clip-group-card.previewed.selected {
+  background: var(--accent-soft);
+}
+
+.clipboard-page .clip-item.is-card.previewed .clip-time {
+  color: var(--text-secondary);
 }
 
 /* 卡片态正文：更大的字号与行高，长英文/URL 不撑破卡片 */
@@ -216,7 +360,21 @@
   --clip-text-lines: 2;
 }
 .clipboard-page .clip-density-list .clip-item {
-  --clip-text-lines: 2;
+  --clip-text-lines: 1;
+}
+.clipboard-page .clip-density-compact .clip-item.is-card {
+  min-height: 140px;
+}
+
+/* 紧凑卡宽度只有约 247px：来源名不能被「使用次数」挤成一个字，
+   次数对快速辨认不是必要信息，留给右栏/完整详情。 */
+.clipboard-page .clip-density-compact .clip-item.is-card .clip-meta-app {
+  max-width: 46%;
+  flex-shrink: 0;
+}
+
+.clipboard-page .clip-density-compact .clip-item.is-card .clip-meta-use {
+  display: none;
 }
 
 @container clip-page (min-width: 560px) {
@@ -227,11 +385,6 @@
 @container clip-page (min-width: 1000px) {
   .clipboard-page .clip-density-comfort .clip-item {
     --clip-text-lines: 5;
-  }
-}
-@container clip-page (min-width: 1320px) {
-  .clipboard-page .clip-density-comfort .clip-item {
-    --clip-text-lines: 6;
   }
 }
 
@@ -245,10 +398,10 @@
 /* ════════════════════════════════════════════════════════════════
    三、大图预览（640px 预览规格，按可视区懒加载）
    ────────────────────────────────────────────────────────────────
-   - 固定高度区间 160–240px（按容器宽度取 18cqi），窗口越大图片越大；
-   - 竖图（高宽比 > 1.2）单独放宽到 230–340px，长截图不缩成一条窄带；
-   - `object-fit: contain` 完整展示：宽图适应卡片宽度，长截图保留比例，
-     不做裁切；极淡的中性底色把图片边界与卡片底分开；
+   - 宽图舞台 128–148px：它只是「识别 + 入口」，不是详情阅读区；
+   - 竖图改用左侧纵向舞台（190–210px 高、卡片 42% 宽），右侧放标题/元数据，
+     不再把整行拉成两倍高，也不把 900×1600 压成 90px 宽的窄条；
+   - `object-fit: contain` 完整展示，不裁切；
    - 不用原图：后端按需生成 640px 预览并缓存，失败回退缩略图。
    ════════════════════════════════════════════════════════════════ */
 .clipboard-page .clip-item.is-hero > .clip-hero {
@@ -257,7 +410,7 @@
   align-items: center;
   justify-content: center;
   width: 100%;
-  height: clamp(160px, 18cqi, 240px);
+  height: clamp(104px, 9cqi, 124px);
   padding: 0;
   border: 1px solid var(--border-subtle);
   border-radius: 8px;
@@ -271,11 +424,24 @@
   outline-offset: 2px;
 }
 
-/* 竖图（长截图 / 手机截图）不能被塞进 160–240px 的固定舞台：
-   那样 900×1600 只会显示成约 90px 宽的窄条，等于没有预览。
-   只对高宽比 > 1.2 的图片加高，宽图仍保持上面的矮舞台。 */
+/* 竖图：左侧图片、右侧正文与动作。长截图有足够高度识别，卡片高度
+   又与同排文字/文件卡接近，避免「一张竖图把整行拉到 340px」。 */
+.clipboard-page .clip-item.is-hero.is-tall {
+  grid-template-columns: minmax(128px, 42%) minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    "top top check"
+    "hero main main"
+    "hero actions actions";
+  min-height: 220px;
+}
+
 .clipboard-page .clip-item.is-hero.is-tall > .clip-hero {
-  height: clamp(230px, 78cqi, 340px);
+  width: 100%;
+  height: 100%;
+  min-height: 186px;
+  max-height: 206px;
+  align-self: stretch;
 }
 
 .clipboard-page .clip-hero-img {
@@ -295,6 +461,25 @@
   color: var(--text-tertiary);
 }
 
+/* 列表密度：单列密排，标题/正文/元数据各占一行，动作列固定在右侧。 */
+.clipboard-page .clip-item.is-row {
+  align-items: start;
+  gap: 3px 8px;
+  padding: 7px 10px;
+}
+
+.clipboard-page .clip-item.is-row > .clip-item-main {
+  gap: 2px;
+}
+
+.clipboard-page .clip-item.is-row .clip-preview {
+  gap: 2px;
+}
+
+.clipboard-page .clip-item.is-row .clip-time {
+  margin-left: auto;
+}
+
 /* 紧凑态的缩略图：略大一点但仍然廉价（仍走 192px 缩略图） */
 .clipboard-page .clip-item.is-thumb .clip-thumb,
 .clipboard-page .clip-item.is-thumb .clip-thumb-placeholder {
@@ -310,8 +495,26 @@
   flex-direction: column;
   flex-wrap: nowrap;
   align-items: stretch;
+  align-self: stretch;
   gap: 6px;
   padding: 10px 12px 8px;
+  min-height: 224px;
+  box-sizing: border-box;
+}
+
+/* 分组主体是真按钮：清掉按钮默认外观，只保留与条目卡一致的信息层级。 */
+.clipboard-page .clip-group-main {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  min-height: 0;
+  cursor: pointer;
+}
+
+.clipboard-page .clip-group-main .clip-meta {
+  margin-top: auto;
 }
 
 .clipboard-page .clip-group-card.density-comfort > .clip-check,
@@ -380,7 +583,8 @@
   border-radius: 7px;
 }
 
-.clipboard-page .clip-group-card.density-comfort > .clip-actions {
+.clipboard-page .clip-group-card.density-comfort > .clip-actions,
+.clipboard-page .clip-group-card.density-compact > .clip-actions {
   width: 100%;
   margin-left: 0;
   justify-content: flex-end;
@@ -394,10 +598,63 @@
 }
 
 /* ════════════════════════════════════════════════════════════════
-   五、工具栏：视图密度分段控件
+   五、工具栏：查找 / 视图 / 管理三组
+   ────────────────────────────────────────────────────────────────
+   搜索与排序、筛选导航属于「查找」组；密度切换独立成组；批量与清理
+   属于管理组。组间 10px，组内 6px，窄窗整组换行而不是把按钮裁掉。
    ════════════════════════════════════════════════════════════════ */
 .clipboard-page .clip-toolbar {
   flex-wrap: wrap;
+  gap: 8px 10px;
+}
+
+.clipboard-page .clip-toolbar-query {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  /* 842px 内容区（1600 工作台 + 右栏）仍能一行放下搜索/排序/筛选与
+     密度/批量/清理；再窄才整组换行。 */
+  flex: 1 1 460px;
+  min-width: 0;
+}
+
+.clipboard-page .clip-toolbar-query .clip-search {
+  flex: 1 1 320px;
+  min-width: 160px;
+}
+
+.clipboard-page .clip-toolbar-tools {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.clipboard-page .clip-toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+.clipboard-page .clip-toolbar-divider {
+  flex: none;
+  width: 1px;
+  height: 20px;
+  background: var(--divider);
+}
+
+@container clip-page (max-width: 760px) {
+  .clipboard-page .clip-toolbar-query {
+    flex-basis: 100%;
+  }
+  .clipboard-page .clip-toolbar-tools {
+    width: 100%;
+    margin-left: 0;
+    justify-content: flex-start;
+  }
 }
 
 /* 排序按钮保留文字标签，避免和筛选/密度图标混成一片；窄窗跟随工具栏换行。 */
@@ -482,6 +739,11 @@
    列表保持原位，详情只读投送到外壳右栏。右栏宽度固定 ~300px，
    因此图片按 180px 高完整展示，正文可滚动，文件只列前 6 个。
    ════════════════════════════════════════════════════════════════ */
+.clip-rail-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
 .clip-rail-head {
   display: flex;
   align-items: center;
@@ -623,14 +885,19 @@
 .clip-filter-pane {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
 }
 
+/* 历史/分组是一组有边界的导航：未选中项也有明确轮廓，不靠悬停才可辨认。 */
 .clip-side-sections {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-base);
 }
 
 .clip-side-sections button {
@@ -689,6 +956,74 @@
   text-transform: uppercase;
 }
 
+/* 高级筛选折叠头：与普通分组同一分隔语言，右侧箭头指示展开状态。 */
+.clip-advanced-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 30px;
+  padding: 8px 2px 0;
+  border: 0;
+  border-top: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-align: left;
+  cursor: pointer;
+}
+
+.clip-advanced-toggle:hover {
+  color: var(--text-secondary);
+}
+
+.clip-advanced-toggle span {
+  flex: none;
+  text-transform: uppercase;
+}
+
+.clip-advanced-toggle em {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-style: normal;
+  font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--accent);
+  text-align: right;
+}
+
+.clip-advanced-toggle svg {
+  flex: none;
+  transition: transform 0.14s ease;
+}
+
+.clip-advanced-toggle svg.is-open {
+  transform: rotate(180deg);
+}
+
+.clip-advanced-filters {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.clip-advanced-filters .clip-side-group {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.clip-advanced-filters .clip-side-group + .clip-side-group {
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+
 .clip-side-type {
   min-height: 30px;
   padding: 0 8px;
@@ -716,6 +1051,7 @@
   align-items: center;
   gap: 7px;
   min-height: 32px;
+  margin-top: 2px;
   padding: 0 9px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
@@ -780,8 +1116,11 @@
   justify-content: center;
   gap: 6px;
   min-height: 30px;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
+  margin-top: 2px;
+  padding-top: 8px;
+  border: 0;
+  border-top: 1px solid var(--border-subtle);
+  border-radius: 0;
   background: transparent;
   color: var(--text-tertiary);
   font-size: 11px;
@@ -789,9 +1128,7 @@
 }
 
 .clip-filter-reset:not(:disabled):hover {
-  border-color: var(--border-subtle);
   color: var(--text-primary);
-  background: var(--surface-hover);
 }
 
 .clip-filter-reset:disabled {
@@ -844,23 +1181,6 @@
    既有代码阅读行为，不在此覆盖。 */
 .clipboard-page .clip-doc pre {
   overflow-wrap: anywhere;
-}
-
-/* 超宽内容区（≥1920px）：在 1320px 四/五列封顶基础上再加一档密度，
-   让宽屏提高单屏信息量，而不是把卡片等比拉宽留白。仍用 minmax(0, 1fr)，
-   不写死像素列宽；分组卡片同档升到四列。 */
-@container clip-page (min-width: 1920px) {
-  .clipboard-page .clip-list-grid.clip-density-comfort {
-    grid-template-columns: repeat(5, minmax(0, 1fr));
-  }
-
-  .clipboard-page .clip-list-grid.clip-density-compact {
-    grid-template-columns: repeat(6, minmax(0, 1fr));
-  }
-
-  .clipboard-page .clip-group-grid.clip-density-comfort {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
 }
 
 /* 灯箱经 createPortal 挂到 document.body，不在 .clipboard-page 子树内，

@@ -127,8 +127,9 @@ function makeView(count = 3): ClipboardView {
 }
 
 /**
- * 删除仍收在「更多操作」菜单（危险动作 + 说明文案）；收藏/置顶/详情在宽度足够的
+ * 删除仍收在「更多操作」菜单（危险动作 + 说明文案）；收藏/置顶在宽度足够的
  * 卡片上直接排在动作行（2026-11-17），窄卡与抽屉行仍必须先展开菜单。
+ * 详情不再有动作行按钮（2026-11-19）：卡片主体点击进入右栏预览/完整详情，
  * 测试按对应形态选择入口，不靠隐藏按钮绕过。
  */
 type TestUser = ReturnType<typeof userEvent.setup>;
@@ -805,7 +806,9 @@ describe("操作反馈与离场", () => {
     await screen.findByText("第 0 条剪贴板预览");
 
     await user.click(screen.getByRole("tab", { name: /分组/ }));
-    await user.click(await screen.findByRole("button", { name: "删除分组" }));
+    // 2026-11-19：删除分组收进「更多」菜单，避免危险动作常显在分组卡动作行。
+    await user.click(await screen.findByRole("button", { name: "更多操作" }));
+    await user.click(await screen.findByRole("menuitem", { name: /删除分组/ }));
     const dialog = await screen.findByRole("dialog", { name: "删除分组「调试截图」？" });
     expect(dialog.textContent).toContain("分组内的历史条目仍保留");
     const exitCallbacks = holdExitTimers();
@@ -837,7 +840,9 @@ describe("操作反馈与离场", () => {
     await screen.findByText("第 0 条剪贴板预览");
 
     await user.click(screen.getByRole("tab", { name: /分组/ }));
-    await user.click(await screen.findByRole("button", { name: "删除分组" }));
+    // 2026-11-19：删除分组收进「更多」菜单，避免危险动作常显在分组卡动作行。
+    await user.click(await screen.findByRole("button", { name: "更多操作" }));
+    await user.click(await screen.findByRole("menuitem", { name: /删除分组/ }));
     const dialog = await screen.findByRole("dialog", { name: "删除分组「调试截图」？" });
     await user.click(await within(dialog).findByRole("button", { name: "删除分组" }));
 
