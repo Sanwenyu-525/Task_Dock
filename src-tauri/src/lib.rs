@@ -48,6 +48,7 @@ pub mod shelf;
 pub mod tab_hint;
 pub mod tab_popups;
 pub mod task_analytics;
+pub mod transfer;
 pub mod user_preferences;
 mod widget_windows;
 mod window_cursor;
@@ -747,6 +748,8 @@ pub fn run() {
             handle.manage(Arc::new(fsops::JobRegistry::new()));
             handle.manage(fsops::Scheduler::new(handle.clone()));
             handle.manage(recycle::RecycleService::new(db.clone()));
+            // 工作篮跨窗口上下文：纯内存、不落库（窗口关闭即失效，避免指向已删除实体）。
+            handle.manage(Arc::new(transfer::context::ContextState::default()));
             // 快速捕获语音输入：只构造服务对象，工作线程与 COM 在首次使用时才创建。
             handle.manage(Arc::new(quick_capture::voice::VoiceInput::new()));
             let settings = db::Settings::load(&db).unwrap_or_else(|e| {
@@ -1870,6 +1873,31 @@ pub fn run() {
             commands::recycle::recycle_restore,
             commands::recycle::recycle_purge,
             commands::recycle::recycle_empty,
+            // 全局跨 Tab 联动（v79）：工作篮、目标预览/执行、批次、上下文、实体关联
+            commands::transfer::transfer_add,
+            commands::transfer::transfer_list,
+            commands::transfer::transfer_get,
+            commands::transfer::transfer_update,
+            commands::transfer::transfer_remove,
+            commands::transfer::transfer_reorder,
+            commands::transfer::transfer_pin,
+            commands::transfer::transfer_clear_temporary,
+            commands::transfer::transfer_counts,
+            commands::transfer::transfer_validate_target,
+            commands::transfer::transfer_preview,
+            commands::transfer::transfer_execute,
+            commands::transfer::transfer_batch,
+            commands::transfer::transfer_batches,
+            commands::transfer::transfer_retry,
+            commands::transfer::transfer_undo,
+            commands::transfer::transfer_context_get,
+            commands::transfer::transfer_context_update,
+            commands::transfer::transfer_context_clear,
+            commands::transfer::entity_link_create,
+            commands::transfer::entity_link_batch,
+            commands::transfer::entity_link_remove,
+            commands::transfer::entity_link_unlink,
+            commands::transfer::entity_link_related,
             // 一键工作流（v0.9）
             commands::workflows::workflow_list,
             commands::workflows::workflow_get,

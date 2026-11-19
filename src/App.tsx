@@ -24,6 +24,7 @@ import { GlobalSearchDialog } from "./components/global-search/GlobalSearchDialo
 import MobilePairingDialog from "./components/mobile/MobilePairingDialog";
 import OnboardingOverlay from "./components/onboarding/OnboardingOverlay";
 import ClipboardDrawer from "./components/clipboard/ClipboardDrawer";
+import TransferDrawer from "./components/transfer/TransferDrawer";
 import TaskContextDrawer from "./components/context/TaskContextDrawer";
 import Toast from "./components/Toast";
 import TooltipLayer from "./components/ui/TooltipLayer";
@@ -63,6 +64,7 @@ import {
 import { useCaptureStore } from "./store/useCaptureStore";
 import { useAudioNotifications } from "./lib/audioNotification";
 import { useLocale } from "./hooks/useLocale";
+import { installTaskActions, uninstallTaskActions } from "./lib/crossTab/modules/tasks";
 import { bootReady, bootStage } from "./boot/bootProtocol";
 
 /**
@@ -383,6 +385,13 @@ export default function App() {
   // 卸载（或热更新）时清掉未执行的行动中心刷新调度，避免遗留定时器
   useEffect(() => () => cancelActionsRefresh(), []);
 
+  // 跨模块动作：由各模块适配器注册到 ActionRegistry，页面只按内容筛选动作。
+  // 注册幂等，组件卸载时只移除本模块动作，不影响其他窗口（各窗口动作表独立）。
+  useEffect(() => {
+    installTaskActions();
+    return () => uninstallTaskActions();
+  }, []);
+
   // 自定义快捷键：应用内（app_local）按键在前端按配置分发，系统级（system_global）
   // 由 Rust 侧常驻注册；录制期间不触发任何动作，旧全局监听已移除避免重复触发。
   useHotkeysRuntime();
@@ -435,6 +444,7 @@ export default function App() {
             </DeferredView>
           </div>
           <ClipboardDrawer />
+          <TransferDrawer />
           <TaskContextDrawer />
         </div>
         <WorkspaceLauncher />

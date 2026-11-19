@@ -680,6 +680,41 @@ fn unique_target(dir: &Path, name: &str) -> PathBuf {
     dir.join(format!("{stem} (dup)"))
 }
 
+/// 为「工作篮 → 文件目标」解析单个写入目标：
+/// 校验目录存在、清洗单段名称、按冲突策略给出最终路径。
+///
+/// 返回 `None` 表示 `skip` 策略下目标已存在，调用方应把该条如实标记为 skipped。
+/// 覆盖目录会被拒绝（不能用文件覆盖目录）。
+pub fn resolve_write_target(
+    dir: &Path,
+    name: &str,
+    conflict: Conflict,
+) -> AppResult<Option<PathBuf>> {
+    let dir = validate_dir(dir)?;
+    let name = sanitize_name(name)?;
+    let target = dir.join(&name);
+    if !target.exists() {
+        return Ok(Some(target));
+    }
+    match conflict {
+        Conflict::Skip => Ok(None),
+        Conflict::Rename => Ok(Some(unique_target(&dir, &name))),
+        Conflict::Overwrite => {
+            if target.is_dir() {
+                return Err(AppError::Validation(
+                    "目标已存在且是目录，不能用文件覆盖".into(),
+                ));
+            }
+            Ok(Some(target))
+        }
+    }
+}
+
+/// 路径是否在 `root` 之内（公开只读版本，供跨模块做目标归属判断）。
+pub fn path_is_under(path: &Path, root: &Path) -> bool {
+    is_under(path, root)
+}
+
 // ── 稳定失败分类 ────────────────────────────────────────────────────────
 //
 // 逐条 `reason` 是给人读的中文 / OS 文案，**不可用于聚合与筛选**。诊断中心需要

@@ -1033,6 +1033,12 @@ pub const BACKUP_TABLES: &[BackupTableRule] = &[
         &["tasks", "project_capabilities"],
         true
     ),
+    // 全局跨 Tab 联动（v79）：工作篮是临时内容，备份恢复后仍可用；
+    // 批次是近期发送历史（quick 截断），实体关联是弱引用、不阻塞恢复。
+    rule!("transfer_contents", "core", "all", 802, &[], true),
+    rule!("transfer_items", "core", "all", 803, &["transfer_contents"], true),
+    rule!("transfer_batches", "core", "recent", 804, &["transfer_items"], true),
+    rule!("entity_links", "core", "all", 805, &[], true),
 ];
 
 pub fn table_rule(table: &str) -> Option<&'static BackupTableRule> {

@@ -2122,6 +2122,8 @@ CREATE INDEX idx_novel_chapters_volume
     (77, crate::collab::schema::MIGRATION_77),
     // 项目中枢（v78）：项目根收敛、目标/能力/交付物/版本/事件/任务关联。
     crate::project_hub::schema::MIGRATION_78,
+    // 全局跨 Tab 联动（v79）：工作篮条目/正文/批次 + 通用实体关联，纯新增表。
+    crate::transfer::schema::MIGRATION_79,
 ];
 
 /// 历史测试数据的保守回填（幂等）。

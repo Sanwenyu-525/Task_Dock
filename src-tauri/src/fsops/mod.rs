@@ -527,6 +527,11 @@ fn protected_dirs(app: &AppHandle) -> Vec<PathBuf> {
         .collect()
 }
 
+/// 供跨模块（工作篮）复用同一套受保护目录判定，不重复实现数据目录规则。
+pub fn protected_dirs_pub(app: &AppHandle) -> Vec<PathBuf> {
+    protected_dirs(app)
+}
+
 /// 删除任务：普通文件路径（进入回收站或永久删除）。复用文件工作区实现。
 pub fn start_delete(
     app: &AppHandle,
@@ -1007,9 +1012,275 @@ fn validate_empty_selection(volumes: Option<&[String]>) -> AppResult<()> {
     Ok(())
 }
 
+/// 工作篮写入任务的一条：文本或「复制已有文件」到固定目标路径。
+///
+/// 目标路径由上层（`transfer::execute`）用
+/// [`crate::file_workspace::resolve_write_target`] 校验目录、清洗名称、按冲突策略解析，
+/// 这里只做落盘与逐条结果，不重复冲突命名逻辑。
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WriteEntry {
+    /// 工作篮条目 id（写入结果按此回写状态，不用文件名做键）。
+    pub item_id: String,
+    /// 展示名（事件/报告中不出现完整路径）。
+    pub label: String,
+    /// 绝对目标路径（含文件名）。
+    pub target: String,
+    /// 文本内容（`text` 与 `copyFrom` 二选一）。
+    #[serde(default)]
+    pub text: Option<String>,
+    /// 复制源（图片缓存或用户文件）。
+    #[serde(default)]
+    pub copy_from: Option<String>,
+    /// 目标已存在时是否覆盖（`false` 时如实报告 skipped，不静默改名）。
+    #[serde(default)]
+    pub overwrite: bool,
+    /// 该条是否为「合并文本」等无法逐条撤销的写入（仅用于报告文案）。
+    #[serde(default)]
+    pub merged: bool,
+}
+
+fn write_error_code(error: &std::io::Error) -> &'static str {
+    match error.kind() {
+        std::io::ErrorKind::NotFound => "FS_OP_SOURCE_MISSING",
+        std::io::ErrorKind::PermissionDenied => "FS_OP_ACCESS_DENIED",
+        std::io::ErrorKind::AlreadyExists => "FS_OP_CONFLICT",
+        _ => match error.raw_os_error() {
+            Some(32) | Some(33) => "FS_OP_FILE_BUSY",
+            Some(112) => "FS_OP_IO",
+            _ => "FS_OP_IO",
+        },
+    }
+}
+
+fn write_one(entry: &WriteEntry, cancelled: &dyn Fn() -> bool) -> crate::file_workspace::FsEntryReport {
+    use crate::file_workspace::FsEntryReport;
+    let mut report = FsEntryReport {
+        source: entry.item_id.clone(),
+        target: Some(entry.target.clone()),
+        status: "failed",
+        reason: None,
+        code: None,
+        stage: Some("prepare".into()),
+    };
+    if cancelled() {
+        report.reason = Some("已取消，未执行".into());
+        report.code = Some("FS_OP_CANCELLED".into());
+        report.status = "skipped";
+        return report;
+    }
+    let target = std::path::Path::new(&entry.target);
+    let Some(parent) = target.parent() else {
+        report.reason = Some("目标路径没有父目录".into());
+        report.code = Some("FS_OP_VALIDATION".into());
+        return report;
+    };
+    if !parent.is_dir() {
+        report.reason = Some("目标目录不存在或不可访问".into());
+        report.code = Some("FS_OP_TARGET_MISSING".into());
+        return report;
+    }
+    if target.file_name().is_none() {
+        report.reason = Some("目标缺少文件名".into());
+        report.code = Some("FS_OP_VALIDATION".into());
+        return report;
+    }
+    if target.exists() {
+        if !entry.overwrite {
+            report.status = "skipped";
+            report.reason = Some("目标已存在，按跳过策略未覆盖".into());
+            report.code = Some("FS_OP_CONFLICT".into());
+            return report;
+        }
+        if target.is_dir() {
+            report.reason = Some("目标已存在且是目录，不能用文件覆盖".into());
+            report.code = Some("FS_OP_CONFLICT".into());
+            return report;
+        }
+        // 覆盖前先清只读属性：Windows 下只读文件无法直接截断写。
+        if let Ok(meta) = std::fs::metadata(target) {
+            let mut perms = meta.permissions();
+            if perms.readonly() {
+                #[allow(clippy::permissions_set_readonly_false)]
+                perms.set_readonly(false);
+                let _ = std::fs::set_permissions(target, perms);
+            }
+        }
+    }
+    report.stage = Some("write".into());
+    let result = if let Some(text) = &entry.text {
+        std::fs::write(target, text.as_bytes())
+    } else if let Some(source) = &entry.copy_from {
+        let source = std::path::Path::new(source);
+        if !source.is_file() {
+            report.reason = Some("来源文件不存在".into());
+            report.code = Some("FS_OP_SOURCE_MISSING".into());
+            return report;
+        }
+        // 先写临时名再替换，避免半写文件被用户看到（同目录保证同卷）。
+        let temp = target.with_file_name(format!(
+            "{}.tdpart-{}",
+            target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "write".into()),
+            uuid::Uuid::new_v4()
+        ));
+        match std::fs::copy(source, &temp) {
+            Ok(_) => {
+                if target.exists() {
+                    let _ = std::fs::remove_file(target);
+                }
+                std::fs::rename(&temp, target)
+                    .map(|_| ())
+                    .map_err(|e| {
+                        let _ = std::fs::remove_file(&temp);
+                        e
+                    })
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(&temp);
+                Err(e)
+            }
+        }
+    } else {
+        report.reason = Some("没有可写入的内容".into());
+        report.code = Some("FS_OP_VALIDATION".into());
+        return report;
+    };
+    match result {
+        Ok(_) => {
+            report.status = "ok";
+            report.code = Some("OK".into());
+            report.reason = None;
+            report.stage = None;
+        }
+        Err(e) => {
+            report.code = Some(write_error_code(&e).into());
+            report.reason = Some(format!("写入失败: {e}"));
+        }
+    }
+    report
+}
+
+/// 工作篮写入任务：逐条独立落盘，条目间可取消，部分成功如实报告。
+pub fn start_write(
+    app: &AppHandle,
+    entries: Vec<WriteEntry>,
+    operation_id: Option<String>,
+) -> AppResult<JobSnapshot> {
+    if entries.is_empty() {
+        return Err(AppError::Validation("没有要写入的内容".into()));
+    }
+    if entries.len() > crate::file_workspace::MAX_OP_PATHS {
+        return Err(AppError::Validation(format!(
+            "单批最多 {} 项",
+            crate::file_workspace::MAX_OP_PATHS
+        )));
+    }
+    submit(
+        app,
+        JobSpec {
+            kind: "write",
+            total: entries.len(),
+            message: None,
+            cancelable: true,
+        },
+        move |app, worker| {
+            let started = std::time::Instant::now();
+            let mut report = crate::file_workspace::FsOpReport {
+                operation_id: operation_id
+                    .clone()
+                    .unwrap_or_else(|| worker.snapshot().id),
+                attempted: entries.len(),
+                ok: 0,
+                failed: 0,
+                skipped: 0,
+                partial: 0,
+                entries: Vec::new(),
+            };
+            let last_emit = std::cell::Cell::new(std::time::Instant::now());
+            for entry in &entries {
+                if worker.cancel_requested() {
+                    let skipped = crate::file_workspace::FsEntryReport {
+                        source: entry.item_id.clone(),
+                        target: Some(entry.target.clone()),
+                        status: "skipped",
+                        reason: Some("已取消，未执行".into()),
+                        code: Some("FS_OP_CANCELLED".into()),
+                        stage: Some("prepare".into()),
+                    };
+                    report.skipped += 1;
+                    report.entries.push(skipped.clone());
+                    record_result(worker, entry_of(&skipped));
+                    continue;
+                }
+                let result = write_one(entry, &|| worker.cancel_requested());
+                match result.status {
+                    "ok" => report.ok += 1,
+                    "skipped" => report.skipped += 1,
+                    _ => report.failed += 1,
+                }
+                record_result(worker, entry_of(&result));
+                report.entries.push(result);
+                if last_emit.get().elapsed() >= std::time::Duration::from_millis(100) {
+                    emit_progress(app, worker);
+                    last_emit.set(std::time::Instant::now());
+                }
+            }
+            *worker.inner.report.lock().unwrap_or_else(|e| e.into_inner()) = Some(report);
+            finish(worker, worker.cancel_requested());
+            emit_progress(app, worker);
+            emit_job_diagnostic("write", operation_id.as_deref(), worker, started);
+        },
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn write_one_for_test(entry: &WriteEntry) -> crate::file_workspace::FsEntryReport {
+    write_one(entry, &|| false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn write_one_really_writes_text_and_copies_without_app_handle() {
+        let dir = std::env::temp_dir().join(format!("taskdock-write-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let text_target = dir.join("a.txt").to_string_lossy().to_string();
+        let entry = WriteEntry {
+            item_id: "i1".into(),
+            label: "文本".into(),
+            target: text_target.clone(),
+            text: Some("真实写入内容".into()),
+            copy_from: None,
+            overwrite: false,
+            merged: false,
+        };
+        let report = write_one_for_test(&entry);
+        assert_eq!(report.status, "ok", "{}", report.reason.unwrap_or_default());
+        assert_eq!(std::fs::read_to_string(&text_target).unwrap(), "真实写入内容");
+
+        let source = dir.join("src.txt");
+        std::fs::write(&source, "复制来源").unwrap();
+        let copy_target = dir.join("b.txt").to_string_lossy().to_string();
+        let copy = WriteEntry {
+            item_id: "i2".into(),
+            label: "复制".into(),
+            target: copy_target.clone(),
+            text: None,
+            copy_from: Some(source.to_string_lossy().to_string()),
+            overwrite: false,
+            merged: false,
+        };
+        let report = write_one_for_test(&copy);
+        assert_eq!(report.status, "ok", "{}", report.reason.unwrap_or_default());
+        assert_eq!(std::fs::read_to_string(&copy_target).unwrap(), "复制来源");
+
+        let conflict = write_one_for_test(&entry);
+        assert_eq!(conflict.status, "skipped");
+        assert_eq!(conflict.code.as_deref(), Some("FS_OP_CONFLICT"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn backend_continuation_empty_selection_cannot_empty_all_volumes() {

@@ -44,6 +44,7 @@ pub mod shelf;
 pub mod system;
 pub mod task_analytics;
 pub mod tasks;
+pub mod transfer;
 pub mod user_preferences;
 pub mod virtual_display;
 pub mod voice_packs;

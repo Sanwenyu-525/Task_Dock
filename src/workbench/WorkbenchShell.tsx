@@ -95,6 +95,11 @@ import { useCaptureStore } from "../store/useCaptureStore";
 import { useSettingsStore } from "../store/useSettingsStore";
 import { useAgentsStore } from "../store/useAgentsStore";
 import { useUiStore, type Tab, type TabSwitchResult } from "../store/useUiStore";
+import { useTransferStore } from "../store/useTransferStore";
+import TransferPanel from "../components/transfer/TransferPanel";
+import TransferDrawer from "../components/transfer/TransferDrawer";
+import { updateContext } from "../lib/crossTab/transferClient";
+import { useFilesWorkspaceStore } from "../store/useFilesWorkspaceStore";
 import { useHotkeysRuntime } from "../store/useHotkeysStore";
 import { useGlobalSearchStore } from "../store/useGlobalSearchStore";
 import { useCommittedNavigationLayout, setNavigationEntryVisible } from "../lib/navigationLayout";
@@ -1632,7 +1637,23 @@ export default function WorkbenchShell() {
     [projects, t],
   );
 
-  const contextVisible = detailOpen && !compact;
+  const trayOpen = useTransferStore((s) => s.panel.visible);
+  const trayWidth = useTransferStore((s) => s.panel.width);
+  const trayDockVisible = trayOpen && !compact;
+  const contextVisible = detailOpen && !compact && !trayDockVisible;
+
+  // 当前模块 / 文件目录写入跨窗口上下文：只用于推荐目标，绝不据此自动写入。
+  useEffect(() => {
+    const pane = useFilesWorkspaceStore.getState();
+    const current = pane.panes[pane.activePaneId];
+    const directory =
+      route === "files"
+        ? current?.tabs.find((tab) => tab.tabId === current.activeTabId)?.path ?? ""
+        : "";
+    void updateContext({ module: route, directory }).catch(() => {
+      // 上下文是增强能力：后端暂不可用时不影响主流程。
+    });
+  }, [route]);
 
   // 页面级详情栏宿主：右栏关闭或窄窗降级时节点卸载，ref 回调自动回到 null，
   // 页面据此不再投送详情（不需要每页各写一遍 detailOpen 判断）。用 state 而不是
@@ -1725,6 +1746,30 @@ export default function WorkbenchShell() {
       toastErrorRef.current("workbench.layoutSaveFailed", e),
     );
   }, [detailOpen]);
+
+  // 工作篮宽度走面板状态（localStorage），与工作台详情栏宽度互不影响。
+  const beginTrayResize = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const startX = event.clientX;
+    const start = useTransferStore.getState().panel.width;
+    document.body.classList.add("wb-resizing");
+    const onMove = (moveEvent: PointerEvent) => {
+      const next = clamp(start + (startX - moveEvent.clientX), 240, 900);
+      useTransferStore.getState().resizePanel(next);
+    };
+    const onUp = () => {
+      document.body.classList.remove("wb-resizing");
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp, { once: true });
+  }, []);
+
+  const toggleTray = useCallback(() => {
+    useTransferStore.getState().togglePanel();
+  }, []);
 
   // 搜索下拉层是「字段下方展开的常驻层」而非模态框：再次点击字段即收起，
   // 快捷键 Ctrl+Shift+F 复用同一 toggle 语义（与主窗口一致）。
@@ -2314,6 +2359,16 @@ export default function WorkbenchShell() {
             />
             <button
               type="button"
+              className={`wb-icon-btn${trayOpen ? " is-on" : ""}`}
+              aria-label={t("transfer.title")}
+              aria-pressed={trayOpen}
+              data-tip={t("transfer.openHint")}
+              onClick={toggleTray}
+            >
+              <Inbox size={15} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
               className={`wb-icon-btn${detailOpen ? " is-on" : ""}`}
               aria-label={t("workbench.contextToggle")}
               aria-pressed={detailOpen}
@@ -2516,6 +2571,41 @@ export default function WorkbenchShell() {
             </RouteSlot>
           </main>
 
+          {trayDockVisible && (
+            <>
+              <div
+                className="wb-resizer wb-resizer-tray"
+                role="separator"
+                aria-orientation="vertical"
+                aria-label={t("transfer.resizeHandle")}
+                aria-valuemin={240}
+                aria-valuemax={900}
+                aria-valuenow={Math.round(trayWidth)}
+                tabIndex={0}
+                onPointerDown={beginTrayResize}
+                onKeyDown={(event) => {
+                  if (event.key === "ArrowLeft") {
+                    event.preventDefault();
+                    useTransferStore.getState().resizePanel(
+                      Math.min(900, useTransferStore.getState().panel.width + 16),
+                    );
+                  } else if (event.key === "ArrowRight") {
+                    event.preventDefault();
+                    useTransferStore.getState().resizePanel(
+                      Math.max(240, useTransferStore.getState().panel.width - 16),
+                    );
+                  }
+                }}
+              />
+              <div className="wb-transfer-col" style={{ width: trayWidth }}>
+                <TransferPanel
+                  variant="dock"
+                  onClose={() => useTransferStore.getState().closePanel()}
+                />
+              </div>
+            </>
+          )}
+
           {contextVisible && (
             <>
               <div
@@ -2551,6 +2641,9 @@ export default function WorkbenchShell() {
           )}
           </WorkbenchDetailHostProvider>
         </div>
+
+        {/* 窄窗 / 主窗口统一抽屉形态：覆盖而非挤压主内容。 */}
+        <TransferDrawer />
 
         <footer className="wb-statusbar" role="contentinfo">
           {agentSessionCount !== null && (

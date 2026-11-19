@@ -49,6 +49,7 @@ import {
   Move,
   Scissors,
   Trash2,
+  Archive,
 } from "lucide-react";
 
 import DropdownMenu from "../ui/DropdownMenu";
@@ -113,6 +114,7 @@ import {
 import { dropTargetAt, registerFileDropConsumer, discardOperation } from "../../lib/fileDrop";
 import type { DragPayloadView } from "../../lib/dragPayload";
 import { useFilesWorkspaceStore, tabTitle } from "../../store/useFilesWorkspaceStore";
+import { useTransferStore } from "../../store/useTransferStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useUiStore } from "../../store/useUiStore";
 import { useWorkbenchPageActive } from "../../lib/windowHost";
@@ -611,6 +613,7 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
   const stashed = useFilesWorkspaceStore((s) => s.stashed);
   const recentDirs = useFilesWorkspaceStore((s) => s.recentDirs);
   const pinnedDirs = useFilesWorkspaceStore((s) => s.pinnedDirs);
+  const selectionMap = useFilesWorkspaceStore((s) => s.selection);
   const store = useFilesWorkspaceStore;
 
   const [dropHint, setDropHint] = useState<FwDropZone | null>(null);
@@ -1807,6 +1810,31 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
   const activeDir =
     panes[activePaneId]?.tabs.find((x) => x.tabId === panes[activePaneId]?.activeTabId)?.path ?? "";
   void activeDir;
+  const selectedPaths = selectionMap[activePaneId]?.paths ?? [];
+
+  /** 把当前窗格选中的文件/目录引用加入工作篮（不复制文件内容）。 */
+  async function addSelectedToTray() {
+    if (selectedPaths.length === 0) return;
+    try {
+      const report = await useTransferStore.getState().add(
+        selectedPaths.map((path) => ({
+          itemType: "file",
+          sourceModule: "files",
+          sourceId: path,
+          title: path.split(/[\\/]/).filter(Boolean).pop() ?? path,
+          description: path,
+          payload: { path },
+        })),
+      );
+      showToast(`已加入工作篮 ${report.added} 项`, { kind: "success" });
+      if (report.duplicates > 0) {
+        showToast(`其中 ${report.duplicates} 项已在工作篮中`, { kind: "warning" });
+      }
+      useTransferStore.getState().openPanel();
+    } catch (e) {
+      showToast(`加入工作篮失败：${errorMessage(e)}`, { kind: "error" });
+    }
+  }
 
   const moreItems = [
     {
@@ -1971,6 +1999,17 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
               ]}
             />
           </div>
+
+          {/* 跨模块入口：把当前选中项作为引用加入工作篮，不复制文件。 */}
+          <button
+            type="button"
+            className="btn sm"
+            disabled={selectedPaths.length === 0}
+            data-tip="把当前窗格选中的文件/目录引用加入全局工作篮"
+            onClick={() => void addSelectedToTray()}
+          >
+            <Archive size={13} aria-hidden="true" /> 加入工作篮
+          </button>
 
           <div className="fw-toolbar-group" role="group" aria-label={t("fw.layout.history")}>
             <button

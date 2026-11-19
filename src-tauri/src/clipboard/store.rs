@@ -3407,6 +3407,35 @@ pub fn image_abs_path(db: &Db, root: &Path, item_id: &str) -> Option<PathBuf> {
     asset_abs(root, &rel).ok()
 }
 
+/// 供工作篮仅持连接时读取剪贴板条目（不重复实现行映射）。
+pub fn get_item_by_conn(conn: &Connection, item_id: &str) -> AppResult<ClipboardItem> {
+    conn.query_row(
+        &format!("SELECT {ITEM_FIELDS} FROM clipboard_items i WHERE i.id = ?1"),
+        params![item_id],
+        map_item,
+    )
+    .optional()?
+    .ok_or_else(|| AppError::NotFound("剪贴板条目不存在".into()))
+}
+
+/// 供工作篮规划/执行阶段解析图片缓存路径（连接 + 缓存根，不构造第二套存储）。
+pub fn image_abs_path_by_conn(
+    conn: &Connection,
+    root: &Path,
+    item_id: &str,
+) -> Option<PathBuf> {
+    let rel: Option<String> = conn
+        .query_row(
+            "SELECT path FROM clipboard_assets WHERE item_id = ?1 AND role = 'image'",
+            params![item_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .ok()
+        .flatten();
+    asset_abs(root, &rel?).ok()
+}
+
 /// 条目内容哈希：OCR 结果缓存的第二重身份（与条目 id 组合），内容变化即失效。
 /// 只返回哈希，不返回正文或像素。
 pub fn content_hash(db: &Db, item_id: &str) -> AppResult<Option<String>> {

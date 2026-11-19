@@ -246,6 +246,18 @@ npm run integrate -- batch plan --platform desktop   # 只读：查看下一验�
 - 环境失败（锁屏、前台锁拒绝、权限不足、磁盘满）记 `ENVIRONMENT BLOCKED`，不标记通过，也不臆断
   为代码缺陷；同条件复跑结果一并保留。
 
+### 5.4 开发期自测：默认用 `tauri dev`，不要每改一处就打包
+- 功能/交互迭代自测默认 `npm run tauri dev`（经 `scripts/dev-launch.mjs` → 调度器 `dev` 类）：
+  前端走 Vite HMR，Rust 改动自动增量编译并重启；只占 dev 槽位（并发 2），**不占全局构建并发
+  名额**，打包排队时仍可自测，不必为每次验证打安装包。
+- dev 会话常驻复用：再次执行 `npm run tauri dev` 只会唤醒已运行的 `target/debug` 实例、不会重新
+  编译；需按新代码重启时先关闭该实例再启动，不为每次验证新开会话或另起 Vite 端口。
+- dev 实例必须隔离数据：`TASK_DOCK_DATA_DIR` 指向 `tmp/debug/<task-name>/`（必要时
+  `WEBVIEW2_USER_DATA_FOLDER` 隔离 WebView2 缓存），避免读写用户或其他会话正在使用的数据目录。
+- dev 结论只用于开发期功能自测：debug 未优化版不能出性能、内存、动画流畅度结论，也不能充当
+  验收证据（不含安装包与升级/卸载路径）。正式验收仍按 §5.2 从集成快照构建，按批次/里程碑出包，
+  不为单个普通任务单独打安装包。
+
 ## 6. UI/UX 与 Skill 路由
 - 复用 `src/components/ui/` 基元与语义 Token，不新增平行组件、不硬编码颜色/圆角/阴影；不产生重复
   输入框、弹层、事件监听，订阅逻辑确认引用计数。

@@ -143,6 +143,9 @@ const ALLOWED_KEYS: &[&str] = &[
     "workbench_current_project",
     // 项目工作空间（v49）：当前打开的工作空间项目 ID（workspace_projects.id；空 = 未设置）
     "workspace_active_project",
+    // 全局工作篮（v79）：面板状态（可见/固定/宽度/形态/推荐开关），按窗口为键保存。
+    // 只是界面偏好，不含任何工作篮正文或文件路径。
+    "transfer_tray_state",
 ];
 
 /// 跨窗口设置广播的修订号：单调递增，接收方可据此忽略倒序/重复的旧事件。
@@ -585,6 +588,62 @@ pub fn validate_setting(key: &str, v: &serde_json::Value) -> AppResult<()> {
             if v.to_string().chars().count() > 256 * 1024 {
                 return Err(AppError::Validation(
                     "file_workspace_layouts 超过 256KB".into(),
+                ));
+            }
+            Ok(())
+        }
+        // 全局工作篮面板状态：只做结构边界校验，拒绝未知形态与不合理宽度。
+        // 结构：{ version, windows?: { main|workspace: { visible, pinned, width, mode } },
+        //         suggestionsEnabled? }
+        "transfer_tray_state" => {
+            let obj = v.as_object().ok_or_else(|| {
+                AppError::Validation("transfer_tray_state 必须是 JSON 对象".into())
+            })?;
+            if obj.get("version").and_then(|value| value.as_u64()).is_none() {
+                return Err(AppError::Validation(
+                    "transfer_tray_state.version 必须是正整数".into(),
+                ));
+            }
+            if let Some(windows) = obj.get("windows") {
+                let windows = windows.as_object().ok_or_else(|| {
+                    AppError::Validation("transfer_tray_state.windows 必须是对象".into())
+                })?;
+                if windows.len() > 4 {
+                    return Err(AppError::Validation(
+                        "transfer_tray_state.windows 超过 4 个".into(),
+                    ));
+                }
+                for (name, state) in windows {
+                    let state = state.as_object().ok_or_else(|| {
+                        AppError::Validation(format!(
+                            "transfer_tray_state.windows.{name} 必须是对象"
+                        ))
+                    })?;
+                    if let Some(width) = state.get("width") {
+                        let width = width.as_f64().ok_or_else(|| {
+                            AppError::Validation("面板宽度必须是数字".into())
+                        })?;
+                        if !(240.0..=900.0).contains(&width) {
+                            return Err(AppError::Validation(
+                                "面板宽度必须在 240–900 之间".into(),
+                            ));
+                        }
+                    }
+                    if let Some(mode) = state.get("mode") {
+                        enum_of(mode, "panel mode", &["auto", "dock", "drawer"])?;
+                    }
+                }
+            }
+            if let Some(suggestions) = obj.get("suggestionsEnabled") {
+                if !suggestions.is_boolean() {
+                    return Err(AppError::Validation(
+                        "transfer_tray_state.suggestionsEnabled 必须是布尔值".into(),
+                    ));
+                }
+            }
+            if v.to_string().chars().count() > 8 * 1024 {
+                return Err(AppError::Validation(
+                    "transfer_tray_state 超过 8KB".into(),
                 ));
             }
             Ok(())

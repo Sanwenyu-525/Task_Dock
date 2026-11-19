@@ -13,9 +13,10 @@ import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouse
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   Minus, PanelsTopLeft, Square, Sun, Moon, Monitor, X, ChevronDown, Palette, Clipboard,
-  Magnet, Columns2, ExternalLink, PanelLeftClose, PinOff, Smartphone,
+  Magnet, Columns2, ExternalLink, PanelLeftClose, PinOff, Smartphone, Archive,
 } from "lucide-react";
 import { useSettingsStore } from "../store/useSettingsStore";
+import { useTransferStore } from "../store/useTransferStore";
 import { useEdgeSnapStore } from "../store/useEdgeSnapStore";
 import { useUiStore } from "../store/useUiStore";
 import { applyMode } from "../lib/bridge";
@@ -135,6 +136,7 @@ export default function TitleBar({ inert = false }: { inert?: boolean }) {
   const openClipboard = useUiStore((s) => s.openClipboard);
   const closeClipboard = useUiStore((s) => s.closeClipboard);
   const clipboardOpen = useUiStore((s) => s.clipboardOpen);
+  const trayOpen = useTransferStore((s) => s.panel.visible);
   // 停靠形态菜单：仅「吸附已启用 + 停靠为完整面板」时渲染。自由窗口的
   // 「重新吸附」是独立引擎事务（暂未立项）；胶囊/标签形态下标题栏不可见，
   // 各自的入口在轨道按钮与标签右键菜单，这里不重复。
@@ -314,6 +316,18 @@ export default function TitleBar({ inert = false }: { inert?: boolean }) {
             />
           )}
         <span className="titlebar-divider" />
+        {/* 全局工作篮：主窗口本身没有右侧固定列，统一以抽屉形态覆盖。 */}
+        {mode !== "minimal" && (
+          <button
+            className={`icon-btn win-btn ${trayOpen ? "active" : ""}`}
+            data-tip="全局工作篮（跨页面收集与发送）"
+            aria-label="打开全局工作篮"
+            aria-expanded={trayOpen}
+            onClick={() => useTransferStore.getState().togglePanel()}
+          >
+            <Archive size={14} />
+          </button>
+        )}
         {/* 配对入口不只放在设置深处：任何页面一键直达同一个配对弹层。
             极简悬浮保持「只有窗口操作」的克制形态，不渲染。 */}
         {mode !== "minimal" && (
