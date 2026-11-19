@@ -905,6 +905,7 @@ export const enUS: Record<MessageKey, string> = {
   "workbench.windowMaximize": "Maximize",
   "workbench.windowRestore": "Restore",
   "workbench.windowClose": "Close workbench",
+  "workbench.windowCloseSaving": "Saving and closing the workbench",
   "workbench.titlebarTools": "Title bar tools",
   "workbench.toolbarMore": "More tools",
   "workbench.toolbarMoreAria": "More title bar tools (theme, visual preset, pin)",

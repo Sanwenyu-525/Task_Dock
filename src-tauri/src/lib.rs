@@ -2011,6 +2011,8 @@ pub fn run() {
             project_workspace_window::workbench_nav_ack,
             // 启动揭示：工作台首帧就绪后才显示窗口（手动打开时是 no-op）
             project_workspace_window::workbench_ui_ready,
+            // 关闭链路诊断：前端阶段写进终端 tracing（白名单 + 字段清洗）
+            project_workspace_window::workbench_close_trace,
             project_workspace_window::project_workspace_open_dev_workbench,
             project_workspace_window::project_workspace_open_dev_workbench_ack,
             // Android 投屏（ADB + scrcpy）：设备/应用枚举、双模式会话托管、窗口定位与截屏

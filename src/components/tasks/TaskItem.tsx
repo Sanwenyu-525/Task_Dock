@@ -31,6 +31,7 @@ import { openWorkbench } from "../../lib/workbenchNav";
 import { errorMessage } from "../../lib/errors";
 import { clearTip, syncTruncatedTip } from "../../lib/nameTip";
 import TargetMenu, { TargetAvatar } from "../navigation/TargetMenu";
+import Popover from "../ui/Popover";
 import { DropdownMenu } from "../ui";
 
 interface Props {
@@ -100,6 +101,8 @@ export default function TaskItem({ task, compact, exiting, exitHeight, selected,
     useSettingsStore((s) => s.settings?.workbench_current_task ?? "") === task.id;
   const links = useNavigationStore((s) => s.linksByTask[task.id]) ?? [];
   const [menuOpen, setMenuOpen] = useState(false);
+  /** 「+N」目标入口：菜单以它为锚点，不再绝对定位在任务卡内部 */
+  const targetMenuAnchorRef = useRef<HTMLButtonElement | null>(null);
   /** 状态切换请求在途：挡住连点把同一条任务翻回翻去 */
   const [busy, setBusy] = useState(false);
   /** `busy` 是异步 state，同一 tick 的连点会都读到旧值；同步锁负责真正去重。 */
@@ -401,6 +404,7 @@ export default function TaskItem({ task, compact, exiting, exitHeight, selected,
             ))}
             {overflow > 0 && (
               <button
+                ref={targetMenuAnchorRef}
                 className="task-nav-btn task-nav-more"
                 data-tip={`还有 ${overflow} 个关联目标`}
                 aria-label={`还有 ${overflow} 个关联目标`}
@@ -478,27 +482,31 @@ export default function TaskItem({ task, compact, exiting, exitHeight, selected,
           </button>
         </>
       )}
-      {menuOpen && links.length > 0 && (
-        <>
-          {/* 点击卡片其余区域关闭菜单 */}
-          <div className="target-menu-backdrop" onClick={() => setMenuOpen(false)} />
-          <div className="target-menu-anchor">
-            <TargetMenu
-              links={links}
-              onClose={() => setMenuOpen(false)}
-              onNavigate={(l) => navigateTarget(l.target_id, l.target.display_name, l.launch_behavior, l.id)}
-              onOpenAll={
-                links.length >= 2
-                  ? () => {
-                      setMenuOpen(false);
-                      openWorkspace(task);
-                    }
-                  : undefined
-              }
-            />
-          </div>
-        </>
-      )}
+      {/* 目标菜单：以「+N」按钮为锚点，Popover 负责 Portal/翻转/边界收敛；
+          原来卡内 absolute + 全屏遮罩的做法会被列表滚动容器裁剪。 */}
+      <Popover
+        open={menuOpen && links.length > 0}
+        onOpenChange={setMenuOpen}
+        anchorRef={targetMenuAnchorRef}
+        placement="top-end"
+        maxWidth={300}
+        maxHeight={360}
+        className="target-menu-popover"
+      >
+        <TargetMenu
+          links={links}
+          onClose={() => setMenuOpen(false)}
+          onNavigate={(l) => navigateTarget(l.target_id, l.target.display_name, l.launch_behavior, l.id)}
+          onOpenAll={
+            links.length >= 2
+              ? () => {
+                  setMenuOpen(false);
+                  openWorkspace(task);
+                }
+              : undefined
+          }
+        />
+      </Popover>
       {/* 快捷工作区入口：≥2 目标时显示（紧凑模式同样可用） */}
       {canLaunchWorkspace && (
         <button

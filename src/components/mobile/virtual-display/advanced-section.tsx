@@ -116,6 +116,7 @@ export default function AdvancedSection({
                   onChange={onSizeChange}
                   ariaLabel={t("virtualDisplay.advanced.defaultSize")}
                   size="sm"
+                  align="end"
                   block
                 />
               </div>

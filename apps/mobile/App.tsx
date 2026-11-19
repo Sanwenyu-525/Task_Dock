@@ -58,6 +58,7 @@ import { DeferredSyncScreen } from "./src/screens/DeferredSyncScreen";
 import { EntryManagerScreen } from "./src/screens/EntryManagerScreen";
 import { FilesScreen } from "./src/screens/FilesScreen";
 import { HomeScreen } from "./src/screens/HomeScreen";
+import { HubPairingScreen } from "./src/screens/HubPairingScreen";
 import { InboxScreen } from "./src/screens/InboxScreen";
 import { LifeScreen } from "./src/screens/LifeScreen";
 import { NoteEditorScreen } from "./src/screens/NoteEditorScreen";
@@ -409,6 +410,8 @@ function Shell() {
     switch (route.key) {
       case "pairing":
         return <PairingScreen nav={nav} />;
+      case "hub_pairing":
+        return <HubPairingScreen nav={nav} />;
       case "sync":
         return <SyncScreen nav={nav} />;
       case "files":

@@ -39,10 +39,13 @@ export default function Tooltip({ content, children, placement = "top", as = "sp
         onOpenChange={setOpen}
         anchorRef={anchorRef}
         placement={placement}
+        // 提示条：保持调用方指定的方向与居中语义；只在主方向翻转，不换到侧边
         offsetPx={6}
+        maxWidth={240}
         layer={null}
         className="ui-tooltip"
         role="tooltip"
+        flipToSide={false}
       >
         {content}
       </Popover>

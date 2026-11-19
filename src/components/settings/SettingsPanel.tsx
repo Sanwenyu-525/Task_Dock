@@ -867,6 +867,7 @@ export default function SettingsPanel() {
             ariaLabel={t("settings.appearance.color")}
             size="sm"
             triggerClassName="settings-select-trigger"
+            align="end"
             value={settings.theme}
             options={[
               { value: "system", label: t("settings.appearance.theme.system") },
@@ -883,6 +884,7 @@ export default function SettingsPanel() {
             ariaLabel={t("settings.appearance.material")}
             size="sm"
             triggerClassName="settings-select-trigger"
+            align="end"
             value={settings.material}
             options={[
               { value: "glass", label: t("settings.appearance.material.glass") },
@@ -980,6 +982,7 @@ export default function SettingsPanel() {
             ariaLabel={t("settings.window.snapMode")}
             size="sm"
             triggerClassName="settings-select-trigger"
+            align="end"
             disabled={!settings.snap_enabled}
             value={settings.snap_display_mode === "full" ? "full" : "capsule"}
             options={[
@@ -1053,6 +1056,7 @@ export default function SettingsPanel() {
             ariaLabel={t("settings.features.lifeCurrency")}
             size="sm"
             triggerClassName="settings-select-trigger"
+            align="end"
             value={settings.life_default_currency}
             options={[
               { value: "", label: t("settings.features.lifeCurrency.unset") },

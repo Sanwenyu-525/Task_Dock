@@ -1,0 +1,3 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 本模块不申请任何权限，也不暴露组件；身份文件写在 noBackupFilesDir，不进系统备份。 -->
+</manifest>

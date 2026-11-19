@@ -16,6 +16,11 @@ path = "src/main.rs"
 name = "taskdock"
 path = "src/bin/taskdock.rs"
 
+# Personal Hub v1.0（P1）：独立普通用户后台进程，与 Tauri WebView GUI 分离。
+[[bin]]
+name = "taskdock-personal-hub"
+path = "src/bin/taskdock-personal-hub.rs"
+
 [lib]
 name = "task_dock_lib"
 crate-type = ["rlib"]
@@ -133,6 +138,12 @@ windows-sys = { version = "0.60", features = [
   # 安全保险箱（P1）：WTSRegisterSessionNotification / WTS_SESSION_LOCK，
   # 系统锁屏即锁定保险箱（仅追加 feature，不新增 crate）。
   "Win32_System_RemoteDesktop",
+  # Personal Hub（P1）：当前用户 ACL 保护的 Named Pipe 本地管理接口。
+  # Pipes 提供 CreateNamedPipeW / PIPE_REJECT_REMOTE_CLIENTS；
+  # IO 提供 ConnectNamedPipe（windows-sys 0.60 中该函数受 Win32_System_IO 门控）。
+  # 两个 feature 均在 windows-sys 0.60 内，无新增 crate 下载。
+  "Win32_System_Pipes",
+  "Win32_System_IO",
 ] }
 # Windows Shell COM（仅图标链路用）：IShellLinkW 解析 .lnk 真实目标、
 # IShellItemImageFactory 取 UWP 包图标。版本与 Cargo.lock 现有传递依赖一致（无新增下载）。
@@ -169,6 +180,14 @@ windows = { version = "0.62", features = [
   # 快速捕获语音输入（WinRT SpeechRecognizer 听写模式）：与 TTS 同一 windows crate，
   # 只启用模块 feature，不新增依赖下载（windows-collections 已在 Cargo.lock）。
   "Media_SpeechRecognition",
+  # Personal Hub（P5 前置 PoC）：Windows Hello / 设备凭据的桌面调用路径。
+  # UserConsentVerifier 的桌面入口是 IUserConsentVerifierInterop（UWP 的
+  # RequestVerificationAsync 在桌面不可用），见 examples/windows_hello_poc.rs。
+  # 只启用模块 feature，与既有 windows 0.62 同版本，不新增依赖下载。
+  "Security_Credentials_UI",
+  # PoC 需要一个真实 top-level HWND 作为系统认证 UI 的 owner。
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_System_LibraryLoader",
 ] }
 # `#[implement]` 宏展开需要 windows_core 直接可达；与 windows 0.62 同版本，
 # 已存在于 Cargo.lock（tao/wry 传递依赖），不是新增下载。
@@ -180,6 +199,17 @@ winreg = "0.55"
 # 开始菜单 .lnk 快捷方式解析（纯 Rust 实现；个别畸形 lnk 会 panic，
 # 调用方以 catch_unwind 隔离，坏文件跳过不影响扫描）
 lnk = "0.5"
+# Personal Hub（P3）：设备身份 Ed25519（RFC 8032，不自行实现密码算法）。
+# 仅启用 rand_core 生成密钥；fast/std/zeroize 为默认特性，私钥 Drop 时清零。
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+# Personal Hub（P3）：Control Plane HTTPS 客户端。TLS 使用系统 schannel
+# （native-tls，项目已有依赖），保持证书校验默认开启；不启用 rustls、
+# 不调用 danger_accept_invalid_certs。blocking 供 Hub 同步进程直接调用。
+reqwest = { version = "0.13", default-features = false, features = [
+  "blocking",
+  "json",
+  "native-tls",
+] }
 
 # 开发构建的 PDB 体积控制（2026-11-05）：完整调试信息让 target/debug 下的 .pdb
 # 膨胀到 15 GiB 级别。line-tables-only 只保留文件/行号表（崩溃栈仍可定位到文件和行），

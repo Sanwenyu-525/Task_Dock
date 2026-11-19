@@ -32,15 +32,15 @@ export interface SelectProps<T extends string = string> {
   className?: string;
   triggerClassName?: string;
   size?: "sm" | "md";
-  /** 浮层与触发按钮的水平对齐：默认 end（右边缘对齐，向左展开）；
-   *  紧贴窗口左侧的窄控件可传 start，center 仅在明确需要时使用。 */
-  align?: "start" | "center" | "end";
+  /** 浮层与触发按钮的水平对齐：默认 start（左边缘对齐，向右展开）。
+   *  `end` 保留给右侧工具按钮/顶栏右缘；`auto` 允许按可用空间在 start/end 间切换。 */
+  align?: "start" | "center" | "end" | "auto";
   /** 显式 placement 覆盖（含上下方向与对齐）；提供后优先于 align */
   placement?: Placement;
   /** 触发按钮宽度策略 */
   block?: boolean;
   /** 列表目标最小宽度（px）：按最长选项文本 + 勾选标记 + 内边距声明；
-   *  默认跟随触发器宽度，但不会低于 146px 兜底 */
+   *  默认跟随触发器宽度，仅在可用宽度内生效（极窄窗口不会因此越界） */
   menuMinWidth?: number;
 }
 
@@ -55,13 +55,14 @@ export default function Select<T extends string = string>({
   className,
   triggerClassName,
   size = "md",
-  align = "end",
+  align = "start",
   placement,
   block = false,
   menuMinWidth,
 }: SelectProps<T>) {
-  // 默认右对齐（浮层右边缘与按钮右边缘一致，向左展开）；显式 placement 优先。
-  const resolvedPlacement: Placement = placement ?? (align === "center" ? "bottom" : `bottom-${align}`);
+  // 默认左对齐（浮层左边缘与按钮左边缘一致，向右展开）；显式 placement 优先。
+  // auto 以 start 为基准，由 Popover 的 flipAlignment 按可用空间切换。
+  const resolvedPlacement: Placement = placement ?? (align === "center" ? "bottom" : `bottom-${align === "auto" ? "start" : align}`);
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
   const anchorRef = useRef<HTMLButtonElement>(null);
@@ -204,6 +205,7 @@ export default function Select<T extends string = string>({
         onOpenChange={setOpen}
         anchorRef={anchorRef}
         placement={resolvedPlacement}
+        alignment={!placement && align === "auto" ? "auto" : undefined}
         matchWidth
         style={menuMinWidth ? ({ "--menu-min-w": `${menuMinWidth}px` } as CSSProperties) : undefined}
         className="ui-select-popover"

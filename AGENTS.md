@@ -294,6 +294,27 @@ MANDATORY 先查」并输出 `### Modern Web Guidance` 披露段，**本项目�
 - 上述信号之外（后端 SQL/ORM/API 路由、CI·Docker、Python/Go、Vite·tsconfig·ESLint、纯改名与文案、
   纯 Rust/Tauri 后端侧、真机验收项）**不加载这两个技能**；真机与视觉验收仍按 §5.3 执行。
 
+### 6.2 弹层定位（强制）
+
+规范全文：[docs/architecture/ui/global-popup-positioning-standard.md](docs/architecture/ui/global-popup-positioning-standard.md)；
+现状与分类：[global-popup-positioning-audit.md](docs/architecture/ui/global-popup-positioning-audit.md)。
+
+1. **普通下拉/操作菜单/大型内容面板**必须复用 `Popover`（或 `Select` / `Combobox` /
+   `DropdownMenu` / `DatePicker` 这些适配器），**右键菜单**必须复用 `PointerMenu`。
+2. **禁止**业务页面自己写 `window.innerWidth/innerHeight`、`getBoundingClientRect` 做边界计算，
+   禁止用固定 `left/right/top/bottom` 或固定 `transform` 偏移「修补」越界。
+3. 新增弹层必须显式声明默认 `side` 与 `alignment`；靠右控件用 `end`，表单/列表用 `start`，
+   需要按空间切换才用 `auto`。默认值写在组件里，不写在调用方。
+4. `Popover` 的 `positionOverride` / `flipToSide={false}` / `layer={null}` 属于**提示条专用**，
+   普通菜单不得使用；`PointerMenu` 的 `trapFocus={false}` 只用于「焦点必须留在原控件」的场景
+   （如分割线比例菜单）。
+5. 弹层尺寸约束统一走 `minWidth/maxWidth/maxHeight` + `constrainPopupSize`；不得在组件内
+   用 CSS `min-width` 压过 `max-width` 制造越界。
+6. 凡保留特殊定位（原生独立窗口、投屏工具栏、拖拽跟随层、模态居中）的组件，必须在规范文档
+   「保留特殊实现」清单登记**业务理由**，并至少有对应测试。
+7. 改动弹层定位后，必须运行 `src/components/ui/positioning.test.ts`、
+   `Popover.edge.test.tsx`、`PointerMenu.test.tsx` 及受影响组件测试；几何断言不能只看 CSS 类名。
+
 ## 7. 文档、验收产物与交付
 - 正式文档按模块归属维护（见第 1 节路由）；功能、接口或数据结构变化必须同步对应文档并说明兼容性
   与迁移要求，不能只写在验收报告里。

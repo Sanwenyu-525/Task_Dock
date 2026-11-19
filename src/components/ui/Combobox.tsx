@@ -5,6 +5,7 @@
 
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Check, ChevronDown, Search, X } from "lucide-react";
+import type { Placement } from "@floating-ui/react";
 import Popover from "./Popover";
 import { scrollIntoViewIfNeeded } from "./overlay";
 import type { SelectOption } from "./Select";
@@ -30,6 +31,10 @@ export interface ComboboxProps<T extends string = string> {
   browse?: boolean;
   /** 纯搜索模式清空按钮的可访问名称 */
   clearLabel?: string;
+  /** 浮层水平对齐：默认 start，与 Select 保持一致；`auto` 按可用空间切换 */
+  align?: "start" | "center" | "end" | "auto";
+  /** 显式 placement 覆盖（含上下方向与对齐）；提供后优先于 align */
+  placement?: Placement;
 }
 
 export default function Combobox<T extends string = string>({
@@ -47,7 +52,12 @@ export default function Combobox<T extends string = string>({
   placeholder = "请选择",
   browse = true,
   clearLabel = "清除搜索",
+  align = "start",
+  placement,
 }: ComboboxProps<T>) {
+  // 与 Select 共用同一套对齐规则：默认左边缘对齐，auto 由 Popover 按空间切换。
+  const resolvedPlacement: Placement =
+    placement ?? (align === "center" ? "bottom" : `bottom-${align === "auto" ? "start" : align}`);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(-1);
@@ -225,6 +235,8 @@ export default function Combobox<T extends string = string>({
           else closeMenu();
         }}
         anchorRef={anchorRef}
+        placement={resolvedPlacement}
+        alignment={!placement && align === "auto" ? "auto" : undefined}
         matchWidth
         className="ui-combobox-popover"
         role="listbox"

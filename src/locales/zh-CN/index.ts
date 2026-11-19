@@ -886,6 +886,7 @@ export const zhCN = {
   "workbench.windowMaximize": "最大化",
   "workbench.windowRestore": "还原",
   "workbench.windowClose": "关闭工作台",
+  "workbench.windowCloseSaving": "正在保存并关闭工作台",
   "workbench.titlebarTools": "标题栏工具",
   "workbench.toolbarMore": "更多工具",
   "workbench.toolbarMoreAria": "更多标题栏工具（明暗、视觉主题、置顶）",

@@ -4447,22 +4447,21 @@ code {
   position: relative;
 }
 
-.target-menu-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 40;
-}
-
-.target-menu-anchor {
-  position: absolute;
-  right: 0;
-  bottom: calc(100% + 4px);
-  z-index: 41;
+/* 目标菜单的外壳只做定位：卡面/描边/阴影由 .target-menu 自己提供，
+   避免与 .ui-popover 的默认卡面叠成双层边框。 */
+.target-menu-popover {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .target-menu {
   min-width: 220px;
   max-width: 300px;
+  max-height: var(--popover-max-h, 360px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   background: var(--surface-overlay);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-card);
@@ -5625,11 +5624,6 @@ code {
 }
 
 @media (max-width: 360px) {
-  .target-menu-anchor {
-    right: auto;
-    left: 0;
-  }
-
   /* 320px 窄窗：两列表单必须改为单列，否则 datetime-local 的
      原生控件（含日历图标）会把字段挤到看不见，用户无法输入 */
   .field-row {

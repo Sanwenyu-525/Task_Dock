@@ -428,9 +428,10 @@
       </div>
     </div>
     <div id="root"></div>
-    <!-- 启动看门狗：public/boot/boot-watchdog.js（经典脚本，先于模块脚本执行）。
+    <!-- 启动看门狗：public/boot/boot-watchdog.js（经典脚本，先于模块入口执行）。
          与主窗口共用同一份状态机；工作台入口在 src/boot/bootProtocol.ts 的
-         bootReady 处确认就绪（WorkbenchShell 设置落定后）。 -->
+         bootReady 处确认就绪（WorkbenchShell 设置落定后）。
+         入口链：boot-watchdog.js → bootstrap.ts → 动态 import main.tsx。 -->
     <script src="/boot/boot-watchdog.js"></script>
     <script>
       /* 死人在场保险（与 index.html 同规则）：watchdog 文件缺失/未执行时，
@@ -460,6 +461,10 @@
         }).observe(splash, { attributes: true, attributeFilter: ["data-state"] });
       })();
     </script>
-    <script type="module" src="/src/workspace/main.tsx"></script>
+    <!-- 启动入口：bootstrap.ts（极轻量，零业务依赖）。它先记录 bootstrap-start，
+         再动态 import("./main") 加载真正入口；import 卡住/失败/CSP 拦截都能被
+         watchdog 的资源与导入状态采样定位。此前直接加载 main.tsx 时，整个静态
+         依赖图未解析完就没有任何阶段信号，只能看到「模块脚本尚未执行」。 -->
+    <script type="module" src="/src/workspace/bootstrap.ts"></script>
   </body>
 </html>

@@ -96,7 +96,11 @@ describe("启动阈值跨文件同步（协议 §2）", () => {
  * 此前只有 #root，React 未挂载时用户看到纯白窗口（2026-11-17 实测截图）。
  * 这里锁定与主窗口同一份看门狗、同一组恢复入口的静态契约。 */
 const workspaceHtml = readFileSync(resolve(process.cwd(), "workspace.html"), "utf8");
-const workspaceModuleAt = workspaceHtml.indexOf('src="/src/workspace/main.tsx"');
+// 2026-11-19 启动诊断升级：入口由 main.tsx 改为极轻量 bootstrap.ts，
+// 再由 bootstrap 动态 import("./main")。契约锚点随之指向新入口。
+const workspaceModuleAt = workspaceHtml.indexOf(
+  'src="/src/workspace/bootstrap.ts"',
+);
 const workspaceWatchdogAt = workspaceHtml.indexOf('<script src="/boot/boot-watchdog.js">');
 
 describe("workspace.html 工作台启动占位", () => {
@@ -140,5 +144,119 @@ describe("workspace.html 工作台启动占位", () => {
     expect(deadManAt).toBeGreaterThan(workspaceWatchdogAt);
     expect(workspaceHtml).toContain("20000");
     expect(workspaceHtml).toContain("removeChild");
+  });
+
+  it("入口链是 watchdog → bootstrap.ts，bootstrap 再动态 import main", () => {
+    expect(workspaceModuleAt).toBeGreaterThan(-1);
+    expect(workspaceWatchdogAt).toBeLessThan(workspaceModuleAt);
+    expect(workspaceHtml).toContain("bootstrap.ts");
+  });
+});
+
+/* ── 启动诊断升级（2026-11-19）：把「模块脚本尚未执行」定位到具体请求 ── */
+const bootstrapSource = readFileSync(
+  resolve(process.cwd(), "src/workspace/bootstrap.ts"),
+  "utf8",
+);
+const watchdogSource = readFileSync(
+  resolve(process.cwd(), "public/boot/boot-watchdog.js"),
+  "utf8",
+);
+const mainSource = readFileSync(
+  resolve(process.cwd(), "src/workspace/main.tsx"),
+  "utf8",
+);
+
+describe("bootstrap.ts 启动隔离契约", () => {
+  it("不静态导入 React / WorkbenchShell / 业务页，只动态 import('./main')", () => {
+    expect(bootstrapSource).toContain('import("./main")');
+    // 只检查真实的 import 声明（注释里出现这些名字是允许的说明文字）。
+    const importLines = bootstrapSource
+      .split("\n")
+      .filter((line) => /^\s*import\b/.test(line))
+      .join("\n");
+    expect(importLines).toBe("");
+  });
+
+  it("记录 bootstrap / main-import 全链路阶段，且失败时 fail() 不静默", () => {
+    for (const stage of [
+      "bootstrap-start",
+      "main-import-start",
+      "main-import-resolved",
+      "main-import-failed",
+    ]) {
+      expect(bootstrapSource).toContain(`"${stage}"`);
+    }
+    expect(bootstrapSource).toContain("importState");
+    expect(bootstrapSource).toMatch(/\.fail\(/);
+  });
+});
+
+describe("watchdog 启动诊断采样契约", () => {
+  it("采集同源资源（去 query）、CSP 违规与入口脚本 load/error", () => {
+    expect(watchdogSource).toContain('getEntriesByType("resource")');
+    expect(watchdogSource).toContain("PerformanceObserver");
+    expect(watchdogSource).toContain("securitypolicyviolation");
+    expect(watchdogSource).toContain("blockedURI");
+    expect(watchdogSource).toContain("effectiveDirective");
+    expect(watchdogSource).toContain("sameOriginPath");
+    expect(watchdogSource).toContain('noteEntryEvent("load"');
+  });
+
+  it("维护动态导入状态机并区分 pending 与无请求", () => {
+    for (const s of [
+      "not-requested", "requested", "pending", "resolved", "rejected",
+    ]) {
+      expect(watchdogSource).toContain(s);
+    }
+    expect(watchdogSource).toContain("pendingExpected");
+  });
+
+  it("复制诊断输出用户约定的固定字段", () => {
+    for (const field of [
+      "Task Dock 启动诊断",
+      "页面 URL:",
+      "document.readyState:",
+      "Bootstrap:",
+      "Main import:",
+      "Main module:",
+      "React root:",
+      "React mounted:",
+      "Settings settled:",
+      "Workbench ready:",
+      "初始化函数耗时:",
+      "资源请求总数:",
+      "Pending 请求:",
+      "失败请求:",
+      "CSP 拦截:",
+      "最近资源请求:",
+    ]) {
+      expect(watchdogSource).toContain(field);
+    }
+  });
+
+  it("仍保持单一计时器对与阈值，不新增刷新/重试循环", () => {
+    expect(watchdogSource).toContain("var SLOW_MS = 4000;");
+    expect(watchdogSource).toContain("var TIMEOUT_MS = 15000;");
+    expect(watchdogSource.match(/setTimeout\(/g)?.length).toBeLessThanOrEqual(4);
+    expect(watchdogSource).not.toContain("location.reload()\n");
+  });
+});
+
+describe("main.tsx 阶段信号细化契约", () => {
+  it("对五个同步初始化函数分别记录 start/end 与耗时", () => {
+    for (const fn of [
+      "setWindowHostRole",
+      "installFeatureRegistry",
+      "installNativeDragBridge",
+      "initLocale",
+      "initWorkbenchWindowFrame",
+    ]) {
+      expect(mainSource).toContain(`timed("${fn}"`);
+    }
+    expect(mainSource).toContain("bootTiming");
+    expect(mainSource).toContain('"react-root"');
+    expect(mainSource).toContain('"modules"');
+    expect(mainSource).toContain('"mounted"');
   });
 });

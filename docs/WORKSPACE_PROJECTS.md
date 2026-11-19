@@ -398,6 +398,50 @@ type WorkspaceCapabilityState = "available" | "limited" | "planned" | "unavailab
 无响应时无法保证保存。系统强杀/断电不执行退出握手。应用退出失败只取消退出并提示，未提供
 “强制退出（明确丢弃正文）”按钮；用户需先处理保存错误后重新退出。
 
+### 11.6 关闭失效专项（2026-11-19，P0）
+
+现场证据：连续三条 `CLOSE_REQUESTED`、无 `WINDOW_DESTROYED`，窗口不关。根因是三个缺陷叠加，
+不是单一按钮问题：
+
+1. **保存 await 永挂**：`flush()` 里的 `await novelChapterSaveContent(...)` 与
+   `await savePromiseRef.current` 都没有上限；正文保存 IPC 卡住时，关闭事务永久停在
+   `saving`。
+2. **守卫无超时、无反馈**：`running=true` 之后再来的 CloseRequested 只同步
+   `preventDefault()` 然后静默 return，用户看到的就是「点了没反应」。
+3. **标题栏过早解锁**：`win.close()` 的 Promise 只代表请求被受理，旧实现却在它的
+   `finally` 里 `setClosing(false)`，于是每 500–600ms 又能再点一次，正好对上日志节奏。
+
+修复（不允许绕过正文保存）：
+
+- **状态机**：`idle → saving → retrying-close → closed`，失败/超时回 `failed` 可重试。
+  同一窗口只允许一笔事务；任何未被许可的 CloseRequested 都同步 `preventDefault()`；
+  重复请求只记 `CLOSE_GUARD_DUPLICATE` 并并入在途事务。
+- **保存等待上限 15s**：超时只停止等待，**不取消、不覆盖**底层保存；原始 Promise 保留，
+  下一次点击复用同一笔。文案明确「仍在进行，可继续等待或稍后重试」。
+- **受理 ≠ 销毁**：`close()` 返回后进入 `closed` 并保持按钮 disabled；5s 内仍未销毁则
+  回 `failed` 并提示重试，避免把「请求受理」当成功。**等待受理本身也有 5s 上限**：
+  IPC 回执丢失时不能让界面停在 `retrying-close` 且按钮永远不可用。
+- **状态单一来源**：`WorkbenchShell` 通过 `onStateChange` 持有状态，标题栏只渲染
+  `closeState`（`saving/retrying/closed` 均 disabled，tooltip 说明「正在保存并关闭工作台」）；
+  X 按钮与 Alt+F4 共用同一笔事务。
+- **正文链路可定位**：`MANUSCRIPT_FLUSH_STARTED/SKIPPED_CLEAN/WAIT_EXISTING_SAVE` +
+  `SAVE_STARTED/COMPLETED/FAILED` + `FLUSH_COMPLETED`，只带章节短 ID、脏稿/在途/归档状态与
+  耗时，不记录正文。
+- **终端同一条时间线**：新增 `workbench_close_trace`（白名单阶段 + 字段清洗 + 仅工作台窗口
+  可调），把前端 `CLOSE_GUARD_*` 与 Rust `CLOSE_REQUESTED / CLOSE_GEOMETRY_* /
+  WINDOW_DESTROYED` 写进同一 tracing 流。
+- **几何快照与持久化分离**：`CloseRequested` 只在主线程做 O(1) 快照并暂存到内存队列，
+  SQLite 写入交给单飞后台线程（latest-wins，写入成功且 revision 未变才清空 pending）；
+  关闭最多等 300ms，超时记 `CLOSE_GEOMETRY_PERSIST_DEFERRED` 并放行销毁。几何读取改走
+  只读连接池（原先 `get_setting` 与正文写入共用写连接锁）。快速关闭后重开优先读内存快照，
+  不会读到过期几何；应用退出改为最多等 2s 的 `CLOSE_GEOMETRY_EXIT_FLUSH`。
+- **Rust 不新增 prevent_close**：避免与前端守卫形成双重拦截；主窗口的「关闭=隐藏到托盘」
+  行为不迁移到 workspace。
+- **可量化的验收**：`node scripts/close-metrics.mjs <终端日志|诊断.jsonl>` 会按 attempt
+  串起前后端事件，输出关闭成功率、flush/几何耗时分位值，并直接判定「只有
+  `CLOSE_REQUESTED`、无任何后续解释」的旧故障签名（有问题时退出码非 0）。
+  场景表见 `docs/WORKSPACE_CLOSE_ACCEPTANCE.md`。
+
 ## 12. 创作工作台五线（B2 / G1 / C1 / U1 / D1，2026-11-16）
 
 五种专业工作空间**不是五套项目管理系统**：项目容器仍是 `workspace_projects`，事项仍是

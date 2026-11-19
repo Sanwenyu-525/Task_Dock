@@ -39,8 +39,13 @@ interface SelectProps<T extends string = string> {
   className?: string;                // 外层容器
   triggerClassName?: string;         // 触发按钮本身
   size?: "sm" | "md";                // 默认 "md"
-  placement?: "bottom-start" | "bottom-end" | "top-start" | "top-end";
+  /** 浮层水平对齐，默认 "start"（左缘对齐、向右展开）；"end" 用于右侧控件 */
+  align?: "start" | "center" | "end" | "auto";
+  /** 完整 placement 覆盖（含主方向与对齐），优先于 align */
+  placement?: Placement;
   block?: boolean;                   // true = 触发按钮撑满容器宽度
+  /** 菜单目标最小宽度（px）；仅在本次可用宽度内生效，不会为满足它而越界 */
+  menuMinWidth?: number;
 }
 ```
 
@@ -50,6 +55,11 @@ interface SelectProps<T extends string = string> {
 - `onChange` **只在用户真正选中时触发**，打开/关闭不触发——避免父组件把「打开」
   当成「改值」。
 - 禁用项渲染为 `aria-disabled="true"`，键盘导航会跳过。
+- **定位（2026-11-19 统一）**：默认由 `bottom-end` 改为 `bottom-start`；设置行/顶栏右侧等
+  原本依赖右缘对齐的调用点必须显式 `align="end"`（见
+  [../architecture/ui/global-popup-positioning-standard.md](../architecture/ui/global-popup-positioning-standard.md)）。
+  `auto` 以 start 为基准，空间不足时由统一引擎切到 end；`menuMinWidth` 与可用宽度冲突时
+  以「不越界」优先，最小宽度会被收敛到可用宽度内。
 
 ## 2. Combobox
 
@@ -71,6 +81,10 @@ interface ComboboxProps<T extends string = string> {
   placeholder?: string;
   browse?: boolean;                  // 默认 true；false = 纯搜索模式
   clearLabel?: string;               // 纯搜索模式清空按钮的可访问名称
+  /** 浮层水平对齐，默认 "start"，与 Select 完全一致 */
+  align?: "start" | "center" | "end" | "auto";
+  /** 完整 placement 覆盖，优先于 align */
+  placement?: Placement;
 }
 ```
 
@@ -116,8 +130,15 @@ interface DropdownMenuProps {
   trigger: (props: DropdownMenuTriggerProps) => ReactNode; // 触发器由调用方渲染
   items: ReadonlyArray<DropdownMenuItem>;
   menuLabel?: string;      // role="menu" 的可访问名
-  placement?: "bottom-start" | "bottom-end" | "top-start" | "top-end";
+  placement?: "bottom" | "bottom-start" | "bottom-end" | "top" | "top-start" | "top-end" | "right-start" | "right-end";
+  /** 首选主方向与对齐（优先于 placement）；默认 side=bottom、alignment=end */
+  side?: "top" | "bottom" | "left" | "right";
+  alignment?: "start" | "center" | "end" | "auto";
+  collisionPadding?: number;  // 与窗口边缘留白，默认 8
+  maxHeight?: number;         // 高度上限；不传时跟随本次可用高度
+  flipToSide?: boolean;       // 主方向放不下时是否翻到左右侧边；指针锚定菜单必须 false
   matchWidth?: boolean;    // 弹出层宽度跟随触发器
+  menuMinWidth?: number;   // 菜单目标最小宽度（可用宽度内生效）
   className?: string;
   disabled?: boolean;
   onOpenChange?: (open: boolean) => void;
@@ -151,11 +172,21 @@ interface PopoverProps {
   onOpenChange: (open: boolean) => void;
   anchorRef: RefObject<HTMLElement | null>;
   children: ReactNode;
-  placement?: Placement;          // 默认 "bottom-start"
+  placement?: Placement;          // 完整 placement；仍优先于默认值，可被 side/alignment 覆盖
+  side?: "top" | "bottom" | "left" | "right";   // 首选主方向
+  alignment?: "start" | "center" | "end" | "auto"; // 首选对齐；auto 允许 start/end 切换
   className?: string;
   layer?: OverlayKind | null;     // null = 不参与 Escape 弹层栈（提示条）
   matchWidth?: boolean;           // 最小宽度跟随锚点
   offsetPx?: number;              // 默认 6
+  collisionPadding?: number;      // 与窗口边缘留白，默认 8
+  minWidth?: number;
+  maxWidth?: number;
+  maxHeight?: number;
+  allowFlip?: boolean;            // 主方向放不下时翻到对侧，默认 true
+  allowAlignmentFlip?: boolean;   // 是否允许 start/end 自动切换（默认仅 auto 开启）
+  flipToSide?: boolean;           // 是否允许翻到垂直侧边；提示条必须 false
+  positionOverride?: { left: number; top: number } | null; // 提示条等外部已算好的坐标
   role?: string;
   ariaLabel?: string;
   id?: string;
@@ -163,13 +194,22 @@ interface PopoverProps {
   onKeyDown?: (e: ReactKeyboardEvent<HTMLDivElement>) => void;
   restoreFocus?: boolean;         // 默认 true；提示条必须 false
   dismissOnOutsidePress?: boolean;// 默认 true；提示条必须 false
+  floatingRef?: RefObject<HTMLDivElement | null>; // 暴露定位外壳，供调用方量尺寸
 }
 ```
 
 要点：
 
-- 浮层通过 `createPortal` 渲染到 `document.body`，**不受内容面板裁剪影响**。
-- 定位中间件固定为 `offset → flip → shift → size`，底部空间不足自动向上翻转。
+- 浮层通过 `createPortal` 渲染到 `document.body`，**不受内容面板裁剪影响**；
+  锚点在 Dialog 内时会被挂进遮罩容器，以保持 `dialog > menu` 的 Escape 语义。
+- **定位（2026-11-19 统一）**：中间件顺序为 `offset → flip → shift → size`，但参数不再写死：
+  `flip` 由 `allowFlip`/`flipToSide` 控制，`flipAlignment` 仅在 `alignment="auto"` 开启；
+  显式 start/end 只翻转主方向，横向越界交给 `shift` 收敛，避免「虽然没越界但对齐关系错乱」。
+  `size` 经 `positioning.ts` 的 `constrainPopupSize` 计算，min 会被收进 max，并写入
+  `--popover-max-w` / `--popover-max-h` / `--popover-min-w` 与 `data-popup-max-*`；
+  主方向翻转后写 `data-popup-flipped`，入场动画方向由 `--ui-pop-origin` 同步。
+- 定位生命周期只有一份：`autoUpdate` 监听窗口 resize、祖先滚动、锚点/弹层尺寸变化；
+  `positionOverride` 路径跳过 autoUpdate，由调用方负责在尺寸变化时重算。
 - `layer={null}` 表示「不注册进弹层栈」：提示条用这种模式，
   避免 Escape 把提示条当成一层去关（也会挡住「Esc 隐藏窗口」）。
 
@@ -369,7 +409,28 @@ interface SwitchProps { /* 同上，语义为开关 */ }
 - `data-tip-skip` 让整棵子树退出回退（自带独立提示窗口的控件）。
 - 每个独立窗口各挂一次 `TooltipLayer` 并引入 `styles-ui.css`（通知 / 快速捕获 / 微件已接入）。
 
-## 10. 弹层基础设施（overlay.ts / overlayStack.ts）
+## 10. 弹层基础设施（positioning.ts / Popover / PointerMenu / overlayStack.ts）
+
+规范全文见 [../architecture/ui/global-popup-positioning-standard.md](../architecture/ui/global-popup-positioning-standard.md)。
+
+```ts
+// positioning.ts（纯函数，无 DOM 依赖）
+resolvePopupConfig(config): ResolvedPopupConfig;
+calculatePopupAvailableSpace(anchor, viewport, opts): Space;
+resolvePopupAlignment(alignment, anchor, popupWidth, space, padding): ResolvedAlignment;
+resolvePopupPlacement(input): PlacementResult;   // 翻转/对齐/平移/尺寸收敛
+constrainPopupSize(prefs, space): SizeConstraints;
+resolvePointerMenuPosition(pointer, menuSize, viewport, padding): PointerMenuPosition;
+centerPopupInViewport(popupSize, viewport, padding): { left, top };
+```
+
+- 普通锚定弹层一律走 `Popover`（含 Select / Combobox / DropdownMenu / DatePicker / 全局搜索）；
+  右键菜单一律走 `PointerMenu`，不要再在业务组件里写 `position:fixed + left/top`。
+- `PointerMenu` 负责：坐标锚点、首帧同步测量（避免先出现在错误位置再跳）、四边翻转/
+  clamp、窗口 resize 与内容尺寸变化重算、`useOverlayLayer`、外部点击关闭、菜单项键盘导航。
+  业务只保留视觉类名与菜单内容。
+- **禁止**在业务页面里重复实现窗口边界计算、用固定 `transform` 偏移修补定位；
+  特殊定位必须有业务理由并补测试，并在规范文档的「保留特殊实现」清单登记。
 
 ```ts
 // 在 overlayStack.ts

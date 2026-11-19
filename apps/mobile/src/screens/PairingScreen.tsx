@@ -311,6 +311,25 @@ export function PairingScreen({ nav }: { nav: Nav }) {
           与桌面端 Task Dock 在同一 Wi-Fi 下建立连接。桌面端是配对发起方，手机端只接受授权。
         </Text>
 
+        {/* Personal Hub 是独立链路（基线 §6.2）：扫码只提交申请，必须由电脑本机批准。
+            与上面的局域网同步配对互不影响，不合并状态机。 */}
+        <GlassCard style={styles.hubCard} level="primary">
+          <Text style={[styles.hubTitle, { color: tokens.text }]}>Personal Hub</Text>
+          <Text style={[styles.hubText, { color: tokens.textSoft }]}>
+            扫描电脑端 Personal Hub 二维码，把这台手机加入你的电脑。提交后必须在电脑上确认，
+            不会授予远控能力。
+          </Text>
+          <PressableScale
+            onPress={() => nav.push("hub_pairing")}
+            accessibilityLabel="打开 Personal Hub 配对"
+            contentStyle={[styles.hubAction, { backgroundColor: tokens.accentFill }]}
+          >
+            <Text style={[styles.hubActionText, { color: tokens.onAccent }]}>
+              打开 Personal Hub 配对
+            </Text>
+          </PressableScale>
+        </GlassCard>
+
         {link.loaded && link.authorization !== "unpaired" ? (
           <View style={[styles.linkBar, { borderColor: tokens.separator }]}>
             <Text style={[styles.linkText, { color: tokens.textSoft }]}>
@@ -705,6 +724,31 @@ const styles = StyleSheet.create({
   linkText: {
     fontSize: font.label,
     lineHeight: 17,
+  },
+  hubCard: {
+    marginHorizontal: space.lg,
+    marginTop: space.md,
+    padding: space.md,
+    gap: space.xs,
+  },
+  hubTitle: {
+    fontSize: font.title,
+    fontWeight: "700",
+  },
+  hubText: {
+    fontSize: font.body,
+    lineHeight: 19,
+  },
+  hubAction: {
+    minHeight: 44,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radius.control,
+    marginTop: space.sm,
+  },
+  hubActionText: {
+    fontSize: font.body,
+    fontWeight: "600",
   },
   steps: {
     marginHorizontal: space.lg,

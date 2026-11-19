@@ -334,6 +334,8 @@ export default function AppManagement({
             ariaLabel={tr("appMgmt.prefs.defaultBrowser")}
             size="sm"
             triggerClassName="settings-select-trigger"
+            // 设置行右侧控件：保留右缘对齐
+            align="end"
             value={settings.nav_default_browser}
             options={[
               { value: "", label: tr("appMgmt.prefs.systemDefault") },

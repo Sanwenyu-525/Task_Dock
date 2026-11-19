@@ -29,13 +29,15 @@
     padding: 0;
     background: var(--dialog-face);
     overflow: hidden;
-    max-width: min(560px, calc(100vw - 24px));
+    /* 面板的目标宽度：实际宽度还会被基元的「本次可用宽」上限收敛，
+       因此靠近右缘时会整体收窄，而不是把右侧内容横向裁掉。 */
+    width: min(560px, calc(100vw - 32px));
   }
 
-  /* 下拉面板：宽度比字段更宽以保证结果标题/片段可读，但仍随窗口收敛。 */
+  /* 下拉面板：宽度比字段更宽以保证结果标题/片段可读，但必须跟随外壳宽度。 */
   .gs-dropdown-panel {
-    width: min(560px, calc(100vw - 32px));
-    max-height: min(var(--popover-max-h, 560px), 520px);
+    width: 100%;
+    max-height: min(var(--popover-max-h, 520px), 520px);
   }
 
   /* 输入行 */

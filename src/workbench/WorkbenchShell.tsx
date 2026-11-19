@@ -39,8 +39,12 @@ import { listen } from "@tauri-apps/api/event";
 import { createAppExitHandler } from "./workbenchExitGuard";
 import {
   installWorkbenchCloseGuard,
+  WorkbenchCloseTimeoutError,
+  type WorkbenchCloseGuardHandle,
+  type WorkbenchCloseState,
   type WorkbenchCloseWindow,
 } from "./workbenchCloseGuard";
+import { traceWorkbenchClose } from "../lib/closeTrace";
 import {
   FolderOpen,
   GripVertical,
@@ -351,6 +355,9 @@ export default function WorkbenchShell() {
   const [routeHydrated, setRouteHydrated] = useState(false);
   const [projectHydrated, setProjectHydrated] = useState(false);
   const route: WorkbenchRoute = atHome ? "home" : isWorkbenchRoute(tab) ? tab : "tasks";
+  /** 关闭诊断上下文：effect 只安装一次，必须经 ref 读最新路由。 */
+  const routeRef = useRef<WorkbenchRoute>(route);
+  routeRef.current = route;
 
   // ── 布局（宽度/右栏/上次路由） ────────────────────────────────────────
   const [navWidth, setNavWidth] = useState(224);
@@ -388,6 +395,18 @@ export default function WorkbenchShell() {
     },
     [],
   );
+  /** 工作空间页当前模块（诊断用）：关闭日志要能区分「正文页」与普通页面。 */
+  const closeModuleRef = useRef<(() => string) | null>(null);
+  const registerCloseModule = useCallback((read: (() => string) | null) => {
+    closeModuleRef.current = read;
+  }, []);
+  /**
+   * 关闭协调器句柄 + 统一关闭状态。
+   * 标题栏、Alt+F4、保存超时提示都读这一份；组件内不再维护第二套 closing。
+   */
+  const closeGuardRef = useRef<WorkbenchCloseGuardHandle | null>(null);
+  const [closeState, setCloseState] = useState<WorkbenchCloseState>("idle");
+  const [closeMessage, setCloseMessage] = useState<string | null>(null);
   const showToastRef = useRef(showToast);
   showToastRef.current = showToast;
   const appExitHandler = useMemo(
@@ -1182,18 +1201,44 @@ export default function WorkbenchShell() {
       }),
     );
 
-    let stopClose: (() => void) | null = null;
+    let guard: WorkbenchCloseGuardHandle | null = null;
     try {
       const current = getCurrentWindow();
       void installWorkbenchCloseGuard({
         window: current as unknown as WorkbenchCloseWindow,
         getFlush: () => workspaceLeaveGuardRef.current,
-        onError: (error) =>
-          showToastRef.current(`工作台未关闭：${errorMessage(error)}`, { kind: "error" }),
+        // 关闭诊断：路由/模块只用于终端日志，不含正文或项目隐私。
+        getContext: () => ({
+          route: routeRef.current,
+          module: closeModuleRef.current?.() ?? undefined,
+        }),
+        trace: traceWorkbenchClose,
+        onStateChange: (snapshot) => {
+          if (disposed) return;
+          setCloseState(snapshot.state);
+          if (snapshot.state === "saving" || snapshot.state === "retrying-close") {
+            setCloseMessage(null);
+          }
+        },
+        onError: (error) => {
+          if (disposed) return;
+          const message = errorMessage(error);
+          setCloseMessage(message);
+          if (error instanceof WorkbenchCloseTimeoutError) {
+            // 保存仍在进行：不是保存失败，用提示而不是错误口吻。
+            showToastRef.current(message, { kind: "warning" });
+          } else {
+            showToastRef.current(`工作台未关闭：${message}`, { kind: "error" });
+          }
+        },
       })
-        .then((stop) => {
-          if (disposed) stop();
-          else stopClose = stop;
+        .then((handle) => {
+          if (disposed) {
+            handle.stop();
+            return;
+          }
+          guard = handle;
+          closeGuardRef.current = handle;
         })
         .catch((error) => {
           if (!disposed) {
@@ -1209,7 +1254,8 @@ export default function WorkbenchShell() {
     return () => {
       disposed = true;
       stops.forEach((stop) => stop());
-      stopClose?.();
+      closeGuardRef.current = null;
+      guard?.stop();
     };
   }, [appExitHandler]);
 
@@ -2187,6 +2233,9 @@ export default function WorkbenchShell() {
               placeholder={t("workbench.noProject")}
               ariaLabel={t("workbench.projectsTitle")}
               size="sm"
+              // 顶栏左侧的项目入口：菜单左缘与触发器对齐，宽度下限 240px，
+              // 靠近右缘时由定位核心收敛，不会被窗口裁掉。
+              align="start"
               menuMinWidth={240}
             />
           </div>
@@ -2296,7 +2345,25 @@ export default function WorkbenchShell() {
             </div>
             <WorkbenchToolbarMore />
           </div>
-          <WorkbenchWindowControls />
+          <WorkbenchWindowControls
+            closeState={closeState}
+            closeMessage={closeMessage}
+            onRequestClose={() => {
+              const handle = closeGuardRef.current;
+              if (!handle) {
+                // 协调器尚未装好或安装失败：宁可不动，也不绕过正文保存守卫。
+                logEvent({
+                  level: "WARN",
+                  module: "workbench",
+                  action: "window-control",
+                  event: "close-guard-not-ready",
+                  status: "cancelled",
+                });
+                return;
+              }
+              handle.requestClose();
+            }}
+          />
         </header>
 
         <div className="wb-workarea">
@@ -2345,6 +2412,7 @@ export default function WorkbenchShell() {
                   onCreateProject={openCreateProject}
                   onNotice={showNotice}
                   registerProjectLeaveGuard={registerWorkspaceLeaveGuard}
+                  registerCloseModule={registerCloseModule}
                   moduleRequest={moduleRequest}
                 />
               )}

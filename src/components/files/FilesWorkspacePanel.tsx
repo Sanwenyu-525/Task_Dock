@@ -52,6 +52,8 @@ import {
 } from "lucide-react";
 
 import DropdownMenu from "../ui/DropdownMenu";
+import PointerMenu from "../ui/PointerMenu";
+import { centerPopupInViewport } from "../ui/positioning";
 import { ConfirmDialog, Dialog } from "../ui/Dialog";
 import Popover from "../ui/Popover";
 import "./files.css";
@@ -230,12 +232,7 @@ export function drawerCenterOverride(
   size: { width: number; height: number } = { width: 280, height: 320 },
 ): { left: number; top: number } | null {
   if (!open || anchor !== null) return null;
-  const maxLeft = Math.max(8, viewport.width - size.width - 8);
-  const maxTop = Math.max(8, viewport.height - size.height - 8);
-  return {
-    left: Math.min(maxLeft, Math.max(8, Math.round((viewport.width - size.width) / 2))),
-    top: Math.min(maxTop, Math.max(8, Math.round((viewport.height - size.height) / 2))),
-  };
+  return centerPopupInViewport(size, viewport);
 }
 
 /**
@@ -348,12 +345,8 @@ export function SplitWithDivider({
   useEffect(() => {
     if (!ratioMenu) return;
     const close = () => setRatioMenu(null);
-    window.addEventListener("pointerdown", close);
     window.addEventListener("blur", close);
-    return () => {
-      window.removeEventListener("pointerdown", close);
-      window.removeEventListener("blur", close);
-    };
+    return () => window.removeEventListener("blur", close);
   }, [ratioMenu]);
 
   // 窗口失焦没有 pointercancel 时也必须退出调整态并回滚临时比例。
@@ -444,12 +437,6 @@ export function SplitWithDivider({
   const firstStyle = horizontal
     ? { width: `calc(${bounds.value * 100}% - 8px)` }
     : { height: `calc(${bounds.value * 100}% - 8px)` };
-  const menuPosition = ratioMenu
-    ? {
-        left: Math.min(ratioMenu.x, Math.max(8, window.innerWidth - 176)),
-        top: Math.min(ratioMenu.y, Math.max(8, window.innerHeight - 210)),
-      }
-    : null;
 
   return (
     <div ref={ref} className={`fw-split fw-split-${node.direction}`}>
@@ -523,13 +510,15 @@ export function SplitWithDivider({
           {ratioHint && <span className="fw-divider-ratio">{ratioHint}</span>}
         </span>
       </div>
-         {ratioMenu && menuPosition && (
-        <div
+      {ratioMenu && (
+        <PointerMenu
+          open={ratioMenu !== null}
+          x={ratioMenu.x}
+          y={ratioMenu.y}
+          label={t("fw.divider.ratioMenu")}
           className="fw-divider-menu"
-          role="menu"
-          aria-label={t("fw.divider.ratioMenu")}
-          style={{ left: menuPosition.left, top: menuPosition.top }}
-          onPointerDown={(event) => event.stopPropagation()}
+          trapFocus={false}
+          onClose={() => setRatioMenu(null)}
         >
           {[0.25, 1 / 3, 0.5, 2 / 3, 0.75].map((ratio) => (
             <button
@@ -542,7 +531,7 @@ export function SplitWithDivider({
               {Math.round(ratio * 100)} : {Math.round((1 - ratio) * 100)}
             </button>
           ))}
-        </div>
+        </PointerMenu>
       )}
       <div className="fw-split-child fw-split-child-second">
         <SplitRender

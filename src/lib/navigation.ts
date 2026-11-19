@@ -5,13 +5,9 @@
 
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { invokeCommand as invoke, sanitizeForUser } from "./errors";
+import type { NavigationTargetType, NavTarget, TaskNavLink } from "./contracts/navigation";
+export type { NavigationTargetType, NavTarget, WindowMemory, TaskNavLink } from "./contracts/navigation";
 
-export type NavigationTargetType =
-  | "application"
-  | "url"
-  | "file"
-  | "directory"
-  | "agent_session";
 
 export interface NavigationResult {
   success: boolean;
@@ -23,33 +19,6 @@ export interface NavigationResult {
   verification_level: string;
 }
 
-export interface NavTarget {
-  id: string;
-  display_name: string;
-  target_type: NavigationTargetType;
-  app_key: string;
-  exe_path: string;
-  launch_args: string;
-  working_dir: string;
-  app_user_model_id: string;
-  url: string;
-  path: string;
-  agent_source_id: string;
-  agent_session_id: string;
-  window_title_hint: string;
-  icon: string;
-  category: string;
-  favorite: boolean;
-  hidden: boolean;
-  last_used_at: string | null;
-  use_count: number;
-  created_at: string;
-  updated_at: string;
-  /** app = 普通应用快捷方式（按程序去重）；window = 指定窗口快捷方式（按稳定身份去重） */
-  shortcut_kind?: "app" | "window";
-  /** 指定窗口快捷方式绑定的稳定身份（类名+标题+exe，不含 HWND） */
-  bound_window_identity?: WindowMemory | null;
-}
 
 export interface TargetInput {
   target_type: NavigationTargetType;
@@ -87,20 +56,6 @@ export interface TargetPatch {
 }
 
 /** 任务关联行（含目标明细 + 实时运行状态）。 */
-export interface TaskNavLink {
-  id: string;
-  task_id: string;
-  target_id: string;
-  display_order: number;
-  is_default: boolean;
-  launch_behavior: string;
-  created_at: string;
-  window_identity?: WindowMemory | null;
-  window_fallback?: "reselect" | "focus_app" | "launch";
-  target: NavTarget;
-  /** not_running | process_only | has_window | always | unavailable | agent */
-  running_state: string;
-}
 
 export interface DiscoveredApp {
   app_key: string;
@@ -138,12 +93,6 @@ export interface WindowInfo {
   exe_path: string | null;
 }
 
-export interface WindowMemory {
-  class_name: string;
-  title: string;
-  exe_path: string;
-  origin: "user" | "auto";
-}
 
 export interface NavLogRow {
   id: string;

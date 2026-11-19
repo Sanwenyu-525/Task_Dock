@@ -22,6 +22,10 @@ const api = vi.hoisted(() => ({
 vi.mock("../lib/bridge", () => api);
 
 import NovelManuscriptPanel from "./NovelManuscriptPanel";
+import {
+  installWorkbenchCloseGuard,
+  type WorkbenchCloseGuardHandle,
+} from "./workbenchCloseGuard";
 
 const volume = {
   id: "v1",
@@ -77,7 +81,11 @@ beforeEach(() => {
   api.novelVolumeDelete.mockResolvedValue(undefined);
 });
 
+/** 每个用例安装的关闭协调器：必须 stop，否则销毁兜底计时器会跨用例触发。 */
+const closeGuards: WorkbenchCloseGuardHandle[] = [];
+
 afterEach(() => {
+  while (closeGuards.length > 0) closeGuards.pop()?.stop();
   cleanup();
 });
 
@@ -698,5 +706,203 @@ describe("NovelManuscriptPanel · 归档只读", () => {
     await waitFor(() =>
       expect(api.novelChapterSaveContent).toHaveBeenCalledWith("c1", "归档瞬间的草稿"),
     );
+  });
+});
+
+describe("NovelManuscriptPanel · 关闭门禁", () => {
+  /**
+   * 真实组合：面板注册 flush → 关闭协调器持有它 → 模拟 CloseRequested。
+   * 只替换窗口对象，不 mock 协调器，避免「单测里通过、真机仍卡死」。
+   */
+  async function renderWithCloseGuard(options?: { timeoutMs?: number }) {
+    const onNotice = vi.fn();
+    const onError = vi.fn();
+    const flushRef: { current: (() => Promise<boolean>) | null } = { current: null };
+    render(
+      <NovelManuscriptPanel
+        projectId="p1"
+        archived={false}
+        onNotice={onNotice}
+        registerFlush={(flush) => {
+          flushRef.current = flush;
+        }}
+      />,
+    );
+    const textarea = (await screen.findByLabelText("第一章正文")) as HTMLTextAreaElement;
+    await waitFor(() => expect(flushRef.current).not.toBeNull());
+
+    let handler: ((event: { preventDefault: () => void }) => void | Promise<void>) | null = null;
+    const close = vi.fn(async () => {});
+    const guard = await installWorkbenchCloseGuard({
+      window: {
+        onCloseRequested: async (next) => {
+          handler = next;
+          return () => {
+            handler = null;
+          };
+        },
+        close,
+        label: () => "workspace",
+      },
+      getFlush: () => flushRef.current,
+      onError,
+      timeoutMs: options?.timeoutMs,
+      // 单测不等真实窗口销毁：兜底时间拉长，结束时由 stop 清掉。
+      destroyTimeoutMs: 60_000,
+    });
+    closeGuards.push(guard);
+
+    return {
+      textarea,
+      onNotice,
+      onError,
+      guard,
+      close,
+      /** 直接驱动面板的落盘协议（模拟自动保存已经占住在途位）。 */
+      flush: () => flushRef.current?.() ?? Promise.resolve(true),
+      fireClose: () => {
+        const event = { preventDefault: vi.fn() };
+        void handler?.(event);
+        return event;
+      },
+    };
+  }
+
+  it("正文无修改：直接通过关闭门禁，不产生写库请求", async () => {
+    const h = await renderWithCloseGuard();
+
+    const event = h.fireClose();
+    expect(event.preventDefault).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(h.close).toHaveBeenCalledTimes(1));
+    expect(api.novelChapterSaveContent).not.toHaveBeenCalled();
+  });
+
+  it("有脏稿：先保存最新正文，成功后才真正关闭", async () => {
+    const d = deferred<ReturnType<typeof saveResult>>();
+    api.novelChapterSaveContent.mockReturnValue(d.promise);
+    const h = await renderWithCloseGuard();
+    fireEvent.change(h.textarea, { target: { value: "关闭前草稿" } });
+
+    h.fireClose();
+    await waitFor(() =>
+      expect(api.novelChapterSaveContent).toHaveBeenCalledWith("c1", "关闭前草稿"),
+    );
+    expect(h.close).not.toHaveBeenCalled();
+
+    await act(async () => {
+      d.resolve(saveResult("c1", "关闭前草稿"));
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(h.close).toHaveBeenCalledTimes(1));
+  });
+
+  it("已有保存在途：关闭复用同一请求，不并发第二次写入", async () => {
+    const d = deferred<ReturnType<typeof saveResult>>();
+    api.novelChapterSaveContent.mockReturnValue(d.promise);
+    const h = await renderWithCloseGuard();
+    fireEvent.change(h.textarea, { target: { value: "在途草稿" } });
+
+    // 先让一轮保存占住在途位，再发起关闭。
+    await act(async () => {
+      void h.flush();
+      await Promise.resolve();
+    });
+    expect(api.novelChapterSaveContent).toHaveBeenCalledTimes(1);
+
+    h.fireClose();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    // 关闭必须等待同一笔请求，不得再发第二次写入。
+    expect(api.novelChapterSaveContent).toHaveBeenCalledTimes(1);
+
+    // 关闭期间只允许这一笔；它完成后才允许关闭。
+    expect(h.close).not.toHaveBeenCalled();
+    await act(async () => {
+      d.resolve(saveResult("c1", "在途草稿"));
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(h.close).toHaveBeenCalledTimes(1));
+    expect(api.novelChapterSaveContent).toHaveBeenCalledTimes(1);
+  });
+
+  it("保存失败：保持窗口并报告，不假装关闭", async () => {
+    api.novelChapterSaveContent.mockRejectedValue(new Error("磁盘只读"));
+    const h = await renderWithCloseGuard();
+    fireEvent.change(h.textarea, { target: { value: "保存失败草稿" } });
+
+    h.fireClose();
+    await waitFor(() => expect(h.onError).toHaveBeenCalled());
+    expect(String(h.onError.mock.calls[0][0])).toContain("正文尚未保存");
+    expect(h.close).not.toHaveBeenCalled();
+    expect(h.textarea.value).toBe("保存失败草稿");
+    expect(h.guard.getState()).toMatchObject({ state: "failed", reason: "flush-false" });
+  });
+
+  it("IPC 长时间 Pending：关闭流程有明确反馈，不无限静默", async () => {
+    const d = deferred<ReturnType<typeof saveResult>>();
+    api.novelChapterSaveContent.mockReturnValue(d.promise);
+    const h = await renderWithCloseGuard({ timeoutMs: 25 });
+    fireEvent.change(h.textarea, { target: { value: "超时草稿" } });
+
+    h.fireClose();
+    await waitFor(() => expect(h.onError).toHaveBeenCalled(), { timeout: 1000 });
+    expect(String(h.onError.mock.calls[0][0])).toContain("仍在进行");
+    expect(h.close).not.toHaveBeenCalled();
+    expect(h.guard.getState()).toMatchObject({
+      state: "failed",
+      reason: "flush-timeout",
+      flushPending: true,
+    });
+  });
+
+  it("超时后保存完成：再次关闭可以成功", async () => {
+    const d = deferred<ReturnType<typeof saveResult>>();
+    api.novelChapterSaveContent.mockReturnValue(d.promise);
+    const h = await renderWithCloseGuard({ timeoutMs: 25 });
+    fireEvent.change(h.textarea, { target: { value: "超时后完成" } });
+
+    h.fireClose();
+    await waitFor(() => expect(h.onError).toHaveBeenCalled(), { timeout: 1000 });
+
+    await act(async () => {
+      d.resolve(saveResult("c1", "超时后完成"));
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(api.novelChapterSaveContent).toHaveBeenCalledTimes(1));
+
+    h.fireClose();
+    await waitFor(() => expect(h.close).toHaveBeenCalledTimes(1));
+    expect(api.novelChapterSaveContent).toHaveBeenCalledTimes(1);
+  });
+
+  it("保存期间新增输入：关闭前必须落盘最新版本", async () => {
+    const calls: Array<{ content: string; deferred: Deferred<ReturnType<typeof saveResult>> }> = [];
+    api.novelChapterSaveContent.mockImplementation((_id: string, content: string) => {
+      const d = deferred<ReturnType<typeof saveResult>>();
+      calls.push({ content, deferred: d });
+      return d.promise;
+    });
+    const h = await renderWithCloseGuard();
+    fireEvent.change(h.textarea, { target: { value: "版本A" } });
+
+    h.fireClose();
+    await waitFor(() => expect(calls.map((c) => c.content)).toEqual(["版本A"]));
+
+    // 保存 A 期间继续输入 B：关闭事务必须等 B 也落盘后才放行。
+    fireEvent.change(h.textarea, { target: { value: "版本B" } });
+    await act(async () => {
+      calls[0].deferred.resolve(saveResult("c1", "版本A"));
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(calls.length).toBe(2));
+    expect(calls[1].content).toBe("版本B");
+    expect(h.close).not.toHaveBeenCalled();
+
+    await act(async () => {
+      calls[1].deferred.resolve(saveResult("c1", "版本B"));
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(h.close).toHaveBeenCalledTimes(1));
   });
 });

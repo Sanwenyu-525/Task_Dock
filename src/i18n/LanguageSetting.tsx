@@ -24,6 +24,8 @@ export default function LanguageSetting() {
           ariaLabel={t("settings.language")}
           size="sm"
           triggerClassName="settings-select-trigger"
+          // 设置行把控件放在最右侧：保留右缘对齐，菜单向左展开。
+          align="end"
           value={preference}
           options={options}
           onChange={(value) => setPreference(value)}

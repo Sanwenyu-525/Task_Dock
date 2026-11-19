@@ -191,6 +191,7 @@ function FreeMenu({
     <DropdownMenu
       menuLabel={menuLabel}
       placement="bottom-start"
+      flipToSide={false}
       trigger={({ ref, onClick, onKeyDown }) => (
         <button
           ref={(el) => {

@@ -1,0 +1,58 @@
+# TaskDock Personal Hub Control Plane — 本地开发环境
+# 用法：cp .env.example .env && docker compose up -d --build
+# 注意：TURN_SECRET 必须替换为随机长密钥；客户端不得内置长期 TURN 密码。
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-hub}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hubpass}
+      POSTGRES_DB: ${POSTGRES_DB:-taskdock_hub}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./schema/sql/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hub} -d ${POSTGRES_DB:-taskdock_hub}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  coturn:
+    image: coturn/coturn:4.6-alpine
+    # 仅用 use-auth-secret（REST API 短时凭证）；关闭长期静态账号口令 lt-cred-mech。
+    command:
+      - -n
+      - --log-file=stdout
+      - --fingerprint
+      - --lt-cred-mech
+      - --use-auth-secret
+      - --static-auth-secret=${TURN_SECRET:?set TURN_SECRET in .env}
+      - --realm=${TURN_REALM:-taskdock.local}
+      - --no-multicast-peers
+      - --mobility
+      - --total-quota=100
+    ports:
+      - "3478:3478/tcp"
+      - "3478:3478/udp"
+      - "5349:5349/tcp"
+    network_mode: default
+
+  control-plane:
+    build: .
+    environment:
+      HOST: 0.0.0.0
+      PORT: ${PORT:-3000}
+      DATABASE_URL: postgres://${POSTGRES_USER:-hub}:${POSTGRES_PASSWORD:-hubpass}@db:5432/${POSTGRES_DB:-taskdock_hub}
+      TURN_SECRET: ${TURN_SECRET:?set TURN_SECRET in .env}
+      TURN_URIS: ${TURN_URIS:-turn:localhost:3478?transport=udp}
+    ports:
+      - "${PORT:-3000}:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:

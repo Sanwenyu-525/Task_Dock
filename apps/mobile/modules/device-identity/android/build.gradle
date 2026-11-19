@@ -1,0 +1,28 @@
+// 本地 Expo 模块：Personal Hub 设备身份（AndroidKeyStore 信封加密 + Ed25519）。
+//
+// 依赖只用 BouncyCastle 轻量 API：AndroidKeyStore 的 Ed25519 仅 API 33+ 提供，
+// 本项目 minSdk 24，按契约 §6 裁定改为「Keystore AES 包装 32 字节 Ed25519 seed」。
+// BC 只做密钥生成/签名，不注册 JCE Provider，也不替换系统 TLS 实现。
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'dev.taskdock.modules.deviceidentity'
+version = '0.1.0'
+
+android {
+  namespace "dev.taskdock.modules.deviceidentity"
+  defaultConfig {
+    versionCode 1
+    versionName "0.1.0"
+  }
+  testOptions {
+    unitTests.returnDefaultValues = true
+  }
+}
+
+dependencies {
+  implementation "org.bouncycastle:bcprov-jdk18on:1.79"
+  testImplementation "junit:junit:4.13.2"
+}

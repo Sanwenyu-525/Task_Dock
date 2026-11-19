@@ -328,6 +328,8 @@ export default function AudioSettings({ openSections, onToggle }: AudioSettingsP
           <Select
             value={gender}
             ariaLabel={t("settings.audio.gender")}
+            // 设置行右侧控件：保留右缘对齐
+            align="end"
             options={[
               { value: "auto", label: t("settings.audio.gender.auto") },
               { value: "female", label: t("settings.audio.gender.female") },

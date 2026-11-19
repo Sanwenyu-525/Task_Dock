@@ -1,0 +1,196 @@
+{
+  "version": "1.0.0",
+  "updated": "2026-11-19",
+  "description": "TaskDock 架构守卫规则。三阶段渐进启用：report(当前) -> staged -> enforced。每个例外必须有 reason 与 exitWhen。",
+  "stage": "report",
+  "roots": {
+    "frontend": "src",
+    "backend": "src-tauri/src",
+    "mobile": "apps/mobile/src"
+  },
+  "ignoreDirs": [
+    "node_modules",
+    "dist",
+    "target",
+    ".expo",
+    "android",
+    "ios",
+    "__tests__",
+    "test",
+    "tests"
+  ],
+  "sourceExtensions": [".ts", ".tsx", ".rs"],
+  "rules": [
+    {
+      "id": "FEAT-001",
+      "name": "页面必须经 Feature Registry 登记",
+      "severity": "error",
+      "enabled": true,
+      "stage": "report",
+      "check": "feature-registry",
+      "description": "页面组件不得被外壳/导航层静态 import，应经 featureRegistry 的 load: () => import(...)",
+      "scope": ["src/**"],
+      "exceptions": [
+        {
+          "path": "src/components/tasks/TasksPanel.tsx",
+          "reason": "默认页 tasks 同步加载，既有有意例外（featureRegistry.ts 已注释）",
+          "exitWhen": "默认页策略变更或改走 registry 时移除"
+        }
+      ]
+    },
+    {
+      "id": "LAYER-001",
+      "name": "lib 不得反向依赖 store",
+      "severity": "error",
+      "enabled": true,
+      "stage": "report",
+      "check": "no-lib-to-store",
+      "description": "lib/ 层不得 import store/，避免层次倒置",
+      "scope": ["src/lib/**"],
+      "exceptions": [
+        {
+          "path": "src/lib/errorReport.ts",
+          "reason": "已知层次倒置 V1，Phase 3.4 修复（改事件上抛）",
+          "exitWhen": "errorReport 去除 useUiStore 依赖后移除"
+        },
+        {
+          "path": "src/lib/audioNotification.ts",
+          "reason": "提示音服务读取设置的既有设计，非本次治理的倒置目标",
+          "exitWhen": "若 Phase 3.4 统一改依赖注入则复核"
+        },
+        {
+          "path": "src/lib/commandRegistry.ts",
+          "reason": "命令注册表读取 UI store 以取上下文，既有设计",
+          "exitWhen": "若引入 Context 注入则复核"
+        },
+        {
+          "path": "src/lib/consistencyChecks.ts",
+          "reason": "一致性检查读取设置的既有设计",
+          "exitWhen": "若引入依赖注入则复核"
+        },
+        {
+          "path": "src/lib/featureRegistry.ts",
+          "reason": "feature 注册表按需读取 UI store，既有设计",
+          "exitWhen": "若改 Context 注入则复核"
+        },
+        {
+          "path": "src/lib/mainWindowNavigation.ts",
+          "reason": "主窗导航 singleton 读取布局/设置/UI store，既有设计，非错误上报倒置",
+          "exitWhen": "若改依赖注入则复核"
+        },
+        {
+          "path": "src/lib/navigationLayout.ts",
+          "reason": "导航布局读取设置 store，既有设计",
+          "exitWhen": "若改依赖注入则复核"
+        },
+        {
+          "path": "src/lib/navigationRegistry.ts",
+          "reason": "导航注册表读取 UI store，既有设计",
+          "exitWhen": "若改 Context 注入则复核"
+        },
+        {
+          "path": "src/lib/navVisibility.ts",
+          "reason": "导航显隐读取 UI store，既有设计",
+          "exitWhen": "若改依赖注入则复核"
+        },
+        {
+          "path": "src/lib/workbenchLayout.ts",
+          "reason": "工作台布局 singleton 读取 UI/设置 store，既有设计",
+          "exitWhen": "若改依赖注入则复核"
+        }
+      ]
+    },
+    {
+      "id": "LAYER-002",
+      "name": "IPC 出口唯一",
+      "severity": "warn",
+      "enabled": true,
+      "stage": "report",
+      "check": "ipc-entrypoints",
+      "description": "invoke 应统一经 src/lib/bridge.ts；其他文件直连 invoke 需登记为受控例外",
+      "scope": ["src/**"],
+      "exceptions": [
+        { "path": "src/lib/errors.ts", "reason": "bridge 的底层 invoke 依赖，合理", "exitWhen": "不适用（底层封装）" },
+        { "path": "src/workbench/creative/ipc.ts", "reason": "受控例外 V2，有注释说明避免并行冲突", "exitWhen": "Phase 3.1 并入 bridge 后移除" },
+        { "path": "src/lib/widgets/desktopBridge.ts", "reason": "受控例外 V2，窗口/微件命令，归入 platform", "exitWhen": "Phase 3.1 收敛后移除" },
+        { "path": "src/lib/dragCursorSession.ts", "reason": "受控例外 V2", "exitWhen": "Phase 3.1 归并后移除" },
+        { "path": "src/workbench/windowFrame.ts", "reason": "受控例外 V2，窗口几何边界模糊", "exitWhen": "Phase 3.1 归并 platform 后移除" },
+        { "path": "src/lib/diagnostics.ts", "reason": "诊断上报动态 import invoke，低风险", "exitWhen": "统一封装后移除" }
+      ]
+    },
+    {
+      "id": "ERROR-001",
+      "name": "禁止重复定义全局错误模型",
+      "severity": "error",
+      "enabled": true,
+      "stage": "report",
+      "check": "duplicate-error-model",
+      "description": "AppError/ErrorCode 应单一事实源；检测多处同名定义",
+      "scope": ["src/**", "src-tauri/src/**", "apps/mobile/src/**"],
+      "exceptions": [
+        { "path": "ALL", "reason": "已知三处重复 V/审计 P0-2，Phase 3.4 归一（ADR-0003）", "exitWhen": "跨端错误契约建立后移除" }
+      ]
+    },
+    {
+      "id": "MOB-001",
+      "name": "UI/screens 不得直接访问数据库",
+      "severity": "error",
+      "enabled": true,
+      "stage": "report",
+      "check": "no-ui-db",
+      "description": "移动端 expo-sqlite 只应出现在 apps/mobile/src/db/",
+      "scope": ["apps/mobile/src/**"],
+      "exceptions": []
+    },
+    {
+      "id": "DOMAIN-001",
+      "name": "Domain 不得依赖 React/Tauri/平台",
+      "severity": "error",
+      "enabled": true,
+      "stage": "report",
+      "check": "domain-purity",
+      "description": "domain/ 必须是纯业务规则，不 import react/tauri/expo-sqlite",
+      "scope": ["apps/mobile/src/domain/**", "src/lib/**/models/**"],
+      "exceptions": []
+    },
+    {
+      "id": "DUP-001",
+      "name": "重复源码树检测",
+      "severity": "error",
+      "enabled": true,
+      "stage": "report",
+      "check": "duplicate-source-tree",
+      "description": "检测未跟踪/分叉的平行源码树（src-tauri/components、src-tauri/boot）",
+      "scope": ["src-tauri/**"],
+      "exceptions": [],
+      "monitoredPaths": ["src-tauri/components", "src-tauri/boot"]
+    },
+    {
+      "id": "DOC-001",
+      "name": "文档关键数字与源码一致",
+      "severity": "warn",
+      "enabled": true,
+      "stage": "report",
+      "check": "doc-number-drift",
+      "description": "README 声称的迁移版本/备份表数应与源码一致",
+      "scope": ["README.md"],
+      "exceptions": [
+        { "path": "README.md", "reason": "已知漂移：v33 应为 v78，43 表应为 143（审计 §8），Phase 3 修正", "exitWhen": "README 更新后移除" }
+      ]
+    },
+    {
+      "id": "CIRC-001",
+      "name": "禁止循环依赖",
+      "severity": "warn",
+      "enabled": true,
+      "stage": "report",
+      "check": "circular-deps",
+      "description": "检测模块级静态 import 环（文件级，保守检测）",
+      "scope": ["src/lib/**", "src/store/**"],
+      "exceptions": [
+        { "path": "featureRuntime->diagnostics", "reason": "已用延迟 import 打断，属正向处理", "exitWhen": "无（动态 import 已缓解，保持监控）" },
+        { "path": "errors->diagnostics->bridge", "reason": "diagnostics.ts:162 用动态 import('./bridge') 延迟打破运行时环，静态分析仍可见；属已缓解的既有环", "exitWhen": "改为事件/接口注入消除静态环后移除" }
+      ]
+    }
+  ]
+}

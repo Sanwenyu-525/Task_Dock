@@ -17,7 +17,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, LazyLock, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -670,6 +670,41 @@ fn normalize_ack_status(ok: bool, pending: bool, status: Option<&str>) -> AppRes
 
 static LAST_GEOMETRY_SAVE: LazyLock<Mutex<Option<Instant>>> = LazyLock::new(|| Mutex::new(None));
 
+/// 关闭路径等待几何落库的上限。超过就不阻塞销毁：快照已在内存队列里，
+/// 后台线程继续写，快速重开也优先读内存值，不会读到过期几何。
+const CLOSE_GEOMETRY_WAIT: Duration = Duration::from_millis(300);
+/// 应用退出等待上限：退出前必须尽力落盘（进程结束后内存队列随之消失）。
+const EXIT_GEOMETRY_WAIT: Duration = Duration::from_millis(2_000);
+
+/// 几何持久化队列：主线程只做 O(1) 快照，SQLite 写入交给单飞后台线程。
+///
+/// 为什么要把两者分开（2026-11-19 关闭专项）：`Db::get_setting / set_setting`
+/// 都用**写连接**的同一把 `Mutex<Connection>`。关闭回调在主线程上做同步读写时，
+/// 只要正文保存正在写大段内容，原生窗口关闭就会被这把锁拖住；而几何只是
+/// 「下次打开放哪」的偏好，不该成为关闭的前置条件。
+///
+/// 语义保证：
+/// - `pending` 永远比数据库新：读取（恢复/最大化判定）优先它；
+/// - 写入成功后只在 `revision` 没变时清空 pending——期间有新快照就继续写新的，
+///   旧值不会覆盖新值；
+/// - 关闭最多等 `CLOSE_GEOMETRY_WAIT`，超时只记 DEFERRED，不丢数据、不阻塞销毁。
+#[derive(Default)]
+struct GeometryStage {
+    /// 待落库的最新快照；None = 已全部持久化。
+    pending: Option<WorkspaceGeometry>,
+    /// 每次暂存自增；写入线程据此判断「写完后是否又有更新」。
+    revision: u64,
+    /// 已成功落库到的 revision。
+    persisted: u64,
+    /// 写入线程是否已启动（只启动一次）。
+    writer_started: bool,
+    /// 最近一次写入失败原因（关闭路径据此区分「排队中」与「真失败」）。
+    last_error: Option<String>,
+}
+
+static GEOMETRY_STAGE: LazyLock<(Mutex<GeometryStage>, Condvar)> =
+    LazyLock::new(|| (Mutex::new(GeometryStage::default()), Condvar::new()));
+
 fn assert_main_or_workspace(window: &WebviewWindow) -> AppResult<()> {
     match window.label() {
         MAIN_LABEL | WINDOW_LABEL => Ok(()),
@@ -679,11 +714,195 @@ fn assert_main_or_workspace(window: &WebviewWindow) -> AppResult<()> {
     }
 }
 
+/// 读取几何：走只读连接池，绝不再和正文写入抢写连接锁。
 fn read_geometry(db: &Db) -> Option<WorkspaceGeometry> {
-    db.get_setting(SETTING_RECT)
-        .ok()
-        .flatten()
-        .and_then(|value| serde_json::from_value(value).ok())
+    db.with_read(|conn| {
+        let raw: Option<String> = conn
+            .query_row(
+                "SELECT value FROM application_settings WHERE key = ?1",
+                rusqlite::params![SETTING_RECT],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(raw)
+    })
+    .ok()
+    .flatten()
+    .and_then(|raw| serde_json::from_str(&raw).ok())
+}
+
+/// 最新内存快照：比数据库新，恢复/最大化判定优先用它（快速关闭后重开不读旧值）。
+fn pending_geometry() -> Option<WorkspaceGeometry> {
+    let (lock, _) = &*GEOMETRY_STAGE;
+    lock.lock().ok().and_then(|stage| stage.pending)
+}
+
+fn geometry_last_error() -> Option<String> {
+    let (lock, _) = &*GEOMETRY_STAGE;
+    lock.lock().ok().and_then(|stage| stage.last_error.clone())
+}
+
+/// 暂存一份快照并唤醒写入线程。返回本次 revision（0 = 锁中毒，未暂存）。
+fn stage_geometry(geometry: WorkspaceGeometry) -> u64 {
+    let (lock, cv) = &*GEOMETRY_STAGE;
+    match lock.lock() {
+        Ok(mut stage) => {
+            stage.pending = Some(geometry);
+            stage.revision = stage.revision.wrapping_add(1);
+            let revision = stage.revision;
+            cv.notify_all();
+            revision
+        }
+        Err(_) => 0,
+    }
+}
+
+/// 启动后台写入线程（幂等）。线程只持有 `Arc<Db>`，不碰窗口对象。
+fn ensure_geometry_writer(db: Arc<Db>) {
+    {
+        let (lock, _) = &*GEOMETRY_STAGE;
+        match lock.lock() {
+            Ok(mut stage) => {
+                if stage.writer_started {
+                    return;
+                }
+                stage.writer_started = true;
+            }
+            Err(_) => return,
+        }
+    }
+    let spawned = std::thread::Builder::new()
+        .name("workspace-geometry-writer".to_string())
+        .spawn(move || geometry_writer_loop(db));
+    if let Err(error) = spawned {
+        tracing::warn!("工作台几何写入线程启动失败：{error}");
+        if let Ok(mut stage) = GEOMETRY_STAGE.0.lock() {
+            stage.writer_started = false;
+        }
+    }
+}
+
+/// 单飞写入循环：始终写「当前最新」快照，成功后才在 revision 未变时清空。
+fn geometry_writer_loop(db: Arc<Db>) {
+    loop {
+        let (revision, geometry) = {
+            let (lock, cv) = &*GEOMETRY_STAGE;
+            let Ok(mut stage) = lock.lock() else {
+                return;
+            };
+            while stage.pending.is_none() {
+                stage = match cv.wait(stage) {
+                    Ok(next) => next,
+                    Err(_) => return,
+                };
+            }
+            (stage.revision, stage.pending)
+        };
+        let Some(geometry) = geometry else {
+            continue;
+        };
+        let payload = match serde_json::to_value(geometry) {
+            Ok(value) => value,
+            Err(error) => {
+                tracing::warn!("序列化工作空间窗口几何失败：{error}");
+                record_geometry_failure(Some(error.to_string()));
+                // 序列化失败不可能靠重试恢复：清空 pending，避免后台线程空转
+                // （不清的话 while 循环会拿着同一个坏值反复失败、占满一个核）。
+                let (lock, cv) = &*GEOMETRY_STAGE;
+                if let Ok(mut stage) = lock.lock() {
+                    if stage.revision == revision {
+                        stage.pending = None;
+                    }
+                    cv.notify_all();
+                }
+                continue;
+            }
+        };
+        match db.set_setting(SETTING_RECT, payload) {
+            Ok(()) => {
+                let (lock, cv) = &*GEOMETRY_STAGE;
+                if let Ok(mut stage) = lock.lock() {
+                    stage.persisted = stage.persisted.max(revision);
+                    stage.last_error = None;
+                    // 期间有新快照就保留，让循环继续写新值。
+                    if stage.revision == revision {
+                        stage.pending = None;
+                    }
+                    cv.notify_all();
+                }
+            }
+            Err(error) => {
+                let message = error.to_string();
+                tracing::warn!("保存工作空间窗口几何失败：{message}");
+                record_geometry_failure(Some(message));
+                // 失败退避：数据库可能长时间被占用，避免高频空转。
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        }
+    }
+}
+
+/// 记录失败原因；`pending` 原样保留，下一次暂存或退出兜底会重试，不丢数据。
+fn record_geometry_failure(message: Option<String>) {
+    let (lock, cv) = &*GEOMETRY_STAGE;
+    if let Ok(mut stage) = lock.lock() {
+        stage.last_error = message;
+        cv.notify_all();
+    }
+}
+
+/// 等待队列清空（关闭 = 短等待；退出 = 长等待）。返回是否已全部落库。
+fn wait_geometry_drain(timeout: Duration) -> bool {
+    let (lock, cv) = &*GEOMETRY_STAGE;
+    let Ok(stage) = lock.lock() else {
+        return false;
+    };
+    let mut stage = stage;
+    let deadline = Instant::now() + timeout;
+    while stage.pending.is_some() {
+        let now = Instant::now();
+        if now >= deadline {
+            return false;
+        }
+        stage = match cv.wait_timeout(stage, deadline - now) {
+            Ok((next, _)) => next,
+            Err(_) => return false,
+        };
+    }
+    true
+}
+
+/// 解析「此刻应该落库的几何」：只做 Win32 查询与内存判断，**不碰数据库写锁**。
+/// - 最大化：保留最近一次正常矩形，只更新标记（没有历史值时退化为当前值）；
+/// - 普通态：完全屏外的位置不落库（与主窗口同口径），避免下次打开找不到窗口。
+fn resolve_geometry_snapshot(app: &AppHandle, win: &WebviewWindow) -> Option<WorkspaceGeometry> {
+    let current = geometry_from_window(win)?;
+    if current.maximized {
+        let mut saved = pending_geometry()
+            .or_else(|| app.try_state::<Arc<Db>>().and_then(|db| read_geometry(&db)))
+            .unwrap_or(current);
+        saved.maximized = true;
+        return Some(saved);
+    }
+    let monitors: Vec<(i32, i32, u32, u32)> = app
+        .available_monitors()
+        .map(|list| {
+            list.iter()
+                .map(|m| {
+                    (
+                        m.position().x,
+                        m.position().y,
+                        m.size().width,
+                        m.size().height,
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if !monitors.is_empty() && !is_rect_mostly_visible(&current.to_window_rect(), &monitors) {
+        return None;
+    }
+    Some(current)
 }
 
 /// 选择恢复目标：优先与保存矩形交集最大的显示器；完全不可见时回落到主显示器，
@@ -765,7 +984,8 @@ fn clamp_into_area(
 
 fn restore_geometry(app: &AppHandle, win: &WebviewWindow, db: &Db) {
     let scale = win.scale_factor().unwrap_or(1.0);
-    let Some(saved) = read_geometry(db) else {
+    // 快速关闭后重开：内存快照可能还没落库，优先它才不读到过期几何。
+    let Some(saved) = pending_geometry().or_else(|| read_geometry(db)) else {
         // 首次打开：按**当前显示器工作区**给出默认尺寸（DIP），再居中。
         // 旧实现按物理像素写 1180×760：125% 缩放下实际是 944×608 DIP，
         // 首次打开就低于最小尺寸，窗口被系统钳制后位置还会偏离中心。
@@ -837,53 +1057,11 @@ fn save_geometry(app: &AppHandle, win: &WebviewWindow, force: bool) {
     let Some(db) = app.try_state::<Arc<Db>>() else {
         return;
     };
-    let Some(current) = geometry_from_window(win) else {
+    let Some(geometry) = resolve_geometry_snapshot(app, win) else {
         return;
     };
-
-    if current.maximized {
-        // 保留关闭前的正常矩形，只记录最大化标记；没有历史矩形时记录当前值，
-        // 下次打开至少能恢复「最大化」状态，而不是回到默认居中。
-        let mut saved = read_geometry(&db).unwrap_or(current);
-        saved.maximized = true;
-        match serde_json::to_value(saved) {
-            Ok(value) => {
-                if let Err(error) = db.set_setting(SETTING_RECT, value) {
-                    tracing::debug!("保存工作空间最大化状态失败: {error}");
-                }
-            }
-            Err(error) => tracing::debug!("序列化工作空间窗口几何失败: {error}"),
-        }
-        return;
-    }
-
-    // 只保存大部分可见的位置（与主窗口 window_rect 同口径），屏外位置不落库。
-    let monitors: Vec<(i32, i32, u32, u32)> = app
-        .available_monitors()
-        .map(|list| {
-            list.iter()
-                .map(|m| {
-                    (
-                        m.position().x,
-                        m.position().y,
-                        m.size().width,
-                        m.size().height,
-                    )
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    if !monitors.is_empty() && !is_rect_mostly_visible(&current.to_window_rect(), &monitors) {
-        return;
-    }
-    match serde_json::to_value(current) {
-        Ok(value) => {
-            if let Err(error) = db.set_setting(SETTING_RECT, value) {
-                tracing::debug!("保存工作空间窗口几何失败: {error}");
-            }
-        }
-        Err(error) => tracing::debug!("序列化工作空间窗口几何失败: {error}"),
-    }
+    ensure_geometry_writer(db.inner().clone());
+    let _ = stage_geometry(geometry);
 }
 
 /// 工作台窗口外轮廓：普通态按当前预设半径（Win32 区域 + CSS 弧同源），
@@ -1013,7 +1191,117 @@ fn attach_events(app: &AppHandle, win: &WebviewWindow) {
             // 正文保存门禁由 WorkbenchShell 的 onCloseRequested 前端握手负责：
             // 有脏稿时同步 preventDefault → await flush → 成功后才二次 close；
             // 失败保持窗口。Rust 若同时 prevent_close 会与前端二次 close 竞争。
-            save_geometry(&app, &w, true);
+            //
+            // 关闭专项诊断（2026-11-19）：终端 tracing 是主证据，四段日志用来区分
+            // 「按钮没触发 close」、「触发但几何快照/落库卡住」、「销毁事件未到」。
+            // Alt+F4 与自绘按钮共用本事件，两者都会走到这里。
+            //
+            // 顺序约束（P0）：快照只做 Win32 查询 + 内存判断，**不在主线程写库**；
+            // 落库交给后台线程，最多等 CLOSE_GEOMETRY_WAIT 就放行销毁。
+            tracing::info!(label = WINDOW_LABEL, "CLOSE_REQUESTED");
+            crate::diagnostics::event(
+                crate::diagnostics::DiagLevel::Info,
+                "workbench",
+                "window-close",
+                "requested",
+            )
+            .window(WINDOW_LABEL)
+            .message("CLOSE_REQUESTED".to_string())
+            .emit();
+
+            let snapshot_started = Instant::now();
+            tracing::info!(label = WINDOW_LABEL, "CLOSE_GEOMETRY_SNAPSHOT_STARTED");
+            // 先通知诊断中心（非阻塞入队），再取快照：即使快照异常也能留下起点。
+            let snapshot = resolve_geometry_snapshot(&app, &w);
+            tracing::info!(
+                label = WINDOW_LABEL,
+                duration_ms = snapshot_started.elapsed().as_millis() as u64,
+                has_geometry = snapshot.is_some(),
+                "CLOSE_GEOMETRY_SNAPSHOT_COMPLETED"
+            );
+
+            let Some(geometry) = snapshot else {
+                tracing::warn!(label = WINDOW_LABEL, "CLOSE_GEOMETRY_PERSIST_SKIPPED");
+                crate::diagnostics::event(
+                    crate::diagnostics::DiagLevel::Warn,
+                    "workbench",
+                    "window-close",
+                    "geometry-unavailable",
+                )
+                .window(WINDOW_LABEL)
+                .message("CLOSE_GEOMETRY_PERSIST_SKIPPED".to_string())
+                .emit();
+                return;
+            };
+
+            let persist_started = Instant::now();
+            tracing::info!(label = WINDOW_LABEL, "CLOSE_GEOMETRY_PERSIST_STARTED");
+            match app.try_state::<Arc<Db>>() {
+                Some(db) => {
+                    ensure_geometry_writer(db.inner().clone());
+                    let revision = stage_geometry(geometry);
+                    let drained = wait_geometry_drain(CLOSE_GEOMETRY_WAIT);
+                    let duration_ms = persist_started.elapsed().as_millis() as u64;
+                    if drained {
+                        tracing::info!(
+                            label = WINDOW_LABEL,
+                            duration_ms,
+                            revision,
+                            "CLOSE_GEOMETRY_PERSIST_COMPLETED"
+                        );
+                        crate::diagnostics::event(
+                            crate::diagnostics::DiagLevel::Info,
+                            "workbench",
+                            "window-close",
+                            "geometry-persisted",
+                        )
+                        .window(WINDOW_LABEL)
+                        .message("CLOSE_GEOMETRY_PERSIST_COMPLETED".to_string())
+                        .metadata("durationMs", serde_json::json!(duration_ms))
+                        .emit();
+                    } else if let Some(error) = geometry_last_error() {
+                        // 真失败：写入线程报错且队列仍未清空。数据仍在内存里，
+                        // 但必须如实记录，不能把「没写进去」说成完成。
+                        tracing::warn!(
+                            label = WINDOW_LABEL,
+                            duration_ms,
+                            revision,
+                            error = %error,
+                            "CLOSE_GEOMETRY_PERSIST_FAILED"
+                        );
+                        crate::diagnostics::event(
+                            crate::diagnostics::DiagLevel::Warn,
+                            "workbench",
+                            "window-close",
+                            "geometry-persist-failed",
+                        )
+                        .window(WINDOW_LABEL)
+                        .message("CLOSE_GEOMETRY_PERSIST_FAILED".to_string())
+                        .metadata("durationMs", serde_json::json!(duration_ms))
+                        .emit();
+                    } else {
+                        // 排队未完成：不是失败，后台继续写；关窗不被它拖住。
+                        tracing::warn!(
+                            label = WINDOW_LABEL,
+                            duration_ms,
+                            revision,
+                            "CLOSE_GEOMETRY_PERSIST_DEFERRED"
+                        );
+                    }
+                }
+                None => {
+                    tracing::warn!(label = WINDOW_LABEL, "CLOSE_GEOMETRY_PERSIST_FAILED");
+                    crate::diagnostics::event(
+                        crate::diagnostics::DiagLevel::Warn,
+                        "workbench",
+                        "window-close",
+                        "geometry-persist-failed",
+                    )
+                    .window(WINDOW_LABEL)
+                    .message("CLOSE_GEOMETRY_PERSIST_FAILED".to_string())
+                    .emit();
+                }
+            }
         }
         tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
             save_geometry(&app, &w, false);
@@ -1022,6 +1310,17 @@ fn attach_events(app: &AppHandle, win: &WebviewWindow) {
             let _ = sync_workbench_frame(&w);
         }
         tauri::WindowEvent::Destroyed => {
+            // 关闭专项诊断：CLOSE_REQUESTED 之后是否真的走到销毁（含 Alt+F4 对照）。
+            tracing::info!(label = WINDOW_LABEL, "WINDOW_DESTROYED");
+            crate::diagnostics::event(
+                crate::diagnostics::DiagLevel::Info,
+                "workbench",
+                "window-close",
+                "destroyed",
+            )
+            .window(WINDOW_LABEL)
+            .message("WINDOW_DESTROYED".to_string())
+            .emit();
             // 工作台专属状态必须随窗口销毁一起清掉：否则下次创建（或句柄被系统
             // 复用时）会命中旧几何指纹/旧区域缓存，新窗口停在上一轮的裁剪形状上。
             reset_workbench_frame_state();
@@ -1232,6 +1531,99 @@ pub fn workbench_ui_ready(window: WebviewWindow) -> AppResult<()> {
         },
     )
     .emit();
+    Ok(())
+}
+
+/// 前端关闭链路允许上报的阶段（白名单）。
+///
+/// 与 `src/workbench/workbenchCloseGuard.ts`、`NovelManuscriptPanel.tsx` 的
+/// 阶段名一一对应；新增阶段必须同时改三处，避免出现「日志里有点、但查不到源头」。
+const CLOSE_TRACE_STAGES: &[&str] = &[
+    "CLOSE_GUARD_INSTALLED",
+    "CLOSE_GUARD_REQUESTED",
+    "CLOSE_GUARD_NO_FLUSH",
+    "CLOSE_GUARD_PREVENTED",
+    "CLOSE_GUARD_FLUSH_STARTED",
+    "CLOSE_GUARD_FLUSH_COMPLETED",
+    "CLOSE_GUARD_FLUSH_FAILED",
+    "CLOSE_GUARD_FLUSH_TIMEOUT",
+    "CLOSE_GUARD_RETRY_CLOSE_STARTED",
+    "CLOSE_GUARD_RETRY_CLOSE_ACCEPTED",
+    "CLOSE_GUARD_RETRY_CLOSE_FAILED",
+    "CLOSE_GUARD_ALLOWED",
+    "CLOSE_GUARD_DUPLICATE",
+    "CLOSE_GUARD_DESTROY_TIMEOUT",
+    "CLOSE_GUARD_DISPOSED",
+    "MANUSCRIPT_FLUSH_STARTED",
+    "MANUSCRIPT_FLUSH_SKIPPED_CLEAN",
+    "MANUSCRIPT_FLUSH_WAIT_EXISTING_SAVE",
+    "MANUSCRIPT_SAVE_STARTED",
+    "MANUSCRIPT_SAVE_COMPLETED",
+    "MANUSCRIPT_SAVE_FAILED",
+    "MANUSCRIPT_FLUSH_COMPLETED",
+];
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloseTracePayload {
+    pub stage: String,
+    pub attempt_id: Option<String>,
+    pub window_label: Option<String>,
+    pub route: Option<String>,
+    pub module: Option<String>,
+    pub duplicate: Option<bool>,
+    /// 浮点接收：JS 的 `Math.round` 仍是 number，serde 对 u64 不接受 1.0。
+    pub duration_ms: Option<f64>,
+    pub result: Option<String>,
+    pub detail: Option<String>,
+}
+
+/// 诊断字段清洗：去控制字符 + 截断。前端只传语义化短标签，这里再做一次边界。
+fn sanitize_trace_text(value: &str, max: usize) -> String {
+    value.chars().filter(|c| !c.is_control()).take(max).collect()
+}
+
+/// 关闭链路终端追踪：把前端阶段写进与 Rust 关闭日志同一个 `tracing` 流。
+///
+/// 为什么需要这条命令：前端 `logEvent` 只进诊断中心文件，终端看不到。关闭失败
+/// 复盘要求 `CLOSE_GUARD_*` 与 `CLOSE_REQUESTED / CLOSE_GEOMETRY_* /
+/// WINDOW_DESTROYED` 出现在同一条时间线上。
+///
+/// 安全边界：阶段名白名单、字段清洗截断、只允许工作台窗口调用。
+#[tauri::command]
+pub fn workbench_close_trace(window: WebviewWindow, payload: CloseTracePayload) -> AppResult<()> {
+    if window.label() != WINDOW_LABEL {
+        return Err(AppError::Validation(
+            "只有工作台窗口可以上报关闭诊断".to_string(),
+        ));
+    }
+    let stage = sanitize_trace_text(&payload.stage, 48);
+    if !CLOSE_TRACE_STAGES.iter().any(|known| *known == stage) {
+        tracing::warn!(label = WINDOW_LABEL, stage = %stage, "CLOSE_TRACE_UNKNOWN_STAGE");
+        return Err(AppError::Validation("未知的关闭诊断阶段".to_string()));
+    }
+    let attempt = sanitize_trace_text(payload.attempt_id.as_deref().unwrap_or(""), 32);
+    // 上报值仅用于交叉核对：形参 `window` 已经保证调用方就是工作台窗口，
+    // 若这里出现别的 label，说明前端上下文取错了，日志里要能一眼看出来。
+    let reported_label = sanitize_trace_text(payload.window_label.as_deref().unwrap_or(""), 32);
+    let route = sanitize_trace_text(payload.route.as_deref().unwrap_or(""), 48);
+    let module = sanitize_trace_text(payload.module.as_deref().unwrap_or(""), 48);
+    let result = sanitize_trace_text(payload.result.as_deref().unwrap_or(""), 32);
+    let detail = sanitize_trace_text(payload.detail.as_deref().unwrap_or(""), 64);
+    let duration_ms = payload.duration_ms.unwrap_or(0.0).max(0.0).round() as u64;
+    tracing::info!(
+        label = WINDOW_LABEL,
+        reported_label = %reported_label,
+        attempt = %attempt,
+        route = %route,
+        module = %module,
+        duplicate = payload.duplicate.unwrap_or(false),
+        duration_ms,
+        result = %result,
+        detail = %detail,
+        "{}",
+        stage
+    );
     Ok(())
 }
 
@@ -1768,7 +2160,16 @@ pub fn project_workspace_open_dev_workbench_ack(
 /// 不保证触发，因此在退出流程显式调用。
 pub fn persist_geometry_on_exit(app: &AppHandle) {
     if let Some(win) = app.get_webview_window(WINDOW_LABEL) {
+        let started = Instant::now();
         save_geometry(app, &win, true);
+        // 进程退出后内存队列随之消失：这里必须等（有时限）后台写入完成。
+        let drained = wait_geometry_drain(EXIT_GEOMETRY_WAIT);
+        tracing::info!(
+            label = WINDOW_LABEL,
+            duration_ms = started.elapsed().as_millis() as u64,
+            drained,
+            "CLOSE_GEOMETRY_EXIT_FLUSH"
+        );
     }
 }
 

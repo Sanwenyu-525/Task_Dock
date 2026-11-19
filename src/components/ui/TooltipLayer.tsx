@@ -24,6 +24,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { Placement } from "@floating-ui/react";
 import Popover from "./Popover";
+import { resolvePopupAlignment } from "./positioning";
 
 /** 悬停多久才出现：避免鼠标路过时闪一下。 */
 const SHOW_DELAY = 350;
@@ -151,29 +152,39 @@ export function computeTooltipPosition(
     return null;
   }
   const dist = Number.isFinite(offset) ? Math.min(MAX_OFFSET, Math.max(0, offset)) : DEFAULT_OFFSET;
-  const centerX = anchor.left + anchor.width / 2 - tip.width / 2;
-  const centerY = anchor.top + anchor.height / 2 - tip.height / 2;
+  const verticalSide = placement.startsWith("top") || placement.startsWith("bottom");
 
-  let left = centerX;
-  let top = centerY;
-  if (placement === "top" || placement === "bottom") {
-    left = centerX;
-    top = placement === "top" ? anchor.top - dist - tip.height : anchor.top + anchor.height + dist;
+  if (verticalSide) {
+    const top = placement.startsWith("top")
+      ? anchor.top - dist - tip.height
+      : anchor.top + anchor.height + dist;
     // 主方向放不下不 clamp（clamp 会压住图标），交给 flip 换边
     if (top < padding || top + tip.height > viewport.height - padding) return null;
-  } else {
-    top = centerY;
-    left = placement === "left" ? anchor.left - dist - tip.width : anchor.left + anchor.width + dist;
-    if (left < padding || left + tip.width > viewport.width - padding) return null;
+    // 横跨轴中心对齐 + 边界收敛走统一定位核心（start/center/end 只有一套实现）
+    const aligned = resolvePopupAlignment({
+      anchorLeft: anchor.left,
+      anchorWidth: anchor.width,
+      popupWidth: tip.width,
+      viewportWidth: viewport.width,
+      alignment: "center",
+      padding,
+    });
+    return { left: Math.round(aligned.left), top: Math.round(top) };
   }
 
-  // 居中后的横跨轴收敛：顺序不能反，否则先 clamp 再居中会再次偏移
-  const maxLeft = Math.max(padding, viewport.width - tip.width - padding);
-  const maxTop = Math.max(padding, viewport.height - tip.height - padding);
-  return {
-    left: Math.round(Math.min(maxLeft, Math.max(padding, left))),
-    top: Math.round(Math.min(maxTop, Math.max(padding, top))),
-  };
+  const left = placement.startsWith("left")
+    ? anchor.left - dist - tip.width
+    : anchor.left + anchor.width + dist;
+  if (left < padding || left + tip.width > viewport.width - padding) return null;
+  const aligned = resolvePopupAlignment({
+    anchorLeft: anchor.top,
+    anchorWidth: anchor.height,
+    popupWidth: tip.height,
+    viewportWidth: viewport.height,
+    alignment: "center",
+    padding,
+  });
+  return { left: Math.round(left), top: Math.round(aligned.left) };
 }
 
 interface TipState {
@@ -333,10 +344,19 @@ export default function TooltipLayer() {
     // 尺寸变量（--popover-max-w）在首帧后才生效，下一帧复测一次，避免按旧宽度居中
     raf = window.requestAnimationFrame(measure);
     window.addEventListener("resize", measure);
+    // 显式定位路径不再走 autoUpdate：锚点尺寸（字体加载/标签变长）与气泡尺寸
+    // 变化必须自己监听，否则会停在旧坐标。
+    const ro =
+      typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(() => measure())
+        : null;
+    ro?.observe(tip.el);
+    if (floatingRef.current) ro?.observe(floatingRef.current);
     return () => {
       alive = false;
       window.cancelAnimationFrame(raf);
       window.removeEventListener("resize", measure);
+      ro?.disconnect();
     };
   }, [tip]);
 

@@ -7,6 +7,7 @@ import { useEffect, useId, useRef, useState, type CSSProperties, type KeyboardEv
 import { Check } from "lucide-react";
 import Popover from "./Popover";
 import { scrollIntoViewIfNeeded } from "./overlay";
+import type { PopupAlignment, PopupSide } from "./positioning";
 
 interface DropdownMenuItemBase {
   key: string;
@@ -49,8 +50,17 @@ export interface DropdownMenuProps {
   trigger: (props: DropdownMenuTriggerProps) => ReactNode;
   items: ReadonlyArray<DropdownMenuItem>;
   menuLabel?: string;
-  /** bottom/top = 相对触发器水平居中；start/end 对齐左右缘 */
+  /** bottom/top = 相对触发器水平居中；start/end 对齐左右缘（旧接口，仍有效） */
   placement?: "bottom" | "bottom-start" | "bottom-end" | "top" | "top-start" | "top-end" | "right-start" | "right-end";
+  /** 首选主方向与对齐（优先于 placement）：操作菜单默认 bottom-end（右缘对齐） */
+  side?: PopupSide;
+  alignment?: PopupAlignment;
+  collisionPadding?: number;
+  /** 菜单高度上限；不传时跟随本次可用高度（超出即滚动） */
+  maxHeight?: number;
+  /** 主方向放不下时是否允许翻到左右侧边（默认 true）；指针锚定的右键菜单
+   *  必须为 false：菜单应留在指针附近上下翻转，而不是跑到指针左侧/右侧。 */
+  flipToSide?: boolean;
   matchWidth?: boolean;
   /** 菜单目标最小宽度（px）：按最长选项文本 + 图标 + 勾选标记 + 内边距声明，
    *  内容更宽时仍会自然增长，绝不截断选项 */
@@ -65,6 +75,11 @@ export default function DropdownMenu({
   items,
   menuLabel,
   placement = "bottom-end",
+  side,
+  alignment,
+  collisionPadding,
+  maxHeight,
+  flipToSide = true,
   matchWidth = false,
   menuMinWidth,
   className,
@@ -202,6 +217,11 @@ export default function DropdownMenu({
         onOpenChange={setOpenState}
         anchorRef={anchorRef}
         placement={placement}
+        side={side}
+        alignment={alignment}
+        collisionPadding={collisionPadding}
+        maxHeight={maxHeight}
+        flipToSide={flipToSide}
         matchWidth={matchWidth}
         style={menuMinWidth ? ({ "--menu-min-w": `${menuMinWidth}px` } as CSSProperties) : undefined}
         className={`ui-menu-popover ${className ?? ""}`}

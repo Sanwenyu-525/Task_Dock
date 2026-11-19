@@ -8,8 +8,11 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useRef, type ReactNode } from "react";
 
 import TargetMenu from "./TargetMenu";
+import { resetOverlayStack } from "../../lib/overlayStack";
+import { useOverlayLayer } from "../ui/overlay";
 import type { TaskNavLink } from "../../lib/navigation";
 
 function linkFix(id: string, display_name: string): TaskNavLink {
@@ -50,6 +53,13 @@ function linkFix(id: string, display_name: string): TaskNavLink {
 
 const LINKS = [linkFix("vscode", "VS Code"), linkFix("wechat", "微信")];
 
+/** 模拟真实调用方（TaskItem 的 Popover）：菜单的弹层栈由外层弹层托管。 */
+function MenuLayerHost({ onClose, children }: { onClose: () => void; children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useOverlayLayer("menu", true, onClose, ref);
+  return <div ref={ref}>{children}</div>;
+}
+
 function renderMenu(handlers?: {
   onNavigate?: (l: TaskNavLink) => void;
   onClose?: () => void;
@@ -58,12 +68,14 @@ function renderMenu(handlers?: {
   const onNavigate = handlers?.onNavigate ?? vi.fn();
   const onClose = handlers?.onClose ?? vi.fn();
   render(
-    <TargetMenu
-      links={LINKS}
-      onNavigate={onNavigate}
-      onClose={onClose}
-      onOpenAll={handlers?.onOpenAll}
-    />,
+    <MenuLayerHost onClose={onClose}>
+      <TargetMenu
+        links={LINKS}
+        onNavigate={onNavigate}
+        onClose={onClose}
+        onOpenAll={handlers?.onOpenAll}
+      />
+    </MenuLayerHost>,
   );
   return { onNavigate, onClose };
 }
@@ -77,6 +89,7 @@ async function expectFocusedIdx(idx: string) {
 
 afterEach(() => {
   cleanup();
+  resetOverlayStack();
 });
 
 describe("TargetMenu 键盘交互", () => {

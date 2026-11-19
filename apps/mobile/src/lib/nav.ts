@@ -5,6 +5,8 @@
 // 入口注册表需要「声明的路由确实在路由表里」这条可断言契约，纯类型做不到运行期校验。
 export const ROUTE_KEYS = [
   "pairing",
+  // Personal Hub（基线 §6.2）：扫码加入电脑 Hub，与局域网同步配对是两条独立链路。
+  "hub_pairing",
   "sync",
   "files",
   "conflict",

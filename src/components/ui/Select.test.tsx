@@ -107,27 +107,27 @@ describe("Select 基元", () => {
     expect(screen.queryByRole("listbox")).toBeNull();
   });
 
-  // 右对齐是共享默认：浮层右边缘跟触发按钮右边缘一致，向左展开。
-  it("默认右对齐（bottom-end），align 可覆盖为 start", async () => {
+  // 左对齐是共享默认：浮层左边缘跟触发按钮左边缘一致，向右展开。
+  it("默认左对齐（bottom-start），align=end 可覆盖为右对齐", async () => {
     const user = userEvent.setup();
     render(<Harness />);
     await user.click(screen.getByRole("combobox", { name: "来源筛选" }));
     const popover = document.querySelector(".ui-select-popover") as HTMLElement;
-    expect(popover.getAttribute("data-placement")).toBe("bottom-end");
+    expect(popover.getAttribute("data-placement")).toBe("bottom-start");
 
     cleanup();
     render(
       <Select
-        ariaLabel="左对齐覆盖"
-        align="start"
+        ariaLabel="右对齐覆盖"
+        align="end"
         value="codex"
         options={OPTIONS}
         onChange={() => {}}
       />,
     );
-    await user.click(screen.getByRole("combobox", { name: "左对齐覆盖" }));
+    await user.click(screen.getByRole("combobox", { name: "右对齐覆盖" }));
     expect(document.querySelector(".ui-select-popover")?.getAttribute("data-placement")).toBe(
-      "bottom-start",
+      "bottom-end",
     );
   });
 

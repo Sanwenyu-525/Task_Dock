@@ -10,10 +10,11 @@
 
 | 部分 | 文件 | 职责 |
 |---|---|---|
-| 看门狗（经典脚本） | `public/boot/boot-watchdog.js` | 状态机、计时器、错误捕获、诊断直写、恢复按钮接线（先于模块脚本执行） |
-| TS 镜像 | `src/boot/bootProtocol.ts` | React 侧类型化入口 `bootStage/bootReady/bootFail`（API 缺失 no-op 安全） |
+| 看门狗（经典脚本） | `public/boot/boot-watchdog.js` | 状态机、计时器、错误捕获、诊断直写、恢复按钮接线（先于模块脚本执行）；资源/CSP/入口脚本采样与动态导入状态机（2026-11-19 补） |
+| TS 镜像 | `src/boot/bootProtocol.ts` | React 侧类型化入口 `bootStage/bootTiming/importState/bootReady/bootFail`（API 缺失 no-op 安全） |
 | 主窗占位界面 | `index.html` | 主题提示读取器、四态 DOM/CSS、死人在场保险、role 翻转 |
 | 工作台占位界面 | `workspace.html` | 同一份看门狗的第二个宿主：主题提示、四态 DOM/CSS、死人在场保险、role 翻转（2026-11-17 补） |
+| 工作台启动隔离 | `src/workspace/bootstrap.ts` | 极轻量入口（零业务静态依赖），记录 bootstrap/main-import 阶段，动态 `import("./main")` 并捕获 rejection（2026-11-19 补） |
 
 ### 1.1 工作台窗口（2026-11-17）
 
@@ -28,6 +29,16 @@
   调用 `bootStage("settings")` + `bootReady()`；失败时外壳的 `wb-boot` 错误卡接管渲染。
 - 看门狗、20s 死人在场保险与 role 翻转规则与主窗口一致；工作台入口的 `main.tsx`
   补 `bootStage("modules")` / `bootStage("mounted")` / 同步抛错 `bootFail`。
+- **启动隔离（2026-11-19）**：入口链改为 `boot-watchdog.js → bootstrap.ts → 动态
+  import("./main")`。此前直接加载 `main.tsx`，整个静态图（163 文件 / 455 import 边）
+  下载解析完成前没有任何阶段信号，诊断只能显示「模块脚本尚未执行」。bootstrap
+  不静态导入 React/外壳/页面，入口一执行即记录 `bootstrap-start`、`main-import-start`，
+  resolve/fail 记 `main-import-resolved`/`main-import-failed`；失败调用 `fail()` 写
+  `UI_BOOT_FATAL`。生产构建中入口 chunk 仅 ~1.7KB，main 保持独立动态 chunk。
+- 阶段细化：`main.tsx` 对 `setWindowHostRole`/`installFeatureRegistry`/
+  `installNativeDragBridge`/`initLocale`/`initWorkbenchWindowFrame` 分别记
+  `init:<fn>:start`/`:end` 与耗时（`state.timings`），另记 `react-root`。所有时间取自
+  watchdog 的单一 `performance.now()` 时间轴，不混用 `Date.now()`。
 
 
 ## 2. 状态机（`#boot-splash[data-state]`）
@@ -48,8 +59,13 @@
 ## 3. 就绪语义（不看出错修正）
 
 - **「`#root` 有子元素」不是就绪**（设置加载门 ShellBootState 期间工作区未就绪，V0 缺陷）。
-- 阶段信号（只记时间不写诊断）：`modules`（main.tsx 开始执行）→ `mounted`（render 发起）
-  → `settings`（设置读取落定）。
+- 阶段信号（只记时间不写诊断，首见为准）：`bootstrap-start` → `main-import-start` →
+  `main-import-resolved`/`main-import-failed` → `modules`（main.tsx 模块主体开始执行，
+  不再是「加载开始」）→ `init:<fn>:start`/`:end` → `react-root` → `mounted`（render 发起）
+  → `settings`（设置读取落定）→ `ready`（bootReady）。`modules` 语义已收窄，加载阶段的
+  细分由 bootstrap 阶段 + watchdog 资源采样覆盖。
+- 动态导入状态机 `state.mainImport`：`not-requested → requested → pending →
+  resolved/rejected`，禁止回退。区分「请求在途（pending）」与「从未请求」。
 - `ready()`：设置落定（成功 → 工作区；失败 → ShellBootState 重试 UI）或 ErrorBoundary
   接管渲染时由 React 侧调用；幂等。
 - `fail()`：仅 React 无法渲染的致命失败（main.tsx 同步抛错、入口资源加载失败）。
@@ -76,7 +92,39 @@
 | `boot_fatal` | 显式 fail() 或入口资源加载失败 | ERROR `UI_BOOT_FATAL` |
 
 watchdog 经 `__TAURI_INTERNALS__.invoke("diagnostics_record")` 直写，不经 React 管道；
-React 侧既有诊断（ErrorBoundary/globalErrors）不变。复制诊断内容只含耗时/阶段/错误摘要/UA。
+React 侧既有诊断（ErrorBoundary/globalErrors）不变。
+
+### 6.1 诊断采样（2026-11-19）
+
+为定位「模块脚本尚未执行」，watchdog 额外采集（全部限量、限长、同源过滤、去 query，
+不记录任务正文/文件路径/凭证，字段容错）：
+
+- **资源请求**：`performance.getEntriesByType("resource")` 快照 + `PerformanceObserver`
+  增量；每条形如 `resourceName/initiatorType/startTime/duration/responseStatus/
+  transferSize/decodedBodySize`。`responseStatus` 等字段在运行时不支持时为 null。
+  `pendingExpected()` 列出首屏关键资源（`@vite/client`/`bootstrap.ts`/`main.tsx`）中
+  尚未出现在采样里的项——表示「请求在途/未见完成」，不能当成没请求。
+- **CSP**：监听 `securitypolicyviolation`，记 `blockedURI/violatedDirective/
+  effectiveDirective/sourceFile/lineNumber`。**只记录不放宽 CSP**，`devCsp` 的修改必须
+  有实际拦截证据。
+- **入口脚本事件**：捕获阶段的 `load`/`error`，区分入口资源加载成功与失败。
+- **富错误**：动态导入失败记录错误 name/message/stack，stack 去 query、绝对路径压成
+  basename、限 6 行 800 字符后随 `UI_BOOT_FATAL` 上报。
+- `boot_timeout` 的 metadata 附 `mainImport`/资源计数/失败数/pending 关键资源/CSP 数/
+  阶段摘要，`boot_fatal` 附 errorName/错误栈，便于诊断中心离线分析。
+
+### 6.2 复制诊断格式（固定）
+
+```
+Task Dock 启动诊断
+状态: / 总耗时: / 页面 URL: / 页面标题: / WebView UA: / document.readyState:
+Bootstrap: / Main import: / Main module: / React root: / React mounted:
+Settings settled: / Workbench ready:
+初始化函数耗时: / 资源请求总数: / Pending 请求: / 失败请求: / CSP 拦截:
+捕获错误: / 最近资源请求:
+```
+
+资源、错误、栈均限长，避免诊断内容过大。
 
 ## 7. 已知边界
 

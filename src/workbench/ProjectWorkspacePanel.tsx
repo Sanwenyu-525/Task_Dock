@@ -135,6 +135,11 @@ export interface ProjectWorkspacePanelProps {
    * await 落盘；返回 false 则取消本次项目切换。壳层只保存回调，不重建导航状态机。
    */
   registerProjectLeaveGuard?: (guard: (() => Promise<boolean>) | null) => void;
+  /**
+   * 向壳层注册「当前模块」读取器：关闭诊断需要知道卡在哪个模块（正文/概览/…）。
+   * 只读模块 ID，不含正文或项目数据；壳层关闭协调器安装一次、经 ref 调用。
+   */
+  registerCloseModule?: (read: (() => string) | null) => void;
 }
 
 export default function ProjectWorkspacePanel({
@@ -149,6 +154,7 @@ export default function ProjectWorkspacePanel({
   moduleRequest = null,
   onNotice,
   registerProjectLeaveGuard,
+  registerCloseModule,
 }: ProjectWorkspacePanelProps) {
   const selectedId = project?.id ?? null;
   const profile = useMemo(() => resolveWorkspaceProfile(project?.kind), [project?.kind]);
@@ -223,6 +229,12 @@ export default function ProjectWorkspacePanel({
     registerProjectLeaveGuard(() => projectLeaveGuardRef.current());
     return () => registerProjectLeaveGuard(null);
   }, [registerProjectLeaveGuard]);
+  // 关闭诊断上下文：只暴露模块 ID（不含正文），壳层在关闭事务开始时读取。
+  useEffect(() => {
+    if (!registerCloseModule) return;
+    registerCloseModule(() => activeModuleRef.current);
+    return () => registerCloseModule(null);
+  }, [registerCloseModule]);
 
   // 项目切换：清空模块覆盖与一次性交互状态（旧项目的编辑表单不得套到新项目）。
   useEffect(() => {

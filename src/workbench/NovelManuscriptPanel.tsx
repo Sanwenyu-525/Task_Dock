@@ -34,8 +34,67 @@ import {
 } from "../lib/bridge";
 import { Dialog } from "../components/ui";
 import { errorMessage } from "../lib/errors";
+import { logEvent } from "../lib/diagnostics";
+import { traceWorkbenchClose } from "../lib/closeTrace";
 
 const AUTOSAVE_MS = 900;
+
+/**
+ * 诊断用的脱敏章节标识：只保留前 8 位，足以串联同一章的保存链路，
+ * 但不含正文、项目名或文件路径。
+ */
+function traceChapterId(id: string | null): string | null {
+  if (!id) return null;
+  return id.length <= 8 ? id : id.slice(0, 8);
+}
+
+function elapsedMs(startedAt: number): number {
+  try {
+    return Math.max(0, Math.round(performance.now() - startedAt));
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * 正文保存链路诊断：诊断中心（结构化可检索）+ 终端（与 Rust 关闭日志同一时间线）。
+ *
+ * 隐私边界：只记录章节短 ID、脏稿/在途/归档等状态与耗时，**绝不记录正文**。
+ * 这条链路只用于回答「关闭时到底卡在哪个 await」。
+ */
+function manuscriptTrace(
+  event: string,
+  fields: {
+    chapterId?: string | null;
+    dirty?: boolean;
+    inflight?: boolean;
+    archived?: boolean;
+    durationMs?: number;
+    result?: string;
+  },
+): void {
+  const metadata: Record<string, string | number | boolean> = {
+    chapter: traceChapterId(fields.chapterId ?? null) ?? "none",
+    dirty: fields.dirty ?? false,
+    inflight: fields.inflight ?? false,
+    archived: fields.archived ?? false,
+  };
+  if (fields.result) metadata.result = fields.result;
+  logEvent({
+    level: event.endsWith("_FAILED") ? "WARN" : "INFO",
+    module: "workbench",
+    action: "manuscript-save",
+    event: event.toLowerCase().replace(/_/g, "-"),
+    duration_ms: fields.durationMs,
+    metadata,
+  });
+  traceWorkbenchClose(event, {
+    module: "manuscript",
+    detail: `chapter=${traceChapterId(fields.chapterId ?? null) ?? "none"}`,
+    durationMs: fields.durationMs,
+    result: fields.result ?? null,
+  });
+}
 
 type NoticeKind = "ok" | "error" | "info";
 type SaveState = "idle" | "pending" | "saving" | "saved" | "error";
@@ -196,6 +255,13 @@ export default function NovelManuscriptPanel({
 
   const persistOnce = useCallback(
     async (chapterId: string, targetProject: string, content: string): Promise<boolean> => {
+      const startedAt = performance.now();
+      // 只记章节短 ID 与状态；content 绝不上送。
+      manuscriptTrace("MANUSCRIPT_SAVE_STARTED", {
+        chapterId,
+        dirty: true,
+        archived: archivedRef.current,
+      });
       if (mountedRef.current) setSaveState("saving");
       try {
         const result = await novelChapterSaveContent(chapterId, content);
@@ -214,8 +280,20 @@ export default function NovelManuscriptPanel({
             setSaveState(draftRef.current === content ? "saved" : "pending");
           }
         }
+        manuscriptTrace("MANUSCRIPT_SAVE_COMPLETED", {
+          chapterId,
+          durationMs: elapsedMs(startedAt),
+          result: "ok",
+        });
         return true;
       } catch (e) {
+        // 保存失败的原始 message 可能含路径：只进诊断中心（Rust 侧会过滤），
+        // 终端 trace 只记 result=error。
+        manuscriptTrace("MANUSCRIPT_SAVE_FAILED", {
+          chapterId,
+          durationMs: elapsedMs(startedAt),
+          result: "error",
+        });
         if (mountedRef.current) setSaveState("error");
         onNotice("error", `正文保存失败：${errorMessage(e)}`);
         return false;
@@ -233,29 +311,61 @@ export default function NovelManuscriptPanel({
     const chapterId = selectedRef.current;
     if (!chapterId) return true;
     const targetProject = projectRef.current;
-    if (archivedRef.current) {
-      if (draftRef.current === savedRef.current) return true;
+    const startedAt = performance.now();
+    manuscriptTrace("MANUSCRIPT_FLUSH_STARTED", {
+      chapterId,
+      dirty: draftRef.current !== savedRef.current,
+      inflight: savePromiseRef.current !== null,
+      archived: archivedRef.current,
+    });
+    /** 所有出口都留一条完成记录：STARTED 没有配对就是「卡在某个 await」的直接证据。 */
+    const done = (ok: boolean, result: string): boolean => {
+      manuscriptTrace("MANUSCRIPT_FLUSH_COMPLETED", {
+        chapterId,
+        dirty: draftRef.current !== savedRef.current,
+        inflight: savePromiseRef.current !== null,
+        archived: archivedRef.current,
+        durationMs: elapsedMs(startedAt),
+        result,
+      });
+      return ok;
+    };
+    /** 归档只读：脏稿无法写库，必须明确拒绝（不能静默丢弃）。 */
+    const archivedBlocked = (): boolean => {
       if (mountedRef.current) setSaveState("error");
       onNotice("error", "项目已归档，未保存的正文无法写入；请先恢复为进行中");
-      return false;
+      return done(false, "archived");
+    };
+    if (archivedRef.current) {
+      if (draftRef.current === savedRef.current) {
+        manuscriptTrace("MANUSCRIPT_FLUSH_SKIPPED_CLEAN", { chapterId, archived: true });
+        return done(true, "clean");
+      }
+      return archivedBlocked();
     }
     while (true) {
       if (selectedRef.current !== chapterId || projectRef.current !== targetProject) {
-        return true; // 已离开该章节/项目，旧请求不再影响新界面。
+        // 已离开该章节/项目，旧请求不再影响新界面。
+        return done(true, "left");
       }
       if (archivedRef.current) {
-        if (mountedRef.current) setSaveState("error");
-        onNotice("error", "项目已归档，未保存的正文无法写入；请先恢复为进行中");
-        return false;
+        return archivedBlocked();
       }
       if (draftRef.current === savedRef.current) {
         if (mountedRef.current) {
           setSaveState((s) => (s === "pending" || s === "saving" ? "saved" : s));
         }
-        return true;
+        manuscriptTrace("MANUSCRIPT_FLUSH_SKIPPED_CLEAN", { chapterId });
+        return done(true, "clean");
       }
       if (savePromiseRef.current) {
-        if (!(await savePromiseRef.current)) return false;
+        // 复用同一笔在途保存：并发 flush 不产生第二次写入。
+        manuscriptTrace("MANUSCRIPT_FLUSH_WAIT_EXISTING_SAVE", {
+          chapterId,
+          dirty: true,
+          inflight: true,
+        });
+        if (!(await savePromiseRef.current)) return done(false, "inflight-failed");
         continue;
       }
       const content = draftRef.current;
@@ -263,7 +373,7 @@ export default function NovelManuscriptPanel({
       savePromiseRef.current = promise;
       const ok = await promise;
       if (savePromiseRef.current === promise) savePromiseRef.current = null;
-      if (!ok) return false;
+      if (!ok) return done(false, "save-failed");
       // 继续循环：若用户在保存期间又输入，自动提交最新草稿。
     }
   }, [clearTimer, onNotice, persistOnce]);

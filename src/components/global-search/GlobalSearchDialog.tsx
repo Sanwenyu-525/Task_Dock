@@ -429,6 +429,8 @@ export function GlobalSearchDialog({
           anchorRef={anchorRef}
           placement="bottom-start"
           offsetPx={6}
+          maxWidth={560}
+          maxHeight={520}
           className="gs-popover"
           role="dialog"
           ariaLabel="全局搜索"

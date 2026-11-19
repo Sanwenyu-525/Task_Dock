@@ -52,6 +52,7 @@ import { useLocale } from "../../hooks/useLocale";
 import { useUiStore } from "../../store/useUiStore";
 import { Checkbox } from "../ui/Toggle";
 import { Dialog, ConfirmDialog } from "../ui/Dialog";
+import PointerMenu from "../ui/PointerMenu";
 import SearchField from "../ui/SearchField";
 import Select from "../ui/Select";
 
@@ -98,38 +99,27 @@ function FreeMenu({
   menuLabel: string;
   onClose: () => void;
 }) {
-  // 动态导入会破坏菜单首帧；这里直接内联一个受控菜单（走 overlayStack 的 Dialog 太重，
-  // 行级菜单改用同一套语义 Token 的轻量弹层，点击外部/Escape 关闭）。
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const onDown = (e: MouseEvent) => {
-      if (!ref.current?.contains(e.target as Node)) onClose();
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("mousedown", onDown, true);
-    window.addEventListener("keydown", onKey, true);
-    return () => {
-      window.removeEventListener("mousedown", onDown, true);
-      window.removeEventListener("keydown", onKey, true);
-    };
-  }, [onClose]);
+  // 指针定位、Portal、Escape（进弹层栈，绝不触发窗口级隐藏）、外部点击与焦点陷阱
+  // 全部交给 PointerMenu；本组件只保留回收站菜单的项渲染与动作顺序。
+  const firstEnabled = items.findIndex((item) => !item.disabled);
   return (
-    <div
-      ref={ref}
+    <PointerMenu
+      open
+      x={x}
+      y={y}
+      label={menuLabel}
+      onClose={onClose}
       className="rc-ctx-menu"
-      role="menu"
-      aria-label={menuLabel}
-      style={{ left: x, top: y }}
+      minWidth={140}
     >
-      {items.map((item) => (
+      {items.map((item, index) => (
         <button
           key={item.key}
           type="button"
           role="menuitem"
           className={`rc-ctx-item${item.danger ? " is-danger" : ""}`}
           disabled={item.disabled}
+          {...(index === firstEnabled ? { "data-autofocus": true } : {})}
           onClick={() => {
             onClose();
             item.onSelect?.();
@@ -139,7 +129,7 @@ function FreeMenu({
           <span>{item.label}</span>
         </button>
       ))}
-    </div>
+    </PointerMenu>
   );
 }
 

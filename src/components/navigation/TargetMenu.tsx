@@ -5,7 +5,6 @@ import { Globe, FileText, FolderOpen, AppWindow, ChevronRight, Rocket } from "lu
 import AgentIcon from "../ui/AgentIcon";
 import type { TaskNavLink, NavigationTargetType } from "../../lib/navigation";
 import { avatarHue, buildTargetMenuItems, moveMenuIndex, stateBadge } from "../../lib/navigation";
-import { useOverlayLayer } from "../ui/overlay";
 
 export function TargetTypeIcon({ type, size = 12 }: { type: NavigationTargetType; size?: number }) {
   switch (type) {
@@ -76,8 +75,8 @@ export default function TargetMenu({ links, onNavigate, onClose, onOpenAll }: Pr
   const [index, setIndex] = useState(0);
   const ref = useRef<HTMLDivElement>(null);
 
-  // 弹层栈：本菜单属于「下拉菜单」层，Escape 只关它，不会顺手把主窗口藏进托盘。
-  useOverlayLayer("menu", true, onClose, ref);
+  // 弹层栈、Portal、外部点击关闭与焦点恢复由外层 Popover 统一负责：
+  // 本组件只保留菜单内容与键盘导航，避免同一层被注册两次。
 
   // 条目集合变化（目标增删）时收敛索引，避免越界后 Enter 无响应
   useEffect(() => {
