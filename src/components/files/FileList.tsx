@@ -58,6 +58,9 @@ interface MarqueeSession {
   pointerId: number;
   startClientX: number;
   startClientY: number;
+  /** pointerdown 时锁定的内容坐标；预览期间不因容器位移/滚动重算起点。 */
+  startContentX: number;
+  startContentY: number;
   ctrlKey: boolean;
   shiftKey: boolean;
   started: boolean;
@@ -595,15 +598,13 @@ export default function FileList({
     // 指针只在内容区（表头之下、滚动条之外）参与几何计算；视觉矩形同样钳制。
     const x = Math.min(Math.max(clientX, body.left), rightBound);
     const y = Math.min(Math.max(clientY, topBound), bottomBound);
-    const start = toMarqueeContentPoint(
-      session.startClientX,
-      session.startClientY,
-      body,
-      el.scrollTop,
-      head,
-    );
     const current = toMarqueeContentPoint(x, y, body, el.scrollTop, head);
-    const contentRect = normalizeMarqueeRect(start.x, start.y, current.x, current.y);
+    const contentRect = normalizeMarqueeRect(
+      session.startContentX,
+      session.startContentY,
+      current.x,
+      current.y,
+    );
     const hits = marqueeHitTest(entriesRef.current, dirPath, contentRect, marqueeGeometry(el));
     const view: MarqueeViewportRect = {
       left: Math.min(session.startClientX, x),
@@ -703,17 +704,21 @@ export default function FileList({
     if (target.closest("[data-fw-path], .fw-list-head, button, a, input, textarea, select, [data-fw-no-marquee]")) {
       return;
     }
-    const rect = el.getBoundingClientRect();
-    const xInBody = e.clientX - rect.left;
-    const yInBody = e.clientY - rect.top;
+    const body = marqueeBodyRect(el);
+    const head = viewMode === "list" ? LIST_HEAD_H : 0;
+    const xInBody = e.clientX - body.left;
+    const yInBody = e.clientY - body.top;
     if (xInBody < 0 || yInBody < 0 || xInBody > el.clientWidth || yInBody > el.clientHeight) return;
-    if (yInBody < (viewMode === "list" ? LIST_HEAD_H : 0)) return;
+    if (yInBody < head) return;
 
     e.preventDefault();
+    const startContent = toMarqueeContentPoint(e.clientX, e.clientY, body, el.scrollTop, head);
     const session: MarqueeSession = {
       pointerId: e.pointerId,
       startClientX: e.clientX,
       startClientY: e.clientY,
+      startContentX: startContent.x,
+      startContentY: startContent.y,
       ctrlKey: e.ctrlKey || e.metaKey,
       shiftKey: e.shiftKey,
       started: false,

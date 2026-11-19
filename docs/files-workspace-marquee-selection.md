@@ -30,10 +30,13 @@ idle --空白按下--> pending --移动 >= 5px--> active --pointerup--> idle（c
 ```
 
 - 只有鼠标左键（`pointerType === "mouse"` 且 `button === 0`）可以启动框选。
+- pointerdown 时即锁定列表内容坐标起点；后续 `preview` 只重算当前点，不因操作条出现、容器位移或自动滚动重算起点，避免框选范围整体漂移。
 - `start` 在越过阈值后才发给 `FilePane`；`preview` 由 `requestAnimationFrame` 合并；
   `commit` 在 pointerup 时提交最终集合。
 - 取消时完整恢复 `pointerdown` 时的 `{ paths, anchor }`，不仅清空矩形。
 - 组件卸载、窗口 blur、`pointercancel`、Escape 都走同一清理函数；自动滚动与移动帧一起取消。
+
+> 2026-11-19 修复：空选择保留 `.fw-selection-bar.is-empty` 占位，避免首次选中时操作条插入改变列表几何；同时在 pointerdown 锁定内容起点，防止容器位移或自动滚动让选区起点漂移。两项共同覆盖 b09 首次框选偏移问题。
 
 ## 3. 选择语义
 

@@ -101,6 +101,40 @@ describe("FileList 矩形框选", () => {
     expect(document.querySelector(".fw-marquee")).toBeNull();
   });
 
+  it("pointerdown 后锁定内容起点：容器中途位移不会改变选区起点", async () => {
+    const onMarqueeChange = vi.fn();
+    const { container } = render(<FileList {...baseProps({ onMarqueeChange })} />);
+    const body = stubBody(container);
+
+    fireEvent.pointerDown(body, { button: 0, clientX: 10, clientY: 56, pointerId: 1 });
+    // 模拟首次选中时操作条插入/列表整体下移：容器 top 增加 29px、可视高度减少 29px。
+    Object.defineProperty(body, "clientHeight", { value: 331, configurable: true });
+    body.getBoundingClientRect = () =>
+      ({
+        left: 0,
+        top: 29,
+        right: 600,
+        bottom: 360,
+        width: 600,
+        height: 331,
+        x: 0,
+        y: 29,
+        toJSON: () => ({}),
+      }) as DOMRect;
+
+    fireEvent.pointerMove(window, { clientX: 300, clientY: 110, pointerId: 1 });
+    await waitFor(() => {
+      expect(onMarqueeChange).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          phase: "preview",
+          paths: [`${DIR}\\file-001.txt`, `${DIR}\\file-002.txt`],
+        }),
+      );
+    });
+    fireEvent.pointerUp(window, { clientX: 300, clientY: 110, pointerId: 1 });
+    await waitFor(() => expect(document.querySelector(".fw-marquee")).toBeNull());
+  });
+
   it("未超过 5px 阈值的空白点击不进入框选，只清空选择", async () => {
     const onMarqueeChange = vi.fn();
     const onBlankClick = vi.fn();
@@ -219,6 +253,14 @@ describe("行视觉与状态通道（CSS 契约 + active/selected 分离）", ()
     const close = css.indexOf("}", open);
     return css.slice(open + 1, close);
   }
+
+  it("空选择操作条保持占位高度，首次选中不压缩列表可视区", () => {
+    const bar = rule(".fw-selection-bar {");
+    expect(bar).toContain("flex: 0 0 auto");
+    expect(bar).toContain("min-height: 28px");
+    const empty = rule(".fw-selection-bar.is-empty");
+    expect(empty).toContain("visibility: hidden");
+  });
 
   it("行槽不增加外边距，交互背景用 inset ::before 绘制", () => {
     const row = rule(".fw-row {");
