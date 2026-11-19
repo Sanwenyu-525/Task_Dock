@@ -235,3 +235,123 @@ MCP bridge 真实监听 `127.0.0.1:6946` 并生成 transport；stdio 客户端�
   `tauri::async_runtime::JoinError` 找不到（非本任务模块），随后 rustc 再次 OOM。
 - CU 桌面控制 `PIP SDK SdkNotInitialized`，系统级视觉、DPI、托盘、通知、剪贴板未走查。
 - 安装包、`buildId`、性能基线仍未开始。
+
+---
+
+# 验收报告（v81 修订轮 · 代码级缺陷修复与协议统一）
+
+- 日期：2026-11-19
+- 范围：P0 文件导入权限边界、P1 冲突/Context/REST/Handoff、P2 文件协议/前端/CLI 一致性修复与真实验收
+- 基线：`f7b999c`；交付提交：`fabdec6`（外部agent访问）、`db0d398`（文件工作区）、`ae7edda`（零散问题）、`1e8817c`（共享文件补丁修正）
+- 构建：干净工作区 `D://Develop//task_dock-agent-snapshot`（checkout `1e8817c`）执行 `npm run tauri build`，**exit 0**；
+  产物 `Task Dock_0.5.0_x64-setup.exe`（12.6MB，NSIS）、`task-dock.exe`、`taskdock.exe`
+  （副本见 `tmp/acceptance/agent-access-v81-run4/artifacts/`）
+- 端到端验收：`node scripts/acceptance-agent-access-v81.mjs`（独立数据目录与工作空间）→ **36/36 通过**
+  （日志 `tmp/acceptance/agent-access-v81-run4/acceptance.log`）
+- 结论：**PASS（功能链路）**；集成快照路径 BLOCKED（见第 6 节），Rust 全量单测仍被其他模块阻塞（见第 7 节）
+
+## 1. 真实发现的问题（逐条核对源码确认存在）
+
+| 编号 | 严重度 | 问题 | 证据位置（修复前） |
+|---|---|---|---|
+| F1 | P0 | `watch::start()` 用 `Principal::local(Source::File)`，而 `permissions::require()` 以 `!is_agent()` 判可信 → 文件来源等价本机用户 | `agent_access/watch.rs:60`、`permissions.rs:44` |
+| F2 | P0 | 文件导入未按 kind 映射真实写能力，未授权文件直接落库 | `sync.rs::import_document`（无能力预检） |
+| F3 | P0 | 文件自称的 `agent_id` 无校验即可被当作身份 | 旧 `ImportEnvelope` 无 `agent_id` 字段 |
+| F4 | P1 | 前端传 `keep_local`/`accept_external`，后端只接受 `db`/`file`/`dismiss` → 冲突按钮必失败 | `AgentAccessSection.tsx:666` vs `sync.rs::resolve_conflict` |
+| F5 | P1 | 冲突解决固定要求 `TasksWrite`，与真实资源类型无关；解决固定用 `conflicts[0]` | `sync.rs:634`、`AgentAccessSection.tsx:681` |
+| F6 | P1 | Context 先 `require_any_read` 再逐类型 `require`，部分权限 Agent 整次请求失败 | `context.rs:188/290/348/408/444/469` |
+| F7 | P1 | 近期变更用 `resource_id = project_id` 近似匹配，遗漏项目内任务/知识/交接 | `context.rs:609` |
+| F8 | P1 | 中文关键词按空白切分，整句中文变成一个词，检索几乎不命中 | `context.rs::keywords` |
+| F9 | P1 | REST 先 `spawn` 再登记句柄，端口占用时仍报 `running=true`；`apply()` 不处理端口变更 | `rest.rs::start/apply` |
+| F10 | P1 | `reject_handoff`/`complete_handoff` 无操作者约束，无关 Agent 可拒绝/完成他人交接 | `handoff.rs::transition` |
+| F11 | P2 | Markdown `task.update` 不解析任务 ID | `sync.rs::parse_external_document` |
+| F12 | P2 | 导入幂等仅按内容 Hash 去重；「业务成功但归档失败」会重复写入 | `sync.rs::scan` 的 seen 判断 |
+| F13 | P2 | 工作报告前端取自活动流（`agentAccessActivity`），数据源错误 | `AgentAccessSection.tsx:160` |
+| F14 | P2 | CLI 文档与实现漂移（`sync pull/push`、`--action keep-db`），未知参数被静默忽略 | `cli-specification.md`、`cli.rs` |
+
+## 2. 修复方法与关键函数
+
+| 问题 | 修复 | 关键函数/文件 |
+|---|---|---|
+| F1 | 身份与来源解耦：`Identity::{LocalHuman, RegisteredAgent, FileImport, SystemInternal}`；`require()` 只对显式可信身份放行 | `agent_access/mod.rs`、`permissions.rs` |
+| F2 | 目录策略 `agent_import_policies`（off/review/trusted）+ `authorize_file_import()` 三态判定；默认待审核、业务表零写入 | `permissions.rs`、`sync.rs::scan` |
+| F3 | 文件 `agent_id` 仅为声明；目录绑定 Agent 时不一致直接拒绝 | `permissions.rs::authorize_file_import` |
+| F4 | 统一枚举 `db|file|dismiss`，前端类型 `ConflictResolution`，CLI 保留旧写法兼容映射 | `bridge.ts`、`cli.rs`、`sync.rs` |
+| F5 | 按冲突资源类型映射能力；解决前校验工作空间归属、文件 hash、目标存在、当前 revision，并重新鉴权 | `sync.rs::capability_for_conflict/resolve_conflict` |
+| F6 | 拆分为 scope/授权类型/收集/过滤/排序/去重/预算/序列化；默认返回已授权部分，显式请求未授权类型报错 | `context.rs` |
+| F7 | 近期变更按任务/知识/决策/交接/规划的业务关联求交集，再按权限过滤 | `context.rs::retrieve_recent_changes` |
+| F8 | 中文按双字切片（2-gram）抽词，英文仍按空白切词 | `context.rs::keywords` |
+| F9 | 先 `std::net::TcpListener::bind` 成功再登记 listening；新增 `RestRuntimeStatus`（stopped/starting/listening/failed/stopping）与真实状态上报 | `rest.rs::start/apply/stop/status` |
+| F10 | 新增 `authorize_handoff_transition()`；报告必须挂在可访问交接上且项目一致 | `handoff.rs` |
+| F11 | front matter 统一 `taskdock_id`（`task_id` 唯一别名，冲突报错），更新类必须带 `base_revision` | `sync.rs::parse_external_document/validate_envelope` |
+| F12 | 导入前占幂等声明（路径+kind+内容 hash+主体），成功后置 `ok`，失败释放 | `sync.rs::claim_import/finish_claim`、迁移 v81 `agent_import_claims` |
+| F13 | 工作报告改用 `agent_access_reports` | `AgentAccessSection.tsx` |
+| F14 | 新增命令注册表 `COMMANDS`、`describe_cli_commands()`、`check_cli_documentation_contract()`、`validate_cli_arguments()`；`sync pull/push` 与 `--action keep-db|keep-file` 保留别名 | `cli.rs`、`cli-specification.md` |
+
+新增迁移 **v81**：`agent_import_policies`、`agent_import_requests`、`agent_import_claims`（只追加）。
+
+## 3. 修改文件
+
+- Rust：`src-tauri/src/agent_access/{mod,permissions,sync,watch,commands,context,rest,handoff,cli,schema}.rs`、新增 `agent_access/tests.rs`；
+  `src-tauri/src/db/mod.rs`（登记 v81）、`src-tauri/src/lib.rs`（注册 7 个新命令）。
+- 前端：`src/components/capability/AgentAccessSection.tsx`、`agent-access.css`、新增 `AgentAccessSection.test.tsx`、
+  `src/lib/bridge.ts`、`src/locales/{zh-CN,en-US}/index.ts`。
+- 文档：`docs/agent-workspace/{permission-model,security,synchronization,handoff-protocol,context-engine,cli-specification,development-progress,acceptance-report}.md`。
+- 验收脚本：`scripts/acceptance-agent-access-v81.mjs`（A–F 全场景，可重复执行）。
+
+## 4. 实际执行的检查（命令 / 退出码 / 证据）
+
+| 检查 | 命令 | 退出码 | 证据 |
+|---|---|---|---|
+| Rust 编译检查 | `npm run cargo -- check --lib` | 0 | `.git/taskdock-build-sched/logs/`（2026-11-19 21:13） |
+| 前端类型检查 | `npm run typecheck` | 0 | 2026-11-19 21:10:55（42s） |
+| 前端契约测试 | `npx vitest run src/components/capability/AgentAccessSection.test.tsx` | 0（9/9） | 2026-11-19 21:10:02 |
+| 隔离工作区验收 | `npm run integrate -- task verify --id agent-shared-workspace --commit 1e8817c --cmd "npm run typecheck && npx vitest run src/components/capability/AgentAccessSection.test.tsx"` | 0（215.1s） | `tmp/integration/logs/verify-agent-shared-workspace-20261119T134847.log` |
+| Release 构建 | `npm run tauri build`（工作区 checkout `1e8817c`） | 0 | 调度日志 `h-mwnm9au5-2106b9`；产物 `tmp/acceptance/agent-access-v81-run4/artifacts/` |
+| 端到端验收 A–F | `node scripts/acceptance-agent-access-v81.mjs` | 0（36/36） | `tmp/acceptance/agent-access-v81-run4/acceptance.log` |
+
+### 端到端验收明细（36/36）
+
+| 场景 | 用例 | 结果 |
+|---|---|---|
+| A CLI Agent | 创建任务 / 查 revision / 带 base-revision 更新 / 过期 revision 被拒(CONFLICT) / 完成任务 / 只读 Agent 写被拒(FORBIDDEN) / 审计留痕 | 7/7 通过 |
+| B 文件 Agent | 初始化隔离工作空间 / 默认策略进入待审核且业务表零写入 / 受信任目录导入成功 / 目录策略只含 tasks.write 时决策导入被拒 / 重复扫描不重复写入 / 导出快照 | 6/6 通过 |
+| C MCP Agent | bridge 就绪 / initialize / tools/list(94) / resources/list(10) / prompts/list(5) / 创建任务 / 只读 Agent 写操作被拒 | 7/7 通过 |
+| D REST Agent | 真实端口监听 / 未认证 401 / 无权限 403 / 授权查询 200 / 创建 201 / 幂等重放 replayed=true / 版本冲突 409 / Token 撤销后 401 | 8/8 通过 |
+| E 双 Agent 交接 | A 创建交接 / 无关 Agent C 不能接收 / 目标 Agent B 可接收 / B 提交报告 / 授权范围内可查报告 | 5/5 通过 |
+| F 并发 | 两个 Agent 读同一 revision，先到者成功、后到者 CONFLICT，库中保留先到者版本 | 1/1 通过 |
+
+## 5. 未解决风险
+
+1. **同一 OS 用户下的文件隔离**：普通文件与 CLI 无法形成强隔离边界；本模块只保证「不因目录可写而越权
+   修改 TaskDock 资源」。真正隔离需受限 OS 用户或沙箱。
+2. **文件导入默认待审核**是行为变更：依赖「放文件即入库」的脚本需先授权目录或人工批准。
+3. **远程访问仍未实现**：REST 仅环回 + Bearer Token。
+4. UI 视觉走查（320/400/600/1024 宽度、浅深主题、100%/125%/150% DPI）本轮未执行，未计入通过。
+
+## 6. 集成快照路径 BLOCKED（非本任务代码问题）
+
+`npm run integrate -- snapshot create --tasks agent-shared-workspace` 在 `src-tauri/src/db/mod.rs`、
+`src-tauri/src/lib.rs`、`src/locales/{zh-CN,en-US}/index.ts` 冲突；整体 3-way 合并产生 63 个冲突文件。
+根因：`integration` 分支基线 `8516cc7`（含 deveff 等 13 个任务）与 `main`（`f7b999c` 之后的提交）已深度分叉，
+且 `agent-shared-workspace` 声明的写入范围覆盖整个仓库。`batch plan` 亦显示多个任务因写入范围交集互相阻塞。
+按规范不擅自合并他人任务内容 → 本轮改为「在干净工作区构建交付提交 + 直接功能验收」，
+正式安装包验收仍需集成负责人先解决分叉。**不得**把本报告的结论当作 Release 正式验收结论。
+
+## 7. Rust 全量单测仍被其他模块阻塞
+
+`npm run cargo -- test --lib agent_access` 在共享工作区编译失败于**其他会话在途改动**
+`src-tauri/src/diagnostics/panic_hook.rs`（test cfg，E0597）与 `src-tauri/src/diagnostics/tests.rs`
+（`WriterConfig.max_age_days` 缺字段），非本任务模块；本任务自身编译错误已清零。
+本任务 Rust 用例位于 `src-tauri/src/agent_access/tests.rs`（18 例），待该模块负责人修复后随全量运行。
+
+## 8. 复现方式
+
+```bash
+# 干净构建（本轮实际路径）
+git worktree add --detach D:/Develop/task_dock-agent-snapshot 1e8817c
+cd D:/Develop/task_dock-agent-snapshot && npm run tauri build
+
+# 端到端验收（独立数据目录与工作空间，不触碰真实用户数据）
+node scripts/acceptance-agent-access-v81.mjs --bin <release 目录>
+```
