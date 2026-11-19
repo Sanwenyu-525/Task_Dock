@@ -2061,7 +2061,9 @@ export default function FilePane({
       ) : dirState?.loading && !dirState.listing ? (
         <div className="fw-body-loading" role="status" aria-label={t("nav.loading")} />
       ) : visibleEntries.length === 0 ? (
-        <div className="fw-body-empty">
+        // 真实空目录 / 搜索无结果与有文件的列表同属「目录内容区」：共用空白处右键
+        // 处理函数，不另建菜单状态；否则 WebView2 原生右键菜单会接管空白区域。
+        <div className="fw-body-empty" onContextMenu={onBodyContextMenu}>
           <p>{tab.search ? t("fw.pane.noMatch") : t("fw.pane.emptyDir")}</p>
         </div>
       ) : (

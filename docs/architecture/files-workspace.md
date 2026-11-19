@@ -752,12 +752,53 @@ interface FolderTab {
      `overflow:hidden` 配合，超长仍截断）。
    - 修正新增测试的断言口径：测试 mock `useLocale` 为 identity，断言用 locale key 而非中文。
 
-**验证**：`npx tsc --noEmit` exit 0；文件工作区全量 Vitest **45 文件 / 474 用例通过**
-（r9 基线 38/370 → +7 文件 / +104 用例）；`npm run cargo -- check` exit 0（109s）。
+**验证**：`npx tsc --noEmit` exit 0；文件工作区全量 Vitest **45 文件 / 475 用例通过**
+（r9 基线 38/370 → +7 文件 / +105 用例；2026-11-19 更正：原记 474/+104，以 round10 原始
+Vitest 日志 `tmp/acceptance/files-workspace/round10/logs/r10-vitest-full-2.log` 为准）；
+`npm run cargo -- check` exit 0（109s）。
 **未执行**：集成快照、正式构建、Windows 原生验收（见 round10 报告）。
+
+### 12.10 R11 空目录右键修复（2026-11-19）
+
+**根因**：内容区三个分支（错误 / 加载 / 空）里，只有 `FileList` 的 `.fw-body` 绑定了
+`onBodyContextMenu`；`visibleEntries.length === 0` 的 `.fw-body-empty` 分支没有任何右键事件，
+于是真实空目录（以及搜索无结果）的空白区域直接落到 WebView2 原生菜单（返回/刷新/另存为/打印/检查）。
+
+**修复（最小改动）**：`.fw-body-empty` 直接复用 `onBodyContextMenu` —— 同一套「阻止默认 + 激活
+窗格 + 记录指针坐标 + `entry: null`」，复用既有 `menuItems`、`menu` 状态与 `FreeMenu`。不新增
+空目录专用菜单状态、不重复定义菜单项、不改 IPC/复制/移动/删除逻辑、不加全局 document 右键拦截，
+也不改动 `.fw-empty-pane` 与 `onEmptyContextMenu` 的语义。
+
+**四种情况边界**：
+
+| 情况 | 处理函数 | 菜单 |
+|---|---|---|
+| A 正常目录 + 文件/文件夹条目 | `onEntryContextMenu` | 条目菜单（进入/打开、复制、剪切、重命名、删除等） |
+| B 正常目录 + 列表空白 | `onBodyContextMenu` | 目录空白菜单（新建文件夹/新建文件/粘贴/取消剪切/刷新/隐藏文件） |
+| C 真实空目录或搜索无结果 + 内容区空白 | `onBodyContextMenu`（本轮接入） | 同 B |
+| D 真·空窗格（`tabs=[]`，无目录） | `onEmptyContextMenu` | 空窗格菜单（浏览文件夹/输入路径/关闭空窗格） |
+
+**右键菜单基元现状（盘点，本轮不做迁移）**：
+
+- 已使用 `PointerMenu`：`ShelfContextMenu`、`RecycleWorkspaceView` 的本地 `FreeMenu`、
+  `FilesWorkspacePanel` 分割线比例菜单（`trapFocus=false`，焦点必须留在分割线的特殊语义）。
+- 仍使用 `DropdownMenu`：`FilePane` 的 `FreeMenu`（零尺寸 `position:fixed` 触发器 + `bottom-start`
+  + `flipToSide={false}`），以及各工具栏/卡片「⋯」按钮菜单（元素锚定，非指针菜单）。
+- 定位策略：`PointerMenu` 走 `positioning.ts#resolvePointerMenuPosition`（指针右下展开 → 空间不足
+  翻转 → 四边夹取）；`FilePane` 的 `FreeMenu` 走 Popover/floating-ui（零尺寸锚点 + 边界收敛）。
+  两者都做视口夹取，但锚点模型不同；重复定义的是 `FreeMenu` 这层包装（`FilePane` 与
+  `RecycleWorkspaceView` 各一份，后者已指向 PointerMenu）。
+- 结论：本次缺陷根因是**空目录分支缺少 `onContextMenu`**，与定位算法无关。把 `FilePane` 纳入
+  全局 `PointerMenu` 属于独立改造评审，不与本次 Bug 修复混合。
+
+**验证**：新增 `FilePane.emptyDirectoryContextMenu.test.tsx` 6 例（空目录默认行为阻止 + 真实菜单、
+空目录新建文件夹、搜索无结果、列表空白回归、文件夹条目回归、真·空窗格区分）；文件工作区全量
+Vitest 46 文件 / 481 用例通过；`npm run typecheck` exit 0。Windows 原生与正式构建结论见
+`tmp/acceptance/files-workspace/round11/empty-directory-context-menu.md`。
 
 ## 13. 变更记录（续）
 
 | 日期 | 变更 |
 |---|---|
 | 2026-11-19 | R10 实现：FolderTab.openedPath、tabTitle 取起始目录、纯函数 duplicateTab 深拷贝、Store action 改名 duplicateTabInPane、splitPane 完整会话复制、closeEmptyPane/closeAllEmptyPanes、remapTabPaths、PersistedTab 可选会话字段、空窗格 UI 框架与关闭入口、搜索框单层焦点/筛选栏收紧/表头契约、Tooltip 两行；无新 Store/IPC/迁移 |
+| 2026-11-19 | R11 修复：`.fw-body-empty` 接入 `onBodyContextMenu`，真实空目录/搜索无结果不再落到 WebView2 原生右键菜单；四种右键边界（条目/列表空白/空目录/空窗格）固化测试；新增 6 例，文件工作区 46/481，tsc 0；无新 Store/IPC/迁移 |

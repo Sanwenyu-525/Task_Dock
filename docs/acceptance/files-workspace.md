@@ -370,7 +370,7 @@ r9 修复范围（对应 §3.2 的 r8 发现）：
 | 数据模型/持久化实现 | 完成 | `useFilesWorkspaceStore.ts`、`model.ts`、`persist.ts`（见架构 §12.9） |
 | 分割/空窗格 UI | 完成 | `FilePane.tsx`、`FilesWorkspacePanel.tsx` |
 | 视觉修复 | 代码完成（像素未验收） | `files.css`、`styles-ui.css`（`.ui-tooltip` pre-line） |
-| 前端全量回归 | **通过**：45 文件 / 474 用例，exit 0 | 本轮命令见测试矩阵 §12 |
+| 前端全量回归 | **通过**：45 文件 / 475 用例，exit 0（2026-11-19 更正：原记 474，按原始日志 `tmp/acceptance/files-workspace/round10/logs/r10-vitest-full-2.log` 的 `Test Files 45 passed (45)` / `Tests 475 passed (475)` 修正） | 本轮命令见测试矩阵 §12 |
 | TypeScript | **通过**：exit 0 | 同上 |
 | Rust `cargo check` | **通过**：exit 0（109s） | 调度 `m-mwn10usc-5b5f4e` |
 | 集成快照 | 未执行 | — |
@@ -380,3 +380,20 @@ r9 修复范围（对应 §3.2 的 r8 发现）：
 **FW-LAYOUT-001 状态**：保持 `TESTING`（自动化通过、原生未验证），不标 PASS。
 **待真机验证项**：标签名恒为起始目录名、Tooltip 两行与边界、分割会话独立、空窗格关闭/批量清空、
 最后一个窗格保护、重启恢复（openedPath/历史/比例）、搜索框单层焦点、筛选栏紧凑度、表头像素对齐。
+
+## 12. R11 空目录右键修复状态（2026-11-19）
+
+> 缺陷：真实空目录（0 项）的内容区空白右键弹出 WebView2 原生菜单，无法新建文件夹/新建文件/
+> 粘贴/刷新。根因与四种情况边界见架构文档 §12.10。
+
+| 项 | 结果 | 证据 |
+|---|---|---|
+| 修复实现 | 完成：`.fw-body-empty` 复用 `onBodyContextMenu` | `src/components/files/FilePane.tsx` |
+| 新增专项测试 | **通过**：6 用例，exit 0 | `src/components/files/FilePane.emptyDirectoryContextMenu.test.tsx` |
+| 失败对照（回归有效性） | 预期失败：移除 `onContextMenu` 后 `defaultPrevented=false` | 本轮终端记录，未另存日志 |
+| 文件工作区全量回归 | **通过**：46 文件 / 481 用例，exit 0 | `tmp/acceptance/files-workspace/round11/logs/r11-vitest-full.log` |
+| TypeScript | **通过**：exit 0 | `tmp/acceptance/files-workspace/round11/logs/r11-tsc.log` |
+| 集成快照 / 正式构建 / Windows 原生 | 见 `tmp/acceptance/files-workspace/round11/empty-directory-context-menu.md`（未完成前不得标 PASS） | — |
+
+**范围**：只修空目录右键；不新增 Store/IPC/迁移/全局右键拦截，不改 `.fw-empty-pane` 语义，
+不把 `FilePane` 迁到 `PointerMenu`（列为独立改造评审）。
