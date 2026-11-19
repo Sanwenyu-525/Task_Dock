@@ -259,3 +259,16 @@ describe("QuickAdd", () => {
     expect(await screen.findByText("写周报")).toBeTruthy();
   });
 });
+
+it.each(["edit", "cancel"])("丢弃在途解析结果 %s", async (mode) => {
+  let finish!: (result: ParsedInput) => void;
+  vi.mocked(parseQuickAdd).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  const input = renderQuickAdd();
+  fireEvent.change(input, { target: { value: "旧输入" } });
+  fireEvent.keyDown(input, { key: "Enter" });
+  if (mode === "cancel") fireEvent.keyDown(input, { key: "Escape" });
+  else fireEvent.change(input, { target: { value: "新输入" } });
+  finish(parseFix("过期预览"));
+  await screen.findByRole("button", { name: "解析" });
+  expect(screen.queryByText("过期预览")).toBeNull();
+});

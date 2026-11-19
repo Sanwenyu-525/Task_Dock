@@ -296,3 +296,27 @@ describe("MobileSyncSection 布局结构", () => {
     expect(container.querySelectorAll(".setting-row").length).toBeGreaterThan(0);
   });
 });
+
+// 按需加载后的可见性门控：设置页在工作台里保活，切到别的页面时组件仍在 DOM。
+// 仅判 document.hidden 会让设备/文件轮询在后台继续跑，这里锁定「不可见即不轮询」。
+describe("MobileSyncSection 页面可见性门控", () => {
+  it("页面不可见时不发起设备状态与文件列表轮询", async () => {
+    const previous = useSettingsStore.getState().settings;
+    statusMock.mockClear();
+    filesMock.mockClear();
+    useSettingsStore.setState({
+      settings: { ...(previous ?? {}), mode: "compact" } as never,
+    });
+
+    try {
+      render(<MobileSyncSection />);
+      // 等一个轮询周期级别的时间片：若 effect 建立了定时器，这里会看到请求。
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(statusMock).not.toHaveBeenCalled();
+      expect(filesMock).not.toHaveBeenCalled();
+    } finally {
+      useSettingsStore.setState({ settings: previous });
+      cleanup();
+    }
+  });
+});

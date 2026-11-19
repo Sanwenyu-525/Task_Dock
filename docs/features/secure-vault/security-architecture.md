@@ -295,7 +295,9 @@ flowchart TD
 | 输出长度 | 32 B | 32 | 32 | AES-256 密钥长度 |
 | 解锁目标耗时 | ≤ 1.2 s（参考机） | — | ≤ 2.5 s（低端机） | **目标，不是实测结论** |
 
-> 不写"实测 0.4 秒"这类数字：本阶段没有运行任何基准。P1 必须按 §5.3 出报告。
+> P1 已完成**单机参考机初步基准**（5 轮，p50 95.48 ms / p95 96.09 ms，见
+> `tmp/acceptance/secure-vault-p1/kdf-bench.md`）；低端机、峰值 RSS 与 15 轮样本仍未覆盖，
+> 不能据此完成 §5.3 定档。
 
 ### 5.2 参数选择理由
 
@@ -504,6 +506,13 @@ sequenceDiagram
 | 唤醒 | `PBT_APMRESUMEAUTOMATIC` | 保持锁定；若单调时钟间断 ≥10 s 也视为"可能休眠过"→ 锁 | — | 复用 `focus/core.rs` 的 gap 判定思路 |
 | 进程退出 | `request_exit` / `RunEvent::Exit` | 清零 + 锁定 | 否 | 无落盘 |
 | 恢复/导入完成 | 备份流程 | 保持锁定 | 否 | 恢复后必须重新解锁 |
+
+> **P1 实际实现（2026-11-18）**：未订阅 `WTS_SESSION_LOCK` 事件，也未接 `WM_POWERBROADCAST`。
+> 2 s ticker 调用 `WTSQuerySessionInformationW` 读取当前会话 `SessionFlags`，等于
+> `WTS_SESSIONSTATE_LOCK` 即锁；休眠用墙钟跳变 >10 s 判定。窗口 `Focused(false)` 只记
+> `background_since`，由 ticker 到点锁定；`CloseRequested`/`Resized(minimized)`/`Destroyed`
+> 立即锁。查询失败按未锁处理，因此存在最坏约 2 秒检测窗口和查询失败不锁的风险，已记入
+> `test-and-acceptance.md` 的未验证项。
 
 ### 9.2 实现要点
 

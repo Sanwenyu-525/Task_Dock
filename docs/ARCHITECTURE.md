@@ -18,7 +18,7 @@
 │                   actions / workspace / context / clipboard）——输入校验     │
 │        │                                                      │
 │  db/               SQLite（rusqlite bundled）                  │
-│    · 连接管理 · 版本迁移（PRAGMA user_version，v9）· 设置存储   │
+│    · 连接管理 · 版本迁移（PRAGMA user_version，见 MIGRATIONS）· 设置存储   │
 │                                                               │
 │  scheduler.rs      提醒调度引擎（1s 粒度，不依赖前端窗口）        │
 │    · 到期触发 · 休眠唤醒补偿 · 重复任务推进 · 去重                │
@@ -134,6 +134,7 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   状态，避免返回列表时列表高度二次变化（滚动位置因此能精确恢复）。
 - **倒计时**：前端页面级共享时钟（`useSyncExternalStore` + 模块级订阅集合，首个订阅启动 1s
   interval、最后一个退订释放），只用绝对时间换算；>1h 显示「时:分」，≤1h 显示「分:秒」。
+- **撤销任务完成（2026-11-18）**：任务列表、胶囊和开发工作台调用 `undo_task_completion({ id, updatedAt })`，携带完成命令返回的版本。事务只重开该版本的已完成任务，并同步完成记录与提醒。任务已修改或已重开时返回 Conflict。完成时会用完成时间标记当时仍待触发的提醒。撤销同一版本时原地恢复这批提醒，保留延后时间与已经触发的历史；显式重开已编辑任务时按当前计划重建。新增 IPC，Breaking Change: No。旧客户端仍可调用原有 `toggle_task`；新版撤销入口需要配套后端。数据库无需迁移。
 - **延后**：`snooze_reminder_inner` 在单事务内先读「未触发行」再条件更新，保留 `kind` 与
   `occurrence`；与调度器 `UPDATE ... WHERE fired=0` 领取串行化。已完成/已取消任务显式拒绝
   （不补建幽灵提醒）；无未触发提醒时补一条 `custom`，并返回 `inserted_id` 供撤销。
@@ -512,7 +513,7 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
     百分比）；项目进度 = 已完成功能/总功能（无功能显示空态，不显示 0%）；功能状态
     与进度相互独立，不由完成率推断。功能状态变化与步骤勾选在后端同一事务写入
     `planning_activity`（status_change / step_done / note 三类显式区分）。
-  - 「内置路线图」：Task Dock 自身 61 项功能规划 / 7 个展示分区（`lib/featureCatalog.ts` 静态目录）
+  - 「内置路线图」：Task Dock 自身 62 项功能规划 / 7 个展示分区（`lib/featureCatalog.ts` 静态目录）
     经 `FeatureRoadmapPanel` 原样只读展示，不入库、不被用户项目编辑覆盖。
 - 任务编辑交互（2026-11-04，模态清理第二批）：原 `TaskEditor.tsx`（`modal-mask` + Dialog）
   删除，改为 `src/components/tasks/TaskEditorView.tsx` 的**页面内编辑态**；`TasksPanel.tsx`
@@ -1545,6 +1546,8 @@ task_reminder_links        （v41 任务提醒联动：一任务一条；target_
 v0.5 扩展表。新增迁移表若未登记，`backup_registry_covers_every_schema_table` 会直接失败，
 防止“新模块数据从未进入备份却无人发现”。
 
+2026-11-18 起，快速备份从注册表读取扩展表全量策略，能力中心、Agent 共享工作空间和协作中心的近期日志每表保留最近 500 条。协作中心和项目中枢的 SQLite 数据段随备份导出，恢复按外键顺序写入。清单 v3 要求文件提供已登记的扩展数据段；v1/v2 兼容曾登记但未写出的 v77/v78 数据段。旧程序应拒绝 v3，以免恢复时遗漏新增数据段。数据库结构和 IPC 无需迁移。
+
 **完整与快速备份**：
 
 - full：全量业务表 + 事件归档 JSONL + 全部剪贴板原图/缩略图；不静默截断。
@@ -2323,7 +2326,7 @@ notification / autostart / global-shortcut / 窗口几何/拖拽权限。业务 
   保留并报部分完成。取消是协作式的，系统调用阻塞期间仍可能等待。当前进度按条目统计，
   文件任务仅在本进程内保留。
 
-## 安全保险箱（Secure Vault，P0 规划中，2026-11-18）
+## 安全保险箱（Secure Vault，P1 本地实现，2026-11-18）
 
 - **定位**：保存不常用但不能忘的敏感凭据（账号密码、API Key、软件许可证、恢复码、设备凭据、
   私密备忘）。与知识库/任务/生活记录的职责边界见
@@ -2339,18 +2342,49 @@ notification / autostart / global-shortcut / 窗口几何/拖拽权限。业务 
 - **明文边界**：库内只留 `id/rev/dek_ver/alg_ver/data_ver/tombstone` 与非敏感元数据；标题、
   账号、URL、标签、分类、自定义字段名全部在密文内。搜索只在解锁态内存中进行，不建 FTS、
   不落查询缓存。
-- **锁定**：后端单一 ticker 驱动。默认闲置 5 分钟、后台 60 秒宽限；系统锁屏（WTS）、休眠
-  （`WM_POWERBROADCAST`）、窗口隐藏、进程退出**强制立即锁定**且不可关闭。前端定时器不作为
-  安全机制。
+- **锁定**：后端单一 2s ticker 驱动。默认闲置 5 分钟、后台 60 秒宽限；系统锁屏通过
+  `WTSQuerySessionInformationW` 轮询检测，休眠通过墙钟跳变（>10s）检测，窗口失焦/最小化/关闭
+  立即锁定；前端定时器不作为安全机制。**未接** WTS 事件回调与 `WM_POWERBROADCAST`，最坏有
+  约 2 秒检测窗口。
 - **外部入口**：MCP 能力位、MCP 工具、CLI 子命令、本地 REST 端点、全局搜索**均不含保险箱**；
-  保险箱命令依赖仅桌面端 `manage` 的 `State<VaultState>`，因此在这些入口里结构性不可达。
+  38 个保险箱命令依赖仅桌面端 `manage` 的 `State<VaultState>`，因此在这些入口里结构性不可达。
   未来若开放，只能走"用户当场授权 + 指定记录 + 短时租约 + 可审计"，见 threat-model T-09/T-10。
 - **备份**：独立 `.tdvault` 容器（头部明文 + 载荷密文），每次导出随机 `file_key`，由独立备份口令
-  封装；导入走 staging + 原子替换 + 保留 `.pre-restore`。**不得写入 `<数据目录>/backups/`**
-  （`list_backups`/`prune_backups` 会枚举该目录并按保留天数删除所有文件）。
-- **兼容性**：本阶段仅文档，**无 IPC / 无迁移 / 无新依赖 / 无 UI**；主库 schema 不变，
-  `featureCatalog.ts` 未登记（不计入当前 61 项统计）。P1 落地时 IPC 为加法，
-  Breaking Change: No。
+  封装；P1 **只支持空库导入为新保险箱**，不覆盖/合并已有库，也不写 `.pre-restore`。
+  **不得写入 `<数据目录>/backups/`**（`list_backups`/`prune_backups` 会枚举该目录并按保留天数
+  删除所有文件）。
+- **兼容性**：P1 已落 38 个 IPC 命令与工作台 UI；主库 schema **零变更**；依赖新增
+  `argon2/aes-gcm/hkdf/hmac/base32/unicode-normalization/zeroize/parking_lot`；
+  `featureCatalog.ts` 已登记第 62 项（`security.secure-vault`，`partial` / `unverified`）。
+  IPC 为加法，Breaking Change: No。
 - **文档入口**：[docs/features/secure-vault/](features/secure-vault/README.md)，含需求矩阵、
   现状分析（F-01..F-08）、威胁模型（T-01..T-15 / R-01..R-22）、安全架构、数据模型、
   方法级接口、桌面与移动端交互、备份恢复、多设备同步架构、测试验收与路线图。
+
+## 前端按需加载与功能生命周期（2026-11-18）
+
+完整规范见 [ON_DEMAND_LOADING.md](ON_DEMAND_LOADING.md)；这里是架构定位与不可破坏的边界。
+
+**四个概念必须分开**：导航项隐藏（配置）≠ 页面代码未加载（bundler/动态 import）≠ 业务数据未加载
+（面板请求）≠ 后台服务未启动（Rust/控制器）。隐藏入口只影响渲染，不停止常驻服务。
+
+**代码落点**
+
+| 文件 | 职责 |
+| --- | --- |
+| `src/lib/navigationRegistry.ts` | 导航元数据（ID/图标/顺序/默认显隐）；**只依赖图标与类型**，不 import 页面 |
+| `src/lib/featureRuntime.ts` | 功能生命周期：`register/load/retry/activate/deactivate/suspend/dispose/preload`、去重、指标、事件环 |
+| `src/lib/featureRegistry.ts` | 每个页面的**唯一**代码入口（动态 import）与策略（tier/instance/preload） |
+| `src/components/feature/FeatureView.tsx` | 加载占位、失败重试、`keep`/`release` 实例策略、活跃态上报 |
+| `src/components/diagnostics/FeatureLoadSection.tsx` | 诊断中心「按需加载」分区（内存快照，不写库） |
+
+**生命周期**：`registered → loading → loaded → active ⇄ inactive/suspended → disposing → disposed`；
+加载失败进入 `failed`，`retryFeature` 才会重新 import（`React.lazy` 的失败 Promise 不可重试，
+因此页面加载不使用 `lazy`）。
+
+**边界**
+
+- 页面组件卸载 ≠ 功能服务销毁：任务/Agent/剪贴板采集/微件桌面桥等由外壳与设置开关管理。
+- 页面在隐藏时必须停止自己的轮询/订阅（`useFullViewVisible` / `useWorkbenchPageActive`）。
+- 预加载只取代码，不初始化连接/Worker/设备会话；有加载在飞时让路。
+- 新增页面漏登记 `featureRegistry` 会被 `featureRegistry.test.ts` 拦下。

@@ -668,6 +668,15 @@ pub fn toggle_task(db: State<'_, Arc<Db>>, id: String) -> AppResult<Task> {
     toggle_task_inner(&db, &id)
 }
 
+#[tauri::command]
+pub fn undo_task_completion(
+    db: State<'_, Arc<Db>>,
+    id: String,
+    updated_at: String,
+) -> AppResult<Task> {
+    toggle_task_checked(&db, &id, Some(&updated_at))
+}
+
 /// 切换完成状态的核心逻辑（命令与测试共用）。
 ///
 /// 完成 / 重新打开时同步维护完成事件表（`task_analytics`）：
@@ -676,7 +685,14 @@ pub fn toggle_task(db: State<'_, Arc<Db>>, id: String) -> AppResult<Task> {
 ///   任意一步失败整体回滚，不会出现「任务已进入下一期但历史完成事件丢失」；
 /// - 重新打开：删除同一完成时间的用户事件，避免重开后仍计入历史完成。
 pub(crate) fn toggle_task_inner(db: &Db, id: &str) -> AppResult<Task> {
+    toggle_task_checked(db, id, None)
+}
+
+fn toggle_task_checked(db: &Db, id: &str, undo_updated_at: Option<&str>) -> AppResult<Task> {
     let task = get_task(db, id)?;
+    if undo_updated_at.is_some() && task.status != "completed" {
+        return Err(AppError::Conflict("任务已发生变化，无法撤销该次完成".into()));
+    }
     let now = now_iso();
     if task.status == "pending" {
         if task.recurrence.is_some() {
@@ -686,7 +702,7 @@ pub(crate) fn toggle_task_inner(db: &Db, id: &str) -> AppResult<Task> {
             // 做 CAS：并发双击时只有一个请求能把期次推进，后到者得到 Conflict，
             // 既不重复推进也不重复写事件。只有 AdvanceOutcome::Advanced 才记事件，
             // 因此自动到期推进（调度器）不会被误记成用户完成。
-            let outcome = db.with_conn(|conn| {
+            return db.with_conn(|conn| {
                 let tx = conn.unchecked_transaction()?;
                 let outcome = crate::scheduler::advance_recurrence_tx(
                     &tx,
@@ -705,18 +721,21 @@ pub(crate) fn toggle_task_inner(db: &Db, id: &str) -> AppResult<Task> {
                         "recurring",
                     )?;
                 }
+                let updated = get_task_in_conn(&tx, id)?;
                 tx.commit()?;
-                Ok::<_, AppError>(outcome)
-            })?;
-            tracing::debug!(task_id = %id, ?outcome, "重复任务完成处理完成");
-            return get_task(db, id);
+                tracing::debug!(task_id = %id, ?outcome, "重复任务完成处理完成");
+                Ok(updated)
+            });
         }
         db.with_conn(|conn| {
             let tx = conn.unchecked_transaction()?;
-            tx.execute(
-                "UPDATE tasks SET status = 'completed', completed_at = ?1, updated_at = ?1 WHERE id = ?2",
-                rusqlite::params![now, id],
+            let changed = tx.execute(
+                "UPDATE tasks SET status = 'completed', completed_at = ?1, updated_at = ?1 WHERE id = ?2 AND status = 'pending' AND updated_at = ?3",
+                rusqlite::params![now, id, task.updated_at],
             )?;
+            if changed != 1 {
+                return Err(AppError::Conflict("任务已发生变化，请刷新后重试".into()));
+            }
             tx.execute(
                 "UPDATE task_reminders SET fired = 1, fired_at = ?1 WHERE task_id = ?2 AND fired = 0",
                 rusqlite::params![now, id],
@@ -730,32 +749,50 @@ pub(crate) fn toggle_task_inner(db: &Db, id: &str) -> AppResult<Task> {
                 task.priority as i64,
                 "once",
             )?;
+            let updated = get_task_in_conn(&tx, id)?;
             tx.commit()?;
-            Ok::<_, AppError>(())
-        })?;
+            Ok(updated)
+        })
     } else {
         // 重新打开：状态回退、撤销完成事件与提醒重建在同一事务
         db.with_conn(|conn| {
             let tx = conn.unchecked_transaction()?;
-            tx.execute(
-                "UPDATE tasks SET status = 'pending', completed_at = NULL, updated_at = ?1 WHERE id = ?2",
-                rusqlite::params![now, id],
+            let changed = tx.execute(
+                "UPDATE tasks SET status = 'pending', completed_at = NULL, updated_at = ?1 WHERE id = ?2 AND status = 'completed' AND updated_at = ?3",
+                rusqlite::params![now, id, undo_updated_at.unwrap_or(&task.updated_at)],
             )?;
+            if changed != 1 {
+                return Err(AppError::Conflict("任务已发生变化，无法撤销该次完成".into()));
+            }
             if let Some(completed_at) = task.completed_at.as_deref() {
                 crate::task_analytics::remove_completion(&tx, id, completed_at)?;
             }
-            rebuild_reminders_tx(
-                &tx,
-                id,
-                task.due_at.as_deref(),
-                task.remind_at.as_deref(),
-                task.advance_minutes,
-            )?;
+            if task.completed_at.as_deref() == Some(task.updated_at.as_str()) {
+                // 完成时只标记了当时待触发的行。原地恢复还能保留已延后的时间。
+                tx.execute(
+                    "UPDATE task_reminders SET fired=0, fired_at=NULL
+                     WHERE task_id=?1 AND fired=1 AND fired_at=?2",
+                    rusqlite::params![id, task.completed_at],
+                )?;
+            } else {
+                // 完成后又编辑过任务，按现行计划重建，保留真正触发过的期次。
+                tx.execute(
+                    "DELETE FROM task_reminders WHERE task_id=?1 AND fired=1 AND fired_at=?2",
+                    rusqlite::params![id, task.completed_at],
+                )?;
+                rebuild_reminders_tx(
+                    &tx,
+                    id,
+                    task.due_at.as_deref(),
+                    task.remind_at.as_deref(),
+                    task.advance_minutes,
+                )?;
+            }
+            let updated = get_task_in_conn(&tx, id)?;
             tx.commit()?;
-            Ok::<_, AppError>(())
-        })?;
+            Ok(updated)
+        })
     }
-    get_task(db, id)
 }
 
 #[tauri::command]
@@ -1951,6 +1988,76 @@ mod tests {
             "重建后应恰好是 提前/独立/截止 三类各一条，实际 {:?}",
             kinds
         );
+    }
+
+    #[test]
+    fn reopening_restores_snoozed_reminder_but_not_a_delivered_reminder() {
+        let db = db();
+        let due = Utc::now() + chrono::Duration::hours(2);
+        let task = create_task_inner(&db, TaskInput {
+            title: "延后与历史提醒".into(),
+            due_at: tri(Some(due.to_rfc3339())),
+            advance_minutes: Some(30),
+            ..Default::default()
+        }).unwrap();
+        let snoozed = (due + chrono::Duration::hours(1)).to_rfc3339();
+        db.with_conn(|conn| {
+            conn.execute("UPDATE task_reminders SET remind_at=?2 WHERE task_id=?1 AND kind='due'", rusqlite::params![task.id, snoozed])?;
+            conn.execute("UPDATE task_reminders SET fired=1, fired_at='previous' WHERE task_id=?1 AND kind='advance'", [&task.id])?;
+            Ok(())
+        }).unwrap();
+        let done = toggle_task_inner(&db, &task.id).unwrap();
+        toggle_task_checked(&db, &task.id, Some(&done.updated_at)).unwrap();
+        db.with_conn(|conn| {
+            let rows: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM task_reminders WHERE task_id=?1 AND
+                 ((kind='due' AND fired=0 AND fired_at IS NULL AND remind_at=?2)
+                   OR (kind='advance' AND fired=1 AND fired_at='previous'))",
+                rusqlite::params![task.id, snoozed], |row| row.get(0),
+            )?;
+            assert_eq!(rows, 2);
+            Ok(())
+        }).unwrap();
+    }
+
+    #[test]
+    fn undo_completion_requires_the_same_completed_revision() {
+        let db = db();
+        let due = (Utc::now() + chrono::Duration::hours(2)).to_rfc3339();
+        let task = create(&db, "测试撤销", Some(due), None);
+        let done = toggle_task_inner(&db, &task.id).unwrap();
+        let undo = || toggle_task_checked(&db, &task.id, Some(&done.updated_at));
+        assert_eq!(undo().unwrap().status, "pending");
+        db.with_conn(|conn| {
+            let pending: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM task_reminders WHERE task_id=?1 AND fired=0",
+                [&task.id],
+                |row| row.get(0),
+            )?;
+            assert_eq!(pending, 1);
+            Ok(())
+        }).unwrap();
+        assert!(matches!(undo(), Err(AppError::Conflict(_))));
+        let done_again = toggle_task_inner(&db, &task.id).unwrap();
+        db.with_conn(|conn| {
+            conn.execute("UPDATE tasks SET title='另一窗口已编辑', updated_at='2026-11-18T23:00:00Z' WHERE id=?1", [&task.id])?;
+            Ok(())
+        }).unwrap();
+        assert!(matches!(toggle_task_checked(&db, &task.id, Some(&done_again.updated_at)), Err(AppError::Conflict(_))));
+        let actual = get_task(&db, &task.id).unwrap();
+        assert_eq!(actual.status, "completed");
+        assert_eq!(actual.title, "另一窗口已编辑");
+        db.with_conn(|conn| {
+            let pending: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM task_reminders WHERE task_id=?1 AND fired=0",
+                [&task.id],
+                |row| row.get(0),
+            )?;
+            assert_eq!(pending, 0);
+            let n: i64 = conn.query_row("SELECT COUNT(*) FROM task_completion_events WHERE task_id=?1", [&task.id], |row| row.get(0))?;
+            assert_eq!(n, 1);
+            Ok(())
+        }).unwrap();
     }
 
     /// 重复任务完成一期：只推进一期、只记一条「本期」完成事件，提醒重建到下一期。

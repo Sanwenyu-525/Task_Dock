@@ -1288,6 +1288,7 @@ pub fn run() {
             commands::tasks::create_task,
             commands::tasks::update_task,
             commands::tasks::toggle_task,
+            commands::tasks::undo_task_completion,
             commands::tasks::delete_task,
             commands::tasks::parse_quick_add,
             commands::tasks::create_from_quick_add,

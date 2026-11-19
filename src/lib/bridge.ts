@@ -896,6 +896,8 @@ export const createTask = (input: TaskInput) => invoke<Task>("create_task", { in
 export const updateTask = (id: string, input: TaskInput) => invoke<Task>("update_task", { id, input });
 export const toggleTask = (id: string) => invoke<Task>("toggle_task", { id });
 export const deleteTask = (id: string) => invoke<void>("delete_task", { id });
+export const undoTaskCompletion = (task: Pick<Task, "id" | "updated_at">) =>
+  invoke<Task>("undo_task_completion", { id: task.id, updatedAt: task.updated_at });
 export const parseQuickAdd = (text: string) => invoke<ParsedInput>("parse_quick_add", { text });
 export const createFromQuickAdd = (
   text: string,

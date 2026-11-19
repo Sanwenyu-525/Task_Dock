@@ -126,10 +126,10 @@
 
 - **已存在**（可作直接依赖，零新增下载）：`zeroize 1.9.1`、`subtle 2.6.1`、`poly1305 0.8`、
   `salsa20 0.10`、`aead 0.5`、`digest 0.10`、`sha2`、`rand 0.8`、`getrandom 0.2`、`parking_lot 0.12`。
-- **不存在**（P1 需新增，待批准）：`argon2`、`aes-gcm`、`hkdf`、`hmac`、`base32`、
+- **不存在**（P1 需新增，**2026-11-18 已批准并接入**）：`argon2`、`aes-gcm`、`hkdf`、`hmac`、`base32`、
   `unicode-normalization`；P2 还需 `p256`（ECDH）。
 - `windows-sys` 现有 features 里**没有** `Win32_System_RemoteDesktop` → WTS 会话通知需要**追加 feature**
-  （不是新 crate）。
+  （不是新 crate）；已在 P1 追加，并使用 `WTSQuerySessionInformationW` 轮询锁屏状态。
 
 ---
 

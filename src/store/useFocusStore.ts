@@ -389,11 +389,20 @@ function scheduleReload() {
 
 async function ensureListeners(): Promise<UnlistenFn[]> {
   if (!listenerReady) {
-    listenerReady = Promise.all([
+    listenerReady = Promise.allSettled([
       listen("focus-changed", scheduleReload),
       listen("focus-completed", scheduleReload),
       listen("focus-sedentary", scheduleReload),
-    ]);
+    ]).then((results) => {
+      const offs = results.flatMap((r) => r.status === "fulfilled" ? [r.value] : []);
+      const failed = results.find((r) => r.status === "rejected");
+      if (failed?.status === "rejected") {
+        listenerReady = null;
+        offs.forEach((off) => off());
+        throw failed.reason;
+      }
+      return offs;
+    });
   }
   return listenerReady;
 }
@@ -401,7 +410,13 @@ async function ensureListeners(): Promise<UnlistenFn[]> {
 /** 组件挂载时获取订阅；返回的清理函数在最后一个订阅者卸载时释放监听。 */
 export async function acquireFocusEvents(): Promise<() => void> {
   listenerRefs += 1;
-  await ensureListeners();
+  try {
+    await ensureListeners();
+  } catch (error) {
+    listenerRefs--;
+    useFocusStore.setState({ error: focusErrorMessage(error) });
+    return () => {};
+  }
   let released = false;
   return () => {
     if (released) return;

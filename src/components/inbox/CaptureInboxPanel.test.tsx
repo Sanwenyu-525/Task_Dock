@@ -353,3 +353,11 @@ describe("CaptureInboxPanel 跨模块转存（v0.8）", () => {
     expect(shelfStore.addText).toHaveBeenCalledTimes(1);
   });
 });
+
+it("计数查询失败时保留上次服务端总数", async () => {
+  useCaptureStore.setState({ inboxCount: 87, inboxCountLoaded: true });
+  bridge.quickCaptureState.mockRejectedValueOnce(new Error("unavailable"));
+  await useCaptureStore.getState().load();
+  expect(useCaptureStore.getState().items).toHaveLength(1);
+  expect(useCaptureStore.getState().inboxCount).toBe(87);
+});

@@ -19,10 +19,10 @@
   仅接受 `https://`）；不得引入绕过指纹固定的网络路径，不得恢复明文放行插件。
   已配对连接缺少已钉住的 SPKI 指纹时必须 **fail-closed**（提示重新配对），
   不得退回「首用信任」继续发送设备令牌。
-- 本地 Expo 模块共六个，均由 autolinking 链接、由 `plugins/` 里的 config plugin 写清单：
+- 本地 Expo 模块共八个，均由 autolinking 链接、由 `plugins/` 里的 config plugin 写清单：
   `secure-http`（TLS + 指纹固定）、`share-intent`（ACTION_SEND / SEND_MULTIPLE 接收）、
   `taskdock-widget`（AppWidgetProvider 2×2 / 4×2）、`voice-recorder`（AAC 录音与本地回放）、
-  `network-state`（计费网络判定，仅前台查询）、`launch-intent`（快捷方式跳板）。
+  `network-state`（计费网络判定，仅前台查询）、`launch-intent`（快捷方式跳板）、`clipboard`（剪贴板）、`media-store`（媒体存储）。
   改原生代码后必须重跑 `npx expo prebuild --platform android` 并做 Gradle 编译验证；
   `android/` 仍不入库。
 - 小组件、分享接收、录音与网络判定**只允许事件驱动**：小组件 `updatePeriodMillis=0`，

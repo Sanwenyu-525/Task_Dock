@@ -46,6 +46,7 @@ import { formatBytes } from "../../lib/clipboardUi";
 import { formatLocalStamp } from "../../lib/format";
 import { localizedErrorMessage } from "../../i18n/errors";
 import { useLocale } from "../../hooks/useLocale";
+import { useFullViewVisible } from "../../hooks/useMainUiVisible";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useUiStore } from "../../store/useUiStore";
 import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
@@ -115,6 +116,9 @@ export default function MobileSyncSection() {
   const settings = useSettingsStore((s) => s.settings);
   const update = useSettingsStore((s) => s.update);
   const showToast = useUiStore((s) => s.showToast);
+  // 页面级可见性：设置页在工作台里是保活的（keep），切到别的页面后组件仍挂载。
+  // 只看 document.hidden 不够——窗口可见但页面被 hidden 时，轮询照样在跑。
+  const pageVisible = useFullViewVisible();
 
   const [status, setStatus] = useState<MobileSyncStatus | null>(null);
   /** 在线判定的本地时钟：定时推进，让设备在无请求时也能从「在线」落到「离线」。 */
@@ -182,6 +186,9 @@ export default function MobileSyncSection() {
   );
 
   useEffect(() => {
+    // 页面不可见（切到其它页面/胶囊/窗口隐藏）时不建立任何轮询与监听：
+    // 设置页保活后，缺这道门会让手机同步在后台每 3s 发一次请求。
+    if (!pageVisible) return;
     mounted.current = true;
     void refresh();
     void refreshFiles(true);
@@ -216,7 +223,7 @@ export default function MobileSyncSection() {
         refreshTimer.current = null;
       }
     };
-  }, [refresh, refreshFiles]);
+  }, [pageVisible, refresh, refreshFiles]);
 
   // 新收到的图片按需拉一次缩略图；轮询刷新同一批文件时不重复读取。
   useEffect(() => {

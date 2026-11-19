@@ -152,7 +152,7 @@ describe("目录结构契约", () => {
     expect(groups.reduce((n, g) => n + g.items.length, 0)).toBe(FEATURE_CATALOG.length);
   });
 
-  it("七个展示分区条目数为 core 9 / workbench 9 / workflow 16 / info 3 / agent 11 / ecosystem 5 / system 8", () => {
+  it("七个展示分区条目数为 core 9 / workbench 9 / workflow 16 / info 3 / agent 11 / ecosystem 5 / system 9", () => {
     const counts = Object.fromEntries(
       featuresByCategory().map((g) => [g.category, g.items.length]),
     );
@@ -163,7 +163,7 @@ describe("目录结构契约", () => {
       info: 3,
       agent: 11,
       ecosystem: 5,
-      system: 8,
+      system: 9,
     });
   });
 
@@ -313,9 +313,9 @@ describe("2026-11-18 全量功能补登", () => {
 });
 
 describe("统计摘要", () => {
-  it("全目录状态计数与验收基线一致（61 = 33 + 23 + 5 + 0）", () => {
+  it("全目录状态计数与验收基线一致（62 = 33 + 24 + 5 + 0）", () => {
     const s = featureCatalogSummary();
-    expect(s.total).toBe(61);
+    expect(s.total).toBe(62);
     // coreTotal 是 CORE_FEATURE_IDS 锁定的 12 项核心功能，与目录总数无关
     expect(s.coreTotal).toBe(12);
     // v0.10（2026-11-04 七项功能验收整改）：专注与休息、快速笔记、Agent 工作时间统计、
@@ -336,7 +336,7 @@ describe("统计摘要", () => {
     // （任务主线、窗口胶囊、规划中心、能力中心、生活、Agent 监控、主题、导航自定义、
     // 历史中心、音频、托盘自启、设置中心），全部保持 unverified（未做新增真机走查）。
     expect(s.implemented).toBe(33);
-    expect(s.partial).toBe(23);
+    expect(s.partial).toBe(24);
     expect(s.planned).toBe(5);
     expect(s.blocked).toBe(0);
     // 状态计数之和必须等于总功能数
@@ -349,7 +349,7 @@ describe("统计摘要", () => {
     // 2026-11-16 新增 verified 2 项：智能剪贴板（五轮 GUI 联合验收 + 真机剪贴板证据）、
     // 备份与恢复（P1-04 PASS：真机 78.44MB 全量恢复 14.28s，边界见条目 detail）。
     expect(s.verified).toBe(10);
-    expect(s.unverified).toBe(51);
+    expect(s.unverified).toBe(52);
     expect(s.verified + s.unverified).toBe(s.total);
   });
 

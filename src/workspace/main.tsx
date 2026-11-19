@@ -15,6 +15,7 @@ import ErrorBoundary from "../components/ErrorBoundary";
 import { bootFail, bootStage } from "../boot/bootProtocol";
 import { initLocale } from "../i18n";
 import { setWindowHostRole } from "../lib/windowHost";
+import { installFeatureRegistry } from "../lib/featureRegistry";
 import { installNativeDragBridge } from "../lib/dragCursorSession";
 import { initWorkbenchWindowFrame } from "../workbench/windowFrame";
 import WorkspaceApp from "./WorkspaceApp";
@@ -22,6 +23,8 @@ import WorkspaceApp from "./WorkspaceApp";
 // 宿主角色必须在挂载前确定：业务页面（useFullViewVisible 等）据此判断自己
 // 运行在唯一大型工作台，而不是主窗口的贴边/胶囊状态机里。
 setWindowHostRole("workbench");
+// 工作台是功能最多的窗口：注册表只登记元数据，页面代码在首次进入时才下载。
+installFeatureRegistry();
 // 顶栏 `data-tauri-drag-region="deep"` 的拖拽光标会话需要原生相位：Rust
 // `drag_watch` 在 WM_ENTERSIZEMOVE / WM_EXITSIZEMOVE 时向本窗口发 `window-drag`，
 // 松手即撤 grabbing（系统模态移动循环期间 WebView2 收不到 pointerup）。

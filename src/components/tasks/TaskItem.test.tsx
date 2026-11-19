@@ -24,8 +24,9 @@ import type { Task, TaskFilter } from "../../lib/bridge";
 import type { NavTarget, TaskNavLink } from "../../lib/navigation";
 import { EXIT_MS } from "../../lib/motion";
 
-const { toggleTask, navNavigate, listTasks, updateSettings } = vi.hoisted(() => ({
+const { toggleTask, undoTaskCompletion, navNavigate, listTasks, updateSettings } = vi.hoisted(() => ({
   toggleTask: vi.fn(),
+  undoTaskCompletion: vi.fn(),
   navNavigate: vi.fn(),
   listTasks: vi.fn(),
   updateSettings: vi.fn(),
@@ -33,7 +34,7 @@ const { toggleTask, navNavigate, listTasks, updateSettings } = vi.hoisted(() => 
 
 vi.mock("../../lib/bridge", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../lib/bridge")>();
-  return { ...actual, toggleTask, listTasks, updateSettings };
+  return { ...actual, toggleTask, undoTaskCompletion, listTasks, updateSettings };
 });
 
 vi.mock("../../lib/navigation", async (importOriginal) => {
@@ -232,6 +233,10 @@ describe("TaskItem 交互", () => {
     await waitFor(() => expect(useUiStore.getState().toast?.kind).toBe("success"));
     // 撤销入口必须保留
     expect(useUiStore.getState().toast?.action?.label).toBe("撤销");
+    undoTaskCompletion.mockResolvedValue(PENDING);
+    await act(async () => { useUiStore.getState().toast?.action?.run(); });
+    expect(undoTaskCompletion).toHaveBeenCalledWith(done);
+    expect(toggleTask).toHaveBeenCalledTimes(1);
   });
 
   it("未完成筛选下 toggle 失败：不播成功离场、不刷新列表，行留在原位", async () => {

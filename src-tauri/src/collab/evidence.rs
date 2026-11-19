@@ -15,7 +15,7 @@ use super::model::{
     MAX_TEXT_EVIDENCE_BYTES, PAGE_MAX,
 };
 use super::util::{
-    assert_file_in_root, collab_evidence_root, json_array, new_id, now_iso, sanitize_filename,
+    assert_file_in_root, collab_evidence_root, new_id, now_iso, sanitize_filename,
     sha256_bytes, sha256_file, validate_enum, validate_text,
 };
 
@@ -390,5 +390,5 @@ pub fn display_path(evidence: &Evidence) -> String {
         .file_name()
         .and_then(|n| n.to_str())
         .map(|s| s.to_string())
-        .unwrap_or_else(|| json_array(&[]))
+        .unwrap_or_else(|| "evidence".to_string())
 }

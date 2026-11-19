@@ -63,7 +63,7 @@ impl Default for LockSettings {
             idle_secs: 300,
             background_secs: 60,
             clipboard_clear_secs: 30,
-            reveal_secs: 60,
+            reveal_secs: 30,
         }
     }
 }
@@ -79,6 +79,9 @@ impl LockSettings {
         }
         if !(5..=300).contains(&self.clipboard_clear_secs) {
             return Err(VaultError::validation("剪贴板清除", "须在 5–300 秒之间"));
+        }
+        if !(5..=300).contains(&self.reveal_secs) {
+            return Err(VaultError::validation("敏感字段显示", "须在 5–300 秒之间"));
         }
         Ok(())
     }
@@ -266,6 +269,20 @@ impl VaultSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lock_settings_secure_defaults() {
+        let settings = LockSettings::default();
+        assert_eq!(settings.idle_secs, 300);
+        assert_eq!(settings.background_secs, 60);
+        assert_eq!(settings.clipboard_clear_secs, 30);
+        assert_eq!(settings.reveal_secs, 30);
+        assert!(settings.validate().is_ok());
+
+        let mut invalid = settings;
+        invalid.reveal_secs = 0;
+        assert!(invalid.validate().is_err());
+    }
 
     #[test]
     fn clear_drops_dek_and_index() {

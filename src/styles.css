@@ -930,6 +930,20 @@ code {
   padding: 10px;
 }
 
+/* 页面槽位（主窗口完整面板）：稳定挂载 + 仅隐藏可见性。
+   必须自带 flex 撑满，否则页面根的 .page-fill 失去高度基准；
+   [hidden] 要显式覆盖 display:flex（类选择器优先于 UA 的 hidden 规则）。 */
+.page-slot {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.page-slot[hidden] {
+  display: none;
+}
+
 /* 跨 Tab 未保存确认条：粘在内容顶部，不额外制造模态遮罩。 */
 .tab-leave-guard {
   position: sticky;
@@ -17646,6 +17660,31 @@ body.nav-reorder-dragging {
   min-height: 120px;
 }
 
+/* 页面代码加载失败：只在真实失败时出现（正常路径不会看到这个块）。
+   与占位同高，切页后布局不跳；重试按钮复用统一 btn 语义。 */
+.panel-status {
+  min-height: 120px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 16px;
+  text-align: center;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card, 10px);
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+}
+
+.panel-status-text {
+  margin: 0;
+  max-width: 420px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
 /* 启动占位（设置加载门）：设置到达前不渲染默认导航/默认模式，只给中性占位。
    占满视图槽高度，避免占位 → 真实界面时整块内容跳动。 */
 .shell-boot {
@@ -18365,6 +18404,91 @@ body.nav-reorder-dragging {
 .diag-center-metric-hint {
   font-size: 10px;
   font-weight: 400;
+  color: var(--text-secondary);
+}
+
+/* 按需加载分区：页面模块表（诊断中心内，只读） */
+.diag-center-section-hint {
+  margin: 0 0 8px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.diag-feature-table {
+  display: flex;
+  flex-direction: column;
+  margin-top: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm, 6px);
+  overflow: hidden;
+}
+
+.diag-feature-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) 88px 72px 84px;
+  gap: 8px;
+  align-items: center;
+  padding: 5px 8px;
+  font-size: 11px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.diag-feature-row:first-child {
+  border-top: 0;
+}
+
+.diag-feature-head {
+  font-size: 10px;
+  color: var(--text-secondary);
+  background: var(--surface-hover);
+}
+
+.diag-feature-name {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.diag-feature-id {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 9.5px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.diag-feature-state {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+
+.diag-feature-state.is-failed {
+  color: var(--status-error);
+}
+
+.diag-feature-state.is-active {
+  color: var(--accent);
+}
+
+.diag-feature-events {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.diag-feature-event {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 10px;
   color: var(--text-secondary);
 }
 

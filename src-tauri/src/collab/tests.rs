@@ -197,6 +197,8 @@ fn plan_requires_review_and_can_create_tasks() {
     let plan = db
         .with_transaction(|conn| Core::new(conn).create_plan_from_issue(&ui, &issue.issue.id))
         .expect("plan");
+    assert_eq!(plan.breakdown.len(), 2, "从需求创建方案应带默认任务草案");
+    assert!(plan.breakdown.iter().any(|d| d.title.starts_with("实现：")));
     let updated = db
         .with_transaction(|conn| {
             Core::new(conn).update_plan(
@@ -521,6 +523,61 @@ fn ai_generation_records_real_provider_and_no_fake_image() {
         .with_conn(|conn| Core::new(conn).get_visual(&ui, job.document_id.as_deref().unwrap()))
         .expect("文档");
     assert_eq!(doc.kind, "prototype");
+    let content: serde_json::Value =
+        serde_json::from_str(&doc.source_content).expect("原型 JSON");
+    let pages = content
+        .get("pages")
+        .and_then(|v| v.as_array())
+        .expect("pages");
+    assert!(pages.len() >= 2, "默认原型应包含确认页与结果页");
+    for page in pages {
+        for comp in page
+            .get("components")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+        {
+            let x = comp.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let w = comp.get("w").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            assert!(x + w <= 320.0, "默认原型必须能在 320px 预览宽度内放下：{comp}");
+        }
+    }
+    assert!(
+        pages.iter().any(|p| {
+            p.get("components")
+                .and_then(|v| v.as_array())
+                .map(|cs| {
+                    cs.iter().any(|c| {
+                        c.get("events")
+                            .and_then(|e| e.get("onClick"))
+                            .and_then(|e| e.get("action"))
+                            .and_then(|v| v.as_str())
+                            == Some("navigate")
+                    })
+                })
+                .unwrap_or(false)
+        }),
+        "默认原型至少一个可导航按钮"
+    );
+
+    let state = db
+        .with_conn(|conn| Core::new(conn).prototype_state(&ui, &doc.id))
+        .expect("原型状态");
+    let next = db
+        .with_conn(|conn| {
+            Core::new(conn).dispatch_prototype_event(
+                &ui,
+                &doc.id,
+                state,
+                &PrototypeEvent {
+                    action: "navigate".to_string(),
+                    target: Some("page-2".to_string()),
+                    value: None,
+                },
+            )
+        })
+        .expect("默认原型应可导航");
+    assert_eq!(next.current_page, "page-2");
 
     let image = db
         .with_transaction(|conn| {

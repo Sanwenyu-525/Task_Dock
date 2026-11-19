@@ -37,7 +37,10 @@ export function useMainUiVisible(): boolean {
   // 两个 store 订阅必须无条件调用（Hooks 规则），再由宿主角色/页面活跃覆盖结果。
   const quickVisible = useEdgeSnapStore((s) => !isCapsuleMode(s.phase));
   const pageActive = useWorkbenchPageActive();
-  if (pageActive !== null) return pageActive;
+  if (pageActive !== null) {
+    // 工作台：只看当前路由；主窗口完整面板：页面被选中且主界面可见。
+    return isWorkbenchHost() ? pageActive : pageActive && quickVisible;
+  }
   return isWorkbenchHost() || quickVisible;
 }
 
@@ -53,7 +56,11 @@ export function useFullViewVisible(): boolean {
   const visible = useEdgeSnapStore((s) => mode === "full" && !isCapsuleMode(s.phase));
   const pageActive = useWorkbenchPageActive();
   // 工作台内：只认当前路由是否可见（隐藏页面必须暂停消费者刷新）。
-  if (pageActive !== null) return pageActive;
+  // 主窗口：除「完整模式可见」外，还要认「该页是否被选中」——按需加载后
+  // keep 页面会留在 DOM（hidden），只判模式会让隐藏页继续轮询。
+  if (pageActive !== null) {
+    return isWorkbenchHost() ? pageActive : pageActive && visible;
+  }
   return isWorkbenchHost() || visible;
 }
 

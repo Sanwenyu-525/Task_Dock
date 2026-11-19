@@ -49,6 +49,7 @@ import {
   taskContext,
   taskReminderLinkGet,
   toggleTask,
+  undoTaskCompletion,
   workspaceList,
   workspaceRestore,
   workspaceRestoreCancel,
@@ -444,24 +445,25 @@ function CurrentTaskSection({
       if (updated.status === "pending") {
         showToast(t("capsule.tasks.recurrenceDone"), { kind: "success" });
       } else {
-      showToast(t("workbench.completeDone", { title: updated.title }), {
-        kind: "success",
-        action: {
-          label: t("workbench.undo"),
-          run: () => {
-            void toggleTask(updated.id)
-              .then(() => {
-                void refresh();
-                void useTasksStore.getState().refresh();
-              })
-              .catch((e) =>
-                showToast(t("workbench.undoFailed", { error: errorMessage(e) }), {
-                  kind: "error",
-                }),
-              );
+        showToast(t("workbench.completeDone", { title: updated.title }), {
+          kind: "success",
+          action: {
+            label: t("workbench.undo"),
+            run: () => {
+              void undoTaskCompletion(updated)
+                .then(() => {
+                  void refresh();
+                  void useTasksStore.getState().refresh();
+                })
+                .catch((e) =>
+                  showToast(t("workbench.undoFailed", { error: errorMessage(e) }), {
+                    kind: "error",
+                  }),
+                );
+            },
           },
-        },
-      });
+        });
+      }
       await refresh();
       void useTasksStore.getState().refresh();
     } catch (e) {

@@ -39,8 +39,25 @@ import { useTasksStore } from "../store/useTasksStore";
 import { useActionsStore } from "../store/useActionsStore";
 import { useCaptureStore } from "../store/useCaptureStore";
 import { useSettingsStore } from "../store/useSettingsStore";
-import { allEntryIds } from "../lib/navigationRegistry";
-import { __resetLocaleForTests, setLocalePreference } from "../i18n";
+import { allEntryIds, defaultVisibleIds, navEntry } from "../lib/navigationRegistry";
+import { __resetLocaleForTests, setLocalePreference, translate } from "../i18n";
+
+/**
+ * 主窗口默认可见入口（顺序 = 注册中心默认顺序，过滤工作台专属）。
+ * 导航增删/改名/换序时测试自动跟随，不再硬编码标签与数量。
+ */
+function defaultMainEntries() {
+  return defaultVisibleIds("left")
+    .map((id) => navEntry(id))
+    .filter((entry): entry is NonNullable<ReturnType<typeof navEntry>> => entry !== undefined)
+    .filter((entry) => entry.workbenchOnly !== true);
+}
+
+function enLabel(id: string): string {
+  const entry = navEntry(id);
+  if (!entry) throw new Error(`unknown nav entry: ${id}`);
+  return translate("en-US", entry.labelKey);
+}
 
 /** 写入一份指定左侧可见入口的导航配置（known 覆盖当前全部入口，确保其余为「用户隐藏」）。 */
 function seedLeftLayout(left: string[]) {
@@ -87,8 +104,8 @@ describe("完整模式左侧导航", () => {
     render(<FullView />);
     const nav = screen.getByRole("navigation", { name: "主导航" });
     expect(nav).toBeTruthy();
-    for (const label of ["工作台", "工作空间", "任务", "Agent", "应用", "微件", "行动", "剪贴板", "收集与暂存", "工作流", "历史", "规划中心", "设置"]) {
-      expect(navItem(label)).toBeTruthy();
+    for (const entry of defaultMainEntries()) {
+      expect(navItem(entry.label)).toBeTruthy();
     }
     expect(screen.queryByRole("button", { name: /^帮助/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /^暂存架/ })).toBeNull();
@@ -109,23 +126,9 @@ describe("完整模式左侧导航", () => {
       ...document.querySelectorAll(".rail-items .rail-item, .rail-foot > .rail-item"),
     ];
     // aria-label 可能追加徽标说明（如「收集与暂存（2 条待处理收集）」），只比较入口名
-    expect(items.map((el) => el.getAttribute("aria-label")?.split("（")[0])).toEqual([
-      "工作台",
-      "工作空间",
-      "任务",
-      "Agent",
-      "应用",
-      "微件",
-      "行动",
-      "剪贴板",
-      "手机互传",
-      "收集与暂存",
-      "工作流",
-      "历史",
-      "规划中心",
-      "资源管理",
-      "设置",
-    ]);
+    expect(items.map((el) => el.getAttribute("aria-label")?.split("（")[0])).toEqual(
+      defaultMainEntries().map((entry) => entry.label),
+    );
 
     await user.click(navItem("应用"));
     expect(await screen.findByTestId("workbench-handoff-apps")).toBeTruthy();
@@ -199,15 +202,16 @@ describe("完整模式左侧导航", () => {
     expect(useUiStore.getState().tab).toBe("shelf");
   });
 
-  it("规划中心位于历史之后、设置之前，点击后渲染规划面板（Tab 身份仍为 roadmap）", async () => {
+  it("规划中心（项目中枢）位于历史之后、设置之前，点击后渲染规划面板（Tab 身份仍为 roadmap）", async () => {
     const user = userEvent.setup();
     render(<FullView />);
+    const roadmapLabel = navEntry("roadmap")?.label ?? "";
 
-    await user.click(navItem("规划中心"));
+    await user.click(navItem(roadmapLabel));
     expect(await screen.findByTestId("workbench-handoff-roadmap")).toBeTruthy();
     expect(useUiStore.getState().tab).toBe("roadmap");
-    expect(navItem("规划中心").getAttribute("aria-current")).toBe("page");
-    expect(navItem("历史").getAttribute("aria-current")).toBeNull();
+    expect(navItem(roadmapLabel).getAttribute("aria-current")).toBe("page");
+    expect(navItem(navEntry("history")?.label ?? "历史").getAttribute("aria-current")).toBeNull();
   });
 
   it("帮助入口位于规划中心之后、设置之前，点击后渲染帮助中心（不占 Ctrl+数字）", async () => {
@@ -216,11 +220,14 @@ describe("完整模式左侧导航", () => {
     seedLeftLayout(allEntryIds("left"));
     render(<FullView />);
 
-    await user.click(navItem("帮助"));
+    const helpLabel = navEntry("help")?.label ?? "";
+    await user.click(navItem(helpLabel));
     expect(await screen.findByTestId("workbench-handoff-help")).toBeTruthy();
     expect(useUiStore.getState().tab).toBe("help");
-    expect(navItem("帮助").getAttribute("aria-current")).toBe("page");
-    expect(navItem("规划中心").getAttribute("aria-current")).toBeNull();
+    expect(navItem(helpLabel).getAttribute("aria-current")).toBe("page");
+    expect(
+      navItem(navEntry("roadmap")?.label ?? "").getAttribute("aria-current"),
+    ).toBeNull();
   });
 
   it("徽标复用任务统计、行动中心计数与收集箱未处理数", () => {
@@ -365,23 +372,7 @@ describe("英文导航", () => {
     const labels = [
       ...document.querySelectorAll(".rail-items .rail-label, .rail-foot > .rail-item .rail-label"),
     ].map((node) => node.textContent);
-    expect(labels).toEqual([
-      "Workbench",
-      "Workspace",
-      "Tasks",
-      "Agents",
-      "Apps",
-      "Widgets",
-      "Actions",
-      "Clipboard",
-      "Phone Transfer",
-      "Capture & Shelf",
-      "Workflows",
-      "History",
-      "Roadmap",
-      "Resources",
-      "Settings",
-    ]);
+    expect(labels).toEqual(defaultMainEntries().map((entry) => translate("en-US", entry.labelKey)));
 
     // 收集与暂存徽标数仍来自未处理计数（2），aria 与提示按英文模板拼接
     const collection = screen.getByRole("button", {
@@ -400,7 +391,7 @@ describe("英文导航", () => {
     setLocalePreference("en-US");
     render(<FullView />);
 
-    await user.click(screen.getByRole("button", { name: "Roadmap" }));
+    await user.click(screen.getByRole("button", { name: enLabel("roadmap") }));
     expect(await screen.findByTestId("workbench-handoff-roadmap")).toBeTruthy();
     expect(useUiStore.getState().tab).toBe("roadmap");
   });

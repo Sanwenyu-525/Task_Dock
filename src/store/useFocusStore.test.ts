@@ -23,6 +23,7 @@ import {
   SESSION_STATE_KEYS,
   formatRemaining,
   remainingFromSnapshot,
+  acquireFocusEvents,
   resetFocusEventsForTest,
   useFocusStore,
   type FocusPrefs,
@@ -313,4 +314,19 @@ describe("偏好更新", () => {
     });
     expect(useFocusStore.getState().snapshot?.prefs.focus_minutes).toBe(30);
   });
+});
+
+it("部分监听注册失败时释放成功项，下次挂载可重新订阅", async () => {
+  const { listen } = await import("@tauri-apps/api/event");
+  const off = vi.fn();
+  vi.mocked(listen).mockResolvedValueOnce(off).mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce(off);
+  const releaseFailed = await acquireFocusEvents();
+  releaseFailed();
+  expect(off).toHaveBeenCalledTimes(2);
+  const offRetry = vi.fn();
+  vi.mocked(listen).mockResolvedValueOnce(offRetry).mockResolvedValueOnce(offRetry).mockResolvedValueOnce(offRetry);
+  const release = await acquireFocusEvents();
+  release();
+  await Promise.resolve();
+  expect(offRetry).toHaveBeenCalledTimes(3);
 });

@@ -6,6 +6,7 @@ import { installGlobalErrorHandlers } from "./lib/globalErrors";
 import { installNativeDragBridge } from "./lib/dragCursorSession";
 import { installStartupConsistencyChecks } from "./lib/consistencyChecks";
 import { installDiagnosticsFlushHooks } from "./lib/diagnostics";
+import { installFeatureRegistry } from "./lib/featureRegistry";
 import { initLocale } from "./i18n";
 import { bootFail, bootStage } from "./boot/bootProtocol";
 import "./styles.css";
@@ -32,6 +33,9 @@ installNativeDragBridge();
 // 诊断队列在窗口关闭前尽量刷盘；一致性校验在设置首次加载后跑一次（无轮询）。
 installDiagnosticsFlushHooks();
 installStartupConsistencyChecks();
+// 功能注册表只登记导航级元数据（ID/代码入口/缓存策略），不 import 任何页面代码。
+// 必须在首次渲染前完成，否则 `FeatureView` 会拿到「未注册」。
+installFeatureRegistry();
 
 try {
   ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(

@@ -13,14 +13,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use parking_lot::{Mutex, RwLock};
-use tauri::{AppHandle, Emitter};
 use tauri::async_runtime::JoinHandle;
+use tauri::{AppHandle, Emitter};
 
 use crate::secure_vault::error::VaultError;
 use crate::secure_vault::session::{LockReason, RuntimeState, VaultSession};
 use crate::secure_vault::store::VaultStore;
 
 pub const DB_FILE: &str = "secure-vault.db";
+pub const SESSION_MARKER: &str = "secure-vault.session.json";
 pub const EVENT_LOCKED: &str = "vault-locked";
 pub const EVENT_STATUS: &str = "vault-status";
 
@@ -62,6 +63,15 @@ impl VaultState {
             },
             None => RuntimeState::NoVault,
         };
+        // 解锁期间写下的 session marker 说明上次进程未走正常锁定流程：
+        // 记录 crash 原因并删除 marker，避免下次启动重复提示。
+        let marker = data_dir.join(SESSION_MARKER);
+        if marker.exists() {
+            let _ = std::fs::remove_file(&marker);
+            if session.runtime == RuntimeState::Locked {
+                session.last_lock_reason = Some(LockReason::Crash);
+            }
+        }
         let state = Arc::new(Self {
             data_dir,
             app,
@@ -135,6 +145,7 @@ impl VaultState {
             let mut s = self.session.write();
             s.clear(reason);
         }
+        let _ = std::fs::remove_file(self.data_dir.join(SESSION_MARKER));
         let _ = self.app.emit(
             EVENT_LOCKED,
             serde_json::json!({
@@ -160,11 +171,25 @@ impl VaultState {
     fn spawn_ticker(state: &Arc<Self>) {
         let weak = Arc::downgrade(state);
         let handle = tauri::async_runtime::spawn(async move {
+            let mut last_wall = std::time::SystemTime::now();
             loop {
                 tokio::time::sleep(Duration::from_secs(2)).await;
                 let Some(state) = weak.upgrade() else {
                     break;
                 };
+                let now_wall = std::time::SystemTime::now();
+                let gap = now_wall.duration_since(last_wall).unwrap_or_default();
+                last_wall = now_wall;
+                // 系统休眠会暂停线程：正常 tick 间隔 2s，出现明显墙钟跳跃时按
+                // 休眠恢复处理，立即锁定；这也覆盖部分不投递 WM_POWERBROADCAST 的场景。
+                if gap > Duration::from_secs(10) && state.session.read().is_unlocked() {
+                    state.lock(LockReason::Sleep);
+                }
+                // WTS 会话锁屏：轮询 WTSSessionInfoEx 的 SessionFlags。
+                // 锁屏后输入桌面切换，2 秒内必定触发；前端计时器不参与该判断。
+                if session_locked() && state.session.read().is_unlocked() {
+                    state.lock(LockReason::SystemLock);
+                }
                 let reason = {
                     let s = state.session.read();
                     policy::should_lock_now(&s, Instant::now())
@@ -176,6 +201,46 @@ impl VaultState {
         });
         *state.ticker.lock() = Some(handle);
     }
+}
+
+/// 当前 Windows 会话是否处于锁屏（WTSSessionInfoEx.SessionFlags == LOCK）。
+/// 非 Windows 恒为 false；查询失败按“未锁定”处理，避免误锁。
+#[cfg(windows)]
+fn session_locked() -> bool {
+    use std::ptr::null_mut;
+    use windows_sys::Win32::System::RemoteDesktop::{
+        WTSFreeMemory, WTSQuerySessionInformationW, WTSSessionInfoEx, WTSINFOEXW,
+        WTS_CURRENT_SESSION, WTS_SESSIONSTATE_LOCK,
+    };
+
+    let mut buffer: *mut u16 = null_mut();
+    let mut bytes = 0u32;
+    let ok = unsafe {
+        WTSQuerySessionInformationW(
+            null_mut(),
+            WTS_CURRENT_SESSION,
+            WTSSessionInfoEx,
+            &mut buffer,
+            &mut bytes,
+        )
+    };
+    if ok == 0 || buffer.is_null() || bytes == 0 {
+        return false;
+    }
+    let info = unsafe { &*(buffer as *const WTSINFOEXW) };
+    let locked = if info.Level == 1 {
+        let flags = unsafe { info.Data.WTSInfoExLevel1.SessionFlags };
+        flags == WTS_SESSIONSTATE_LOCK as i32
+    } else {
+        false
+    };
+    unsafe { WTSFreeMemory(buffer as *mut _) };
+    locked
+}
+
+#[cfg(not(windows))]
+fn session_locked() -> bool {
+    false
 }
 
 pub fn db_path(data_dir: &Path) -> PathBuf {

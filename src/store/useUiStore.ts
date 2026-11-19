@@ -8,6 +8,7 @@ export type Tab =
   | "files"
   | "tasks"
   | "life"
+  | "vault"
   | "agents"
   | "apps"
   | "widgets"
@@ -61,6 +62,7 @@ export const RAIL_ORDER: readonly Tab[] = [
   "tasks",
   "agents",
   "life",
+  "vault",
   "apps",
   "widgets",
   "actions",
@@ -365,7 +367,8 @@ export const useUiStore = create<{
     set((s) => {
       // 相同根因去重：优先错误码 + 文案，避免轮询/重复点击刷屏
       const dup = [...s.toasts].reverse().find((t) => {
-        const sameCode = opts?.code ? t.code === opts.code : true;
+        if (opts?.action || t.action) return false;
+        const sameCode = opts?.code === t.code;
         return t.message === msg && t.kind === kind && sameCode && now - t.at < TOAST_DEDUP_MS;
       });
       if (dup) {

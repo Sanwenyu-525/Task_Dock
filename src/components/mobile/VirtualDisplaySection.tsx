@@ -48,6 +48,7 @@ import {
 import { copyText } from "../../lib/clipboard";
 import { localizedErrorMessage } from "../../i18n/errors";
 import { useLocale } from "../../hooks/useLocale";
+import { useFullViewVisible } from "../../hooks/useMainUiVisible";
 import { useUiStore } from "../../store/useUiStore";
 import { useVirtualDisplayStore } from "../../store/useVirtualDisplayStore";
 import { ConfirmDialog } from "../ui";
@@ -84,6 +85,9 @@ export default function VirtualDisplaySection() {
   const showToast = useUiStore((s) => s.showToast);
   const getStoredConfig = useVirtualDisplayStore((s) => s.getVirtualDisplayConfig);
   const saveConfig = useVirtualDisplayStore((s) => s.setVirtualDisplayConfig);
+  // 页面级可见性：手机互传页在工作台里保活，切走后组件仍在 DOM（hidden）。
+  // 只判 document.hidden 会让设备/会话轮询在后台持续跑（1–3s 一次）。
+  const pageVisible = useFullViewVisible();
 
   const [initializing, setInitializing] = useState(true);
   const [probe, setProbe] = useState<VdProbe | null>(null);
@@ -282,6 +286,8 @@ export default function VirtualDisplaySection() {
     (session) => session.status === "starting" || session.status === "stopping",
   );
   useEffect(() => {
+    // 页面不可见就不建立轮询（保活不等于继续采样）；回到页面时立即补一次真实状态。
+    if (!pageVisible) return;
     const timer = window.setInterval(
       () => {
         if (document.hidden) return;
@@ -303,17 +309,17 @@ export default function VirtualDisplaySection() {
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [fastPoll]);
+  }, [fastPoll, pageVisible]);
 
   // 工具链缺失时低频重试：用户可能在页面打开期间安装/改 PATH。
   const toolchainMissing = probe !== null && (!probe.adb_path || !probe.scrcpy_path);
   useEffect(() => {
-    if (!toolchainMissing) return;
+    if (!toolchainMissing || !pageVisible) return;
     const timer = window.setInterval(() => {
       if (!document.hidden) void refreshProbe.current();
     }, 30_000);
     return () => window.clearInterval(timer);
-  }, [toolchainMissing]);
+  }, [toolchainMissing, pageVisible]);
 
   const selectedDevice = useMemo(
     () =>

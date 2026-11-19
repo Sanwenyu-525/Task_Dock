@@ -11,6 +11,8 @@
   padding: 12px;
   height: 100%;
   overflow: auto;
+  container-type: inline-size;
+  container-name: collab;
 }
 
 .collab-toolbar {
@@ -29,7 +31,7 @@
 }
 
 .collab-muted {
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   font-size: 12px;
 }
 
@@ -444,7 +446,7 @@
   min-width: 40px;
   text-align: center;
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--text-tertiary);
 }
 
 .collab-graph-wrap {
@@ -472,7 +474,7 @@
 }
 
 .collab-edge-label {
-  fill: var(--text-muted);
+  fill: var(--text-tertiary);
   font-size: 11px;
 }
 
@@ -506,6 +508,29 @@
   max-height: 60vh;
   overflow: auto;
   font-size: 12px;
+}
+
+.collab-visual-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.collab-visual-edit label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.collab-source-editor {
+  max-height: 52vh;
+  overflow: auto;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+  font-size: 12px;
+  line-height: 1.45;
+  resize: vertical;
 }
 
 .collab-readonly-artifact {
@@ -619,7 +644,7 @@
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  background: var(--text-muted);
+  background: var(--text-tertiary);
 }
 
 .proto-switch.is-on .proto-switch-knob {
@@ -653,7 +678,7 @@
   justify-content: center;
   border: 1px dashed var(--border-strong);
   border-radius: 8px;
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   font-size: 12px;
   background: var(--surface-sunken);
 }
@@ -667,7 +692,7 @@
 .proto-tab {
   padding: 0 10px;
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--text-tertiary);
 }
 
 .proto-tab.is-active {
@@ -786,7 +811,7 @@
 
 .collab-diff-value {
   overflow-wrap: anywhere;
-  color: var(--text-muted);
+  color: var(--text-tertiary);
 }
 
 .collab-version-list {
@@ -822,6 +847,21 @@
 
 .collab-back {
   align-self: flex-start;
+}
+
+/* 工作台侧栏会挤压协作中心；按容器宽度而非视口宽度退化。 */
+@container collab (max-width: 640px) {
+  .collab-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .collab-list-pane {
+    max-height: 38vh;
+  }
+
+  .collab-facts {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 900px) {

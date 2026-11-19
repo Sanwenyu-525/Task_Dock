@@ -53,6 +53,7 @@ import {
 } from "../../lib/bridge";
 import { setClientVerboseMode } from "../../lib/diagnostics";
 import type { MessageKey } from "../../i18n";
+import FeatureLoadSection from "./FeatureLoadSection";
 import "./diagnostics-workspace.css";
 
 const PAGE_SIZE = 30;
@@ -1187,6 +1188,10 @@ export default function DiagnosticsCenterPanel() {
             </div>
           </div>
         </section>
+
+        {/* 按需加载运行态：页面模块加载耗时/次数/实例释放；接在健康概览之后，
+            不新增第二个诊断页面，也不读数据库。 */}
+        <FeatureLoadSection />
 
         {!chain && (
           <section className="diag-center-filters" aria-label={t("diagnosticsCenter.filter.title")}>

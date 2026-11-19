@@ -1,7 +1,7 @@
 # 安全保险箱 · 开发路线图
 
 - 日期：2026-11-18
-- 阶段：P0（路线图；P1 起按本文推进）
+- 阶段：P0 已完成；P1 本地 MVP 已实现（W14 真机验收未完成）
 - 上游：[product-requirements.md](product-requirements.md)、[test-and-acceptance.md](test-and-acceptance.md)
 
 > 规模用 S/M/L 表示相对工作量（**不是工期承诺**）。所有阶段都必须遵守
@@ -52,6 +52,25 @@
 ---
 
 ## 3. P1（MVP）工作包
+
+### 3.0 P1 执行状态（2026-11-18）
+
+| ID | 状态 | 实际落地 / 缺口 |
+|---|---|---|
+| W1 | ✅ | 6 个 crate + `RemoteDesktop` feature；`secure_vault` 模块注册到 `lib.rs` |
+| W2 | ✅ | `crypto/{kdf,aead,envelope,secret_bytes,password_gen}.rs`，**23 项** crypto/policy/session/记录信封测试全部通过 |
+| W3 | ✅ | `store.rs` 8 表、digest HMAC、`vault_meta`，不碰主库 `MIGRATIONS` |
+| W4 | ✅ | `session.rs` + `policy.rs` + 2s ticker；前端不吃安全定时器 |
+| W5 | ✅ | 38 个命令、`src/lib/vault.ts`；**未建** `vaultBridge.ts` 中间层，`bridge.ts` 未改 |
+| W6 | ✅ | 7 类记录模板、`expectedRev`、软删/恢复、最近使用独立表 |
+| W7 | ✅ | 内存索引、分类/标签、搜索仅标题/账号/邮箱/网址/平台/分类/标签/备注 |
+| W8 | ✅ | CSPRNG + 拒绝采样 + 强度启发式 |
+| W9 | ⚠️ 部分 | 窗口失焦/最小化/关闭、WTS 锁屏轮询、休眠墙钟跳跃；**未做** WTS 事件回调与 `WM_POWERBROADCAST` |
+| W10 | ✅ | 受控写、sha256 指纹、内容比对后清除、手动立即清除 |
+| W11 | ⚠️ 部分 | 导出/检查/导入为新库；**未做** 合并/覆盖、5000 条/200MB 上限、导入进度 |
+| W12 | ✅ | 工作台单页 + 建库/锁屏/列表/详情/编辑器/设置/生成器/备份/审计 |
+| W13 | ✅ | `Tab`/`RAIL_ORDER`/`NAV_ENTRIES`/`WORKBENCH_ROUTES`/i18n 两语言/featureCatalog 62 项；工作台已改为按需加载，保险箱登记在 `featureRegistry` 的 `page:vault` |
+| W14 | ⚠️ 部分 | **23 项 Rust 单测 + 1 项前端 store 测试通过**；前端生产构建通过；KDF 基准已跑；1280/400 视觉走查通过；真机锁屏、休眠、剪贴板、320 窄窗、1000 条性能**未执行** |
 
 ### 3.1 工作包与依赖
 

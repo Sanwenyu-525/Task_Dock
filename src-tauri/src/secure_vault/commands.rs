@@ -20,8 +20,8 @@ use crate::secure_vault::crypto::secret_bytes;
 use crate::secure_vault::crypto::{random_array, record_aad, sha256};
 use crate::secure_vault::error::VaultError;
 use crate::secure_vault::session::{
-    LockReason, LockSettings, RecordMeta, RecordSecret, RuntimeState, SecretField, VaultIndex,
-    PendingCopy,
+    LockReason, LockSettings, PendingCopy, RecordMeta, RecordSecret, RuntimeState, SecretField,
+    VaultIndex,
 };
 use crate::secure_vault::store::{
     decode_salt, Bootstrap, StoredName, StoredRecord, StoredUsage, VaultStore,
@@ -342,7 +342,11 @@ fn validate_fields(fields: &[SecretField]) -> Result<(), VaultError> {
         if f.encoding != "utf8" && f.encoding != "base64" {
             return Err(VaultError::validation("字段编码", "只支持 utf8/base64"));
         }
-        let limit = if f.encoding == "base64" { 256 * 1024 } else { 64 * 1024 };
+        let limit = if f.encoding == "base64" {
+            256 * 1024
+        } else {
+            64 * 1024
+        };
         if f.value.len() > limit {
             return Err(VaultError::validation("字段值", "超出长度上限"));
         }
@@ -465,7 +469,7 @@ pub fn vault_status(state: State<'_, Arc<VaultState>>) -> Result<VaultStatusDto,
         has_vault: state.has_vault(),
         unlocked: s.is_unlocked(),
         recovery_mode: s.runtime == RuntimeState::Recovery,
-        record_count: if s.is_unlocked() {
+        record_count: if s.is_unlocked() || s.runtime == RuntimeState::Recovery {
             Some(s.index.rows.len())
         } else {
             None
@@ -653,11 +657,13 @@ pub async fn vault_unlock(
         }
     };
 
-    let salt_b64 = state.with_store(|s| s.get_meta("vault_salt"))?
+    let salt_b64 = state
+        .with_store(|s| s.get_meta("vault_salt"))?
         .ok_or_else(VaultError::corrupt)?;
     let salt = decode_salt(&salt_b64)?;
 
-    let expected = state.with_store(|s| s.get_meta("digest_hmac"))?
+    let expected = state
+        .with_store(|s| s.get_meta("digest_hmac"))?
         .ok_or_else(VaultError::corrupt)?;
     let actual = crate::secure_vault::crypto::secret_bytes::b64_encode(
         &state.with_store(|s| s.digest_of(&dek, &salt))?,
@@ -896,12 +902,12 @@ pub fn vault_regenerate_recovery_key(
 }
 
 #[tauri::command]
-pub fn vault_delete(
-    state: State<'_, Arc<VaultState>>,
-    confirm: String,
-) -> Result<(), VaultError> {
+pub fn vault_delete(state: State<'_, Arc<VaultState>>, confirm: String) -> Result<(), VaultError> {
     if confirm != DELETE_CONFIRM {
-        return Err(VaultError::validation("确认文本", "必须逐字输入 DELETE VAULT"));
+        return Err(VaultError::validation(
+            "确认文本",
+            "必须逐字输入 DELETE VAULT",
+        ));
     }
     let dek = require_unlocked(state.inner())?;
     drop(dek);
@@ -960,7 +966,12 @@ pub fn vault_record_list(
                 return false;
             }
             if !q.is_empty() {
-                let cat = s.index.category_names.get(&m.category_id).cloned().unwrap_or_default();
+                let cat = s
+                    .index
+                    .category_names
+                    .get(&m.category_id)
+                    .cloned()
+                    .unwrap_or_default();
                 let tags: String = m
                     .tag_ids
                     .iter()
@@ -969,8 +980,8 @@ pub fn vault_record_list(
                     .collect::<Vec<_>>()
                     .join(" ");
                 let hay = format!(
-                    "{} {} {} {} {} {}",
-                    m.title, m.username, m.email, m.url, m.platform, cat
+                    "{} {} {} {} {} {} {}",
+                    m.title, m.username, m.email, m.url, m.platform, cat, m.note
                 ) + &tags;
                 if !hay.to_lowercase().contains(&q) {
                     return false;
@@ -978,9 +989,7 @@ pub fn vault_record_list(
             }
             true
         })
-        .map(|m| {
-            build_item(m, &s.index, s.index.usage.get(&m.id))
-        })
+        .map(|m| build_item(m, &s.index, s.index.usage.get(&m.id)))
         .collect();
     rows.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     let off = offset.unwrap_or(0) as usize;
@@ -1240,7 +1249,16 @@ pub async fn vault_record_toggle_favorite(
     meta.rev = rev;
     meta.updated_at = now_iso();
     let secret = decrypt_secret(&dek, &salt, &rec)?;
-    let stored = make_stored(id.clone(), rev, rec.dek_ver, &dek, &salt, &meta, &secret, rec.tombstone)?;
+    let stored = make_stored(
+        id.clone(),
+        rev,
+        rec.dek_ver,
+        &dek,
+        &salt,
+        &meta,
+        &secret,
+        rec.tombstone,
+    )?;
     state.with_store(|s| s.write_record(&stored, rev + 1, &dek, &salt))?;
     {
         let mut s = state.session.write();
@@ -1358,7 +1376,12 @@ pub async fn vault_category_rename(
     row.nonce = sealed.nonce;
     row.ciphertext = sealed.ciphertext;
     state.with_store(|s| s.put_category(&row))?;
-    state.session.write().index.category_names.insert(id, trimmed);
+    state
+        .session
+        .write()
+        .index
+        .category_names
+        .insert(id, trimmed);
     Ok(())
 }
 
@@ -1381,7 +1404,10 @@ pub async fn vault_category_delete(
             .collect()
     };
     if !affected.is_empty() && !confirm_affected.unwrap_or(false) {
-        return Err(VaultError::validation("删除分类", "仍有记录引用该分类，需要二次确认"));
+        return Err(VaultError::validation(
+            "删除分类",
+            "仍有记录引用该分类，需要二次确认",
+        ));
     }
     for rid in &affected {
         let rec = state
@@ -1412,9 +1438,7 @@ pub async fn vault_category_delete(
 }
 
 #[tauri::command]
-pub fn vault_tag_list(
-    state: State<'_, Arc<VaultState>>,
-) -> Result<Vec<CategoryDto>, VaultError> {
+pub fn vault_tag_list(state: State<'_, Arc<VaultState>>) -> Result<Vec<CategoryDto>, VaultError> {
     let _ = require_unlocked(state.inner())?;
     let s = state.session.read();
     let rows = state.with_store(|st| st.load_tags())?;
@@ -1455,7 +1479,12 @@ pub async fn vault_tag_create(
         dek_ver: 1,
     };
     state.with_store(|s| s.put_tag(&row))?;
-    state.session.write().index.tag_names.insert(id.clone(), trimmed.clone());
+    state
+        .session
+        .write()
+        .index
+        .tag_names
+        .insert(id.clone(), trimmed.clone());
     Ok(CategoryDto {
         id,
         name: trimmed,
@@ -1539,9 +1568,7 @@ pub async fn vault_tag_delete(
 // ── 设置 / 密码 / 剪贴板 ─────────────────────────────────────
 
 #[tauri::command]
-pub fn vault_settings_get(
-    state: State<'_, Arc<VaultState>>,
-) -> Result<LockSettings, VaultError> {
+pub fn vault_settings_get(state: State<'_, Arc<VaultState>>) -> Result<LockSettings, VaultError> {
     let _ = require_unlocked(state.inner())?;
     Ok(state.session.read().lock_settings.clone())
 }
@@ -1596,7 +1623,8 @@ pub fn vault_copy_secret(
         .find(|f| f.id == field_id)
         .ok_or_else(VaultError::not_found)?;
 
-    let rt = clipboard_runtime(&state.app).ok_or_else(|| VaultError::io("clipboard:unavailable"))?;
+    let rt =
+        clipboard_runtime(&state.app).ok_or_else(|| VaultError::io("clipboard:unavailable"))?;
     let text = field.value;
     let payload = ClipboardPayload::Text {
         text: text.clone(),
@@ -1691,9 +1719,7 @@ pub async fn vault_export_backup(
 }
 
 #[tauri::command]
-pub fn vault_backup_inspect(
-    path: String,
-) -> Result<BackupInspectDto, VaultError> {
+pub fn vault_backup_inspect(path: String) -> Result<BackupInspectDto, VaultError> {
     let header = crate::secure_vault::backup::inspect(&path)?;
     Ok(BackupInspectDto {
         path,
@@ -1725,11 +1751,14 @@ pub async fn vault_backup_import(
 // ── 内部实现 ─────────────────────────────────────────────────
 
 fn clipboard_runtime(app: &AppHandle) -> Option<Arc<ClipboardRuntime>> {
-    app.try_state::<Arc<ClipboardRuntime>>().map(|s| s.inner().clone())
+    app.try_state::<Arc<ClipboardRuntime>>()
+        .map(|s| s.inner().clone())
 }
 
 fn cooldown_remaining(state: &VaultState) -> Result<Option<i64>, VaultError> {
-    let until = state.with_store(|s| s.get_meta("lockout_until"))?.unwrap_or_default();
+    let until = state
+        .with_store(|s| s.get_meta("lockout_until"))?
+        .unwrap_or_default();
     if until.is_empty() {
         return Ok(None);
     }
@@ -1787,7 +1816,8 @@ fn save_lock_settings(
     salt: &[u8; 16],
     dek_ver: u32,
     settings: &LockSettings,
-) -> Result<(), VaultError> {    let values = [
+) -> Result<(), VaultError> {
+    let values = [
         ("auto_lock_idle_secs", serde_json::json!(settings.idle_secs)),
         (
             "auto_lock_background_secs",
@@ -1839,7 +1869,7 @@ fn load_settings(
         out.clipboard_clear_secs = 30;
     }
     if out.reveal_secs == 0 {
-        out.reveal_secs = 60;
+        out.reveal_secs = 30;
     }
     Ok(out)
 }
@@ -1881,7 +1911,9 @@ fn load_index(
         let aad = format!("tdcat|{}|v{}", row.id, row.dek_ver);
         if let Ok(plain) = aead::open(&rk, &row.nonce, &row.ciphertext, &aad) {
             if let Ok(name) = std::str::from_utf8(&plain) {
-                index.category_names.insert(row.id.clone(), name.to_string());
+                index
+                    .category_names
+                    .insert(row.id.clone(), name.to_string());
             }
         }
     }
@@ -1955,10 +1987,13 @@ fn clear_clipboard_if_unchanged(
             }
         }
     };
-    let rt = clipboard_runtime(&state.app).ok_or_else(|| VaultError::io("clipboard:unavailable"))?;
+    let rt =
+        clipboard_runtime(&state.app).ok_or_else(|| VaultError::io("clipboard:unavailable"))?;
     let read = platform::read_clipboard(true);
     let text = match read {
-        platform::ClipboardRead::Content { content, .. } if content.kind == crate::clipboard::KIND_TEXT => {
+        platform::ClipboardRead::Content { content, .. }
+            if content.kind == crate::clipboard::KIND_TEXT =>
+        {
             content.text.clone()
         }
         platform::ClipboardRead::Empty(_) => {
@@ -2011,7 +2046,7 @@ fn clear_clipboard_if_unchanged(
 }
 
 fn write_crash_marker(state: &VaultState, vault_id: &str) {
-    let path = state.data_dir.join("secure-vault.session.json");
+    let path = state.data_dir.join(crate::secure_vault::SESSION_MARKER);
     let body = serde_json::json!({
         "vaultId": vault_id,
         "pid": std::process::id(),
@@ -2021,7 +2056,7 @@ fn write_crash_marker(state: &VaultState, vault_id: &str) {
 }
 
 fn remove_crash_marker(state: &VaultState) {
-    let _ = std::fs::remove_file(state.data_dir.join("secure-vault.session.json"));
+    let _ = std::fs::remove_file(state.data_dir.join(crate::secure_vault::SESSION_MARKER));
 }
 
 impl VaultIndex {
@@ -2034,5 +2069,120 @@ impl VaultIndex {
             tag_names: self.tag_names.clone(),
             category_names: self.category_names.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn meta(id: &str, title: &str) -> RecordMeta {
+        RecordMeta {
+            id: id.to_string(),
+            rev: 1,
+            field_count: 2,
+            record_type: "password".to_string(),
+            title: title.to_string(),
+            username: "alice@example.com".to_string(),
+            email: "alice@example.com".to_string(),
+            url: "https://example.com/login".to_string(),
+            platform: "example".to_string(),
+            category_id: String::new(),
+            tag_ids: Vec::new(),
+            favorite: false,
+            note: "backup email: alice-backup@example.com".to_string(),
+            created_at: "2026-11-18T00:00:00Z".to_string(),
+            updated_at: "2026-11-18T00:00:00Z".to_string(),
+        }
+    }
+
+    fn secret() -> RecordSecret {
+        RecordSecret {
+            version: DATA_VERSION,
+            fields: vec![
+                SecretField {
+                    id: "username".to_string(),
+                    label: "用户名".to_string(),
+                    kind: "text".to_string(),
+                    encoding: "utf8".to_string(),
+                    value: "alice".to_string(),
+                },
+                SecretField {
+                    id: "password".to_string(),
+                    label: "密码".to_string(),
+                    kind: "password".to_string(),
+                    encoding: "utf8".to_string(),
+                    value: "correct horse battery staple".to_string(),
+                },
+            ],
+        }
+    }
+
+    fn seal(dek: &[u8; 32], salt: &[u8; 16], id: &str) -> StoredRecord {
+        let (meta_nonce, meta_ct) =
+            encrypt_meta(dek, salt, id, 1, &meta(id, "邮箱主账号")).unwrap();
+        let (secret_nonce, secret_ct) = encrypt_secret(dek, salt, id, 1, &secret()).unwrap();
+        StoredRecord {
+            id: id.to_string(),
+            rev: 1,
+            dek_ver: 1,
+            alg_ver: ALG_VERSION,
+            data_ver: DATA_VERSION,
+            meta_nonce,
+            meta_ct,
+            secret_nonce,
+            secret_ct,
+            tombstone: 0,
+        }
+    }
+
+    #[test]
+    fn record_roundtrip_keeps_multiline_and_unicode_secrets() {
+        let dek = [9u8; 32];
+        let salt = [3u8; 16];
+        let rec = seal(&dek, &salt, "rec-1");
+        let opened = decrypt_meta(&dek, &salt, &rec).unwrap();
+        assert_eq!(opened.title, "邮箱主账号");
+        assert_eq!(opened.email, "alice@example.com");
+        let opened_secret = decrypt_secret(&dek, &salt, &rec).unwrap();
+        assert_eq!(opened_secret.fields.len(), 2);
+        assert_eq!(
+            opened_secret.fields[1].value,
+            "correct horse battery staple"
+        );
+    }
+
+    #[test]
+    fn same_plaintext_uses_fresh_nonce_and_ciphertext() {
+        let dek = [7u8; 32];
+        let salt = [5u8; 16];
+        let a = seal(&dek, &salt, "rec-a");
+        let b = seal(&dek, &salt, "rec-b");
+        assert_ne!(a.secret_nonce, b.secret_nonce);
+        assert_ne!(a.secret_ct, b.secret_ct);
+    }
+
+    #[test]
+    fn tampered_ciphertext_and_cross_record_aad_are_rejected() {
+        let dek = [11u8; 32];
+        let salt = [13u8; 16];
+        let rec = seal(&dek, &salt, "rec-a");
+        let mut tampered = rec.clone();
+        tampered.secret_ct[0] ^= 0x01;
+        assert!(decrypt_secret(&dek, &salt, &tampered).is_err());
+
+        let mut swapped = rec.clone();
+        swapped.id = "rec-b".to_string();
+        assert!(decrypt_meta(&dek, &salt, &swapped).is_err());
+        assert!(decrypt_secret(&dek, &salt, &swapped).is_err());
+    }
+
+    #[test]
+    fn wrong_key_and_wrong_salt_are_rejected() {
+        let dek = [21u8; 32];
+        let salt = [23u8; 16];
+        let rec = seal(&dek, &salt, "rec-c");
+        assert!(decrypt_meta(&[22u8; 32], &salt, &rec).is_err());
+        assert!(decrypt_secret(&dek, &[24u8; 16], &rec).is_err());
     }
 }

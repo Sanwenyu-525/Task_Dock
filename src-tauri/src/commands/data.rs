@@ -1040,12 +1040,8 @@ fn normalize_extended_row(
 
 /// 解析扩展模块行：列白名单来自目标库 schema，未知列/缺必填列/重复主键在写库前拒绝。
 ///
-/// 完整性校验以**备份文件自带的 registry 头**为准（扩展模块诞生（v0.5）起每个
-/// bundle 都写入了当时的 BACKUP_TABLES 全集）：文件 registry 里声明且属于当前
-/// EXTENDED_TABLES 的表必须提供 section。这样新版本新增扩展表（如规划中心）后，
-/// 旧备份不会因「缺新表」被误判为模块不完整而无法恢复；反过来，文件声明了却
-/// 缺失 section 仍然报错，防止半份备份静默清空数据。
-/// 无 registry 头的极老文件按 PRE_PLANNING_EXTENDED_TABLES 校验。
+/// 备份按文件自带的 registry 校验完整性。manifest v1/v2 豁免历史上只登记
+/// 却没有写出的 v77/v78 表。v3 声明的 section 缺失时拒绝恢复。
 fn parse_extended(
     db: &Db,
     data: &serde_json::Value,
@@ -1061,11 +1057,17 @@ fn parse_extended(
                 .filter_map(|r| r.get("table").and_then(|t| t.as_str()).map(String::from))
                 .collect()
         });
+    let manifest_version = data.get("manifest_version").and_then(|v| v.as_i64()).unwrap_or(0);
     let required: Vec<&'static str> = match &registry_tables {
         Some(names) => crate::commands::backup::EXTENDED_TABLES
             .iter()
             .copied()
             .filter(|t| names.iter().any(|n| n == *t))
+            // v1/v2 的 writer 曾只登记这些表，没有写对应 section。
+            .filter(|t| {
+                manifest_version >= 3 || crate::commands::backup::table_rule(t)
+                    .is_some_and(|rule| !(770..=800).contains(&rule.restore_order))
+            })
             .collect(),
         None => crate::commands::backup::PRE_PLANNING_EXTENDED_TABLES.to_vec(),
     };

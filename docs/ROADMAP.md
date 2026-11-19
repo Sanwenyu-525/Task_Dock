@@ -235,12 +235,12 @@
   CRUD、回收站任务事件的真实后端端到端、4 万/10 万条压测；预览走查数据为 CDP 临时夹具。
   因此文件工作区与项目空间仍保持 `implemented` / `partial`，不据此提升为正式验收通过。
 
-## 2026-11-18 安全保险箱（Secure Vault）P0 立项（未登记 featureCatalog）
+## 2026-11-18 安全保险箱（Secure Vault）P1 本地 MVP 实现
 
-**状态：规划中（P0 设计与威胁模型完成，待评审）**。本条目**暂不计入** `featureCatalog.ts` 的
-61 项统计，也未修改 `featureRoadmapContract.test.ts`：该文件与其契约测试当前正被其他会话修改，
-同步插入会破坏计数并覆盖他人改动。P1 启动时由集成负责人**单独提交**补登（追加一项"规划中"、
-更新计数与两个契约测试），在此之前以本节与专项文档为事实来源。
+**状态：P1 代码完成，P1 Gate 未通过（待真机验收）**。已登记 `featureCatalog.ts` 第 62 项
+（`security.secure-vault`，`partial` / `unverified`），更新 `featureCatalog.test.ts` 与
+`featureRegistry` 的 `page:vault` 路由；`cargo check` exit 0、23 项 Rust 单测通过、
+`npm run typecheck` exit 0、前端目标测试通过。未提交 Git、未登记集成台账、未出正式构建包。
 
 - 定位：保存不常用但不能忘的敏感凭据（账号密码、API Key、软件许可证、恢复码、设备凭据、
   私密备忘），**独立库、独立密钥、独立安全边界**，不属于笔记/任务/生活记录的任何一类。
@@ -252,4 +252,4 @@
 - 文档入口：[docs/features/secure-vault/](features/secure-vault/README.md)（13 篇，含
   25 项功能矩阵、F-01..F-08 现状结论、T-01..T-15 威胁、D-01..D-13 决策、P-01..P-08 待决）。
 - 依赖前置：新增 `argon2` / `aes-gcm` / `hkdf` / `hmac` / `base32` / `unicode-normalization`
-  六个 crate 与 `windows-sys` 的 `Win32_System_RemoteDesktop` feature，**待用户批准**（P-01）。
+  六个 crate 与 `windows-sys` 的 `Win32_System_RemoteDesktop` feature，**P-01 已批准并接入**。

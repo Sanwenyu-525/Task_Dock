@@ -40,6 +40,10 @@ npm run cargo -- test
 # 生成应用图标（scripts/gen-icons.mjs，零依赖 PNG/ICO 编码）
 npm run icons
 
+# 首屏 JS 体积审计（按需加载回归：entry 的 modulepreload 闭包 + gzip）
+# 用法：node scripts/on-demand-audit.mjs dist [--json] [--entry workspace]
+node scripts/on-demand-audit.mjs dist
+
 # 构建 Windows 安装包（NSIS + MSI）
 npm run tauri build
 # 产物：src-tauri/target/release/bundle/nsis/Task Dock_0.5.0_x64-setup.exe
@@ -435,6 +439,8 @@ panic 栈与调试器仍能定位到**文件和行号**，但看不到局部变�
 
 **影响范围**：`cargo build` / `cargo check` / `cargo test` / `tauri dev` 都走 dev profile，
 因此测试二进制与调试构建的 PDB 一并变小；`[profile.release]` 未改动，发布包行为不变。
+
+**Windows 桌面启动（2026-11-18）**：MSVC 链接时为 `task-dock` 主程序预留 8 MiB 主线程栈。调试构建曾在 Windows 原生窗口启动路径耗尽默认预留。Tao/WebView2 仍在原主线程启动。此设置只增加虚拟地址预留，实际提交随栈使用量增长。
 
 **磁盘提醒**：
 - 体积下降对**下次**构建生效，属预期值，本仓库尚无实测对比数据（未执行全量对比构建）。

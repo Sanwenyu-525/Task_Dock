@@ -481,6 +481,9 @@ TaskDock 主窗口（工作台）
   `TaskDock · 设备型号 · 应用名`。
 - `apply_taskdock_window_identity`：`SetWindowTextW` + `WM_SETICON(ICON_BIG/ICON_SMALL)`
   + `IPropertyStore::SetValue(PKEY_AppUserModel_ID, "TaskDock.Projection")`。
+  AUMID 字符串必须用 `SHStrDupW`（CoTaskMem）分配，`SetValue`/`Commit` 完成后再
+  `PropVariantClear` 释放；**不可**用 Rust 堆内存或提前 `CoTaskMemFree`，否则属性系统
+  按 `CoTaskMemFree` 清理时会触发 `0xc0000374` 堆损坏（2026-11-18 真机修复）。
 - 图标优先从二进制内嵌的 `icons/icon.ico` 解析（最大尺寸给 ICON_BIG、最接近 32px 给
   ICON_SMALL），失败才回退 `ExtractIconExW`；失败只追加 warning，不阻断投屏。
 - 必须真机检查标题栏、Alt+Tab、任务栏三处；jsdom/单测不能替代。
@@ -496,9 +499,39 @@ TaskDock 主窗口（工作台）
 
 - 本机 `adb devices` 无设备：控制栏真实窗口、外置/内置位置、全屏触发、多显示器、
   100–200% DPI、图标与 AUMID 均**未做原生验收**，记 `ENVIRONMENT BLOCKED`。
+  （2026-11-18 真机补测结果见 §16.7；多显示器、100/150/200% DPI 与双设备仍未覆盖。）
 - 控制栏使用 topmost 窗口以覆盖 scrcpy 全屏；用户切换到其他应用时控制栏仍可能悬浮在
   最上层（与 scrcpy 窗口生命周期绑定，Session 关闭即销毁）。原生验收时需确认是否可接受。
 - `vd_screenshot` 仍基于 `PrintWindow`，GPU/受保护窗口可能失败；无障碍/触摸注入仍需真机。
+
+### 16.7 真机验收补记（2026-11-18，vivo V2323A）
+
+真机（无线 ADB，scrcpy 5.0.1，单显示器 2048×1152，DPI 125%）在隔离数据目录的 debug
+实例上完成以下原生验证（Win32 句柄/矩形/样式为证据，截图受透明窗口与遮挡影响仅作辅助）：
+
+| 项目 | 结果 |
+|---|---|
+| 普通窗口外置 | 通过：控制栏 56×300 位于 scrcpy 右侧 8px、垂直居中 |
+| 拖动跟随 | 通过：scrcpy 移到 (300,120) 后控制栏同步到 (784,502) |
+| 缩放跟随 | 通过：scrcpy 600×800 时控制栏随右边缘/垂直中心更新 |
+| 最大化内置 | 通过：控制栏切为 300×56 横向，位于窗口底部居中 |
+| 恢复外置 | 通过：恢复后回到右侧竖排 |
+| 全屏默认隐藏 | 通过：F11 全屏（style=0x0、覆盖显示器）后控制栏 `IsWindowVisible=false` |
+| 底部触发显示 | 通过：光标进入底部触发带后控制栏显示 |
+| 延迟隐藏 | 通过：光标离开触发带 4s 后隐藏 |
+| 锁定不隐藏 | 通过：锁定后光标离开仍显示；取消锁定后恢复延迟隐藏 |
+| 不抢焦点 | 通过：点击控制栏「返回」前后前台窗口始终为 scrcpy |
+| 导航动作 | 通过：手机从短视频收藏页返回推荐页 |
+| 品牌标题/图标 | 通过：`TaskDock · V2323A · 屏幕镜像`、`TaskDock · 投屏控制栏`；`WM_GETICON` 句柄非零 |
+| 生命周期 | 通过：关闭会话后 scrcpy 退出、控制栏销毁、应用存活；再次启动创建新控制栏且无残留 |
+| 切页配置保持 | 通过：虚拟屏模式经「文件互传」往返后仍选中 |
+
+同轮发现并修复：品牌化设置 AUMID 时提前释放 `CoTaskMem` 导致创建控制栏后进程
+`0xc0000374` 堆损坏；改为 `SHStrDupW` + `Commit` 后 `PropVariantClear` 后，连续两次
+启动/关闭会话均稳定。**仍受环境限制未验证**：跨显示器（本机仅 1 台显示器）、
+DPI 100%/150%/200%（当前 125%）、双设备控制栏隔离（仅 1 台设备）、AUMID 的任务栏
+分组表现、Home/最近任务/截屏/更多按钮的逐项真机点击。
+
 ## 17. 投屏窗口一体化重构（2026-11-19，取代 §16 的独立控制栏方案）
 
 > 本节推翻 §16 的「独立 ToolWindow 置顶控制栏」设计：§16 记录保留作为历史，

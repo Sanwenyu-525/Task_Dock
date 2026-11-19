@@ -17,17 +17,17 @@ export type WindowHostRole = "quick" | "workbench" | "auxiliary";
 import { createContext, useContext } from "react";
 
 /**
- * 工作台页面活跃上下文：`true` = 当前路由可见，`false` = 已访问但被隐藏
- * （DeferredView 保活），`null` = 不在工作台内。
+ * 页面活跃上下文（主窗口完整面板与工作台共用）：`true` = 当前页面可见，
+ * `false` = 已访问但被隐藏（keep 页面保活），`null` = 不在任何页面上（外壳/弹层）。
  *
- * 为什么需要：工作台为了不丢草稿/滚动位置会保留已访问页面，`display:none`
- * 的页面如果仍被判定为「可见」，剪贴板实时订阅、资源轮询等消费者门控就会
- * 永远不停。RouteSlot 为每个页面提供真实的 active，页面通过既有
- * `useFullViewVisible()` 消费，不需要各自改判据。
+ * 为什么需要：按需加载后 keep 页面会留在 DOM（`hidden`），`display:none` 的页面
+ * 如果仍被判定为「可见」，剪贴板实时订阅、资源轮询等消费者门控就会永远不停。
+ * 两个宿主各自为页面提供真实的 active，页面通过既有 `useFullViewVisible()` 消费，
+ * 不需要各自改判据，也不产生第二套状态源。
  */
 export const WorkbenchPageActiveContext = createContext<boolean | null>(null);
 
-/** 当前页面在工作台内是否可见；不在工作台内返回 null。 */
+/** 当前页面是否可见；不在页面槽位内返回 null。 */
 export function useWorkbenchPageActive(): boolean | null {
   return useContext(WorkbenchPageActiveContext);
 }

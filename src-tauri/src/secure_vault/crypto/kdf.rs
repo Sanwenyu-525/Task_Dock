@@ -37,7 +37,10 @@ impl Argon2Params {
 
     pub fn validate(&self) -> Result<(), VaultError> {
         if self.m_cost_kib < 8192 || self.m_cost_kib > 1048576 {
-            return Err(VaultError::validation("KDF 内存参数", "须在 8 MiB–1 GiB 之间"));
+            return Err(VaultError::validation(
+                "KDF 内存参数",
+                "须在 8 MiB–1 GiB 之间",
+            ));
         }
         if self.t_cost < 1 || self.t_cost > 16 {
             return Err(VaultError::validation("KDF 迭代参数", "须在 1–16 之间"));

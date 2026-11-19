@@ -196,23 +196,45 @@ fn local_prototype(title: &str, context: &Value) -> Value {
     json!({
         "schemaVersion": 1,
         "viewport": {"width": 400, "height": 640},
-        "pages": [{
-            "id": "page-1",
-            "name": "方案确认",
-            "components": [
-                {"id":"c-title","type":"heading","x":20,"y":24,"w":360,"h":40,
-                 "props":{"text":title},"style":{"fontSize":"20px","fontWeight":"bold"},"events":{}},
-                {"id":"c-desc","type":"text","x":20,"y":76,"w":360,"h":60,
-                 "props":{"text":acceptance},"style":{"fontSize":"14px"},"events":{}},
-                {"id":"c-input","type":"input","x":20,"y":150,"w":360,"h":40,
-                 "props":{"label":"审阅备注","placeholder":"填写修改意见"},"style":{},"events":{}},
-                {"id":"c-switch","type":"switch","x":20,"y":210,"w":360,"h":36,
-                 "props":{"label":"同意进入开发"},"style":{},"events":{}},
-                {"id":"c-btn","type":"button","x":20,"y":270,"w":160,"h":40,
-                 "props":{"label":"批准方案","variant":"primary"},
-                 "style":{"bg":"var(--accent)","radius":"8px"},"events":{}}
-            ]
-        }],
+        "pages": [
+            {
+                "id": "page-1",
+                "name": "方案确认",
+                "components": [
+                    {"id":"c-title","type":"heading","x":10,"y":24,"w":300,"h":40,
+                     "props":{"text":title},"style":{"fontSize":"20px","fontWeight":"bold"},"events":{}},
+                    {"id":"c-desc","type":"text","x":10,"y":76,"w":300,"h":60,
+                     "props":{"text":acceptance},"style":{"fontSize":"14px"},"events":{}},
+                    {"id":"c-input","type":"input","x":10,"y":150,"w":300,"h":40,
+                     "props":{"label":"审阅备注","placeholder":"填写修改意见"},"style":{},"events":{}},
+                    {"id":"c-switch","type":"switch","x":10,"y":210,"w":300,"h":36,
+                     "props":{"label":"同意进入开发"},"style":{},"events":{}},
+                    {"id":"c-btn","type":"button","x":10,"y":270,"w":140,"h":40,
+                     "props":{"label":"批准方案","variant":"primary"},
+                     "style":{"bg":"var(--accent)","radius":"8px"},
+                     "events":{"onClick":{"action":"navigate","target":"page-2"}}},
+                    {"id":"c-note-btn","type":"button","x":160,"y":270,"w":140,"h":40,
+                     "props":{"label":"查看说明"},"style":{"radius":"8px"},
+                     "events":{"onClick":{"action":"openModal","target":"c-note"}}},
+                    {"id":"c-note","type":"frame","x":10,"y":330,"w":300,"h":100,
+                     "props":{"label":"说明：批准后进入开发，可随时返回修改。"},
+                     "style":{},"events":{}}
+                ]
+            },
+            {
+                "id": "page-2",
+                "name": "已确认",
+                "components": [
+                    {"id":"c-done-title","type":"heading","x":10,"y":24,"w":300,"h":40,
+                     "props":{"text":"方案已确认"},"style":{"fontSize":"20px","fontWeight":"bold"},"events":{}},
+                    {"id":"c-done-text","type":"text","x":10,"y":76,"w":300,"h":60,
+                     "props":{"text":"已进入开发准备阶段；可返回继续修改。"},"style":{"fontSize":"14px"},"events":{}},
+                    {"id":"c-back","type":"button","x":10,"y":160,"w":140,"h":40,
+                     "props":{"label":"返回方案"},"style":{"radius":"8px"},
+                     "events":{"onClick":{"action":"navigate","target":"page-1"}}}
+                ]
+            }
+        ],
         "state": {}
     })
 }

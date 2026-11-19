@@ -13,7 +13,7 @@
 //! （vi.mock 工厂会被提升到模块顶部执行）。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useAgentsStore } from "../../store/useAgentsStore";
@@ -151,6 +151,7 @@ vi.mock("../../lib/bridge", async (importOriginal) => {
     taskContext: vi.fn(async () => FIX_CTX),
     taskReminderLinkGet: vi.fn(async () => null),
     toggleTask: vi.fn(async () => FIX_TASK),
+    undoTaskCompletion: vi.fn(async () => FIX_TASK),
     workspaceList: vi.fn(async () => []),
     workspaceRestore: vi.fn(async () => true),
     workspaceRestoreCancel: vi.fn(async () => undefined),
@@ -209,6 +210,7 @@ import {
   listTasks,
   actionsOpenSession,
   toggleTask,
+  undoTaskCompletion,
   updateSettings,
   quickCaptureShow,
 } from "../../lib/bridge";
@@ -507,4 +509,27 @@ describe("开发工作台", () => {
     expect(screen.getByRole("button", { name: "Quick capture" })).toBeTruthy();
     expect(screen.queryByText("继续工作")).toBeNull();
   });
+});
+
+it("重复任务完成本期后不提供再次推进的撤销操作", async () => {
+  seedSettings({ workbench_current_task: "a" });
+  vi.mocked(toggleTask).mockResolvedValueOnce({ ...FIX_TASK, status: "pending" });
+  render(<DevWorkbenchPanel />);
+  fireEvent.click(await screen.findByRole("button", { name: "标记完成" }));
+  fireEvent.click(screen.getByRole("button", { name: "确认完成" }));
+  await waitFor(() => expect(useUiStore.getState().toast?.message).toBe("已完成本期"));
+  expect(useUiStore.getState().toast?.action).toBeUndefined();
+});
+
+it("工作台撤销传回完成操作的版本", async () => {
+  seedSettings({ workbench_current_task: "a" });
+  const completed: Task = { ...FIX_TASK, status: "completed", updated_at: "2026-11-18T12:00:00Z" };
+  vi.mocked(toggleTask).mockResolvedValueOnce(completed);
+  render(<DevWorkbenchPanel />);
+  fireEvent.click(await screen.findByRole("button", { name: "标记完成" }));
+  fireEvent.click(screen.getByRole("button", { name: "确认完成" }));
+  await waitFor(() => expect(useUiStore.getState().toast?.action?.label).toBe("撤销"));
+  await act(async () => { useUiStore.getState().toast?.action?.run(); });
+  expect(undoTaskCompletion).toHaveBeenCalledWith(completed);
+  expect(toggleTask).toHaveBeenCalledTimes(1);
 });

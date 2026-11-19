@@ -20,14 +20,14 @@
 
 import {
   Fragment,
-  lazy,
-  Suspense,
   useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
+  type ComponentProps,
+  type ComponentType,
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
@@ -60,20 +60,13 @@ import {
 // TaskDock 应用图标：与 `src-tauri/icons` 同一套 01-flat-2d 资源。
 // 顶栏品牌位直接展示产品图标，不再用通用线性图标冒充品牌标识。
 import appMark from "../../assets/branding/icons/01-flat-2d/128x128.png";
-import DeferredView from "../components/DeferredView";
 import ErrorBoundary from "../components/ErrorBoundary";
 import TabLeaveGuard from "../components/TabLeaveGuard";
 import Toast from "../components/Toast";
 import TooltipLayer from "../components/ui/TooltipLayer";
 import WindowResizeGrips from "../components/WindowResizeGrips";
 import { Dialog, DropdownMenu, Select } from "../components/ui";
-import TasksPanel from "../components/tasks/TasksPanel";
-import LifePanel from "../components/life/LifePanel";
-import AgentPanel from "../components/agents/AgentPanel";
-import ActionCenterPanel from "../components/actions/ActionCenterPanel";
-import ClipboardPanel from "../components/clipboard/ClipboardPanel";
 import ClipboardDrawer from "../components/clipboard/ClipboardDrawer";
-import CollectionPanel from "../components/collection/CollectionPanel";
 import { WIDGET_SOURCES } from "../components/widgets/liveSources";
 import { GlobalSearchDialog } from "../components/global-search/GlobalSearchDialog";
 import MobilePairingDialog from "../components/mobile/MobilePairingDialog";
@@ -165,21 +158,16 @@ import { errorMessage } from "../lib/errors";
 import { logEvent } from "../lib/diagnostics";
 import { withTimeout } from "../lib/timeout";
 import { WorkbenchPageActiveContext } from "../lib/windowHost";
+// 页面级按需加载：代码入口集中在 `lib/featureRegistry.ts`，本文件不再静态 import
+// 任何路由面板（否则整个工作台的功能会在窗口创建时一次性下载/解析）。
+import FeatureView from "../components/feature/FeatureView";
+import { preloadFeature } from "../lib/featureRuntime";
+import { featureIdForWorkbenchRoute, type PageFeatureId } from "../lib/featureRegistry";
 
-const ProjectWorkspacePanel = lazy(() => import("./ProjectWorkspacePanel"));
-const DevWorkbenchPanel = lazy(() => import("../components/workbench/DevWorkbenchPanel"));
-const AppsPanel = lazy(() => import("../components/apps/AppsPanel"));
-const WidgetsPanel = lazy(() => import("../components/widgets/WidgetsPanel"));
-const MobileTransferPanel = lazy(() => import("../components/mobile/MobileTransferPanel"));
-const WorkflowsPanel = lazy(() => import("../components/workflows/WorkflowsPanel"));
-const HistoryPanel = lazy(() => import("../components/history/HistoryPanel"));
-const PlanningCenterPanel = lazy(() => import("../components/roadmap/PlanningCenterPanel"));
-const SettingsPanel = lazy(() => import("../components/settings/SettingsPanel"));
-const HelpCenterPanel = lazy(() => import("../components/help/HelpCenterPanel"));
-const DiagnosticsCenterPanel = lazy(() => import("../components/diagnostics/DiagnosticsCenterPanel"));
-const ResourceManagementPanel = lazy(() => import("../components/resource/ResourceManagementPanel"));
-const FilesWorkspacePanel = lazy(() => import("../components/files/FilesWorkspacePanel"));
-const CapabilityCenterPanel = lazy(() => import("../components/capability/CapabilityCenterPanel"));
+/** 各页面的 props 类型（`typeof import` 是纯类型查询，不会产生运行时导入）。 */
+type WorkspacePanelProps = ComponentProps<typeof import("./ProjectWorkspacePanel").default>;
+type FilesPanelProps = ComponentProps<typeof import("../components/files/FilesWorkspacePanel").default>;
+type WidgetsPanelProps = ComponentProps<typeof import("../components/widgets/WidgetsPanel").default>;
 
 /** 左侧入口（与主窗口共用注册中心；声明顺序无关于展示顺序）。 */
 const LEFT_ENTRIES = entriesForSurface("left");
@@ -222,7 +210,13 @@ function RouteBoundary({
 /**
  * 功能槽位：复用主面板的 `.tab-content-*` 页面骨架（页面内部滚动/贴顶筛选等
  * 依赖这些类），但去掉主窗口的 560px 阅读宽度限制（工作台是宽屏宿主）。
- * DeferredView 保证首次访问前不挂载、访问后保活（切页不丢草稿与滚动位置）。
+ *
+ * 按需加载（docs/ON_DEMAND_LOADING.md）：
+ * - 代码首次可见时才 import（`FeatureView` → `featureRuntime`），窗口启动不再
+ *   下载全部页面；
+ * - 实例策略来自注册表：默认 `keep`（切页保留草稿/滚动位置），只读工具页
+ *   `release`（离开即卸载实例，代码仍缓存，再进入无 loading 闪烁）；
+ * - 隐藏页仍挂载时由 `WorkbenchPageActiveContext=false` 通知页面停止后台活动。
  *
  * 错误边界必须**在槽位内部**：它一旦接替渲染，就会替换掉外层 `hidden`
  * 槽位节点；若边界放在槽位外，失败页会一直留在 `.wb-content` 里与后续
@@ -230,27 +224,32 @@ function RouteBoundary({
  * 仍然持有失败态，切页时随 `hidden` 一起消失；重新进入页面时
  * `resetKey` 变化会自动重试一次。
  */
-function RouteSlot({
+function RouteSlot<P = Record<string, never>>({
   id,
+  feature,
   active,
   label,
   children,
 }: {
   id: string;
+  /** 注册表中的功能 ID（`page:<tab>`）；字面量联合，拼错直接编译失败。 */
+  feature: PageFeatureId;
   active: boolean;
   label: string;
-  children: ReactNode;
+  children: (Panel: ComponentType<P>) => ReactNode;
 }) {
   return (
-    <DeferredView active={active}>
-      <WorkbenchPageActiveContext.Provider value={active}>
-        <div className={`tab-content tab-content-${id} wb-route`} hidden={!active}>
-          <RouteBoundary id={id} label={label} resetKey={active}>
-            {children}
-          </RouteBoundary>
-        </div>
-      </WorkbenchPageActiveContext.Provider>
-    </DeferredView>
+    <FeatureView<P> id={feature} active={active} label={label}>
+      {(Panel) => (
+        <WorkbenchPageActiveContext.Provider value={active}>
+          <div className={`tab-content tab-content-${id} wb-route`} hidden={!active}>
+            <RouteBoundary id={id} label={label} resetKey={active}>
+              {children(Panel)}
+            </RouteBoundary>
+          </div>
+        </WorkbenchPageActiveContext.Provider>
+      )}
+    </FeatureView>
   );
 }
 
@@ -1319,6 +1318,17 @@ export default function WorkbenchShell() {
   const moveNavEntryTo = navDraft.moveTo;
 
   const navListRef = useRef<HTMLDivElement | null>(null);
+  /**
+   * 悬停/聚焦预加载：只预取页面**代码**，不挂载页面、不初始化业务数据。
+   * 失败静默（预加载是优化手段，不能影响导航），冷却由 runtime 负责。
+   */
+  const preloadEntryCode = useCallback((entry: NavEntry) => {
+    for (const candidate of entry.tabs) {
+      if (!isWorkbenchRoute(candidate)) continue;
+      const feature = featureIdForWorkbenchRoute(candidate);
+      if (feature) preloadFeature(feature, "hover");
+    }
+  }, []);
   // 拖拽结束后浏览器补发的 click 不能变成页面跳转（与设置页同一语义）。
   // 不能只依赖时间窗：测试/慢帧下补发 click 也可能晚到；同时用一个「待消费」
   // 标记记住本次拖拽结束，页面按钮的真实 pointerdown 或键盘操作会主动清掉它。
@@ -1798,6 +1808,29 @@ export default function WorkbenchShell() {
     return () => window.clearTimeout(timer);
   }, [booted]);
 
+  // 空闲预加载（受限）：只预取一个「用户最可能进入」的默认页代码，且仅在启动门
+  // 已完成、浏览器空闲时执行一次。预加载只下载代码，不挂载页面、不发业务请求；
+  // 有其它加载在飞行时 runtime 会直接跳过（不与用户真正需要的页面抢资源）。
+  useEffect(() => {
+    if (!booted) return;
+    let cancelled = false;
+    const run = () => {
+      if (!cancelled) preloadFeature("page:tasks", "idle");
+    };
+    if (typeof requestIdleCallback === "function") {
+      const handle = requestIdleCallback(run, { timeout: 5000 });
+      return () => {
+        cancelled = true;
+        cancelIdleCallback(handle);
+      };
+    }
+    const timer = window.setTimeout(run, 4000);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [booted]);
+
   if (!booted) {
     const failed = Boolean(settingsError || projectsError);
     const failureText = settingsError
@@ -1930,6 +1963,13 @@ export default function WorkbenchShell() {
                     data-nav-drag-surface
                     data-tip={navTip}
                     style={translate !== 0 ? { transform: `translateY(${translate}px)` } : undefined}
+                    onPointerEnter={(event) => {
+                      // 只有真正落在页面按钮/行本体上才算「要打开」的意图；
+                      // 划过 × 按钮不预加载（那是隐藏动作）。
+                      const target = event.target as HTMLElement | null;
+                      if (target?.closest("[data-nav-hide], .wb-nav-actions")) return;
+                      preloadEntryCode(entry);
+                    }}
                     onPointerDown={(event) => {
                       if (event.button !== 0) return;
                       const target = event.target as HTMLElement | null;
@@ -1961,6 +2001,7 @@ export default function WorkbenchShell() {
                       aria-current={active ? "page" : undefined}
                       aria-label={count > 0 ? t("nav.labelWithCount", { label, count }) : label}
                       data-tip={navTip}
+                      onFocus={() => preloadEntryCode(entry)}
                       onClick={(event) => {
                         event.stopPropagation();
                         activateEntry();
@@ -2284,103 +2325,127 @@ export default function WorkbenchShell() {
               </div>
             </WorkbenchPageActiveContext.Provider>
 
-            <Suspense
-              fallback={
-                <div className="panel-loading" role="status" aria-label={t("nav.loading")} />
-              }
+            {/* 全部路由页面按需加载：窗口启动只加载导航元数据与外壳，
+                页面代码在首次可见时才 import（见 docs/ON_DEMAND_LOADING.md）。 */}
+            <RouteSlot<WorkspacePanelProps>
+              label={t("nav.workspace")}
+              id="workspace"
+              feature="page:workspace"
+              active={route === "workspace"}
             >
-              <RouteSlot label={t("nav.workspace")} id="workspace" active={route === "workspace"}>
-                  <ProjectWorkspacePanel
-                    project={selected}
-                    devProjects={devProjects}
-                    onProjectsChanged={refreshProjects}
-                    onSelectProject={(id) => selectProject(id)}
-                    onRefreshDevProjects={refreshDevProjects}
-                    onNavigateWorkbench={() => goRoute("workbench")}
-                    onOpenDevWorkbench={requestDevWorkbench}
-                    onCreateProject={openCreateProject}
-                    onNotice={showNotice}
-                    registerProjectLeaveGuard={registerWorkspaceLeaveGuard}
-                    moduleRequest={moduleRequest}
-                  />
-                </RouteSlot>
+              {(Panel) => (
+                <Panel
+                  project={selected}
+                  devProjects={devProjects}
+                  onProjectsChanged={refreshProjects}
+                  onSelectProject={(id) => selectProject(id)}
+                  onRefreshDevProjects={refreshDevProjects}
+                  onNavigateWorkbench={() => goRoute("workbench")}
+                  onOpenDevWorkbench={requestDevWorkbench}
+                  onCreateProject={openCreateProject}
+                  onNotice={showNotice}
+                  registerProjectLeaveGuard={registerWorkspaceLeaveGuard}
+                  moduleRequest={moduleRequest}
+                />
+              )}
+            </RouteSlot>
 
-              <RouteSlot label={t("nav.files")} id="files" active={route === "files"}>
-                  <FilesWorkspacePanel project={selected} />
-                </RouteSlot>
+            <RouteSlot<FilesPanelProps>
+              label={t("nav.files")}
+              id="files"
+              feature="page:files"
+              active={route === "files"}
+            >
+              {(Panel) => <Panel project={selected} />}
+            </RouteSlot>
 
-              <RouteSlot label={t("nav.workbench")} id="workbench" active={route === "workbench"}>
-                  <DevWorkbenchPanel />
-                </RouteSlot>
+            <RouteSlot label={t("nav.workbench")} id="workbench" feature="page:workbench" active={route === "workbench"}>
+              {(Panel) => <Panel />}
+            </RouteSlot>
 
-              <RouteSlot label={t("nav.tasks")} id="tasks" active={route === "tasks"}>
-                  <TasksPanel />
-                </RouteSlot>
+            <RouteSlot label={t("nav.tasks")} id="tasks" feature="page:tasks" active={route === "tasks"}>
+              {(Panel) => <Panel />}
+            </RouteSlot>
 
-              <RouteSlot label={t("nav.life")} id="life" active={route === "life"}>
-                  <LifePanel />
-                </RouteSlot>
+            <RouteSlot label={t("nav.life")} id="life" feature="page:life" active={route === "life"}>
+              {(Panel) => <Panel />}
+            </RouteSlot>
 
-              <RouteSlot label={t("nav.agents")} id="agents" active={route === "agents"}>
-                  <AgentPanel />
-                </RouteSlot>
+            {/* 安全保险箱：面板由并行任务开发，这里同样走统一按需加载入口，
+                不允许新功能以静态 import 的方式绕过规范。 */}
+            <RouteSlot label={t("nav.vault")} id="vault" feature="page:vault" active={route === "vault"}>
+              {(Panel) => <Panel />}
+            </RouteSlot>
 
-              <RouteSlot label={t("nav.actions")} id="actions" active={route === "actions"}>
-                  <ActionCenterPanel />
-                </RouteSlot>
+            <RouteSlot label={t("nav.agents")} id="agents" feature="page:agents" active={route === "agents"}>
+              {(Panel) => <Panel />}
+            </RouteSlot>
 
-              <RouteSlot label={t("nav.clipboard")} id="clipboard" active={route === "clipboard"}>
-                  <ClipboardPanel />
-                </RouteSlot>
+            <RouteSlot label={t("nav.actions")} id="actions" feature="page:actions" active={route === "actions"}>
+              {(Panel) => <Panel />}
+            </RouteSlot>
 
-              <RouteSlot label={t("nav.collection")} id={tab === "shelf" ? "shelf" : "inbox"} active={route === "inbox" || route === "shelf"}>
-                  <CollectionPanel />
-                </RouteSlot>
+            <RouteSlot label={t("nav.clipboard")} id="clipboard" feature="page:clipboard" active={route === "clipboard"}>
+              {(Panel) => <Panel />}
+            </RouteSlot>
 
-              <RouteSlot label={t("nav.apps")} id="apps" active={route === "apps"}>
-                  <AppsPanel />
-                </RouteSlot>
+            <RouteSlot
+              label={t("nav.collection")}
+              id={tab === "shelf" ? "shelf" : "inbox"}
+              feature="page:collection"
+              active={route === "inbox" || route === "shelf"}
+            >
+              {(Panel) => <Panel />}
+            </RouteSlot>
 
-              <RouteSlot label={t("nav.widgets")} id="widgets" active={route === "widgets"}>
-                  <WidgetsPanel sources={WIDGET_SOURCES} />
-                </RouteSlot>
+            <RouteSlot label={t("nav.apps")} id="apps" feature="page:apps" active={route === "apps"}>
+              {(Panel) => <Panel />}
+            </RouteSlot>
 
-              <RouteSlot label={t("nav.mobile")} id="mobile" active={route === "mobile"}>
-                  <MobileTransferPanel />
-                </RouteSlot>
+            <RouteSlot<WidgetsPanelProps>
+              label={t("nav.widgets")}
+              id="widgets"
+              feature="page:widgets"
+              active={route === "widgets"}
+            >
+              {(Panel) => <Panel sources={WIDGET_SOURCES} />}
+            </RouteSlot>
 
-              <RouteSlot label={t("nav.workflows")} id="workflows" active={route === "workflows"}>
-                  <WorkflowsPanel />
-                </RouteSlot>
+            <RouteSlot label={t("nav.mobile")} id="mobile" feature="page:mobile" active={route === "mobile"}>
+              {(Panel) => <Panel />}
+            </RouteSlot>
 
-              <RouteSlot label={t("nav.history")} id="history" active={route === "history"}>
-                  <HistoryPanel />
-                </RouteSlot>
+            <RouteSlot label={t("nav.workflows")} id="workflows" feature="page:workflows" active={route === "workflows"}>
+              {(Panel) => <Panel />}
+            </RouteSlot>
 
-              <RouteSlot label={t("nav.roadmap")} id="roadmap" active={route === "roadmap"}>
-                  <PlanningCenterPanel />
-                </RouteSlot>
+            <RouteSlot label={t("nav.history")} id="history" feature="page:history" active={route === "history"}>
+              {(Panel) => <Panel />}
+            </RouteSlot>
 
-              <RouteSlot label={t("nav.capability")} id="capability" active={route === "capability"}>
-                  <CapabilityCenterPanel />
-                </RouteSlot>
+            <RouteSlot label={t("nav.roadmap")} id="roadmap" feature="page:roadmap" active={route === "roadmap"}>
+              {(Panel) => <Panel />}
+            </RouteSlot>
 
-              <RouteSlot label={t("nav.help")} id="help" active={route === "help"}>
-                  <HelpCenterPanel />
-                </RouteSlot>
+            <RouteSlot label={t("nav.capability")} id="capability" feature="page:capability" active={route === "capability"}>
+              {(Panel) => <Panel />}
+            </RouteSlot>
 
-              <RouteSlot label={t("nav.diagnostics")} id="diagnostics" active={route === "diagnostics"}>
-                  <DiagnosticsCenterPanel />
-                </RouteSlot>
+            <RouteSlot label={t("nav.help")} id="help" feature="page:help" active={route === "help"}>
+              {(Panel) => <Panel />}
+            </RouteSlot>
 
-              <RouteSlot label={t("nav.resource")} id="resource" active={route === "resource"}>
-                  <ResourceManagementPanel />
-                </RouteSlot>
+            <RouteSlot label={t("nav.diagnostics")} id="diagnostics" feature="page:diagnostics" active={route === "diagnostics"}>
+              {(Panel) => <Panel />}
+            </RouteSlot>
 
-              <RouteSlot label={t("nav.settings")} id="settings" active={route === "settings"}>
-                  <SettingsPanel />
-                </RouteSlot>
-            </Suspense>
+            <RouteSlot label={t("nav.resource")} id="resource" feature="page:resource" active={route === "resource"}>
+              {(Panel) => <Panel />}
+            </RouteSlot>
+
+            <RouteSlot label={t("nav.settings")} id="settings" feature="page:settings" active={route === "settings"}>
+              {(Panel) => <Panel />}
+            </RouteSlot>
           </main>
 
           {contextVisible && (

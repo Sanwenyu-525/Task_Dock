@@ -176,3 +176,14 @@ describe("导航事务结果（TabSwitchResult）", () => {
     );
   });
 });
+
+it("同名任务的撤销回调分别保留，带码错误与无代码错误互不合并", () => {
+  const { showToast } = useUiStore.getState();
+  const callbacks = [vi.fn(), vi.fn()];
+  for (const run of callbacks) showToast("完成", { action: { label: "撤销", run } });
+  expect(useUiStore.getState().toasts.map(item => item.action?.run)).toEqual(callbacks);
+  showToast(null);
+  showToast("失败", { code: "A" });
+  showToast("失败");
+  expect(messages()).toEqual(["失败", "失败"]);
+});

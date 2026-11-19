@@ -190,9 +190,7 @@ impl VaultStore {
                 |r| r.get(0),
             )
             .ok();
-        let version = version
-            .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(0);
+        let version = version.and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
         if version > SCHEMA_VERSION {
             return Err(VaultError::format_unsupported(version, SCHEMA_VERSION));
         }
@@ -269,9 +267,8 @@ impl VaultStore {
 
     pub fn get_envelope(&self, slot: &str) -> Result<Option<StoredEnvelope>, VaultError> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT slot, envelope_json, dek_ver FROM key_envelopes WHERE slot=?1",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT slot, envelope_json, dek_ver FROM key_envelopes WHERE slot=?1")?;
         let mut rows = stmt.query(params![slot])?;
         Ok(rows
             .next()?
@@ -375,15 +372,17 @@ impl VaultStore {
 
     pub fn delete_usage(&self, record_id: &str) -> Result<(), VaultError> {
         let conn = self.conn.lock();
-        conn.execute("DELETE FROM record_usage WHERE record_id=?1", params![record_id])?;
+        conn.execute(
+            "DELETE FROM record_usage WHERE record_id=?1",
+            params![record_id],
+        )?;
         Ok(())
     }
 
     pub fn load_usage(&self) -> Result<Vec<StoredUsage>, VaultError> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT record_id,used_nonce,used_ct,alg_ver,dek_ver FROM record_usage",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT record_id,used_nonce,used_ct,alg_ver,dek_ver FROM record_usage")?;
         let rows = stmt.query_map([], |r| {
             Ok(StoredUsage {
                 record_id: r.get(0)?,
@@ -416,9 +415,8 @@ impl VaultStore {
 
     pub fn load_settings(&self) -> Result<Vec<StoredSetting>, VaultError> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT key,value_nonce,value_ct,alg_ver,dek_ver FROM settings",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT key,value_nonce,value_ct,alg_ver,dek_ver FROM settings")?;
         let rows = stmt.query_map([], |r| {
             Ok(StoredSetting {
                 key: r.get(0)?,
@@ -513,12 +511,7 @@ impl VaultStore {
              VALUES(?1,?2,?3,1,?4)
              ON CONFLICT(id) DO UPDATE SET name_nonce=excluded.name_nonce,
                name_ct=excluded.name_ct, dek_ver=excluded.dek_ver",
-            params![
-                &row.id,
-                row.nonce.as_slice(),
-                &row.ciphertext,
-                row.dek_ver
-            ],
+            params![&row.id, row.nonce.as_slice(), &row.ciphertext, row.dek_ver],
         )?;
         Ok(())
     }
@@ -585,11 +578,10 @@ fn digest_conn(
     vault_salt: &[u8; 16],
 ) -> Result<[u8; 32], VaultError> {
     let key = derive_digest_key(dek, vault_salt)?;
-    let mut stmt =
-        conn.prepare("SELECT id,rev FROM records WHERE tombstone=0 ORDER BY id ASC")?;
+    let mut stmt = conn.prepare("SELECT id,rev FROM records WHERE tombstone=0 ORDER BY id ASC")?;
     let mut rows = stmt.query([])?;
-    let mut mac = Hmac::<Sha256>::new_from_slice(&key[..])
-        .map_err(|_| VaultError::internal("hmac:key"))?;
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(&key[..]).map_err(|_| VaultError::internal("hmac:key"))?;
     while let Some(row) = rows.next()? {
         let id: String = row.get(0)?;
         let rev: i64 = row.get(1)?;
@@ -640,11 +632,7 @@ pub struct Bootstrap {
     pub created_at: String,
 }
 
-pub fn bootstrap(
-    store: &VaultStore,
-    b: &Bootstrap,
-    dek: &[u8; 32],
-) -> Result<(), VaultError> {
+pub fn bootstrap(store: &VaultStore, b: &Bootstrap, dek: &[u8; 32]) -> Result<(), VaultError> {
     let digest = store.digest_of(dek, &decode_salt(&b.vault_salt_b64)?)?;
     let mut meta: Vec<(&str, String)> = vec![
         ("schema_version", SCHEMA_VERSION.to_string()),

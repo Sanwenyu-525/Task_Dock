@@ -36,6 +36,7 @@ import {
   ShoppingBasket,
   Smartphone,
   Workflow,
+  ShieldCheck,
 } from "lucide-react";
 import AgentIcon, { type IconComponent } from "../components/ui/AgentIcon";
 import PointerClickIcon from "../components/ui/PointerClickIcon";
@@ -64,6 +65,7 @@ export type NavEntryId =
   | "files"
   | "tasks"
   | "life"
+  | "vault"
   | "agents"
   | "apps"
   | "widgets"
@@ -206,6 +208,23 @@ export const NAV_ENTRIES: readonly NavEntry[] = [
     defaults: {
       // 不默认强制所有用户显示生活模块：首次安装隐藏，从功能管理显式开启。
       left: { order: 2.5, visible: false },
+      capsule: { order: 0, visible: false },
+    },
+  },
+  {
+    id: "vault",
+    kind: "page",
+    // 安全保险箱：独立加密库 + 独立解锁会话，仅工作台宿主；不提供胶囊入口，
+    // 避免锁屏状态与主窗口导航产生两套入口。
+    surfaces: ["left"],
+    labelKey: "nav.vault",
+    label: "安全保险箱",
+    icon: ShieldCheck,
+    tabs: ["vault"],
+    group: "core",
+    workbenchOnly: true,
+    defaults: {
+      left: { order: 2.6, visible: true },
       capsule: { order: 0, visible: false },
     },
   },

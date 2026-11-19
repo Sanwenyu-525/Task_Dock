@@ -327,6 +327,18 @@ export const collabEvidenceAttachText = (
   },
 ) => invoke<Evidence>("collab_evidence_attach_text", { projectId, input });
 
+export const collabEvidenceAttachPath = (
+  projectId: string,
+  input: {
+    subjectKind: string;
+    subjectId: string;
+    kind: string;
+    title?: string;
+    path: string;
+    mime?: string;
+  },
+) => invoke<Evidence>("collab_evidence_attach", { projectId, input });
+
 export const collabEvidenceList = (
   projectId: string,
   subjectKind?: string,

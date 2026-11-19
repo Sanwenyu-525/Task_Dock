@@ -109,7 +109,13 @@ impl VaultError {
     }
 
     pub fn not_found() -> Self {
-        Self::new("VAULT_NOT_FOUND", "记录不存在", "not_found", "warning", false)
+        Self::new(
+            "VAULT_NOT_FOUND",
+            "记录不存在",
+            "not_found",
+            "warning",
+            false,
+        )
     }
 
     pub fn conflict(expected: i64, actual: i64) -> Self {
@@ -155,14 +161,7 @@ impl VaultError {
     }
 
     pub fn io(detail: impl Into<String>) -> Self {
-        Self::new(
-            "VAULT_IO",
-            "本地存储读写失败",
-            "io",
-            "error",
-            true,
-        )
-        .with_detail(detail)
+        Self::new("VAULT_IO", "本地存储读写失败", "io", "error", true).with_detail(detail)
     }
 
     pub fn migration(detail: impl Into<String>) -> Self {

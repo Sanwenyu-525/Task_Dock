@@ -119,7 +119,10 @@ pub fn generate(opts: &GenerateOptions) -> Result<GeneratedDto, VaultError> {
         return Err(VaultError::validation("密码字符类别", "至少选择 2 类"));
     }
     if sets.iter().any(|s| s.is_empty()) {
-        return Err(VaultError::validation("排除易混淆字符", "当前组合会清空某一字符类别"));
+        return Err(VaultError::validation(
+            "排除易混淆字符",
+            "当前组合会清空某一字符类别",
+        ));
     }
     if (opts.length as usize) < sets.len() {
         return Err(VaultError::validation("密码长度", "不能小于已选类别数"));
@@ -291,7 +294,10 @@ mod tests {
         assert!(out.password.chars().any(|c| c.is_ascii_uppercase()));
         assert!(out.password.chars().any(|c| c.is_ascii_lowercase()));
         assert!(out.password.chars().any(|c| c.is_ascii_digit()));
-        assert!(out.password.chars().any(|c| "!@#$%^&*()-_=+[]{};:,.?/".contains(c)));
+        assert!(out
+            .password
+            .chars()
+            .any(|c| "!@#$%^&*()-_=+[]{};:,.?/".contains(c)));
         assert!(!out.password.chars().any(|c| AMBIGUOUS.contains(&c)));
     }
 

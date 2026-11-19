@@ -39,7 +39,7 @@ import {
 } from "lucide-react";
 import { useTasksStore, type TaskLiteScope } from "../../store/useTasksStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
-import { fetchTask, type Task } from "../../lib/bridge";
+import { fetchTask, undoTaskCompletion, type Task } from "../../lib/bridge";
 import { describeRecurrence } from "../../lib/format";
 import useImeComposition from "../../hooks/useImeComposition";
 import { resolveDevProjectChip } from "../devwork/DevProjectContext";
@@ -145,7 +145,7 @@ export default function TasksLite() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [reopening, setReopening] = useState<string | null>(null);
   /** 最近一次完成：底栏据此提供限时撤销，不把「完成」做成不可逆操作。 */
-  const [undo, setUndo] = useState<{ id: string; title: string } | null>(null);
+  const [undo, setUndo] = useState<Pick<Task, "id" | "title" | "updated_at"> | null>(null);
   const [undoing, setUndoing] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -322,9 +322,9 @@ export default function TasksLite() {
       const updated = await useTasksStore.getState().toggle(id);
       setExpandedId((cur) => (cur === id ? null : cur));
       if (updated.status === "completed") {
-        setUndo({ id, title: target.title });
+        setUndo(updated);
         // 撤销入口限时保留；期间又完成了别的任务时，只让最新一次的定时器生效。
-        later(() => setUndo((cur) => (cur?.id === id ? null : cur)), 6000);
+        later(() => setUndo((cur) => (cur === updated ? null : cur)), 6000);
         // 视觉反馈先行：留 320ms 让勾选动画可见，再移出列表。
         // 期间切了分段就不再加 hidden——新分段应按真实状态展示。
         const token = (completeTokens.current.get(id) ?? 0) + 1;
@@ -364,7 +364,7 @@ export default function TasksLite() {
   };
 
   /**
-   * 撤销最近一次完成：走同一个 `toggle` 写回真实状态（不是只改本地视觉），
+   * 撤销最近一次完成：使用完成时返回的版本，避免改写其他窗口的后续操作。
    * 失败时保留撤销入口并重拉真实列表，不把失败的撤销说成已恢复。
    */
   const undoComplete = async () => {
@@ -372,7 +372,8 @@ export default function TasksLite() {
     const target = undo;
     setUndoing(true);
     try {
-      await useTasksStore.getState().toggle(target.id);
+      await undoTaskCompletion(target);
+      await useTasksStore.getState().refresh();
       completeTokens.current.set(target.id, (completeTokens.current.get(target.id) ?? 0) + 1);
       // 完成时的勾选态与移出态都只属于「已完成」：撤销后必须一并清掉，
       // 否则回到列表的任务会被旧的 completing 记录继续画成已勾选。
@@ -388,7 +389,7 @@ export default function TasksLite() {
         next.delete(target.id);
         return next;
       });
-      setUndo((cur) => (cur?.id === target.id ? null : cur));
+      setUndo((cur) => (cur === target ? null : cur));
       flash(t("capsule.tasks.undoDone"));
     } catch {
       flash(t("capsule.tasks.undoFailed"));

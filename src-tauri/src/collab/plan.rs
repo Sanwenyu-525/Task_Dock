@@ -12,9 +12,9 @@ use crate::error::{AppError, AppResult};
 
 use super::actor::{assert_project_scope, write_audit, Actor, ActorKind, Capability};
 use super::model::{
-    page_args, Evidence, Page, Plan, PlanDetail, PlanPatch, PlanProgress, PlanTaskRef,
-    PlanTasksResult, VisualDocument, PLAN_STATUSES, MAX_DESCRIPTION, MAX_SOLUTION, MAX_TITLE,
-    PAGE_MAX,
+    page_args, Evidence, Issue, Page, Plan, PlanDetail, PlanPatch, PlanProgress, PlanTaskRef,
+    PlanTasksResult, TaskDraft, VisualDocument, PLAN_STATUSES, MAX_DESCRIPTION, MAX_SOLUTION,
+    MAX_TITLE, PAGE_MAX,
 };
 use super::util::{new_id, now_iso, validate_enum, validate_text};
 
@@ -53,6 +53,41 @@ pub fn load_plan(conn: &Connection, id: &str) -> AppResult<Plan> {
     .ok_or_else(|| AppError::NotFound("方案不存在".to_string()))
 }
 
+fn clip_title(prefix: &str, title: &str) -> String {
+    let mut out = String::with_capacity(prefix.len() + title.len());
+    out.push_str(prefix);
+    out.extend(title.chars().take(MAX_TITLE.saturating_sub(prefix.chars().count())));
+    out
+}
+
+/// 从 Issue 创建方案时先落一份可执行的规则草案，避免“已批准但无任务可拆”。
+fn default_breakdown(issue: &Issue) -> Vec<TaskDraft> {
+    let action = if issue.kind == "bug" { "修复" } else { "实现" };
+    let description = if issue.description.trim().is_empty() {
+        format!("来自需求 {} 的方案拆解。", issue.id)
+    } else {
+        issue.description.clone()
+    };
+    let priority = issue
+        .priority
+        .trim_start_matches('P')
+        .parse::<u8>()
+        .ok()
+        .map(|p| p.clamp(1, 3));
+    vec![
+        TaskDraft {
+            title: clip_title(&format!("{action}："), &issue.title),
+            description,
+            priority,
+        },
+        TaskDraft {
+            title: clip_title("验证：", &issue.title),
+            description: "补充自动化测试与真实验收证据，覆盖边界、错误路径与回归场景。".to_string(),
+            priority: Some(2),
+        },
+    ]
+}
+
 pub fn create_plan_from_issue(
     conn: &Connection,
     actor: &Actor,
@@ -84,7 +119,7 @@ pub fn create_plan_from_issue(
         title: format!("方案：{}", issue.title),
         summary: issue.description.clone(),
         solution_md: String::new(),
-        breakdown: Vec::new(),
+        breakdown: default_breakdown(&issue),
         status: "draft".to_string(),
         review_note: String::new(),
         approved_by: String::new(),

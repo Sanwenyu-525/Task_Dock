@@ -5,6 +5,7 @@
 //! 业务规则（权限、审批状态机、版本冲突均由后端判定）。
 
 import { useEffect, useState } from "react";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   AlertTriangle,
   Bug,
@@ -22,6 +23,7 @@ import {
   collabAiGenerate,
   collabAiJobs,
   collabAiNotice,
+  collabEvidenceAttachPath,
   collabEvidenceAttachText,
   collabIssueArchive,
   collabIssueCreate,
@@ -101,12 +103,31 @@ function priorityTone(priority: string) {
   return "neutral" as const;
 }
 
+function evidenceKindForPath(path: string) {
+  const ext = path.split(".").pop()?.toLowerCase() ?? "";
+  if (["png", "jpg", "jpeg", "webp", "gif"].includes(ext)) return "screenshot";
+  if (["log", "txt"].includes(ext)) return "log";
+  if (["mp4", "webm"].includes(ext)) return "video";
+  if (ext === "json" || ext === "md") return "report";
+  return "other";
+}
+
+// 复现步骤用 <ol> 自动编号；用户输入里常见的 “1. / - / •” 前缀会被去掉，避免双重编号。
+function reproStepText(step: string) {
+  return step.replace(/^\s*(?:\d+[.)、]|[-*•])\s*/, "");
+}
+
 interface IssueDraft {
   kind: IssueKind;
   title: string;
   description: string;
   priority: string;
   acceptance: string;
+  reproSteps: string;
+  expectedResult: string;
+  actualResult: string;
+  environment: string;
+  relatedFiles: string;
 }
 
 const EMPTY_DRAFT: IssueDraft = {
@@ -115,6 +136,11 @@ const EMPTY_DRAFT: IssueDraft = {
   description: "",
   priority: "P2",
   acceptance: "",
+  reproSteps: "",
+  expectedResult: "",
+  actualResult: "",
+  environment: "",
+  relatedFiles: "",
 };
 
 export default function CollabPanel() {
@@ -238,6 +264,19 @@ export default function CollabPanel() {
         description: draft.description,
         priority: draft.priority,
         acceptance: draft.acceptance,
+        reproSteps: draft.reproSteps
+          .split(/\r?\n/)
+          .map((s) => reproStepText(s.trim()))
+          .filter(Boolean)
+          .slice(0, 30),
+        expectedResult: draft.expectedResult.trim() || null,
+        actualResult: draft.actualResult.trim() || null,
+        environment: draft.environment.trim() || null,
+        relatedFiles: draft.relatedFiles
+          .split(/[\n,]/)
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .slice(0, 50),
         clientRequestId: `ui-${Date.now()}`,
       });
       setCreating(false);
@@ -405,6 +444,36 @@ export default function CollabPanel() {
                       验收要求
                       <textarea className="input" rows={2} value={draft.acceptance} onChange={(e) => setDraft({ ...draft, acceptance: e.target.value })} />
                     </label>
+                    {draft.kind === "bug" ? (
+                      <>
+                        <label>
+                          复现步骤（每行一步）
+                          <textarea
+                            className="input"
+                            rows={3}
+                            placeholder="1. 打开页面&#10;2. 点击生成方案&#10;3. 出现错误"
+                            value={draft.reproSteps}
+                            onChange={(e) => setDraft({ ...draft, reproSteps: e.target.value })}
+                          />
+                        </label>
+                        <label>
+                          预期结果
+                          <input className="input" value={draft.expectedResult} onChange={(e) => setDraft({ ...draft, expectedResult: e.target.value })} />
+                        </label>
+                        <label>
+                          实际结果
+                          <input className="input" value={draft.actualResult} onChange={(e) => setDraft({ ...draft, actualResult: e.target.value })} />
+                        </label>
+                        <label>
+                          环境
+                          <input className="input" placeholder="如 Windows 11 · WebView2 · v0.5.0" value={draft.environment} onChange={(e) => setDraft({ ...draft, environment: e.target.value })} />
+                        </label>
+                        <label>
+                          关联文件（逗号或换行分隔）
+                          <textarea className="input" rows={2} value={draft.relatedFiles} onChange={(e) => setDraft({ ...draft, relatedFiles: e.target.value })} />
+                        </label>
+                      </>
+                    ) : null}
                     <div className="collab-form-actions">
                       <button className="btn small" onClick={submitIssue} disabled={loading}>
                         提交（幂等）
@@ -575,6 +644,7 @@ function IssueDetailView({
 }) {
   const issue = detail.issue;
   const [evidenceText, setEvidenceText] = useState("");
+  const [evidencePath, setEvidencePath] = useState("");
   const [resolution, setResolution] = useState("");
   const [verifyId, setVerifyId] = useState("");
   const [busy, setBusy] = useState(false);
@@ -603,6 +673,32 @@ function IssueDetailView({
         text: evidenceText,
       });
       setEvidenceText("");
+    });
+
+  const pickEvidenceFile = async () => {
+    setError("");
+    try {
+      const selected = await openDialog({
+        multiple: false,
+        directory: false,
+        title: "选择证据文件（≤32 MiB）",
+      });
+      if (typeof selected === "string") setEvidencePath(selected);
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  };
+
+  const attachFile = () =>
+    run(async () => {
+      if (!evidencePath.trim()) throw new Error("请选择或填写证据文件路径");
+      await collabEvidenceAttachPath(issue.projectId, {
+        subjectKind: "issue",
+        subjectId: issue.id,
+        kind: evidenceKindForPath(evidencePath),
+        path: evidencePath.trim(),
+      });
+      setEvidencePath("");
     });
 
   const resolve = () =>
@@ -657,7 +753,7 @@ function IssueDetailView({
             <strong>复现步骤</strong>
             <ol>
               {issue.reproSteps.map((s, i) => (
-                <li key={`${i}-${s}`}>{s}</li>
+                <li key={`${i}-${s}`}>{reproStepText(s)}</li>
               ))}
               {!issue.reproSteps.length ? <li className="collab-muted">未填写</li> : null}
             </ol>
@@ -714,6 +810,21 @@ function IssueDetailView({
             附证据
           </button>
         </div>
+        <div className="collab-form-inline">
+          <input
+            className="input"
+            placeholder="证据文件路径，如 D:\logs\crash.log"
+            value={evidencePath}
+            onChange={(e) => setEvidencePath(e.target.value)}
+          />
+          <button className="btn ghost small" onClick={() => void pickEvidenceFile()} disabled={busy}>
+            选择文件
+          </button>
+          <button className="btn small" onClick={attachFile} disabled={busy || !evidencePath.trim()}>
+            附文件
+          </button>
+        </div>
+        <div className="collab-muted">文件会复制到受控证据目录并计算 sha256；支持 png/log/json/mp4/zip，单个 ≤32 MiB。</div>
       </div>
 
       {issue.kind === "bug" ? (

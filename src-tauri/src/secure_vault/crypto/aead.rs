@@ -14,8 +14,8 @@ pub struct Sealed {
 }
 
 pub fn seal(key: &[u8; 32], plaintext: &[u8], aad: &str) -> Result<Sealed, VaultError> {
-    let cipher = Aes256Gcm::new_from_slice(key)
-        .map_err(|_| VaultError::internal("aes:key_length"))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(key).map_err(|_| VaultError::internal("aes:key_length"))?;
     let nonce: [u8; 12] = random_array()?;
     let ct = cipher
         .encrypt(
@@ -38,8 +38,8 @@ pub fn open(
     ciphertext: &[u8],
     aad: &str,
 ) -> Result<Zeroizing<Vec<u8>>, VaultError> {
-    let cipher = Aes256Gcm::new_from_slice(key)
-        .map_err(|_| VaultError::internal("aes:key_length"))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(key).map_err(|_| VaultError::internal("aes:key_length"))?;
     let plaintext = cipher
         .decrypt(
             Nonce::from_slice(nonce),

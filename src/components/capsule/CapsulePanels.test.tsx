@@ -16,6 +16,7 @@ import { act } from "react";
 
 const listTasks = vi.fn();
 const toggleTask = vi.fn();
+const undoTaskCompletion = vi.fn();
 const taskStats = vi.fn();
 const fetchTask = vi.fn();
 const createFromQuickAdd = vi.fn();
@@ -62,6 +63,7 @@ const workbenchOk = async () => ({
 vi.mock("../../lib/bridge", () => ({
   onClipboardChanged: async () => () => {},
   listTasks: (...a: unknown[]) => listTasks(...a),
+  undoTaskCompletion: (...a: unknown[]) => undoTaskCompletion(...a),
   toggleTask: (...a: unknown[]) => toggleTask(...a),
   taskStats: (...a: unknown[]) => taskStats(...a),
   fetchTask: (...a: unknown[]) => fetchTask(...a),
@@ -170,6 +172,7 @@ function task(id: string, title: string, due: number | null, extra: Partial<Task
 beforeEach(() => {
   listTasks.mockReset();
   toggleTask.mockReset();
+  undoTaskCompletion.mockReset();
   taskStats.mockReset();
   fetchTask.mockReset();
   createFromQuickAdd.mockReset();
@@ -503,6 +506,10 @@ describe("任务面板", () => {
         ? { ...original, status: "completed" as const, completed_at: iso(now) }
         : original;
     });
+    undoTaskCompletion.mockImplementation(async () => {
+      done = false;
+      return original;
+    });
     render(<TasksLite />);
     await screen.findByText("整理产品周报");
 
@@ -513,10 +520,11 @@ describe("任务面板", () => {
     await waitFor(() => expect(screen.queryByText("整理产品周报")).toBeNull(), { timeout: 2000 });
 
     act(() => undoBtn.click());
-    // 撤销走真实 toggle + 刷新：任务重新出现在列表，而底栏确认已撤销
+    // 撤销携带完成时的版本并刷新：任务重新出现在列表，而底栏确认已撤销
     expect(await screen.findByText("整理产品周报")).toBeTruthy();
     await screen.findByText("已撤销完成");
-    await waitFor(() => expect(toggleTask).toHaveBeenCalledTimes(2));
+    expect(toggleTask).toHaveBeenCalledTimes(1);
+    expect(undoTaskCompletion).toHaveBeenCalledWith(expect.objectContaining({ id: original.id, updated_at: original.updated_at }));
     expect(screen.queryByRole("button", { name: "撤销完成「整理产品周报」" })).toBeNull();
   });
 

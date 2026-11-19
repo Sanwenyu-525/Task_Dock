@@ -18,7 +18,7 @@ import {
   Layers,
 } from "lucide-react";
 import type { Task } from "../../lib/bridge";
-import { snoozeReminder } from "../../lib/bridge";
+import { snoozeReminder, undoTaskCompletion } from "../../lib/bridge";
 import { EXIT_MS, prefersReducedMotion } from "../../lib/motion";
 import { useTasksStore, taskViewKey } from "../../store/useTasksStore";
 import { useUiStore } from "../../store/useUiStore";
@@ -151,7 +151,7 @@ export default function TaskItem({ task, compact, exiting, exitHeight, selected,
             action: {
               label: "撤销",
               run: () => {
-                toggle(updated.id).catch((e) => showToast(`撤销失败：${errorMessage(e)}`, { kind: "error" }));
+                undoTaskCompletion(updated).then(() => refreshTasks()).catch((e) => showToast(`撤销失败：${errorMessage(e)}`, { kind: "error" }));
               },
             },
           },

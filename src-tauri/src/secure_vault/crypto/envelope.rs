@@ -60,16 +60,18 @@ impl Envelope {
             return Err(VaultError::corrupt());
         }
         if env.version != ENVELOPE_VERSION {
-            return Err(VaultError::format_unsupported(env.version, ENVELOPE_VERSION));
+            return Err(VaultError::format_unsupported(
+                env.version,
+                ENVELOPE_VERSION,
+            ));
         }
         Ok(env)
     }
 
-    pub fn argon2_params(&self) -> Result<crate::secure_vault::crypto::kdf::Argon2Params, VaultError> {
-        let m = self
-            .kdf
-            .m_cost_kib
-            .ok_or_else(|| VaultError::corrupt())?;
+    pub fn argon2_params(
+        &self,
+    ) -> Result<crate::secure_vault::crypto::kdf::Argon2Params, VaultError> {
+        let m = self.kdf.m_cost_kib.ok_or_else(|| VaultError::corrupt())?;
         let t = self.kdf.t_cost.ok_or_else(|| VaultError::corrupt())?;
         let p = self.kdf.p_cost.ok_or_else(|| VaultError::corrupt())?;
         Ok(crate::secure_vault::crypto::kdf::Argon2Params {

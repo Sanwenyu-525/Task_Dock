@@ -88,12 +88,10 @@ export const useCaptureStore = create<CaptureStore>((set, get) => ({
         quickCaptureState().catch(() => null),
       ]);
       if (seq !== loadSeq) return;
-      const fallbackCount = items.filter(isInbox).length;
       set({
         items,
         loading: false,
-        inboxCount: state ? state.inbox_count : fallbackCount,
-        inboxCountLoaded: true,
+        ...(state && { inboxCount: state.inbox_count, inboxCountLoaded: true }),
       });
       // 收集箱胶囊面板开着就顺带刷新轻量切片：全应用只有 App.tsx 的一条
       // quick-capture-created 监听驱动这里，lite 不自建第二条监听。

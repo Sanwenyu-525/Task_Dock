@@ -3,6 +3,13 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn main() {
+    // Tao/WebView2 must start on the main thread. Reserve stack in the PE header
+    // for native startup and IPC dispatch, including unoptimized Windows builds.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+        && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc")
+    {
+        println!("cargo:rustc-link-arg-bin=task-dock=/STACK:8388608");
+    }
     emit_build_info();
     emit_test_manifest();
     tauri_build::build()

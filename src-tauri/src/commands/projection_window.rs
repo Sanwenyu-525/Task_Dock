@@ -2009,20 +2009,20 @@ mod win {
 
     #[cfg(windows)]
     fn set_app_user_model_id_inner(hwnd: isize, aumid: &str) -> Result<(), String> {
-        use windows::core::PWSTR;
+        use windows::core::PCWSTR;
         use windows::Win32::Foundation::HWND as WHWND;
         use windows::Win32::Storage::EnhancedStorage::PKEY_AppUserModel_ID;
         use windows::Win32::System::Com::StructuredStorage::{
-            PROPVARIANT, PROPVARIANT_0, PROPVARIANT_0_0, PROPVARIANT_0_0_0,
+            PropVariantClear, PROPVARIANT, PROPVARIANT_0, PROPVARIANT_0_0, PROPVARIANT_0_0_0,
         };
         use windows::Win32::System::Com::{
-            CoInitializeEx, CoTaskMemAlloc, CoTaskMemFree, CoUninitialize,
-            COINIT_APARTMENTTHREADED,
+            CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED,
         };
         use windows::Win32::System::Variant::VT_LPWSTR;
         use windows::Win32::UI::Shell::PropertiesSystem::{
             IPropertyStore, SHGetPropertyStoreForWindow,
         };
+        use windows::Win32::UI::Shell::SHStrDupW;
 
         struct ComGuard(bool);
         impl Drop for ComGuard {

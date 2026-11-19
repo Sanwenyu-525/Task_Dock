@@ -20,9 +20,7 @@ use crate::secure_vault::error::VaultError;
 use crate::secure_vault::session::{
     LockSettings, RecordMeta, RecordSecret, RuntimeState, VaultIndex,
 };
-use crate::secure_vault::store::{
-    Bootstrap, StoredName, StoredRecord, StoredUsage, VaultStore,
-};
+use crate::secure_vault::store::{Bootstrap, StoredName, StoredRecord, StoredUsage, VaultStore};
 use crate::secure_vault::VaultState;
 
 pub const BACKUP_FORMAT: &str = "tdv-vault-backup";
@@ -118,7 +116,10 @@ fn hex(bytes: &[u8]) -> String {
 fn validate_passphrase(p: &str) -> Result<(), VaultError> {
     let len = p.chars().count();
     if !(10..=128).contains(&len) {
-        return Err(VaultError::validation("备份口令", "长度须在 10–128 字符之间"));
+        return Err(VaultError::validation(
+            "备份口令",
+            "长度须在 10–128 字符之间",
+        ));
     }
     Ok(())
 }
@@ -135,8 +136,8 @@ fn decrypt_record(
         &rec.meta_ct,
         &record_aad(&rec.id, "meta", rec.dek_ver, rec.data_ver),
     )?;
-    let meta: RecordMeta = serde_json::from_slice(&meta_plain)
-        .map_err(|_| VaultError::corrupt())?;
+    let meta: RecordMeta =
+        serde_json::from_slice(&meta_plain).map_err(|_| VaultError::corrupt())?;
     let sk = kdf::derive_record_key(dek, salt, &rec.id, "secret", rec.dek_ver)?;
     let secret_plain = aead::open(
         &sk,
@@ -144,16 +145,12 @@ fn decrypt_record(
         &rec.secret_ct,
         &record_aad(&rec.id, "secret", rec.dek_ver, rec.data_ver),
     )?;
-    let secret: RecordSecret = serde_json::from_slice(&secret_plain)
-        .map_err(|_| VaultError::corrupt())?;
+    let secret: RecordSecret =
+        serde_json::from_slice(&secret_plain).map_err(|_| VaultError::corrupt())?;
     Ok((meta, secret))
 }
 
-fn decrypt_usage(
-    dek: &[u8; 32],
-    salt: &[u8; 16],
-    row: &StoredUsage,
-) -> Option<BackupUsage> {
+fn decrypt_usage(dek: &[u8; 32], salt: &[u8; 16], row: &StoredUsage) -> Option<BackupUsage> {
     let rk = kdf::derive_record_key(dek, salt, &row.record_id, "usage", row.dek_ver).ok()?;
     let plain = aead::open(
         &rk,
@@ -233,7 +230,9 @@ pub async fn export_backup(
             s.vault_salt,
             s.dek_ver,
             s.vault_id.clone(),
-            state.with_store(|st| st.get_meta("created_at"))?.unwrap_or_default(),
+            state
+                .with_store(|st| st.get_meta("created_at"))?
+                .unwrap_or_default(),
             s.lock_settings.clone(),
         )
     };
@@ -308,7 +307,11 @@ pub async fn export_backup(
         categories,
         tags,
         records: out_records,
-        settings: if include_settings { Some(settings) } else { None },
+        settings: if include_settings {
+            Some(settings)
+        } else {
+            None
+        },
         checksums: BackupChecksums {
             count,
             records_sha256: records_sha,
@@ -401,7 +404,10 @@ pub fn inspect(path: &str) -> Result<BackupHeader, VaultError> {
         return Err(VaultError::corrupt());
     }
     if header.version > BACKUP_VERSION {
-        return Err(VaultError::format_unsupported(header.version, BACKUP_VERSION));
+        return Err(VaultError::format_unsupported(
+            header.version,
+            BACKUP_VERSION,
+        ));
     }
     Ok(header)
 }
@@ -466,11 +472,13 @@ pub async fn import_backup(
     new_master_password: &str,
 ) -> Result<super::commands::ImportResultDto, VaultError> {
     if state.has_vault() {
-        return Err(VaultError::already_exists()
-            .with_detail("import_requires_empty_vault"));
+        return Err(VaultError::already_exists().with_detail("import_requires_empty_vault"));
     }
     if new_master_password.chars().count() < 8 {
-        return Err(VaultError::validation("新主密码", "长度须在 8–128 字符之间"));
+        return Err(VaultError::validation(
+            "新主密码",
+            "长度须在 8–128 字符之间",
+        ));
     }
     let header = inspect(path)?;
     let raw = std::fs::read_to_string(path)?;
@@ -484,11 +492,10 @@ pub async fn import_backup(
         return Err(VaultError::corrupt());
     }
     let pass = passphrase.to_string();
-    let (payload, _file_key) = tauri::async_runtime::spawn_blocking(move || {
-        decrypt_payload(&pass, &header, &payload_ct)
-    })
-    .await
-    .map_err(|_| VaultError::internal("join"))??;
+    let (payload, _file_key) =
+        tauri::async_runtime::spawn_blocking(move || decrypt_payload(&pass, &header, &payload_ct))
+            .await
+            .map_err(|_| VaultError::internal("join"))??;
     if payload.v != 1 || payload.checksums.count != payload.records.len() {
         return Err(VaultError::corrupt());
     }
@@ -573,7 +580,9 @@ pub async fn import_backup(
             ciphertext: sealed.ciphertext,
             dek_ver: 1,
         })?;
-        index.category_names.insert(cat.id.clone(), cat.name.clone());
+        index
+            .category_names
+            .insert(cat.id.clone(), cat.name.clone());
     }
     for tag in &payload.tags {
         let rk = kdf::derive_record_key(&dek, &vault_salt, &tag.id, "tag", 1)?;
@@ -623,7 +632,12 @@ pub async fn import_backup(
     let settings = payload.settings.clone().unwrap_or_default();
     super::commands::save_settings_public(&store, &dek, &vault_salt, 1, &settings)?;
     store.set_meta("generation", "1")?;
-    store.audit("backup_import", "ok", None, Some(payload.records.len() as i64))?;
+    store.audit(
+        "backup_import",
+        "ok",
+        None,
+        Some(payload.records.len() as i64),
+    )?;
     state.insert_store(store);
 
     {

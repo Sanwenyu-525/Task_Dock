@@ -10,7 +10,7 @@
 
 Task Dock 是 Windows 桌面任务/启动器/Agent 监控中枢：Tauri 2 + Rust（`src-tauri/`）、React +
 TypeScript + Vite + Zustand（`src/`）、SQLite；Android 客户端 `apps/mobile/` 以本地 SQLite
-为主，支持用户显式发起的局域网配对、手动同步与文件互传（TLS-only + SPKI 指纹固定）。能力与
+为主，支持用户显式发起的局域网配对、手动与前台自动同步、文件互传（TLS-only + SPKI 指纹固定）。能力与
 状态见 [README.md](README.md)。
 
 **开工必做**：1）读本文件（改移动端同读其 `AGENTS.md`）；2）`git status`——本仓库多会话共享
@@ -29,6 +29,7 @@ TypeScript + Vite + Zustand（`src/`）、SQLite；Android 客户端 `apps/mobil
 | 构建产物、缓存、磁盘 | 本文件 5.3 + [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) 第七章 |
 | 测试、验收、真机、性能 | [docs/TESTING.md](docs/TESTING.md)、[docs/ACCEPTANCE_ROUTING.md](docs/ACCEPTANCE_ROUTING.md)、`docs/PERFORMANCE_*.md` |
 | UI/UX、视觉 | 本文件第 6 节 + [docs/ui-themes/](docs/ui-themes/) + [docs/AGENT_SKILL_ROUTING.md](docs/AGENT_SKILL_ROUTING.md) |
+| 新增页面 / 页面加载 / 启动体积 | [docs/ON_DEMAND_LOADING.md](docs/ON_DEMAND_LOADING.md)（四层架构、生命周期、策略矩阵、检查清单） |
 | Agent 接入、导航 | [docs/AGENT_ADAPTERS.md](docs/AGENT_ADAPTERS.md)、[AGENT_COVERAGE_MATRIX.md](AGENT_COVERAGE_MATRIX.md)、[APP_NAVIGATION_MATRIX.md](APP_NAVIGATION_MATRIX.md) |
 
 链接不会自动加载，执行对应任务时必须实际读取；本规范不依赖特定 Agent 工具。
@@ -170,6 +171,10 @@ npm run integrate -- batch plan --platform desktop   # 只读：查看下一验�
    监听器或永不停止的轮询。
 9. **兼容性**：DB schema、备份 manifest 版本、命令签名、设置键是公开契约；变更必须说明兼容范围、
    迁移方式与旧数据/旧备份处理结果。
+10. **按需加载**：页面代码必须经 `featureRegistry` 登记并由 `FeatureView` 首次可见时加载，
+    **禁止**在导航/外壳里静态 import 页面组件；新增功能必须按
+    [docs/ON_DEMAND_LOADING.md](docs/ON_DEMAND_LOADING.md) §9 回答「代码/数据/服务何时初始化、
+    离开后如何处理、资源谁释放、是否允许预加载」。隐藏入口不得等于停止常驻服务。
 
 ## 5. 构建、测试与验收
 

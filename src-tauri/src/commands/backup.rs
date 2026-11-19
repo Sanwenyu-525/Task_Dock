@@ -30,7 +30,7 @@ use crate::error::{AppError, AppResult};
 
 pub const BUNDLE_FORMAT: &str = "taskdock-bundle";
 pub const BUNDLE_VERSION: i64 = 1;
-pub const MANIFEST_VERSION: i64 = 2;
+pub const MANIFEST_VERSION: i64 = 3;
 const CHUNK_ROWS: usize = 500;
 const ARCHIVE_CHUNK_BYTES: usize = 1024 * 1024;
 const ASSET_CHUNK_BYTES: usize = 512 * 1024;
@@ -44,6 +44,7 @@ pub const QUICK_CLIPBOARD_PASTE_LIMIT: i64 = 500;
 /// 工作流运行历史：快速备份保留最近 20 次运行（与库内 50 条/工作流的保留策略独立，
 /// 备份取更保守值）；工作流定义与步骤在快速备份中全量保存。
 pub const QUICK_WORKFLOW_RUN_LIMIT: i64 = 20;
+const QUICK_EXTENDED_LOG_LIMIT: i64 = 500;
 
 /// 恢复提交标记：与业务数据同事务写入，用于崩溃恢复判定。
 pub const RESTORE_COMMIT_KEY: &str = "restore_commit_id";
@@ -222,6 +223,27 @@ pub const EXTENDED_TABLES: &[&str] = &[
     "agent_sync_conflicts",
     "agent_context_access_logs",
     "agent_request_cache",
+    // v77–v78：按外键顺序导出，恢复时沿用此顺序。
+    "collab_issues",
+    "collab_issue_links",
+    "collab_plans",
+    "collab_plan_links",
+    "collab_visual_docs",
+    "collab_visual_versions",
+    "collab_evidence",
+    "collab_ai_jobs",
+    "collab_audit",
+    "project_capabilities",
+    "project_goals",
+    "project_capability_requirements",
+    "capability_resource_links",
+    "capability_gap_resolutions",
+    "project_deliverables",
+    "plan_versions",
+    "project_events",
+    "plan_dependencies",
+    "task_plan_links",
+    "task_capability_links",
 ];
 
 /// 引入规划中心之前的扩展表集合（v0.7 前的备份没有 registry 头时按此校验完整性，
@@ -954,12 +976,12 @@ pub const BACKUP_TABLES: &[BackupTableRule] = &[
     rule!("agent_context_access_logs", "core", "recent", 758, &[], true),
     rule!("agent_request_cache", "core", "recent", 760, &[], true),
     // 协作中心（v77）：需求/Bug/方案/可视化/证据/审计。
-    rule!("collab_issues", "core", "all", 770, &["planning_projects"], false),
-    rule!("collab_issue_links", "core", "all", 772, &["collab_issues"], false),
-    rule!("collab_plans", "core", "all", 774, &["collab_issues"], false),
-    rule!("collab_plan_links", "core", "all", 776, &["collab_plans"], false),
-    rule!("collab_visual_docs", "core", "all", 778, &["collab_plans"], false),
-    rule!("collab_visual_versions", "core", "all", 780, &["collab_visual_docs"], false),
+    rule!("collab_issues", "core", "all", 770, &["planning_projects"], true),
+    rule!("collab_issue_links", "core", "all", 772, &["collab_issues"], true),
+    rule!("collab_plans", "core", "all", 774, &["collab_issues"], true),
+    rule!("collab_plan_links", "core", "all", 776, &["collab_plans"], true),
+    rule!("collab_visual_docs", "core", "all", 778, &["collab_plans"], true),
+    rule!("collab_visual_versions", "core", "all", 780, &["collab_visual_docs"], true),
     rule!("collab_evidence", "core", "all", 782, &[], true),
     rule!("collab_ai_jobs", "core", "recent", 784, &["collab_plans", "collab_visual_docs"], true),
     rule!("collab_audit", "core", "recent", 786, &[], true),
@@ -1274,7 +1296,6 @@ fn generic_sql(table: &str, kind: BackupKind) -> AppResult<String> {
             "SELECT * FROM clipboard_assets WHERE item_id IN ({}) ORDER BY rowid",
             items
         ),
-        "clipboard_groups" => "SELECT * FROM clipboard_groups ORDER BY rowid".to_string(),
         "clipboard_group_items" => format!(
             "SELECT * FROM clipboard_group_items WHERE item_id IN ({}) ORDER BY rowid",
             items
@@ -1291,99 +1312,6 @@ fn generic_sql(table: &str, kind: BackupKind) -> AppResult<String> {
             "SELECT * FROM clipboard_paste_items WHERE job_id IN (SELECT id FROM clipboard_paste_jobs ORDER BY started_at DESC, id DESC LIMIT {}) ORDER BY rowid",
             QUICK_CLIPBOARD_PASTE_LIMIT
         ),
-        "workspace_snapshots"
-        | "workspace_snapshot_items"
-        | "action_acks"
-        // 规划中心：用户项目数据在快速备份中也全量保存（不截断，spec 明确要求）
-        | "planning_projects"
-        | "planning_milestones"
-        | "planning_features"
-        | "planning_feature_steps"
-        | "planning_activity"
-        // 文件暂存架：条目与托管副本全量保存（占用受 shelf_max_storage_mb 配额约束）
-        | "shelf_groups"
-        | "shelf_items"
-        | "shelf_task_links"
-        | "shelf_project_links"
-        | "shelf_tags"
-        // 最近目标目录与快捷投递目标：用户目录偏好，属于可迁移业务数据
-        // （shelf_file_ops 是设备本地瞬时日志，不走此分支，由写循环单独写空 section）
-        | "shelf_recent_dirs"
-        | "shelf_drop_targets"
-        // 一键工作流：定义与步骤是用户配置，快速备份全量保存
-        | "workflows"
-        | "workflow_steps"
-    // 快速笔记与任务完成事件：用户长期内容 / 派生完成事实，快速备份也不截断
-    | "notes"
-    | "task_completion_events"
-    // 专注与休息：会话历史与日聚合都是用户数据，快速备份也全量保存
-    | "focus_sessions"
-    | "focus_daily_stats"
-    // Agent MCP Server（v37）：身份/授权/审计/会话关联都是小体量配置与审计数据，
-    // 快速备份全量保存（审计是问责依据，不截断）
-    | "mcp_agents"
-    | "mcp_agent_grants"
-    | "mcp_agent_capabilities"
-    | "mcp_note_ownership"
-    | "mcp_workspace_roots"
-    | "mcp_audit_log"
-        | "feature_agent_links"
-        | "scenarios"
-        // 自定义语音包：完整/快速备份都包含包、去重资产、关联和事件绑定。
-        | "voice_packs"
-        | "voice_assets"
-        | "voice_pack_assets"
-        // 任务提醒联动（v41）：用户显式意图，行数小，快速备份也全量保存。
-        | "task_reminder_links"
-        // 开发工作台（v48）：项目登记/交接文档/验收记录是用户工作产物，
-        // 行数小且不含文件内容（root_path 为用户自填路径，与现场快照同口径），
-        // 快速备份全量保存。
-        | "dev_projects"
-        | "dev_handoff_packs"
-        | "dev_acceptance_records"
-        // 项目工作空间（v49）：本地元数据体积小，快速备份全量保存。
-        | "workspace_projects"
-        | "workspace_instances"
-        | "workspace_items"
-        | "workspace_task_links"
-        | "workspace_resource_links"
-        // 小说卷/章（v58）：用户创作内容，快速备份也必须全量保存（不截断正文）。
-        | "novel_volumes"
-        | "novel_chapters"
-        // 创作工作台五线（v59–v63，2026-11-17 集成修复）：17 张专业表此前只登记了
-        // BACKUP_TABLES/EXTENDED_TABLES 与恢复依赖，**漏登记快速备份的写出策略**，
-        // 使 write_bundle(Quick) 落入 other => Err("扩展表缺少备份策略")，五线
-        // 的 Full/Quick 往返用例全部在写出阶段失败。这些表都是用户创作/工作产物，
-        // 体量小且不含文件内容（素材只存路径引用），快速备份按全量写出口径一致。
-        // 顺序与 EXTENDED_TABLES 的依赖序对齐，便于对照阅读（match arm 顺序本身不影响语义）。
-        // 小说 B2（v59）：人物档案 / 人物关系 / 世界观设定 / 实体→章节引用
-        | "novel_characters"
-        | "novel_character_relations"
-        | "novel_worldview_entries"
-        | "novel_entity_refs"
-        // 游戏 G1（v60）：引擎识别事实 / 资源关联 / 构建记录 / 测试记录
-        | "game_project_facts"
-        | "game_assets"
-        | "game_builds"
-        | "game_tests"
-        // AI 漫剧 C1（v61）：剧集 / 分镜 / 角色 / 场景 / 素材版本
-        | "comic_episodes"
-        | "comic_shots"
-        | "comic_characters"
-        | "comic_scenes"
-        | "comic_media_versions"
-        // 通用 U1（v62）：里程碑 / 项目资料关联
-        | "general_milestones"
-        | "general_materials"
-        // 开发 D1（v63）：开发任务接续关联 / Git 与 Worktree 探测快照
-        | "dws_task_links"
-        | "dws_workspace_probes"
-        // 生活效率 v1（v65–v67）：快速备份也全量保存商品、事件、明细与票据引用。
-        | "life_items"
-        | "life_events"
-        | "life_event_items"
-        | "life_document_links"
-        | "voice_bindings" => format!("SELECT * FROM {} ORDER BY rowid", table),
         // 运行历史：快速备份保留最近 20 次运行（回执按运行子集过滤，保证引用完整）
         "workflow_runs" => format!(
             "SELECT * FROM workflow_runs WHERE id IN (SELECT id FROM workflow_runs ORDER BY started_at DESC, rowid DESC LIMIT {}) ORDER BY rowid",
@@ -1397,6 +1325,21 @@ fn generic_sql(table: &str, kind: BackupKind) -> AppResult<String> {
             "SELECT * FROM clipboard_snapshot_links WHERE (target_type = 'group' AND target_id IN (SELECT id FROM clipboard_groups)) OR (target_type = 'item' AND target_id IN ({})) ORDER BY rowid",
             items
         ),
+        "external_mcp_calls"
+        | "agent_activity_logs"
+        | "agent_sync_events"
+        | "agent_context_access_logs"
+        | "agent_request_cache"
+        | "collab_audit"
+        | "collab_ai_jobs" => format!(
+            "SELECT * FROM {table} ORDER BY created_at DESC, rowid DESC LIMIT {QUICK_EXTENDED_LOG_LIMIT}"
+        ),
+        "capability_recipe_runs" => format!(
+            "SELECT * FROM {table} ORDER BY started_at DESC, rowid DESC LIMIT {QUICK_EXTENDED_LOG_LIMIT}"
+        ),
+        other if table_rule(other).is_some_and(|rule| rule.quick_policy == "all") => {
+            format!("SELECT * FROM {other} ORDER BY rowid")
+        }
         other => {
             return Err(AppError::Validation(format!(
                 "扩展表缺少备份策略: {}",
@@ -4152,6 +4095,13 @@ mod tests {
         let (_, read, dir) = write_then_read(&db, BackupKind::Full);
         // 构造旧 registry：从文件头剔除规划中心表
         let mut header = read.data.clone();
+        header["manifest_version"] = json!(2);
+        // 旧 writer 登记了项目中枢和协作中心表，但没有输出对应 section。
+        for &table in EXTENDED_TABLES {
+            if table_rule(table).is_some_and(|rule| (770..=800).contains(&rule.restore_order)) {
+                std::fs::remove_file(read.rows_dir.join(format!("{table}.jsonl"))).unwrap();
+            }
+        }
         let registry = header
             .get_mut("registry")
             .and_then(|v| v.as_array_mut())
@@ -4815,6 +4765,15 @@ mod tests {
                 table
             );
         }
+        db.with_conn(|conn| {
+            for &table in EXTENDED_TABLES {
+                if !is_local_transient_table(table) {
+                    let sql = generic_sql(table, BackupKind::Quick)?;
+                    conn.prepare(&sql)?;
+                }
+            }
+            Ok(())
+        }).unwrap();
         for rule in BACKUP_TABLES {
             assert!(
                 tables.iter().any(|t| t == rule.table),

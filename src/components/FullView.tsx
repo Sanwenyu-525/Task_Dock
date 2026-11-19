@@ -26,20 +26,17 @@
 //! 徽标口径：合并入口徽标 = 未处理捕获条数（useCaptureStore.inboxCount），
 //! 即「待处理收集内容」；暂存条目总数**不计入**未处理徽标。
 
-import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ComponentType, type ReactNode } from "react";
 import { useUiStore, type Tab } from "../store/useUiStore";
 import { useTasksStore } from "../store/useTasksStore";
 import { useActionsStore, attentionCount } from "../store/useActionsStore";
 import { useCaptureStore } from "../store/useCaptureStore";
 import { useSettingsStore } from "../store/useSettingsStore";
 import { useFullViewVisible } from "../hooks/useMainUiVisible";
-// 高频页（任务 / Agent / 行动 / 剪贴板 / 收集与暂存）保持同步加载，避免切页白屏；
-// 低频页按需加载，降低首屏主包体积（轻量化专项 B）。打包后仍是本地资源，离线可用。
+// 首屏默认页（任务）保持同步加载：启动即见内容，不为了指标牺牲首屏体验。
+// 其余页面统一走 `FeatureView`（featureRegistry 登记 → 首次可见才 import）。
 import TasksPanel from "./tasks/TasksPanel";
-import AgentPanel from "./agents/AgentPanel";
-import ActionCenterPanel from "./actions/ActionCenterPanel";
-import ClipboardPanel from "./clipboard/ClipboardPanel";
-import CollectionPanel from "./collection/CollectionPanel";
+import FeatureView from "./feature/FeatureView";
 import TabLeaveGuard from "./TabLeaveGuard";
 import ErrorBoundary from "./ErrorBoundary";
 import WorkbenchHandoff from "./workbench/WorkbenchHandoff";
@@ -60,9 +57,10 @@ import { safeTabForHiddenEntry } from "../lib/navVisibility";
 import { useLocale } from "../hooks/useLocale";
 
 import { requestSettingsSectionReveal } from "../lib/settingsSections";
+import { preloadFeature } from "../lib/featureRuntime";
+import { featureIdForMainTab, type PageFeatureId } from "../lib/featureRegistry";
+import { WorkbenchPageActiveContext } from "../lib/windowHost";
 import type { WorkbenchRoute } from "../lib/workbenchLayout";
-
-const SettingsPanel = lazy(() => import("./settings/SettingsPanel"));
 
 // Phase D：这些功能的完整管理界面只存在于唯一大型工作台。主窗口保留导航
 // 位置、徽标与快捷键，但页面退化为兼容入口（摘要 + 打开工作台），不再挂载
@@ -91,8 +89,66 @@ const LEFT_ENTRIES = entriesForSurface("left").filter((entry) => entry.workbench
 // 不套用停靠四边朝内映射；形态显式传给纯函数，避免靠 edge 值推断。
 const FLOATING_TIP_PLACEMENT = railTipPlacement("floating", null, false);
 
+/**
+ * 主窗口页面槽位（按需加载 + 稳定实例）。
+ *
+ * 为什么不能再用 `{tab === "x" && <FeatureView>}`：条件渲染会在切页时卸载
+ * FeatureView 自身，`keep` 策略根本没机会保活（设置页草稿、筛选、滚动位置全丢）。
+ * 这里每个页面都有**稳定的包装实例**：
+ * - 未访问过：FeatureView 返回 null，不加载代码、不挂载业务组件；
+ * - 首次访问后：`keep` 页面隐藏（hidden）但保持挂载；`release` 页面卸载实例；
+ * - 页面活跃状态由 Context 提供，页面内的轮询/订阅据此停止与恢复。
+ *
+ * 外层不再用 `.tab-content`：主窗口的滚动容器是 `<main>`，再套一层会双重
+ * 内边距与滚动；`.page-slot` 只负责撑满高度与 hidden 语义。
+ */
+function PageSlot({
+  id,
+  feature,
+  active,
+  label,
+  children,
+}: {
+  id: string;
+  feature: PageFeatureId;
+  active: boolean;
+  label: string;
+  children: (Panel: ComponentType<Record<string, never>>) => ReactNode;
+}) {
+  return (
+    <FeatureView<Record<string, never>> id={feature} active={active} label={label}>
+      {(Panel) => (
+        <WorkbenchPageActiveContext.Provider value={active}>
+          <div className="page-slot" hidden={!active}>
+            <ErrorBoundary
+              scope={`完整面板/${id}`}
+              variant="compact"
+              resetKey={active}
+              label={label}
+            >
+              {children(Panel)}
+            </ErrorBoundary>
+          </div>
+        </WorkbenchPageActiveContext.Provider>
+      )}
+    </FeatureView>
+  );
+}
+
 export default function FullView() {
   const { t } = useLocale();
+  /** 按入口 ID 取本地化名称：页面加载失败的提示需要「哪个页面」而非 tab 代码名。 */
+  const navLabelOf = (id: string) => {
+    const entry = navEntry(id);
+    return entry ? navLabel(entry, t) : id;
+  };
+  /** 悬停/聚焦预取页面代码（不挂载页面、不发业务请求；失败静默）。 */
+  const preloadEntry = (entry: NavEntry) => {
+    for (const entryTab of entry.tabs) {
+      const feature = featureIdForMainTab(entryTab);
+      if (feature) preloadFeature(feature, "hover");
+    }
+  };
   const tab = useUiStore((s) => s.tab);
   const setTab = useUiStore((s) => s.setTab);
   const collectionSub = useUiStore((s) => s.collectionSub);
@@ -300,6 +356,8 @@ export default function FullView() {
                 data-nav-id={entry.id}
                 className={`rail-item ${active ? "active" : ""}`}
                 onClick={() => openEntry(entry)}
+                onPointerEnter={() => preloadEntry(entry)}
+                onFocus={() => preloadEntry(entry)}
                 aria-current={active ? "page" : undefined}
                 // 窄窗下文字标签被隐藏，可访问名必须由 aria-label 兜底；
                 // 提示条走统一的 data-tip（原生 title 会弹出系统样式提示）。
@@ -414,19 +472,54 @@ export default function FullView() {
           resetKey={tab}
           label={currentEntry ? navLabel(currentEntry, t) : undefined}
         >
-          {/* 低频页首次进入时异步加载；fallback 只占位、不做持续动画，避免闪烁。 */}
-          <Suspense fallback={<div className="panel-loading" role="status" aria-label={t("nav.loading")} />}>
-            {WORKBENCH_ONLY_TABS.has(tab) && (
-              <WorkbenchHandoff tab={tab as WorkbenchRoute} />
-            )}
-            {tab === "tasks" && <TasksPanel />}
-            {tab === "agents" && <AgentPanel />}
-            {tab === "actions" && <ActionCenterPanel />}
-            {tab === "clipboard" && <ClipboardPanel />}
-            {/* 收集与暂存：inbox / shelf 两个逻辑 Tab 共用同一组合页 */}
-            {(tab === "inbox" || tab === "shelf") && <CollectionPanel />}
-            {tab === "settings" && <SettingsPanel />}
-          </Suspense>
+          {/* 非默认页按需加载：稳定槽位 + keep/release 策略。
+              未访问不加载；keep 页面隐藏不卸载；页面活跃态由 Context 提供。 */}
+          {WORKBENCH_ONLY_TABS.has(tab) && (
+            <WorkbenchHandoff tab={tab as WorkbenchRoute} />
+          )}
+          {/* 默认任务页是经审核的同步加载例外：启动首屏即用，避免切页白屏。 */}
+          {tab === "tasks" && <TasksPanel />}
+          <PageSlot
+            id="agents"
+            feature="page:agents"
+            active={tab === "agents"}
+            label={navLabelOf("agents")}
+          >
+            {(Panel) => <Panel />}
+          </PageSlot>
+          <PageSlot
+            id="actions"
+            feature="page:actions"
+            active={tab === "actions"}
+            label={navLabelOf("actions")}
+          >
+            {(Panel) => <Panel />}
+          </PageSlot>
+          <PageSlot
+            id="clipboard"
+            feature="page:clipboard"
+            active={tab === "clipboard"}
+            label={navLabelOf("clipboard")}
+          >
+            {(Panel) => <Panel />}
+          </PageSlot>
+          {/* 收集与暂存：inbox / shelf 两个逻辑 Tab 共用同一组合页 */}
+          <PageSlot
+            id="collection"
+            feature="page:collection"
+            active={tab === "inbox" || tab === "shelf"}
+            label={navLabelOf("collection")}
+          >
+            {(Panel) => <Panel />}
+          </PageSlot>
+          <PageSlot
+            id="settings"
+            feature="page:settings"
+            active={tab === "settings"}
+            label={navLabelOf("settings")}
+          >
+            {(Panel) => <Panel />}
+          </PageSlot>
         </ErrorBoundary>
       </main>
     </div>

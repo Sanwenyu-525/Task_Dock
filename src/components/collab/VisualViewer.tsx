@@ -14,6 +14,7 @@ import {
   Loader2,
   Maximize2,
   Minus,
+  Pencil,
   Plus,
   RotateCcw,
 } from "lucide-react";
@@ -25,6 +26,7 @@ import {
   collabVisualCompare,
   collabVisualExport,
   collabVisualRestore,
+  collabVisualUpdate,
   collabVisualVersions,
   type PrototypeEvent,
   type PrototypeState,
@@ -422,10 +424,20 @@ export default function VisualViewer({ doc, onUpdate }: { doc: VisualDocument; o
   const [error, setError] = useState("");
   const [fromV, setFromV] = useState(1);
   const [toV, setToV] = useState(1);
+  const [editing, setEditing] = useState(false);
+  const [editTitle, setEditTitle] = useState(doc.title);
+  const [editContent, setEditContent] = useState(doc.sourceContent);
+  const [changeSummary, setChangeSummary] = useState("");
 
   const content = parseJson<GraphContent | ProtoContent | Record<string, unknown>>(doc.sourceContent);
   const isPrototype = doc.kind === "prototype";
   const isGraph = ["flowchart", "architecture", "dataflow"].includes(doc.kind);
+
+  useEffect(() => {
+    setEditTitle(doc.title);
+    setEditContent(doc.sourceContent);
+    setEditing(false);
+  }, [doc.id, doc.revision]);
 
   const loadVersions = async () => {
     setBusy(true);
@@ -473,6 +485,39 @@ export default function VisualViewer({ doc, onUpdate }: { doc: VisualDocument; o
     }
   };
 
+  const saveEdit = async () => {
+    if (!editTitle.trim()) {
+      setError("标题不能为空");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const next = await collabVisualUpdate(
+        doc.id,
+        doc.revision,
+        {
+          title: editTitle.trim(),
+          sourceFormat: doc.sourceFormat,
+          sourceContent: editContent,
+        },
+        changeSummary.trim() || "UI 编辑",
+      );
+      onUpdate?.(next);
+      setEditing(false);
+      setTab("versions");
+      setDiff(null);
+      const page = await collabVisualVersions(next.id);
+      setVersions(page.items);
+      setFromV(Math.max(1, next.version - 1));
+      setToV(next.version);
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const exportSvg = async () => {
     setBusy(true);
     setError("");
@@ -509,6 +554,21 @@ export default function VisualViewer({ doc, onUpdate }: { doc: VisualDocument; o
           <button className={`btn ghost small ${tab === "versions" ? "is-active" : ""}`} onClick={openVersions}>
             <History size={14} /> 版本
           </button>
+          <button
+            className="btn ghost small"
+            onClick={() => {
+              setTab("preview");
+              if (!editing) {
+                setEditTitle(doc.title);
+                setEditContent(doc.sourceContent);
+                setChangeSummary("");
+              }
+              setEditing((v) => !v);
+            }}
+            disabled={busy}
+          >
+            <Pencil size={14} /> {editing ? "退出编辑" : "编辑"}
+          </button>
           <button className="btn ghost small" onClick={exportSvg} disabled={busy}>
             <Download size={14} /> 导出
           </button>
@@ -518,7 +578,36 @@ export default function VisualViewer({ doc, onUpdate }: { doc: VisualDocument; o
 
       {tab === "preview" ? (
         <div className="collab-visual-body">
-          {isGraph && content ? (
+          {editing ? (
+            <div className="collab-visual-edit">
+              <label>
+                标题
+                <input className="input" value={editTitle} onChange={(e) => setEditTitle(e.target.value)} />
+              </label>
+              <label>
+                源码（{doc.sourceFormat}，保存时由后端重新校验并生成新版本）
+                <textarea
+                  className="input collab-source-editor"
+                  rows={14}
+                  spellCheck={false}
+                  value={editContent}
+                  onChange={(e) => setEditContent(e.target.value)}
+                />
+              </label>
+              <label>
+                版本说明
+                <input className="input" placeholder="如：补充审批按钮交互" value={changeSummary} onChange={(e) => setChangeSummary(e.target.value)} />
+              </label>
+              <div className="collab-form-actions">
+                <button className="btn small" onClick={() => void saveEdit()} disabled={busy}>
+                  保存新版本
+                </button>
+                <button className="btn ghost small" onClick={() => setEditing(false)} disabled={busy}>
+                  取消
+                </button>
+              </div>
+            </div>
+          ) : isGraph && content ? (
             <GraphCanvas content={content as GraphContent} />
           ) : isPrototype ? (
             <PrototypePanel doc={doc} />

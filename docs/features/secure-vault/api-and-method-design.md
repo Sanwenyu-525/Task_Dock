@@ -611,3 +611,42 @@ export const vaultApi = {
 - [ ] `reveal` 为空时**不**解密 `secret_blob`
 - [ ] `expectedRev` 在更新路径上强制校验
 - [ ] 备份只写 `vault-backups/` 或用户选择路径，绝不写 `backups/`
+
+---
+
+## 16. P1 实现落地记录（2026-11-18）
+
+本节记录**实际代码**与前面设计的差异，后续以代码为准；文档不反过来虚构实现。
+
+### 16.1 模块与命令数量
+
+实际模块（`src-tauri/src/secure_vault/`）：
+
+| 文件 | 职责 |
+|---|---|
+| `mod.rs` | `VaultState`、独立库路径、锁定 ticker、WTS 锁屏/休眠检测、session marker |
+| `commands.rs` | 38 个 `#[tauri::command]`、DTO、会话门禁、记录/分类/标签/设置/剪贴板/审计 |
+| `store.rs` | `secure-vault.db` 8 张表、meta/envelope/record/settings/name/usage/audit、摘要 HMAC |
+| `session.rs` | `VaultSession`、`LockReason`、`LockSettings`、`RecordMeta/RecordSecret`、失败冷却 |
+| `policy.rs` | 纯函数锁定策略（闲置/后台/立即/锁定态） |
+| `backup.rs` | `.tdvault` 导出/检查/导入 |
+| `crypto/` | `kdf.rs`、`aead.rs`、`envelope.rs`、`secret_bytes.rs`、`password_gen.rs`、`mod.rs` |
+
+命令共 **38** 个：状态与生命周期 11、记录 9（含 `vault_search_records`）、分类 4、标签 4、
+设置 2、密码 2、剪贴板 2、审计 1、备份 3。前端唯一入口是 `src/lib/vault.ts`。
+
+### 16.2 与设计的差异（必须知道）
+
+1. **备份导入只支持“空库导入为新保险箱”**：`vault_backup_import` 在已有库时返回
+   `VAULT_ALREADY_EXISTS`；设计稿中的 Merge / Replace 模式留到 P2，不允许把“导入”写成覆盖。
+2. **`vault_status` 在 recovery 模式返回 `unlocked=false`、`state="recovery"`**：前端必须用
+   `state === "recovery"` 判断可读；`require_unlocked` 允许 recovery 读，`require_writable` 拒绝。
+3. **系统锁屏/休眠用 Rust ticker 轮询**：WTS `WTSSessionInfoEx.SessionFlags` 每 2 秒检查；
+   休眠用墙钟跳跃 >10 秒判定。不是事件驱动，最坏有约 2 秒窗口。
+4. **崩溃 marker**：解锁成功写 `secure-vault.session.json`；正常锁定/删除删除；启动读到 marker
+   会标记 `lastLockReason=crash` 并保持锁定。
+5. **恢复模式 UI 可读不可写**：编辑、删除、改设置均被后端 `require_writable` 拒绝；前端同时禁用。
+6. **生成的密码复制仍走浏览器剪贴板**：它不属于任何记录，后端没有 `vault_copy_text`；因此
+   不享受 30 秒自动清除。P1 在 UI 提示“未写入保险箱”，P2 再补通用敏感文本剪贴板命令。
+7. **`vault_record_update` 不支持修改 `type`**：编辑器在编辑态禁用类型选择；新建时选定。
+8. **备份导出暂无 5000 条 / 200MB 上限**：大库导出可能长时间占用写锁，P2 补上限与进度。
