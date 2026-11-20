@@ -4,7 +4,8 @@
 //! 归档态所有写入口置灰并说明原因；失败可见 + 可重试；正文保存机制不受影响。
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Select, type SelectOption } from "../../../components/ui";
+import { EmptyState, Select, type SelectOption } from "../../../components/ui";
+import WorkspaceSplit from "../../WorkspaceSplit";
 import type { CreativeModuleProps } from "../types";
 import {
   novelCharacterDelete,
@@ -23,7 +24,7 @@ import {
   type NovelCharacterRelation,
   type RelationType,
 } from "./types";
-import { ArchivedBanner, errorText, Field, LoadError, TagEditor } from "./shared";
+import { ArchivedBanner, errorText, Field, FormSection, LoadError, TagEditor } from "./shared";
 import { RefSection } from "./RefSection";
 
 const EMPTY_DRAFT: CharacterDraft = {
@@ -67,6 +68,12 @@ export function CharactersPanel({ projectId, archived, onNotice }: CreativeModul
   const [relationBusy, setRelationBusy] = useState(false);
 
   const seqRef = useRef(0);
+  const detailRef = useRef<HTMLDivElement>(null);
+
+  // 切换人物或新建时回到表单顶部，避免继承上一条的滚动位置。
+  useEffect(() => {
+    detailRef.current?.scrollTo?.({ top: 0 });
+  }, [selectedId, creating]);
 
   const loadCharacters = useCallback(
     async (keyword?: string | null) => {
@@ -234,31 +241,44 @@ export function CharactersPanel({ projectId, archived, onNotice }: CreativeModul
     .map((character) => ({ value: character.id, label: character.name }));
 
   return (
-    <div className="novel-layout">
-      <aside className="novel-pane novel-pane-list" aria-label="人物列表">
-        <div className="novel-toolbar">
-          <input
-            type="search"
-            className="novel-input"
-            placeholder="搜索姓名 / 别名 / 标签"
-            aria-label="搜索人物"
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-          />
-          <button
-            type="button"
-            className="novel-btn"
-            disabled={archived}
-            onClick={startNew}
-          >
-            新建人物
-          </button>
-        </div>
+    <div className="novel-split-root">
+      <WorkspaceSplit
+        id="novel-characters"
+        sidebarLabel="人物列表"
+        defaultWidth={280}
+        minWidth={220}
+        maxWidth={360}
+        sidebar={
+          <div className="novel-sidebar">
+            <div className="novel-sidebar-head">
+              <span className="novel-eyebrow">设定</span>
+              <strong>人物</strong>
+              <span className="novel-count">{characters.length} 人</span>
+            </div>
+            <div className="novel-toolbar">
+              <input
+                type="search"
+                className="novel-input novel-search"
+                placeholder="搜索姓名 / 别名 / 标签"
+                aria-label="搜索人物"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+              />
+              <button
+                type="button"
+                className="novel-btn novel-new-btn"
+                disabled={archived}
+                onClick={startNew}
+              >
+                新建人物
+              </button>
+            </div>
 
-        {loadError && <LoadError message={loadError} onRetry={() => void loadCharacters()} />}
-        {loading && !loadError && <p className="novel-empty-hint">加载中…</p>}
+            {loadError && <LoadError message={loadError} onRetry={() => void loadCharacters()} />}
+            {loading && !loadError && <p className="novel-muted">加载中…</p>}
 
-        <ul className="novel-list">
+            {characters.length > 0 && (
+            <ul className="novel-list">
           {characters.map((character) => (
             <li key={character.id}>
               <button
@@ -274,118 +294,173 @@ export function CharactersPanel({ projectId, archived, onNotice }: CreativeModul
               </button>
             </li>
           ))}
-          {!loading && characters.length === 0 && !loadError && (
-            <li className="novel-empty-hint">暂无人物，点击「新建人物」开始。</li>
-          )}
-        </ul>
-      </aside>
-
-      <div className="novel-pane novel-pane-detail">
+            </ul>
+            )}
+            {!loading && !loadError && characters.length === 0 && (
+              <EmptyState
+                className="novel-empty-panel"
+                framed
+                title={search.trim() ? "没有匹配的人物" : "还没有人物"}
+                hint={
+                  search.trim()
+                    ? "换个关键词，或清空搜索查看全部人物。"
+                    : "人物档案用于记录姓名、阵营、动机与人物关系；创建后可关联章节与关系，写作时随时查阅。"
+                }
+                action={
+                  search.trim() ? (
+                    <button type="button" className="novel-btn-ghost" onClick={() => setSearch("")}>
+                      清空搜索
+                    </button>
+                  ) : (
+                    <button type="button" className="novel-btn" disabled={archived} onClick={startNew}>
+                      创建第一个人物
+                    </button>
+                  )
+                }
+              />
+            )}
+          </div>
+        }
+      >
+        <div className="novel-detail" ref={detailRef}>
         {archived && <ArchivedBanner />}
 
         {!editorOpen && !loading && (
-          <p className="novel-empty-hint">从左侧选择人物，或新建人物档案。</p>
+          <EmptyState
+            className="novel-empty-detail"
+            framed
+            title="选择一个人物"
+            hint="从左侧选择人物查看档案、关系与出场章节；也可以新建一条人物档案。"
+            action={
+              <button type="button" className="novel-btn" disabled={archived} onClick={startNew}>
+                新建人物档案
+              </button>
+            }
+          />
         )}
 
         {editorOpen && (
           <>
+            <div className="novel-detail-head">
+              <div className="novel-detail-title-group">
+                <span className="novel-eyebrow">{creating ? "新建人物" : "人物档案"}</span>
+                <strong className="novel-detail-title">{draft.name.trim() || "未命名人物"}</strong>
+              </div>
+              <span className="novel-chip">{CHARACTER_STATUS_LABELS[draft.status]}</span>
+            </div>
             <div className="novel-form">
-              <Field label="姓名" htmlFor="novel-char-name">
-                <input
-                  id="novel-char-name"
-                  type="text"
-                  className="novel-input"
-                  disabled={archived || saving}
-                  value={draft.name}
-                  onChange={(event) => setDraft({ ...draft, name: event.target.value })}
-                />
-              </Field>
-              <Field label="别名" htmlFor="novel-char-aliases">
-                <input
-                  id="novel-char-aliases"
-                  type="text"
-                  className="novel-input"
-                  disabled={archived || saving}
-                  value={draft.aliases}
-                  onChange={(event) => setDraft({ ...draft, aliases: event.target.value })}
-                />
-              </Field>
-              <Field label="人物状态">
-                <Select
-                  value={draft.status}
-                  options={STATUS_OPTIONS}
-                  onChange={(value) => setDraft({ ...draft, status: value })}
-                  ariaLabel="人物状态"
-                  disabled={archived || saving}
-                />
-              </Field>
-              <Field label="阵营 / 身份 / 组织" htmlFor="novel-char-faction">
-                <input
-                  id="novel-char-faction"
-                  type="text"
-                  className="novel-input"
-                  disabled={archived || saving}
-                  value={draft.faction}
-                  onChange={(event) => setDraft({ ...draft, faction: event.target.value })}
-                />
-              </Field>
-              <Field label="标签">
-                <TagEditor
-                  tags={draft.tags}
-                  disabled={archived || saving}
-                  onChange={(tags) => setDraft({ ...draft, tags })}
-                />
-              </Field>
-              <Field label="简介" htmlFor="novel-char-intro">
-                <textarea
-                  id="novel-char-intro"
-                  className="novel-textarea"
-                  disabled={archived || saving}
-                  rows={3}
-                  value={draft.intro}
-                  onChange={(event) => setDraft({ ...draft, intro: event.target.value })}
-                />
-              </Field>
-              <Field label="外貌与性格" htmlFor="novel-char-appearance">
-                <textarea
-                  id="novel-char-appearance"
-                  className="novel-textarea"
-                  disabled={archived || saving}
-                  rows={3}
-                  value={draft.appearance}
-                  onChange={(event) => setDraft({ ...draft, appearance: event.target.value })}
-                />
-              </Field>
-              <Field label="背景经历" htmlFor="novel-char-background">
-                <textarea
-                  id="novel-char-background"
-                  className="novel-textarea"
-                  disabled={archived || saving}
-                  rows={4}
-                  value={draft.background}
-                  onChange={(event) => setDraft({ ...draft, background: event.target.value })}
-                />
-              </Field>
-              <Field label="目标与动机" htmlFor="novel-char-motivation">
-                <textarea
-                  id="novel-char-motivation"
-                  className="novel-textarea"
-                  disabled={archived || saving}
-                  rows={3}
-                  value={draft.motivation}
-                  onChange={(event) => setDraft({ ...draft, motivation: event.target.value })}
-                />
-              </Field>
-              <Field label="备注" htmlFor="novel-char-notes">
-                <textarea
-                  id="novel-char-notes"
-                  className="novel-textarea"
-                  disabled={archived || saving}
-                  rows={2}
-                  value={draft.notes}
-                  onChange={(event) => setDraft({ ...draft, notes: event.target.value })}
-                />
-              </Field>
+              <FormSection
+                title="基础资料"
+                description="姓名、别名、状态与阵营用于列表检索与快速识别。"
+              >
+                <div className="novel-field-grid">
+                  <Field label="姓名" htmlFor="novel-char-name">
+                    <input
+                      id="novel-char-name"
+                      type="text"
+                      className="novel-input"
+                      disabled={archived || saving}
+                      value={draft.name}
+                      onChange={(event) => setDraft({ ...draft, name: event.target.value })}
+                    />
+                  </Field>
+                  <Field label="别名" htmlFor="novel-char-aliases">
+                    <input
+                      id="novel-char-aliases"
+                      type="text"
+                      className="novel-input"
+                      disabled={archived || saving}
+                      value={draft.aliases}
+                      onChange={(event) => setDraft({ ...draft, aliases: event.target.value })}
+                    />
+                  </Field>
+                  <Field label="人物状态">
+                    <Select
+                      value={draft.status}
+                      options={STATUS_OPTIONS}
+                      onChange={(value) => setDraft({ ...draft, status: value })}
+                      ariaLabel="人物状态"
+                      disabled={archived || saving}
+                    />
+                  </Field>
+                  <Field label="阵营 / 身份 / 组织" htmlFor="novel-char-faction">
+                    <input
+                      id="novel-char-faction"
+                      type="text"
+                      className="novel-input"
+                      disabled={archived || saving}
+                      value={draft.faction}
+                      onChange={(event) => setDraft({ ...draft, faction: event.target.value })}
+                    />
+                  </Field>
+                  <div className="novel-field-span">
+                    <Field label="标签">
+                      <TagEditor
+                        tags={draft.tags}
+                        disabled={archived || saving}
+                        onChange={(tags) => setDraft({ ...draft, tags })}
+                      />
+                    </Field>
+                  </div>
+                </div>
+              </FormSection>
+              <FormSection
+                title="人物设定"
+                description="长文本按写作需要自由组织；纯文本保存，不解析 Markdown。"
+              >
+                <div className="novel-field-stack">
+                  <Field label="简介" htmlFor="novel-char-intro">
+                    <textarea
+                      id="novel-char-intro"
+                      className="novel-textarea"
+                      disabled={archived || saving}
+                      rows={3}
+                      value={draft.intro}
+                      onChange={(event) => setDraft({ ...draft, intro: event.target.value })}
+                    />
+                  </Field>
+                  <Field label="外貌与性格" htmlFor="novel-char-appearance">
+                    <textarea
+                      id="novel-char-appearance"
+                      className="novel-textarea"
+                      disabled={archived || saving}
+                      rows={3}
+                      value={draft.appearance}
+                      onChange={(event) => setDraft({ ...draft, appearance: event.target.value })}
+                    />
+                  </Field>
+                  <Field label="背景经历" htmlFor="novel-char-background">
+                    <textarea
+                      id="novel-char-background"
+                      className="novel-textarea"
+                      disabled={archived || saving}
+                      rows={4}
+                      value={draft.background}
+                      onChange={(event) => setDraft({ ...draft, background: event.target.value })}
+                    />
+                  </Field>
+                  <Field label="目标与动机" htmlFor="novel-char-motivation">
+                    <textarea
+                      id="novel-char-motivation"
+                      className="novel-textarea"
+                      disabled={archived || saving}
+                      rows={3}
+                      value={draft.motivation}
+                      onChange={(event) => setDraft({ ...draft, motivation: event.target.value })}
+                    />
+                  </Field>
+                  <Field label="备注" htmlFor="novel-char-notes">
+                    <textarea
+                      id="novel-char-notes"
+                      className="novel-textarea"
+                      disabled={archived || saving}
+                      rows={2}
+                      value={draft.notes}
+                      onChange={(event) => setDraft({ ...draft, notes: event.target.value })}
+                    />
+                  </Field>
+                </div>
+              </FormSection>
 
               {saveError && (
                 <p className="novel-inline-error" role="alert">
@@ -416,9 +491,12 @@ export function CharactersPanel({ projectId, archived, onNotice }: CreativeModul
             {selectedId && (
               <>
                 <section className="novel-section" aria-label="人物关系">
-              <h3 className="novel-section-title">人物关系</h3>
+              <header className="novel-section-head">
+                <h3 className="novel-section-title">人物关系</h3>
+                <span className="novel-count">{relations.length} 条</span>
+              </header>
               {relations.length === 0 ? (
-                <p className="novel-empty-hint">暂无关系记录。</p>
+                <p className="novel-empty-hint">还没有关系记录。可把当前人物与其他人物关联，关系会双向可查。</p>
               ) : (
                 <ul className="novel-ref-list">
                   {relations.map((relation) => (
@@ -495,7 +573,8 @@ export function CharactersPanel({ projectId, archived, onNotice }: CreativeModul
             )}
           </>
         )}
-      </div>
+        </div>
+      </WorkspaceSplit>
     </div>
   );
 }

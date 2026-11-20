@@ -435,6 +435,30 @@ export interface WorkspaceModule {
   label: string;
 }
 
+/**
+ * 展示层导航分组（可选）。
+ *
+ * 只影响「一级 Tab 如何归并」，不是新的业务模块，也不写入 `layout_json`：
+ * 保存时仍然按 `WorkspaceModuleId` 展平，旧布局（平铺数组）无需迁移。
+ * 未声明分组的类型继续使用原有平铺导航。
+ */
+export interface WorkspaceNavGroup {
+  /** 稳定分组 ID（只用于渲染与测试，不是模块 ID）。 */
+  id: string;
+  label: string;
+  /** 组内模块；顺序只是默认值，实际顺序仍由 layout.moduleOrder 决定。 */
+  modules: WorkspaceModuleId[];
+}
+
+/** 分组解析结果：已按 layout 顺序过滤掉隐藏模块，只包含真实可见的子模块。 */
+export interface WorkspaceNavGroupView {
+  id: string;
+  label: string;
+  modules: WorkspaceModule[];
+  /** 进入该分组时的默认子模块（分组内第一个可见模块）。 */
+  defaultModule: WorkspaceModuleId;
+}
+
 export interface WorkspaceProfile {
   kind: WorkspaceKind;
   label: string;
@@ -442,6 +466,11 @@ export interface WorkspaceProfile {
   icon: "code" | "gamepad" | "clapperboard" | "layers" | "book-open";
   /** 导航布局：顺序即渲染顺序；不同类型标题不同。 */
   modules: WorkspaceModule[];
+  /**
+   * 展示层一级导航分组：声明后一级 Tab 渲染分组、二级 Tab 渲染组内模块；
+   * 未声明则保持原有平铺导航（其他工作空间类型不受小说调整影响）。
+   */
+  navGroups?: WorkspaceNavGroup[];
   /** 旧项目没有布局配置时的默认模块。 */
   defaultModule: WorkspaceModuleId;
   /** 首页卡片（顺序即渲染顺序）。 */
@@ -503,6 +532,21 @@ const NOVEL_MODULES: WorkspaceModule[] = [
   { id: "items", label: "写作事项" },
   { id: "links", label: "任务关联" },
   { id: "settings", label: "项目设置" },
+];
+
+/**
+ * 小说一级导航分组（2026-11-20）：七个模块 ID 不变，只把展示层归并为
+ * 概览 / 正文 / 设定 / 推进 / 项目设置 五个入口；设定与推进下各有二级 Tab。
+ *
+ * 顺序默认与 NOVEL_MODULES 一致；实际渲染顺序由 `resolveNavGroups` 按
+ * layout.moduleOrder 计算，因此用户排序仍然生效。
+ */
+const NOVEL_NAV_GROUPS: WorkspaceNavGroup[] = [
+  { id: "overview", label: "概览", modules: ["overview"] },
+  { id: "manuscript", label: "正文", modules: ["manuscript"] },
+  { id: "setting", label: "设定", modules: ["characters", "worldview"] },
+  { id: "progress", label: "推进", modules: ["items", "links"] },
+  { id: "settings", label: "项目设置", modules: ["settings"] },
 ];
 
 export const WORKSPACE_PROFILES: Record<WorkspaceKind, WorkspaceProfile> = {
@@ -595,6 +639,7 @@ export const WORKSPACE_PROFILES: Record<WorkspaceKind, WorkspaceProfile> = {
     label: "小说",
     icon: "book-open",
     modules: NOVEL_MODULES,
+    navGroups: NOVEL_NAV_GROUPS,
     defaultModule: "overview",
     // 首页只展示真实存在的数据（项目/简介/写作事项/任务关联）；
     // 「后续创作功能」卡片只列出 planned 能力，不渲染任何编辑/生成入口。
@@ -808,4 +853,95 @@ export function resolveModuleOrder(
     if (!ordered.some((x) => x.id === m.id)) ordered.push(m);
   }
   return ordered.filter((m) => !layout.hiddenModules.includes(m.id));
+}
+
+// ── 展示层导航分组（2026-11-20，小说）──────────────────────────────────
+//
+// 设计边界：
+// - 分组只是「渲染时的归并」，不是业务模块；layout_json 仍保存模块 ID 数组，
+//   旧布局（平铺 moduleOrder）不需要迁移；
+// - 未声明 navGroups 的类型继续平铺导航，本组函数不会被调用；
+// - 分组是否显示、默认子模块、回退目标全部由真实 layout 计算，不做猜测。
+
+/** 该 Profile 是否声明了展示层分组（只有小说）。 */
+export function hasNavGroups(profile: WorkspaceProfile): boolean {
+  return Array.isArray(profile.navGroups) && profile.navGroups.length > 0;
+}
+
+/**
+ * 模块所属分组（按声明查找，包含被隐藏的模块）。
+ * 未声明分组或模块不在任何分组时返回 null。
+ */
+export function findNavGroup(
+  profile: WorkspaceProfile,
+  moduleId: WorkspaceModuleId,
+): WorkspaceNavGroup | null {
+  if (!profile.navGroups) return null;
+  return profile.navGroups.find((group) => group.modules.includes(moduleId)) ?? null;
+}
+
+/**
+ * 解析一级导航分组：
+ * 1. 子模块按 `resolveModuleOrder` 的真实顺序排列（用户排序生效）；
+ * 2. 隐藏模块剔除；
+ * 3. 全部子模块被隐藏的分组不返回；
+ * 4. 分组顺序 = 组内首个可见模块在 `moduleOrder` 中的位置。
+ */
+export function resolveNavGroups(
+  profile: WorkspaceProfile,
+  layout: WorkspaceLayoutConfig,
+): WorkspaceNavGroupView[] {
+  if (!profile.navGroups) return [];
+  const visible = resolveModuleOrder(profile, layout);
+  const position = new Map(visible.map((m, index) => [m.id, index]));
+  const groups: WorkspaceNavGroupView[] = [];
+  for (const group of profile.navGroups) {
+    const modules = visible.filter((m) => group.modules.includes(m.id));
+    if (modules.length === 0) continue;
+    groups.push({
+      id: group.id,
+      label: group.label,
+      modules,
+      defaultModule: modules[0].id,
+    });
+  }
+  groups.sort((a, b) => (position.get(a.modules[0].id) ?? 0) - (position.get(b.modules[0].id) ?? 0));
+  return groups;
+}
+
+/**
+ * 分组的有效默认模块：组内第一个可见模块；整组隐藏时返回 null。
+ * 用于「用户隐藏了人物、保留世界观」时设定入口仍然落在世界观。
+ */
+export function resolveGroupDefaultModule(
+  profile: WorkspaceProfile,
+  layout: WorkspaceLayoutConfig,
+  groupId: string,
+): WorkspaceModuleId | null {
+  const group = profile.navGroups?.find((item) => item.id === groupId);
+  if (!group) return null;
+  const visible = resolveModuleOrder(profile, layout);
+  const first = visible.find((m) => group.modules.includes(m.id));
+  return first?.id ?? null;
+}
+
+/**
+ * 当前模块被隐藏后的安全回退目标：
+ * 1. 当前模块仍可见 → 原样返回；
+ * 2. 同组还有可见子模块 → 回退到组内第一个可见模块（设定/推进不会跳回概览）；
+ * 3. 否则回退概览；概览不可用时取首个可见模块。
+ */
+export function resolveSafeActiveModule(
+  profile: WorkspaceProfile,
+  layout: WorkspaceLayoutConfig,
+): WorkspaceModuleId {
+  const visible = resolveModuleOrder(profile, layout);
+  if (visible.some((m) => m.id === layout.activeModule)) return layout.activeModule;
+  const group = findNavGroup(profile, layout.activeModule);
+  if (group) {
+    const sameGroup = visible.find((m) => group.modules.includes(m.id));
+    if (sameGroup) return sameGroup.id;
+  }
+  if (visible.some((m) => m.id === "overview")) return "overview";
+  return visible[0]?.id ?? "overview";
 }

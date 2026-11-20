@@ -641,7 +641,7 @@ describe("NovelManuscriptPanel · 归档只读", () => {
     expect(textarea.readOnly).toBe(true);
     expect(screen.getByText("项目已归档，只读")).toBeTruthy();
     expect((screen.getByPlaceholderText("新建卷标题") as HTMLInputElement).disabled).toBe(true);
-    expect((screen.getByRole("button", { name: "卷" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "新建卷" }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: "第一卷" }) as HTMLButtonElement).disabled).toBe(true);
     expect(
       (screen.getByRole("button", { name: "重命名章节「第一章」" }) as HTMLButtonElement).disabled,
@@ -904,5 +904,33 @@ describe("NovelManuscriptPanel · 关闭门禁", () => {
       await Promise.resolve();
     });
     await waitFor(() => expect(h.close).toHaveBeenCalledTimes(1));
+  });
+});
+
+describe("NovelManuscriptPanel · 空态引导（2026-11-20）", () => {
+  it("没有卷与章节时展示完整引导，并可直接在未分卷下新建第一章", async () => {
+    api.novelVolumeList.mockResolvedValue({ volumes: [] });
+    api.novelChapterList.mockResolvedValue({ chapters: [] });
+    api.novelChapterSave.mockResolvedValue({
+      chapter: { ...chapter, id: "cnew", volumeId: null },
+    });
+
+    renderPanel();
+
+    await screen.findByText("还没有选中的章节");
+    expect(screen.getByText(/正文按章保存到本地数据库/)).toBeTruthy();
+    expect(screen.getByText(/在左侧新建一卷/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "新建卷" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /新建第一章/ }));
+
+    await waitFor(() =>
+      expect(api.novelChapterSave).toHaveBeenCalledWith({
+        projectId: "p1",
+        volumeId: null,
+        title: "新章节",
+        sortOrder: null,
+      }),
+    );
   });
 });

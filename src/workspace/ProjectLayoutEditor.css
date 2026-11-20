@@ -1,0 +1,57 @@
+/*
+ * 布局编辑器的分组排序视图（2026-11-20，小说）。
+ *
+ * 只在 Profile 声明 navGroups 时渲染 `.ws-layout-group*`；平铺类型继续使用
+ * workspace.css 里既有的 `.ws-layout-row` 样式，不受本文件影响。
+ * 颜色/圆角/间距全部走语义 Token。
+ */
+
+.ws-layout-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ws-layout-group {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--surface-raised) 72%, transparent);
+  padding: 4px;
+  min-width: 0;
+}
+
+.ws-layout-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 4px 6px;
+}
+
+.ws-layout-group-head .ws-layout-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.ws-layout-group .ws-layout-list {
+  gap: 2px;
+  padding: 0 0 2px 12px;
+}
+
+.ws-layout-group .ws-layout-row.is-child {
+  border-color: transparent;
+  background: transparent;
+  padding: 3px 6px;
+}
+
+.ws-layout-group .ws-layout-row.is-child:hover {
+  border-color: var(--border-subtle);
+  background: var(--surface-hover);
+}
+
+.ws-layout-group .ws-layout-row.is-child .ws-layout-name {
+  font-size: 12px;
+  color: var(--text-secondary);
+}

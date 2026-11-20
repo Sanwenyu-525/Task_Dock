@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
+  BookOpen,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
@@ -19,6 +20,8 @@ import {
   Trash2,
 } from "lucide-react";
 
+import WorkspaceSplit from "./WorkspaceSplit";
+import "./creative/novel/manuscript.css";
 import {
   novelChapterDelete,
   novelChapterGet,
@@ -826,11 +829,11 @@ export default function NovelManuscriptPanel({
     return (
       <div
         key={item.id}
-        className={`ws-novel-chapter ${isSelected ? "is-active" : ""}`}
+        className={`manuscript-chapter ${isSelected ? "is-active" : ""}`}
       >
         {isRenaming ? (
           <input
-            className="ws-input ws-flex"
+            className="ws-input ws-flex manuscript-rename-input"
             value={renameDraft}
             autoFocus
             onChange={(e) => setRenameDraft(e.target.value)}
@@ -850,16 +853,16 @@ export default function NovelManuscriptPanel({
         ) : (
           <button
             type="button"
-            className="ws-novel-chapter-title"
+            className="manuscript-chapter-title"
             onClick={() => void selectChapter(item.id)}
             aria-current={isSelected ? "true" : undefined}
           >
             {item.title}
           </button>
         )}
-        <span className="ws-novel-count">{item.wordCount} 字</span>
+        <span className="manuscript-count">{item.wordCount} 字</span>
         {!isRenaming && (
-          <span className="ws-novel-actions">
+          <span className="manuscript-row-actions">
             <button
               type="button"
               className="ws-btn ws-btn-quiet"
@@ -910,11 +913,11 @@ export default function NovelManuscriptPanel({
     const isRenaming = volume ? renaming === volume.id : false;
     const index = volume ? sortedVolumes.findIndex((v) => v.id === volume.id) : -1;
     return (
-      <section className="ws-novel-volume" key={key} aria-label={title}>
-        <header className="ws-novel-volume-head">
+      <section className="manuscript-volume" key={key} aria-label={title}>
+        <header className="manuscript-volume-head">
           {isRenaming && volume ? (
             <input
-              className="ws-input ws-flex"
+              className="ws-input ws-flex manuscript-rename-input"
               value={renameDraft}
               autoFocus
               onChange={(e) => setRenameDraft(e.target.value)}
@@ -934,7 +937,7 @@ export default function NovelManuscriptPanel({
           ) : (
             <button
               type="button"
-              className="ws-novel-volume-title"
+              className="manuscript-volume-title"
               onClick={() => volume && startRename(volume.id, volume.title)}
               disabled={!volume || archived}
               data-tip={volume ? "点击重命名" : undefined}
@@ -942,9 +945,9 @@ export default function NovelManuscriptPanel({
               {title}
             </button>
           )}
-          <span className="ws-novel-count">{words} 字</span>
+          <span className="manuscript-count">{words} 字</span>
           {volume && !isRenaming && (
-            <span className="ws-novel-actions">
+            <span className="manuscript-row-actions">
               <button
                 type="button"
                 className="ws-btn ws-btn-quiet"
@@ -975,12 +978,12 @@ export default function NovelManuscriptPanel({
             </span>
           )}
         </header>
-        {rows.length === 0 && <div className="ws-novel-empty">本卷还没有章节</div>}
+        {rows.length === 0 && <div className="manuscript-empty-row">本卷还没有章节</div>}
         {rows.map(renderChapterRow)}
-        <div className="ws-novel-add">
+        <div className="manuscript-add">
           <button
             type="button"
-            className="ws-btn"
+            className="ws-btn manuscript-add-btn"
             disabled={busy || archived}
             onClick={() => void addChapter(volume ? volume.id : null)}
           >
@@ -1045,117 +1048,161 @@ export default function NovelManuscriptPanel({
   const saveTone = archived && draft !== savedRef.current ? "error" : saveState;
 
   return (
-    <div className="ws-novel">
-      {/* 左栏：卷 → 章树 */}
-      <aside className="ws-novel-tree" aria-label="章节树">
-        <div className="ws-novel-toolbar">
-          <input
-            className="ws-input ws-flex"
-            placeholder="新建卷标题"
-            value={newVolumeTitle}
-            disabled={archived || busy}
-            onChange={(e) => setNewVolumeTitle(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") void addVolume();
-            }}
-          />
-          <button
-            type="button"
-            className="ws-btn ws-btn-primary"
-            disabled={archived || busy || !newVolumeTitle.trim()}
-            onClick={() => void addVolume()}
-          >
-            <Plus size={11} /> 卷
-          </button>
-        </div>
-        {error && (
-          <div className="ws-notice" data-tone="error" role="alert">
-            <AlertCircle size={13} />
-            <span>读取章节树失败：{error}</span>
-            <button type="button" className="ws-btn" onClick={() => void loadTree()}>
-              重试
-            </button>
-          </div>
-        )}
-        {loading ? (
-          <div className="ws-state" data-tone="muted">
-            <Loader2 size={12} className="ws-spin" /> 正在读取卷与章节…
-          </div>
-        ) : (
-          <>
-            {sortedVolumes.map((volume) => renderVolumeBlock(volume))}
-            {renderVolumeBlock(null)}
-            {sortedVolumes.length === 0 && visibleChapters.length === 0 && (
-              <div className="ws-novel-empty">
-                还没有内容：先新建一卷，或在「未分卷」下写第一章。
+    <div className="manuscript-root">
+      <WorkspaceSplit
+        id="novel-manuscript"
+        sidebarLabel="卷与章节"
+        defaultWidth={300}
+        minWidth={240}
+        maxWidth={400}
+        sidebar={
+          <div className="manuscript-tree">
+            <div className="manuscript-tree-head">
+              <span className="manuscript-eyebrow">正文</span>
+              <strong>卷与章节</strong>
+              <span className="ws-meta">
+                全书 {totalWords} 字 · {chapters.length} 章
+              </span>
+            </div>
+            <div className="manuscript-toolbar">
+              <input
+                className="ws-input manuscript-volume-input"
+                placeholder="新建卷标题"
+                aria-label="新建卷标题"
+                value={newVolumeTitle}
+                disabled={archived || busy}
+                onChange={(e) => setNewVolumeTitle(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void addVolume();
+                }}
+              />
+              <button
+                type="button"
+                className="ws-btn ws-btn-primary manuscript-new-volume"
+                disabled={archived || busy || !newVolumeTitle.trim()}
+                onClick={() => void addVolume()}
+              >
+                <Plus size={11} /> 新建卷
+              </button>
+            </div>
+            {error && (
+              <div className="ws-notice" data-tone="error" role="alert">
+                <AlertCircle size={13} />
+                <span>读取章节树失败：{error}</span>
+                <button type="button" className="ws-btn" onClick={() => void loadTree()}>
+                  重试
+                </button>
               </div>
             )}
-          </>
-        )}
-        <div className="ws-meta">全书 {totalWords} 字 · {chapters.length} 章</div>
-      </aside>
-
-      {/* 右栏：纯文本编辑器 */}
-      <section className="ws-novel-editor" aria-label="正文编辑器">
-        {!selectedId && (
-          <div className="ws-novel-editor-empty">
-            <h3>还没有选中的章节</h3>
-            <p>在左侧选择一章，或点「新建章节」开始写作。正文按章保存，不写入外部文件。</p>
-          </div>
-        )}
-        {selectedId && chapterLoading && (
-          <div className="ws-state" data-tone="muted">
-            <Loader2 size={12} className="ws-spin" /> 正在读取正文…
-          </div>
-        )}
-        {selectedId && !chapterLoading && (
-          <>
-            <header className="ws-novel-editor-head">
-              <div className="ws-flex">
-                <strong className="ws-novel-editor-title">{chapter?.title ?? "（章节已删除）"}</strong>
-                <div className="ws-meta">
-                  本章 {currentWordCount} 字 · 全书 {totalWords} 字
+            <div className="manuscript-tree-scroll">
+              {loading ? (
+                <div className="ws-state" data-tone="muted">
+                  <Loader2 size={12} className="ws-spin" /> 正在读取卷与章节…
                 </div>
-              </div>
-              <span className="ws-novel-save" data-tone={saveTone}>
-                {saveState === "saved" && <CheckCircle2 size={12} />}
-                {(saveState === "error" || saveTone === "error") && <AlertCircle size={12} />}
-                {saveLabel}
+              ) : (
+                <>
+                  {sortedVolumes.map((volume) => renderVolumeBlock(volume))}
+                  {renderVolumeBlock(null)}
+                  {sortedVolumes.length === 0 && visibleChapters.length === 0 && (
+                    <div className="manuscript-empty-tree">
+                      还没有内容。先新建一卷，或直接在「未分卷」下写第一章。
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        }
+      >
+        {/* 右侧：纯文本写作区 */}
+        <section className="manuscript-editor" aria-label="正文编辑器">
+          {!selectedId && !chapterLoading && (
+            <div className="manuscript-editor-empty">
+              <span className="manuscript-empty-icon" aria-hidden="true">
+                <BookOpen size={22} />
               </span>
-              {saveState === "error" && !archived && (
+              <h3>还没有选中的章节</h3>
+              <p>正文按章保存到本地数据库，不写入外部文件。你可以：</p>
+              <ul className="manuscript-empty-list">
+                <li>在左侧新建一卷，再在卷下新建章节；</li>
+                <li>或直接在「未分卷」下写第一章。</li>
+              </ul>
+              <div className="manuscript-empty-actions">
                 <button
                   type="button"
-                  className="ws-btn"
-                  onClick={() => void flushRef.current()}
+                  className="ws-btn ws-btn-primary"
+                  disabled={archived || busy}
+                  onClick={() => void addChapter(null)}
                 >
-                  重试保存
+                  <Plus size={12} /> 新建第一章
                 </button>
-              )}
-            </header>
-            {archived && (
-              <div className="ws-notice" data-tone="info">
-                项目已归档：正文可查看，恢复为进行中后才能继续编辑。
               </div>
-            )}
-            <textarea
-              className="ws-novel-textarea"
-              value={draft}
-              readOnly={archived}
-              spellCheck={false}
-              placeholder="在这里写正文…（纯文本，自动保存）"
-              aria-label={`${chapter?.title ?? "章节"}正文`}
-              onChange={(e) => setDraft(e.target.value)}
-              onBlur={() => {
-                if (!archived) void flushRef.current();
-              }}
-            />
-            <div className="ws-meta">
-              停止输入约 {AUTOSAVE_MS / 1000} 秒后自动写入本地数据库；失焦、切换章节与切换项目时立即保存。
-              纯文本保存，不解析 Markdown；单章上限 8 MiB。
+              {archived && (
+                <p className="ws-meta">项目已归档：恢复为进行中后才能新建或编辑章节。</p>
+              )}
             </div>
-          </>
-        )}
-      </section>
+          )}
+          {selectedId && chapterLoading && (
+            <div className="ws-state" data-tone="muted">
+              <Loader2 size={12} className="ws-spin" /> 正在读取正文…
+            </div>
+          )}
+          {selectedId && !chapterLoading && (
+            <>
+              <header className="manuscript-editor-head">
+                <div className="manuscript-editor-title-group">
+                  <strong className="manuscript-editor-title">
+                    {chapter?.title ?? "（章节已删除）"}
+                  </strong>
+                  <div className="manuscript-editor-stats">
+                    <span>本章 {currentWordCount} 字</span>
+                    <span aria-hidden="true">·</span>
+                    <span>全书 {totalWords} 字</span>
+                  </div>
+                </div>
+                <span className="manuscript-save" data-tone={saveTone}>
+                  {saveState === "saved" && <CheckCircle2 size={12} />}
+                  {(saveState === "error" || saveTone === "error") && <AlertCircle size={12} />}
+                  {(saveState === "pending" || saveState === "saving") && (
+                    <span className="manuscript-save-dot" aria-hidden="true" />
+                  )}
+                  {saveLabel}
+                </span>
+                {saveState === "error" && !archived && (
+                  <button
+                    type="button"
+                    className="ws-btn"
+                    onClick={() => void flushRef.current()}
+                  >
+                    重试保存
+                  </button>
+                )}
+              </header>
+              {archived && (
+                <div className="ws-notice" data-tone="info">
+                  项目已归档：正文可查看，恢复为进行中后才能继续编辑。
+                </div>
+              )}
+              <textarea
+                className="manuscript-textarea"
+                value={draft}
+                readOnly={archived}
+                spellCheck={false}
+                placeholder="在这里写正文…（纯文本，自动保存）"
+                aria-label={`${chapter?.title ?? "章节"}正文`}
+                onChange={(e) => setDraft(e.target.value)}
+                onBlur={() => {
+                  if (!archived) void flushRef.current();
+                }}
+              />
+              <div className="manuscript-editor-hint">
+                停止输入约 {AUTOSAVE_MS / 1000} 秒后自动写入本地数据库；失焦、切换章节、切换模块与切换项目时立即保存。
+                纯文本保存，不解析 Markdown；单章上限 8 MiB。
+              </div>
+            </>
+          )}
+        </section>
+      </WorkspaceSplit>
 
       {deleteTarget && deleteInfo && (
         <Dialog

@@ -15,8 +15,13 @@ import {
   canInvokeCapability,
   capabilitiesFor,
   defaultLayout,
+  findNavGroup,
+  hasNavGroups,
   parseWorkspaceLayout,
+  resolveGroupDefaultModule,
   resolveModuleOrder,
+  resolveNavGroups,
+  resolveSafeActiveModule,
   resolveWorkspaceProfile,
   withActiveModule,
   WORKSPACE_LAYOUT_VERSION,
@@ -335,6 +340,150 @@ describe("布局解析与模块顺序", () => {
     ).toEqual(["items", "overview", "manuscript", "characters", "worldview", "settings"]);
     // 旧布局本身是合法 v1，不标记 repaired
     expect(parseWorkspaceLayout(JSON.stringify(legacy), novel).repaired).toBe(false);
+  });
+});
+
+describe("展示层导航分组（小说，2026-11-20）", () => {
+  const novel = WORKSPACE_PROFILES.novel;
+
+  it("只有小说声明分组；七个模块 ID 全都保留且只归属一个分组", () => {
+    expect(hasNavGroups(novel)).toBe(true);
+    for (const kind of ["development", "game", "ai_comic", "general"] as const) {
+      expect(hasNavGroups(WORKSPACE_PROFILES[kind])).toBe(false);
+    }
+    // 模块 ID 没有被删减或改名
+    expect(novel.modules.map((m) => m.id)).toEqual([
+      "overview",
+      "manuscript",
+      "characters",
+      "worldview",
+      "items",
+      "links",
+      "settings",
+    ]);
+    const grouped = (novel.navGroups ?? []).flatMap((g) => g.modules);
+    expect(new Set(grouped).size).toBe(grouped.length);
+    expect([...grouped].sort()).toEqual([...novel.modules.map((m) => m.id)].sort());
+    expect(findNavGroup(novel, "characters")?.label).toBe("设定");
+    expect(findNavGroup(novel, "links")?.label).toBe("推进");
+    expect(findNavGroup(novel, "overview")?.label).toBe("概览");
+  });
+
+  it("默认布局渲染五个一级入口，设定/推进各有二级模块", () => {
+    const groups = resolveNavGroups(novel, defaultLayout(novel));
+    expect(groups.map((g) => g.label)).toEqual(["概览", "正文", "设定", "推进", "项目设置"]);
+    expect(groups.map((g) => g.id)).toEqual([
+      "overview",
+      "manuscript",
+      "setting",
+      "progress",
+      "settings",
+    ]);
+    const setting = groups.find((g) => g.id === "setting");
+    expect(setting?.modules.map((m) => m.label)).toEqual(["人物", "世界观"]);
+    expect(setting?.defaultModule).toBe("characters");
+    const progress = groups.find((g) => g.id === "progress");
+    expect(progress?.modules.map((m) => m.label)).toEqual(["写作事项", "任务关联"]);
+    expect(progress?.defaultModule).toBe("items");
+    // 单模块分组不产生额外子模块
+    expect(groups.find((g) => g.id === "overview")?.modules.map((m) => m.id)).toEqual(["overview"]);
+  });
+
+  it("分组顺序跟随现有 moduleOrder（旧布局或用户排序都生效）", () => {
+    const layout: WorkspaceLayoutConfig = {
+      version: WORKSPACE_LAYOUT_VERSION,
+      moduleOrder: ["overview", "items", "links", "manuscript", "characters", "worldview", "settings"],
+      hiddenModules: [],
+      activeModule: "overview",
+    };
+    expect(resolveNavGroups(novel, layout).map((g) => g.label)).toEqual([
+      "概览",
+      "推进",
+      "正文",
+      "设定",
+      "项目设置",
+    ]);
+    // 组内顺序同样由 moduleOrder 决定
+    const reversed: WorkspaceLayoutConfig = {
+      ...layout,
+      moduleOrder: ["overview", "worldview", "characters", "manuscript", "links", "items", "settings"],
+    };
+    const groups = resolveNavGroups(novel, reversed);
+    expect(groups.find((g) => g.id === "setting")?.modules.map((m) => m.id)).toEqual([
+      "worldview",
+      "characters",
+    ]);
+    expect(groups.find((g) => g.id === "progress")?.modules.map((m) => m.id)).toEqual([
+      "links",
+      "items",
+    ]);
+  });
+
+  it("隐藏人物但保留世界观：设定入口仍显示并落在世界观；整组隐藏则不显示", () => {
+    const onlyWorldview: WorkspaceLayoutConfig = {
+      ...defaultLayout(novel),
+      hiddenModules: ["characters"],
+    };
+    const groups = resolveNavGroups(novel, onlyWorldview);
+    expect(groups.map((g) => g.label)).toContain("设定");
+    expect(groups.find((g) => g.id === "setting")?.modules.map((m) => m.id)).toEqual(["worldview"]);
+    expect(groups.find((g) => g.id === "setting")?.defaultModule).toBe("worldview");
+    expect(resolveGroupDefaultModule(novel, onlyWorldview, "setting")).toBe("worldview");
+
+    const settingHidden: WorkspaceLayoutConfig = {
+      ...defaultLayout(novel),
+      hiddenModules: ["characters", "worldview"],
+    };
+    expect(resolveNavGroups(novel, settingHidden).map((g) => g.label)).toEqual([
+      "概览",
+      "正文",
+      "推进",
+      "项目设置",
+    ]);
+    expect(resolveGroupDefaultModule(novel, settingHidden, "setting")).toBeNull();
+
+    // 单模块分组全部隐藏后同样消失
+    expect(
+      resolveNavGroups(novel, { ...defaultLayout(novel), hiddenModules: ["manuscript", "settings"] }).map(
+        (g) => g.label,
+      ),
+    ).toEqual(["概览", "设定", "推进"]);
+  });
+
+  it("当前模块被隐藏时优先回退到同组可见模块，再回退概览", () => {
+    const hiddenCharacters: WorkspaceLayoutConfig = {
+      ...defaultLayout(novel),
+      activeModule: "characters",
+      hiddenModules: ["characters"],
+    };
+    expect(resolveSafeActiveModule(novel, hiddenCharacters)).toBe("worldview");
+
+    const hiddenItems: WorkspaceLayoutConfig = {
+      ...defaultLayout(novel),
+      activeModule: "items",
+      hiddenModules: ["items"],
+    };
+    expect(resolveSafeActiveModule(novel, hiddenItems)).toBe("links");
+
+    const hiddenProgress: WorkspaceLayoutConfig = {
+      ...defaultLayout(novel),
+      activeModule: "items",
+      hiddenModules: ["items", "links"],
+    };
+    expect(resolveSafeActiveModule(novel, hiddenProgress)).toBe("overview");
+
+    // 仍是可见模块时保持原值
+    expect(resolveSafeActiveModule(novel, { ...defaultLayout(novel), activeModule: "settings" })).toBe(
+      "settings",
+    );
+    // 其他类型没有分组：隐藏后直接回退概览
+    expect(
+      resolveSafeActiveModule(WORKSPACE_PROFILES.development, {
+        ...defaultLayout(WORKSPACE_PROFILES.development),
+        activeModule: "items",
+        hiddenModules: ["items"],
+      }),
+    ).toBe("overview");
   });
 });
 

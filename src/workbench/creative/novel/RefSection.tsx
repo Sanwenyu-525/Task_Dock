@@ -119,7 +119,10 @@ export function RefSection({ projectId, entityType, entityId, disabled, onNotice
 
   return (
     <section className="novel-section" aria-label="章节引用">
-      <h3 className="novel-section-title">章节引用</h3>
+      <header className="novel-section-head">
+        <h3 className="novel-section-title">章节引用</h3>
+        <span className="novel-count">{refs.length} 章</span>
+      </header>
 
       {loadError && <LoadError message={loadError} onRetry={() => void loadRefs()} />}
 
@@ -160,7 +163,9 @@ export function RefSection({ projectId, entityType, entityId, disabled, onNotice
       {chapterError && <p className="novel-inline-error">章节列表读取失败：{chapterError}</p>}
 
       {refs.length === 0 ? (
-        <p className="novel-empty-hint">暂无章节关联。</p>
+        <p className="novel-empty-hint">
+          还没有关联章节。把当前条目关联到真实章节后，写作时可按章节回查出场位置。
+        </p>
       ) : (
         <ul className="novel-ref-list">
           {refs.map((ref) => (

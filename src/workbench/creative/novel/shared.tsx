@@ -83,6 +83,27 @@ export function TagEditor({
   );
 }
 
+/** 表单分组：基础资料 / 人物设定等，标题 + 可选说明 + 字段区。 */
+export function FormSection({
+  title,
+  description,
+  children,
+}: {
+  title: string;
+  description?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="novel-form-section" aria-label={title}>
+      <header className="novel-form-section-head">
+        <h3>{title}</h3>
+        {description ? <p className="novel-meta">{description}</p> : null}
+      </header>
+      <div className="novel-form-section-body">{children}</div>
+    </section>
+  );
+}
+
 /** 表单字段外壳：标签 + 控件。 */
 export function Field({
   label,

@@ -1,0 +1,460 @@
+/*
+ * 项目工作空间面板的局部样式（2026-11-20）。
+ *
+ * 范围：
+ * - 小说一级/二级导航：`.ws-subtabs`（分组 Tab 仍复用 workspace.css 的 .ws-tab）；
+ * - 小说概览：快捷操作、真实统计、项目信息/写作事项/任务关联紧凑卡片；
+ * - 推进（写作事项 / 任务关联）与项目设置（事实行、危险区、高级能力信息）。
+ *
+ * 不修改 workspace.css / workbench.css / 全局 Token；所有选择器挂在本面板新增的
+ * 类名下，颜色、圆角、间距全部使用语义 Token。响应式只查询祖先 `.ui-page-frame`
+ * （container-name: ui-page），不写视口断点。
+ */
+
+/* ── 页头长路径：省略显示，完整路径通过 data-tip 查看 ───────────────── */
+.ws-header-path {
+  display: inline-block;
+  max-width: min(52ch, 100%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+/* ── 二级 Tab（设定 / 推进）───────────────────────────────────────── */
+.ws-subtabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-wrap: wrap;
+  margin: -4px 0 12px;
+  padding: 2px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--surface-raised) 66%, transparent);
+  width: fit-content;
+  max-width: 100%;
+}
+
+.ws-subtab {
+  appearance: none;
+  border: 1px solid transparent;
+  border-radius: calc(var(--radius-control) - 2px);
+  background: transparent;
+  color: var(--text-secondary);
+  min-height: calc(var(--btn-height) - 4px);
+  padding: 0 12px;
+  font-size: var(--font-size-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.ws-subtab:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.ws-subtab.is-active {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 28%, transparent);
+  color: var(--text-primary);
+  font-weight: var(--font-weight-medium, 600);
+}
+
+/* ── 小说概览 ─────────────────────────────────────────────────────── */
+.ws-overview-novel {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+  min-width: 0;
+}
+
+.ws-overview-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--accent-soft) 70%, transparent),
+      color-mix(in srgb, var(--surface-raised) 40%, transparent)
+    );
+  min-width: 0;
+}
+
+.ws-overview-hero-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1 1 260px;
+}
+
+.ws-overview-hero-title {
+  font-size: var(--font-size-card-title, 15px);
+  font-weight: var(--font-weight-semibold, 600);
+  color: var(--text-primary);
+}
+
+.ws-overview-hero .ws-overview-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.ws-overview-novel .ws-overview-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-auto-rows: min-content;
+  gap: 8px;
+  /* 覆盖 workbench.css 的 `flex: 1 1 340px`：在纵向 flex 里 340px 会变成高度，
+     把统计卡拉成一整块空白。统计区只按内容自然撑开。 */
+  flex: 0 0 auto;
+}
+
+.ws-overview-novel .ws-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--surface-raised);
+  min-width: 0;
+}
+
+.ws-overview-novel .ws-stat strong {
+  font-size: 20px;
+  line-height: 1.2;
+  color: var(--text-primary);
+}
+
+.ws-overview-novel .ws-stat span {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+/* 卡片按内容自然撑开：不被同排最长卡片拉高。 */
+.ws-overview-grid--natural {
+  align-items: start;
+}
+
+.ws-overview-grid > .ws-card {
+  margin-bottom: 0;
+}
+
+.ws-overview-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ws-overview-card-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.ws-fact-list {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.ws-fact {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 13px;
+}
+
+.ws-fact:last-child {
+  border-bottom: none;
+}
+
+.ws-fact > span:first-child {
+  flex: 0 0 auto;
+  min-width: 64px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.ws-fact > strong,
+.ws-fact > .ws-path-clamp {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.ws-path-clamp {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.ws-note-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding-top: 4px;
+}
+
+.ws-note-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.ws-note-text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ws-compact-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.ws-compact-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 13px;
+}
+
+.ws-compact-row:last-child {
+  border-bottom: none;
+}
+
+.ws-compact-row > span.ws-flex {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── 推进：写作事项 / 任务关联 ─────────────────────────────────────── */
+.ws-module-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.ws-list-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: var(--font-weight-medium, 600);
+  color: var(--text-primary);
+}
+
+.ws-list-head .ws-meta {
+  font-weight: 400;
+}
+
+.ws-items-form {
+  margin-bottom: 0;
+}
+
+.ws-items-form .ws-items-title {
+  flex: 2 1 260px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.ws-items-form .ws-items-stage {
+  flex: 1 1 170px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.ws-items-form .ws-items-add {
+  flex: 0 0 auto;
+}
+
+.ws-item-row {
+  gap: 8px;
+}
+
+.ws-item-title {
+  min-width: 0;
+}
+
+.ws-item-stage {
+  flex: none;
+}
+
+.ws-status-btn {
+  flex: 0 0 auto;
+  min-width: 64px;
+  justify-content: center;
+}
+
+.ws-status-btn[data-status="done"] {
+  color: var(--status-success);
+  border-color: color-mix(in srgb, var(--status-success) 38%, var(--border-subtle));
+  background: color-mix(in srgb, var(--status-success) 10%, var(--surface-raised));
+}
+
+.ws-status-btn[data-status="doing"],
+.ws-status-btn[data-status="in_progress"] {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--border-subtle));
+  background: var(--accent-soft);
+}
+
+.ws-status-btn[data-status="blocked"] {
+  color: var(--status-warning);
+  border-color: color-mix(in srgb, var(--status-warning) 38%, var(--border-subtle));
+  background: color-mix(in srgb, var(--status-warning) 10%, var(--surface-raised));
+}
+
+.ws-links-toolbar {
+  margin-bottom: 0;
+}
+
+.ws-links-toolbar .ws-links-search {
+  flex: 1 1 260px;
+  min-width: 180px;
+  max-width: 100%;
+}
+
+.ws-links-count {
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.ws-links-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ws-links-section + .ws-links-section {
+  padding-top: 10px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.ws-link-row {
+  min-width: 0;
+}
+
+/* ── 项目设置 ─────────────────────────────────────────────────────── */
+.ws-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.ws-settings > .ws-card {
+  margin-bottom: 0;
+}
+
+.ws-settings .ws-fact > strong,
+.ws-settings .ws-fact > .ws-path-clamp {
+  overflow-wrap: anywhere;
+}
+
+.ws-danger-zone {
+  border-color: color-mix(in srgb, var(--status-error) 34%, var(--border-subtle));
+}
+
+.ws-cap-section {
+  padding: 2px 0;
+}
+
+.ws-cap-section .ws-cap-list {
+  padding-top: 4px;
+}
+
+.ws-cap-section .ws-cap {
+  background: color-mix(in srgb, var(--surface-raised) 60%, transparent);
+}
+
+/* ── 窄内容区降级（容器查询；仅作用于 .ui-page-frame 的后代）──────── */
+@container ui-page (max-width: 720px) {
+  .ws-overview-novel .ws-overview-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .ws-overview-hero .ws-overview-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .ws-links-count {
+    margin-left: 0;
+    flex: 1 1 100%;
+  }
+}
+
+@container ui-page (max-width: 480px) {
+  .ws-fact {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+  }
+
+  .ws-fact > span:first-child {
+    min-width: 0;
+  }
+
+  .ws-item-row {
+    flex-wrap: wrap;
+  }
+
+  .ws-item-title {
+    flex: 1 1 100%;
+  }
+
+  .ws-subtabs {
+    width: 100%;
+  }
+
+  .ws-subtab {
+    flex: 1 1 auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ws-subtab {
+    transition: none;
+  }
+}

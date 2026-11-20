@@ -284,7 +284,7 @@ type WorkspaceCapabilityState = "available" | "limited" | "planned" | "unavailab
 | 数据库 | v57 迁移：`kind` CHECK 五值；事务内暂存 → 按依赖逆序重建 → 回填 → 自检；`PRAGMA foreign_key_check` 0 违例 |
 | Rust | `PROJECT_KINDS` 增加 `novel`；创建/编辑/列表/归档/恢复/设为当前/备注/根目录沿用原命令，没有新增重复 CRUD |
 | TypeScript | `WorkspaceKind` 增加 `"novel"`；`WORKSPACE_PROFILES.novel`（标签「小说」、图标 token `book-open`，映射到 `BookOpen`） |
-| 导航 | 概览 / 写作事项 / 任务关联 / 项目设置（只使用既有模块 ID） |
+| 导航 | 概览 / 写作事项 / 任务关联 / 项目设置（只使用既有模块 ID；A 阶段历史，2026-11-20 起一级导航合并为五入口，见 §14） |
 | 首页 | 小说项目（基本信息）/ 项目简介 / 写作事项 / 任务关联 / 后续创作功能（只列 planned 能力，纯文本无按钮） |
 | 能力 | available：`core.project` / `core.items` / `core.taskLinks`；limited：`core.layout`；planned：`novel.manuscript` / `novel.characters` / `novel.worldview` / `novel.aiAssist` |
 | 入口 | 统一工作台新建/编辑项目类型、项目列表徽标、项目详情类型、项目切换与独立窗口，全部由 Profile 注册中心派生 |
@@ -296,7 +296,8 @@ type WorkspaceCapabilityState = "available" | "limited" | "planned" | "unavailab
   见 §11；富文本与版本历史仍未实现）；
 - 章节/卷管理（A 阶段只用 `workspace_items.stage` 标注；B1 已建模卷→章树与字数统计，
   见 §11）；
-- 人物档案与关系、世界观设定集、剧情时间线、伏笔追踪；
+- 人物档案与关系、世界观设定集、剧情时间线、伏笔追踪（人物与世界观已于 B2 落盘，
+  当前能力状态为 limited，见 §14.2；剧情时间线与伏笔追踪仍未实现）；
 - AI 续写/改写/生成、导出（TXT/Markdown/DOCX/PDF）。
 
 本阶段**没有**为上述功能新建数据库表；`workspace_items` 足以承载「写作事项」，
@@ -329,6 +330,8 @@ type WorkspaceCapabilityState = "available" | "limited" | "planned" | "unavailab
 
 - `WorkspaceModuleId` 增加 `manuscript`；`novel` Profile 导航为
   概览 / **正文** / 写作事项 / 任务关联 / 项目设置；旧布局缺少 `manuscript` 时自动补齐。
+  （B1 阶段历史顺序；2026-11-20 起展示层合并为 概览 / 正文 / 设定 / 推进 / 项目设置，
+  七个模块 ID 不变，见 §14。）
 - `novel.manuscript` 从 `planned` 提升为 `available`，`provider` 指向 v58 表与内置纯文本
   编辑器，`action` 指向 `manuscript` 模块；人物/世界观/AI 仍为 `planned` 且不可调用。
 - `NovelManuscriptPanel`：左栏卷→章树（新建/重命名/上下移/两步删除确认，未分卷桶），
@@ -500,7 +503,7 @@ src-tauri/src/commands/backup.rs           # BACKUP_TABLES / EXTENDED_TABLES 登
 
 | 类型 | 模块顺序 |
 |---|---|
-| 小说 | 概览 → 正文 → 人物 → 世界观 → 写作事项 → 任务关联 → 项目设置 |
+| 小说 | 概览 → 正文 → 设定（人物 · 世界观）→ 推进（写作事项 · 任务关联）→ 项目设置（展示层五入口；底层模块 ID 仍是七个，见 §14） |
 | 游戏 | 概览 → 制作事项 → 游戏资源 → 构建与测试 → 任务关联 → 设置 |
 | AI 漫剧 | 概览 → 剧集 → 分镜 → 角色与场景 → 素材与产物 → 任务关联 → 设置 |
 | 通用 | 概览 → 阶段与里程碑 → 项目资料 → 事项 → 任务关联 → 设置 |
@@ -615,3 +618,93 @@ src-tauri/src/commands/backup.rs           # BACKUP_TABLES / EXTENDED_TABLES 登
   交互分支，不代表后端真实结果。跨设备项目同步仍未实现。
 
 
+
+## 14. 小说工作空间导航与 UI 精修（2026-11-20）
+
+**目标**：在不改数据库、IPC、数据模型、正文保存机制与项目生命周期的前提下，把小说工作空间
+从「七个平铺模块」整理为符合创作流程的工作台：一级入口收敛为五个，设定与推进各有二级 Tab，
+概览/正文/人物/世界观/推进/设置统一空间利用率与视觉层级。
+
+### 14.1 新旧导航对照
+
+| 旧（七个平铺 Tab） | 新（五个一级入口 + 二级 Tab） | 底层模块 ID |
+|---|---|---|
+| 概览 | 概览 | `overview` |
+| 正文 | 正文 | `manuscript` |
+| 人物 | 设定 → 人物 | `characters` |
+| 世界观 | 设定 → 世界观 | `worldview` |
+| 写作事项 | 推进 → 写作事项 | `items` |
+| 任务关联 | 推进 → 任务关联 | `links` |
+| 项目设置 | 项目设置 | `settings` |
+
+- `WorkspaceModuleId` 仍是七个值，`WorkspaceLayoutConfig.version` 仍为 1，`layout_json`
+  仍保存模块 ID 数组；分组只是 `workspaceProfiles.ts` 里的展示层声明（`navGroups`）。
+- 其他工作空间类型（开发/游戏/AI 漫剧/通用）未声明 `navGroups`，继续原有平铺导航。
+
+### 14.2 分组规则与能力状态
+
+`workspaceProfiles.ts` 新增纯函数：`hasNavGroups` / `findNavGroup` / `resolveNavGroups` /
+`resolveGroupDefaultModule` / `resolveSafeActiveModule`。
+
+- **分组顺序**：由现有 `moduleOrder` 中组内首个可见模块的位置决定，因此旧布局、用户排序都生效。
+- **子模块**：按 `moduleOrder` 排列，隐藏项剔除；只剩一个可见子模块时不渲染二级条，但一级入口保留。
+- **默认子模块**：组内第一个可见模块。隐藏人物但保留世界观时，「设定」直接落在世界观。
+- **整组隐藏**：该分组不显示；当前模块被隐藏时优先回退同组可见模块，再回退概览。
+- **切换统一入口**：一级/二级 Tab 全部调用 `switchModule()`（正文 flush 失败不切换、
+  布局串行保存、`moduleRequest` 仍传原始模块 ID）。
+
+能力状态与代码一致，未升级未实现能力：`novel.manuscript` 为 `available`；
+`novel.characters` / `novel.worldview` 为 `limited`；`novel.aiAssist` 仍为 `planned`，
+不渲染续写/生成入口。项目设置中的能力清单折叠进「能力与实现说明（高级信息）」，四态
+（可用 / 受限 / 计划中 / 未接入）与 provider/降级条件原样展示；概览不再占用空间展示计划能力。
+
+### 14.3 布局编辑器
+
+`ProjectLayoutEditor.tsx` 在声明分组的 Profile 下改为：一级分组排序、组内模块排序、子模块显隐；
+`overview` 固定首位且不可隐藏。保存时展平为原有模块 ID 数组，隐藏当前模块时用
+`resolveSafeActiveModule` 计算回退目标。归档项目只读。未声明分组的类型仍渲染原平铺列表。
+
+### 14.4 页面与样式
+
+- **概览**：真实统计（写作事项/进行中/已完成/关联任务，空数据不伪装成百分比）；快捷操作
+  （开始写作 / 新增写作事项 / 关联任务 / 打开工作目录）；「项目信息与简介」合并卡片，
+  写作事项与任务关联独立紧凑卡片，按内容自然撑开；计划中能力移入设置高级信息。
+- **正文**：`WorkspaceSplit id="novel-manuscript"`（默认 300 / 最小 240 / 最大 400），
+  左侧卷→章树（新建卷、字数、排序、重命名、删除），右侧标题/本章字数/全书字数/保存状态/
+  纯文本编辑器；无章节时显示完整引导空态。900ms 防抖、同章串行保存、切换章节/模块/项目
+  flush、删除前保存或明确丢弃、归档只读、诊断脱敏全部保持原实现。
+- **人物/世界观**：`WorkspaceSplit id="novel-characters"` / `id="novel-worldview"`
+  （默认 280 / 最小 220 / 最大 360）；左栏搜索 + 新建 + 列表 + 数量 + 类型/状态辅助信息，
+  右栏完整表单（人物分「基础资料 / 人物设定」，关系与章节引用独立）、保存/删除/错误提示；
+  空列表与未选中都有说明、原因、新建入口与操作引导。世界观类型筛选改为单行横向滚动，
+  不再换成多排按钮。
+- **推进**：写作事项输入行在宽内容区保持同一行、窄内容区自然换行；列表显示标题/阶段/状态/
+  改状态/删除。任务关联统一搜索与状态筛选，已关联与可关联两个区域各自显示数量与操作，
+  保留分页与按需查询（200 条窗口），取消关联只解除弱引用。
+- **项目设置**：项目信息改为结构化事实行；编辑/归档与删除分层，删除单独放入危险操作区；
+  保留 `ProjectResourcesCard`（只保留引用关系，不复制目标）；能力清单折叠展示。
+- **样式归属**：`src/workbench/ProjectWorkspacePanel.css`、`src/workspace/ProjectLayoutEditor.css`、
+  `src/workbench/creative/novel/manuscript.css`、`src/workbench/creative/novel/novel.css`。
+  未修改 `workspace.css` / `workbench.css` / 全局主题 Token；宽度判断使用
+  `.ui-page-frame`（`ui-page`）与 `workspace-split` 容器查询。
+
+### 14.5 兼容性与测试
+
+- 旧 `layout_json`（version=1、平铺 `moduleOrder`、隐藏项）直接可读；分组顺序与子模块顺序
+  都由该数组推导，无需迁移。显式传入未知/损坏 JSON 仍按原逻辑回退默认布局。
+- 自动化（2026-11-20）：`workspaceProfiles.test.ts` 24 项、`ProjectLayoutEditor.test.tsx` 5 项、
+  `ProjectWorkspacePanel.nav.test.tsx` 8 项、`NovelManuscriptPanel.test.tsx` 29 项、
+  `CharactersPanel.test.tsx` / `WorldviewPanel.test.tsx` 各 4 项、`WorkspaceSplit.test.tsx` 9 项、
+  `CreativeModuleHost.test.tsx` 4 项、`WorkbenchShell.selectGuard.test.tsx` 4 项、
+  `layoutMetrics.test.ts` 20 项，共 111 项通过；`tsc --noEmit` 0 错误。
+- 真实桌面窗口验收与截图见 `tmp/acceptance/novel-workspace-ui/report.md`（Dev 功能验收，
+  不推进 Release 状态机，不生成 buildId）。
+
+### 14.6 已知边界与后续建议
+
+- 正文仍为纯文本 textarea；Markdown/富文本、版本历史、导入导出未接入。
+- 人物/世界观运行期能力仍按 `limited` 表述，真实桌面端到端（隔离数据目录、归档写拒绝）
+  以 Dev 验收记录为准；未取得 Release 安装包结论。
+- 一级分组目前只对小说声明；若后续游戏/漫剧也需要分组，只需在各自 Profile 增加
+  `navGroups`，无需改壳层渲染逻辑。
+- 后续可评估：正文目录悬浮定位、章节拖拽排序、设定之间的交叉引用视图（均不在本轮范围）。

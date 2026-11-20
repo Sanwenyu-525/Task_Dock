@@ -34,6 +34,7 @@ import NovelManuscriptPanel from "./NovelManuscriptPanel";
 import CreativeModuleHost from "./creative/CreativeModuleHost";
 import type { CreativeModuleId } from "./creative/types";
 import Select from "../components/ui/Select";
+import CollapsibleSection from "../components/ui/CollapsibleSection";
 import {
   agentSnapshot,
   workspaceProjectDelete,
@@ -62,12 +63,16 @@ import {
   WORKSPACE_CAPABILITIES,
   WORKSPACE_PROFILES,
   canInvokeCapability,
+  hasNavGroups,
   resolveModuleOrder,
+  resolveNavGroups,
   resolveWorkspaceProfile,
   type WorkspaceCard,
   type WorkspaceModuleId,
+  type WorkspaceNavGroupView,
   type WorkspaceProfile,
 } from "../workspace/workspaceProfiles";
+import "./ProjectWorkspacePanel.css";
 
 const KIND_OPTIONS: { value: WorkspaceKind; label: string }[] = (
   Object.values(WORKSPACE_PROFILES) as WorkspaceProfile[]
@@ -205,10 +210,37 @@ export default function ProjectWorkspacePanel({
     return modules.some((m) => m.id === requested) ? requested : modules[0]?.id ?? "overview";
   }, [localModule, ctx.layout.activeModule, modules]);
 
+  // 展示层导航分组（只有小说声明；其他类型返回空数组，继续平铺导航）。
+  const groupedNav = hasNavGroups(profile);
+  const navGroups = useMemo(
+    () => resolveNavGroups(profile, ctx.layout),
+    [profile, ctx.layout],
+  );
+  const activeGroup = useMemo(
+    () => navGroups.find((group) => group.modules.some((m) => m.id === activeModule)) ?? null,
+    [navGroups, activeModule],
+  );
+  /** 记住每个分组上次停留的子模块：在「设定/推进」间往返不会总跳回第一个。 */
+  const lastGroupModuleRef = useRef<Record<string, WorkspaceModuleId>>({});
+  useEffect(() => {
+    if (!activeGroup) return;
+    lastGroupModuleRef.current[activeGroup.id] = activeModule;
+  }, [activeGroup, activeModule]);
+
   const picker = useWorkspaceTaskPicker(
     activeModule === "links" && Boolean(selectedId),
     ctx.links.map((l) => l.taskId),
   );
+  /** 已关联任务与「可关联任务」共用同一套搜索/状态筛选。 */
+  const filteredLinks = useMemo(() => {
+    const query = picker.query.trim().toLowerCase();
+    return ctx.links.filter((link: WorkspaceTaskLink) => {
+      if (query && !link.title.toLowerCase().includes(query)) return false;
+      if (picker.status === "completed") return link.status === "completed";
+      if (picker.status === "pending") return link.status !== "completed";
+      return true;
+    });
+  }, [ctx.links, picker.query, picker.status]);
 
   activeModuleRef.current = activeModule;
   const registerManuscriptFlush = useCallback(
@@ -305,6 +337,22 @@ export default function ProjectWorkspacePanel({
 
   const switchModuleRef = useRef(switchModule);
   switchModuleRef.current = switchModule;
+
+  /**
+   * 一级分组切换：所有模块跳转仍然统一经过 `switchModule`（含正文 flush 与
+   * 布局保存），不直接 setLocalModule。分组内上次停留的模块仍可见时优先回到它。
+   */
+  const switchGroup = useCallback(
+    (group: WorkspaceNavGroupView) => {
+      if (group.modules.some((m) => m.id === activeModule)) return;
+      const remembered = lastGroupModuleRef.current[group.id];
+      const target = group.modules.some((m) => m.id === remembered)
+        ? (remembered as WorkspaceModuleId)
+        : group.defaultModule;
+      void switchModule(target);
+    },
+    [activeModule, switchModule],
+  );
 
   // 外部模块定位（如右栏「项目设置」）：只认 token 变化，避免 layout 变化
   // 反复把用户手动切换的模块重置回请求值。
@@ -740,6 +788,207 @@ export default function ProjectWorkspacePanel({
     }
   };
 
+  /**
+   * 小说概览（2026-11-20）：真实统计 + 快捷操作 + 「项目信息与简介 / 写作事项 /
+   * 任务关联」三张紧凑卡片。计划中能力不再占用概览，统一收进项目设置的高级信息。
+   */
+  const renderNovelOverview = () => {
+    if (!project) return null;
+    const doing = ctx.items.filter((it) => {
+      const status = it.status as string;
+      return status === "doing" || status === "in_progress";
+    }).length;
+    const done = ctx.items.filter((it) => it.status === "done").length;
+    return (
+      <>
+        <section className="ws-overview ws-overview-novel" aria-label="项目概览与快捷入口">
+          <div className="ws-overview-hero">
+            <div className="ws-overview-hero-main">
+              <strong className="ws-overview-hero-title">继续写作</strong>
+              <p className="ws-meta">
+                正文按章保存到本地数据库；设定与推进用于组织人物、世界观、写作事项与关联任务。
+              </p>
+            </div>
+            <div className="ws-overview-actions">
+              <button
+                type="button"
+                className="ws-btn ws-btn-primary"
+                onClick={() => void switchModule("manuscript")}
+              >
+                <BookOpen size={12} /> 开始写作
+              </button>
+              <button type="button" className="ws-btn" onClick={() => void switchModule("items")}>
+                <Plus size={12} /> 新增写作事项
+              </button>
+              <button type="button" className="ws-btn" onClick={() => void switchModule("links")}>
+                <Link2 size={12} /> 关联任务
+              </button>
+              <button
+                type="button"
+                className="ws-btn"
+                disabled={!project.rootPath || !project.rootExists}
+                data-tip={
+                  !project.rootPath
+                    ? "未设置工作目录，可在项目设置中指定"
+                    : !project.rootExists
+                      ? "工作目录不存在，可在项目设置中重新指定"
+                      : "在系统文件管理器中打开"
+                }
+                onClick={() => void openFolder(project.rootPath)}
+              >
+                <FolderOpen size={12} /> 打开工作目录
+              </button>
+            </div>
+          </div>
+          <div className="ws-overview-stats" aria-label="项目统计">
+            <div className="ws-stat">
+              <strong>{ctx.items.length}</strong>
+              <span>写作事项</span>
+            </div>
+            <div className="ws-stat">
+              <strong>{doing}</strong>
+              <span>进行中</span>
+            </div>
+            <div className="ws-stat">
+              <strong>{done}</strong>
+              <span>已完成</span>
+            </div>
+            <div className="ws-stat">
+              <strong>{ctx.links.length}</strong>
+              <span>关联任务</span>
+            </div>
+          </div>
+          {project.rootPath && !project.rootExists && (
+            <div className="ws-state" data-tone="error">
+              工作目录不存在（登记仍保留，可在项目设置中重新指定）
+            </div>
+          )}
+        </section>
+
+        <ProjectProgressCard projectId={selectedId} archived={project.status === "archived"} />
+
+        <div className="ws-overview-grid ui-adaptive-grid ws-overview-grid--natural">
+          <section className="ws-card ws-overview-card" aria-label="项目信息与简介">
+            <header className="ws-card-head">
+              <h3>项目信息</h3>
+              <span className="ws-badge ws-badge-soft">小说</span>
+            </header>
+            <div className="ws-fact-list">
+              <div className="ws-fact"><span>状态</span><strong>{project.status === "archived" ? "已归档" : "进行中"}</strong></div>
+              <div className="ws-fact">
+                <span>工作目录</span>
+                {project.rootPath ? (
+                  <span className="ws-path ws-path-clamp" data-tip={project.rootPath}>{project.rootPath}</span>
+                ) : (
+                  <strong>未设置</strong>
+                )}
+                {project.rootPath && project.rootExists && (
+                  <button
+                    type="button"
+                    className="ws-btn ws-btn-quiet"
+                    aria-label="打开工作目录"
+                    onClick={() => void openFolder(project.rootPath)}
+                  >
+                    <FolderOpen size={12} />
+                  </button>
+                )}
+              </div>
+              <div className="ws-fact"><span>创建</span><strong>{formatLocalizedDateTime(project.createdAt)}</strong></div>
+              <div className="ws-fact"><span>最近更新</span><strong>{formatLocalizedDateTime(project.updatedAt)}</strong></div>
+            </div>
+            <div className="ws-note-block">
+              <span className="ws-note-label">项目简介</span>
+              {project.note ? (
+                <p className="ws-note-text">{project.note}</p>
+              ) : (
+                <p className="ws-meta">未填写项目简介；可在「项目设置」的备注里补充。</p>
+              )}
+            </div>
+          </section>
+
+          <section className="ws-card ws-overview-card" aria-label="写作事项">
+            <header className="ws-card-head">
+              <h3>写作事项</h3>
+              <span className="ws-card-actions">
+                <span className="ws-meta">{ctx.items.length} 项</span>
+                <button
+                  type="button"
+                  className="ws-btn ws-btn-quiet"
+                  aria-label="打开写作事项"
+                  onClick={() => void switchModule("items")}
+                >
+                  打开
+                </button>
+              </span>
+            </header>
+            {ctx.status === "loading" ? (
+              <div className="ws-state" data-tone="muted"><Loader2 size={12} className="ws-spin" /> 正在加载…</div>
+            ) : ctx.items.length === 0 ? (
+              <div className="ws-overview-card-empty">
+                <p className="ws-meta">还没有写作事项。它用于记录章节、卷或线索的推进状态。</p>
+                <button type="button" className="ws-btn" onClick={() => void switchModule("items")}>
+                  <Plus size={12} /> 新增写作事项
+                </button>
+              </div>
+            ) : (
+              <ul className="ws-compact-list">
+                {ctx.items.slice(0, 5).map((it) => (
+                  <li key={it.id} className="ws-compact-row">
+                    <span className="ws-flex" title={it.title}>{it.title}</span>
+                    {it.stage && <span className="ws-badge">{it.stage}</span>}
+                    <span className="ws-badge">{ITEM_STATUS_LABEL[it.status] ?? it.status}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {ctx.items.length > 5 && (
+              <div className="ws-meta">仅显示前 5 项，共 {ctx.items.length} 项</div>
+            )}
+          </section>
+
+          <section className="ws-card ws-overview-card" aria-label="任务关联">
+            <header className="ws-card-head">
+              <h3>任务关联</h3>
+              <span className="ws-card-actions">
+                <span className="ws-meta">{ctx.links.length} 个</span>
+                <button
+                  type="button"
+                  className="ws-btn ws-btn-quiet"
+                  aria-label="打开任务关联"
+                  onClick={() => void switchModule("links")}
+                >
+                  打开
+                </button>
+              </span>
+            </header>
+            {ctx.status === "loading" ? (
+              <div className="ws-state" data-tone="muted"><Loader2 size={12} className="ws-spin" /> 正在加载…</div>
+            ) : ctx.links.length === 0 ? (
+              <div className="ws-overview-card-empty">
+                <p className="ws-meta">还没有关联任务。关联只建立弱引用，不会复制或删除全局任务。</p>
+                <button type="button" className="ws-btn" onClick={() => void switchModule("links")}>
+                  <Link2 size={12} /> 关联任务
+                </button>
+              </div>
+            ) : (
+              <ul className="ws-compact-list">
+                {ctx.links.slice(0, 5).map((l) => (
+                  <li key={l.taskId} className="ws-compact-row">
+                    <span className="ws-flex" title={l.title}>{l.title}</span>
+                    <span className="ws-badge">{l.status}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {ctx.links.length > 5 && (
+              <div className="ws-meta">仅显示前 5 个，共 {ctx.links.length} 个</div>
+            )}
+          </section>
+        </div>
+      </>
+    );
+  };
+
   if (!project) {
     return (
       <section className="wb-project wb-project-empty ui-page-frame" aria-label="项目工作空间">
@@ -787,7 +1036,9 @@ export default function ProjectWorkspacePanel({
             {project.rootPath ? (
               <>
                 {" · 根目录 "}
-                <span className="ws-path">{project.rootPath}</span>
+                <span className="ws-header-path" data-tip={project.rootPath}>
+                  {project.rootPath}
+                </span>
               </>
             ) : (
               " · 未设置根目录"
@@ -816,17 +1067,29 @@ export default function ProjectWorkspacePanel({
       )}
 
       <div className="ws-tabs ui-toolbar-row" role="tablist" aria-label="工作空间模块">
-        {modules.map((m) => (
-          <button
-            key={m.id}
-            role="tab"
-            aria-selected={activeModule === m.id}
-            className={`ws-tab ${activeModule === m.id ? "is-active" : ""}`}
-            onClick={() => void switchModule(m.id)}
-          >
-            {m.label}
-          </button>
-        ))}
+        {groupedNav
+          ? navGroups.map((group) => (
+              <button
+                key={group.id}
+                role="tab"
+                aria-selected={activeGroup?.id === group.id}
+                className={`ws-tab ${activeGroup?.id === group.id ? "is-active" : ""}`}
+                onClick={() => switchGroup(group)}
+              >
+                {group.label}
+              </button>
+            ))
+          : modules.map((m) => (
+              <button
+                key={m.id}
+                role="tab"
+                aria-selected={activeModule === m.id}
+                className={`ws-tab ${activeModule === m.id ? "is-active" : ""}`}
+                onClick={() => void switchModule(m.id)}
+              >
+                {m.label}
+              </button>
+            ))}
         {ctx.status === "loading" && (
           <span className="ws-tab-loading"><Loader2 size={12} className="ws-spin" /> 加载中</span>
         )}
@@ -842,6 +1105,21 @@ export default function ProjectWorkspacePanel({
           布局
         </button>
       </div>
+      {groupedNav && activeGroup && activeGroup.modules.length > 1 && (
+        <div className="ws-subtabs" role="tablist" aria-label={`${activeGroup.label}子模块`}>
+          {activeGroup.modules.map((m) => (
+            <button
+              key={m.id}
+              role="tab"
+              aria-selected={activeModule === m.id}
+              className={`ws-subtab ${activeModule === m.id ? "is-active" : ""}`}
+              onClick={() => void switchModule(m.id)}
+            >
+              {m.label}
+            </button>
+          ))}
+        </div>
+      )}
       <ProjectLayoutEditor
         open={layoutEditorOpen}
         profile={profile}
@@ -857,105 +1135,100 @@ export default function ProjectWorkspacePanel({
         <div className="ws-meta" data-tone="warn">当前模块位置未保存成功（仅影响下次打开时的默认模块）</div>
       )}
 
-      {activeModule === "overview" && (
-        <>
-          <section className="ws-overview" aria-label="项目概览与快捷入口">
-            <div className="ws-overview-stats">
-              <div className="ws-stat">
-                <strong>{ctx.items.length}</strong>
-                <span>事项</span>
+      {activeModule === "overview" &&
+        (profile.kind === "novel" ? (
+          renderNovelOverview()
+        ) : (
+          <>
+            <section className="ws-overview" aria-label="项目概览与快捷入口">
+              <div className="ws-overview-stats">
+                <div className="ws-stat">
+                  <strong>{ctx.items.length}</strong>
+                  <span>事项</span>
+                </div>
+                <div className="ws-stat">
+                  <strong>{ctx.items.filter((it) => it.status === "done").length}</strong>
+                  <span>已完成</span>
+                </div>
+                <div className="ws-stat">
+                  <strong>{ctx.links.length}</strong>
+                  <span>关联任务</span>
+                </div>
+                <div className="ws-stat">
+                  <strong>
+                    {
+                      ctx.items.filter((it) => {
+                        const status = it.status as string;
+                        return status === "doing" || status === "in_progress";
+                      }).length
+                    }
+                  </strong>
+                  <span>进行中</span>
+                </div>
               </div>
-              <div className="ws-stat">
-                <strong>{ctx.items.filter((it) => it.status === "done").length}</strong>
-                <span>已完成</span>
+              <div className="ws-overview-actions">
+                <button type="button" className="ws-btn" onClick={() => void switchModule("items")}>
+                  <Plus size={12} /> 新增事项
+                </button>
+                <button type="button" className="ws-btn" onClick={() => void switchModule("links")}>
+                  <Link2 size={12} /> 关联任务
+                </button>
+                {project?.devProjectId && (
+                  <button
+                    type="button"
+                    className="ws-btn ws-btn-primary"
+                    onClick={() => onOpenDevWorkbench(project.devProjectId!)}
+                  >
+                    <GitBranch size={12} /> 开发工作台
+                  </button>
+                )}
+                {project?.rootPath && project.rootExists && (
+                  <button type="button" className="ws-btn" onClick={() => void openFolder(project.rootPath)}>
+                    <FolderOpen size={12} /> 打开目录
+                  </button>
+                )}
               </div>
-              <div className="ws-stat">
-                <strong>{ctx.links.length}</strong>
-                <span>关联任务</span>
-              </div>
-              <div className="ws-stat">
-                <strong>
-                  {
-                    ctx.items.filter((it) => {
-                      const status = it.status as string;
-                      return status === "doing" || status === "in_progress";
-                    }).length
-                  }
-                </strong>
-                <span>进行中</span>
-              </div>
+              {project && (
+                <p className="ws-overview-meta">
+                  创建于 {formatLocalizedDateTime(project.createdAt)} · 最近更新{" "}
+                  {formatLocalizedDateTime(project.updatedAt)}
+                </p>
+              )}
+            </section>
+            <ProjectProgressCard
+              projectId={selectedId}
+              archived={project.status === "archived"}
+            />
+            <div className="ws-overview-grid ui-adaptive-grid">
+              {profile.homeCards.map((card) => {
+                const cap = WORKSPACE_CAPABILITIES[card.capability];
+                return (
+                  <section className="ws-card" key={card.id} aria-label={card.title}>
+                    <header className="ws-card-head">
+                      <h3>{card.title}</h3>
+                      <span className={`ws-badge ws-badge-${cap.state}`}>{CAPABILITY_STATE_LABEL[cap.state]}</span>
+                    </header>
+                    {ctx.status === "loading" && card.body !== "agents" && card.body !== "git" ? (
+                      <div className="ws-state" data-tone="muted">
+                        <Loader2 size={12} className="ws-spin" /> 正在加载…
+                      </div>
+                    ) : (
+                      cardBody(card)
+                    )}
+                  </section>
+                );
+              })}
             </div>
-            <div className="ws-overview-actions">
-              <button type="button" className="ws-btn" onClick={() => void switchModule("items")}>
-                <Plus size={12} /> 新增事项
-              </button>
-              <button type="button" className="ws-btn" onClick={() => void switchModule("links")}>
-                <Link2 size={12} /> 关联任务
-              </button>
-              {profile.kind === "novel" && (
-                <button
-                  type="button"
-                  className="ws-btn ws-btn-primary"
-                  onClick={() => void switchModule("manuscript")}
-                >
-                  <BookOpen size={12} /> 开始写作
-                </button>
-              )}
-              {project?.devProjectId && (
-                <button
-                  type="button"
-                  className="ws-btn ws-btn-primary"
-                  onClick={() => onOpenDevWorkbench(project.devProjectId!)}
-                >
-                  <GitBranch size={12} /> 开发工作台
-                </button>
-              )}
-              {project?.rootPath && project.rootExists && (
-                <button type="button" className="ws-btn" onClick={() => void openFolder(project.rootPath)}>
-                  <FolderOpen size={12} /> 打开目录
-                </button>
-              )}
-            </div>
-            {project && (
-              <p className="ws-overview-meta">
-                创建于 {formatLocalizedDateTime(project.createdAt)} · 最近更新{" "}
-                {formatLocalizedDateTime(project.updatedAt)}
-              </p>
-            )}
-          </section>
-          <ProjectProgressCard
-            projectId={selectedId}
-            archived={project.status === "archived"}
-          />
-          <div className="ws-overview-grid ui-adaptive-grid">
-            {profile.homeCards.map((card) => {
-              const cap = WORKSPACE_CAPABILITIES[card.capability];
-              return (
-                <section className="ws-card" key={card.id} aria-label={card.title}>
-                  <header className="ws-card-head">
-                    <h3>{card.title}</h3>
-                    <span className={`ws-badge ws-badge-${cap.state}`}>{CAPABILITY_STATE_LABEL[cap.state]}</span>
-                  </header>
-                  {ctx.status === "loading" && card.body !== "agents" && card.body !== "git" ? (
-                    <div className="ws-state" data-tone="muted">
-                      <Loader2 size={12} className="ws-spin" /> 正在加载…
-                    </div>
-                  ) : (
-                    cardBody(card)
-                  )}
-                </section>
-              );
-            })}
-          </div>
-        </>
-      )}
+          </>
+        ))}
 
       {activeModule === "items" && (
-        <div>
-          <div className="ws-form-row">
+        <div className="ws-module-panel ws-items-panel">
+          <div className="ws-form-row ws-items-form">
             <input
-              className="ws-input ws-flex-2"
+              className="ws-input ws-items-title"
               placeholder="事项标题"
+              aria-label="事项标题"
               value={newItemTitle}
               onChange={(e) => setNewItemTitle(e.target.value)}
               onKeyDown={(e) => {
@@ -963,25 +1236,37 @@ export default function ProjectWorkspacePanel({
               }}
             />
             <input
-              className="ws-input"
+              className="ws-input ws-items-stage"
               placeholder={STAGE_HINT[profile.kind]}
+              aria-label="阶段"
               value={newItemStage}
               onChange={(e) => setNewItemStage(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter") void addItem();
               }}
             />
-            <button className="ws-btn ws-btn-primary" onClick={() => void addItem()} disabled={!newItemTitle.trim()}>
+            <button
+              type="button"
+              className="ws-btn ws-btn-primary ws-items-add"
+              onClick={() => void addItem()}
+              disabled={!newItemTitle.trim()}
+            >
               <Plus size={12} /> 添加
             </button>
           </div>
-          <div className="ws-list">
+          <div className="ws-list-head">
+            <span>共 {ctx.items.length} 项</span>
+            <span className="ws-meta">点击状态可切换；删除只影响本项目事项。</span>
+          </div>
+          <div className="ws-list ws-item-list">
             {ctx.items.map((it) => (
-              <div key={it.id} className="ws-row">
-                <span className="ws-flex" title={it.title}>{it.title}</span>
-                {it.stage && <span className="ws-badge">{it.stage}</span>}
+              <div key={it.id} className="ws-row ws-item-row">
+                <span className="ws-flex ws-item-title" title={it.title}>{it.title}</span>
+                {it.stage && <span className="ws-badge ws-item-stage">{it.stage}</span>}
                 <button
-                  className="ws-btn"
+                  type="button"
+                  className="ws-btn ws-status-btn"
+                  data-status={it.status}
                   onClick={() => void cycleItemStatus(it)}
                   data-tip="点击切换状态"
                   aria-label={`切换「${it.title}」状态`}
@@ -989,9 +1274,11 @@ export default function ProjectWorkspacePanel({
                   {ITEM_STATUS_LABEL[it.status] ?? it.status}
                 </button>
                 <button
+                  type="button"
                   className="ws-btn ws-btn-quiet"
                   onClick={() => void removeItem(it)}
                   aria-label={`删除事项「${it.title}」`}
+                  data-tip="删除事项"
                 >
                   <Trash2 size={12} />
                 </button>
@@ -999,7 +1286,9 @@ export default function ProjectWorkspacePanel({
             ))}
             {ctx.status === "loading" && <div className="ws-empty">正在加载事项…</div>}
             {ctx.status !== "loading" && ctx.items.length === 0 && (
-              <div className="ws-empty">暂无事项；上方输入标题即可添加。</div>
+              <div className="ws-empty">
+                还没有写作事项。上方填写标题（可附阶段，如章节 / 卷 / 线索）即可添加。
+              </div>
             )}
           </div>
         </div>
@@ -1035,11 +1324,12 @@ export default function ProjectWorkspacePanel({
       )}
 
       {activeModule === "links" && (
-        <div>
-          <div className="ws-form-row">
+        <div className="ws-module-panel ws-links-panel">
+          <div className="ws-form-row ws-links-toolbar">
             <input
-              className="ws-input ws-flex"
+              className="ws-input ws-links-search"
               placeholder="搜索任务（标题）"
+              aria-label="搜索任务"
               value={picker.query}
               onChange={(e) => picker.setQuery(e.target.value)}
             />
@@ -1053,45 +1343,72 @@ export default function ProjectWorkspacePanel({
               onChange={(v) => picker.setStatus(v as TaskPickerStatus)}
               ariaLabel="任务状态筛选"
             />
+            <span className="ws-meta ws-links-count">
+              已关联 {ctx.links.length} · 可关联 {picker.tasks.length}
+            </span>
           </div>
 
-          <h4 className="ws-subhead">已关联（{ctx.links.length}）</h4>
-          <div className="ws-list">
-            {ctx.links.map((l: WorkspaceTaskLink) => (
-              <div key={l.taskId} className="ws-row">
-                <span className="ws-flex" title={l.title}>{l.title}</span>
-                <span className="ws-badge">{l.status}</span>
-                <button className="ws-btn" onClick={() => void removeTaskLink(l.taskId)}>
-                  <Link2 size={12} /> 取消关联
-                </button>
-              </div>
-            ))}
-            {ctx.links.length === 0 && <div className="ws-empty">暂无关联任务</div>}
-          </div>
-
-          <h4 className="ws-subhead">可关联任务</h4>
-          <div className="ws-list">
-            {picker.loading && <div className="ws-empty"><Loader2 size={12} className="ws-spin" /> 正在查询任务…</div>}
-            {picker.error && <div className="ws-notice" data-tone="error">查询任务失败：{picker.error}</div>}
-            {!picker.loading &&
-              picker.tasks.map((t) => (
-                <div key={t.id} className="ws-row">
-                  <span className="ws-flex" title={t.title}>{t.title}</span>
-                  {t.status === "completed" && <span className="ws-badge">已完成</span>}
-                  <button className="ws-btn" onClick={() => void addTaskLink(t.id)}>
-                    <Plus size={12} /> 关联
+          <section className="ws-links-section" aria-label="已关联任务">
+            <div className="ws-list-head">
+              <span>已关联</span>
+              <span className="ws-badge">{filteredLinks.length === ctx.links.length ? ctx.links.length : `${filteredLinks.length}/${ctx.links.length}`}</span>
+              <span className="ws-meta">取消关联只解除弱引用，不删除全局任务。</span>
+            </div>
+            <div className="ws-list">
+              {filteredLinks.map((l: WorkspaceTaskLink) => (
+                <div key={l.taskId} className="ws-row ws-link-row">
+                  <span className="ws-flex" title={l.title}>{l.title}</span>
+                  <span className="ws-badge">{l.status}</span>
+                  <button
+                    type="button"
+                    className="ws-btn"
+                    onClick={() => void removeTaskLink(l.taskId)}
+                  >
+                    <Link2 size={12} /> 取消关联
                   </button>
                 </div>
               ))}
-            {!picker.loading && !picker.error && picker.tasks.length === 0 && (
-              <div className="ws-empty">没有匹配的可关联任务（已排除已关联项）</div>
-            )}
-          </div>
+              {ctx.links.length === 0 && (
+                <div className="ws-empty">
+                  还没有关联任务。可在下方「可关联任务」中搜索并建立关联；原任务不会被复制或移动。
+                </div>
+              )}
+              {ctx.links.length > 0 && filteredLinks.length === 0 && (
+                <div className="ws-empty">没有符合当前搜索 / 状态筛选的已关联任务。</div>
+              )}
+            </div>
+          </section>
+
+          <section className="ws-links-section" aria-label="可关联任务">
+            <div className="ws-list-head">
+              <span>可关联任务</span>
+              <span className="ws-badge">{picker.tasks.length}</span>
+              <span className="ws-meta">按需查询，不一次加载全部历史任务。</span>
+            </div>
+            <div className="ws-list">
+              {picker.loading && <div className="ws-empty"><Loader2 size={12} className="ws-spin" /> 正在查询任务…</div>}
+              {picker.error && <div className="ws-notice" data-tone="error">查询任务失败：{picker.error}</div>}
+              {!picker.loading &&
+                picker.tasks.map((t) => (
+                  <div key={t.id} className="ws-row ws-link-row">
+                    <span className="ws-flex" title={t.title}>{t.title}</span>
+                    {t.status === "completed" && <span className="ws-badge">已完成</span>}
+                    <button type="button" className="ws-btn" onClick={() => void addTaskLink(t.id)}>
+                      <Plus size={12} /> 关联
+                    </button>
+                  </div>
+                ))}
+              {!picker.loading && !picker.error && picker.tasks.length === 0 && (
+                <div className="ws-empty">没有匹配的可关联任务（已排除已关联项）。</div>
+              )}
+            </div>
+          </section>
+
           <div className="ws-form-actions">
             {picker.canLoadMore && (
-              <button className="ws-btn" onClick={picker.loadMore}>加载更多（最多 200 条）</button>
+              <button type="button" className="ws-btn" onClick={picker.loadMore}>加载更多（最多 200 条）</button>
             )}
-            <button className="ws-btn" onClick={picker.reload}>重新查询</button>
+            <button type="button" className="ws-btn" onClick={picker.reload}>重新查询</button>
             <span className="ws-meta">
               {picker.atWindowLimit
                 ? "已到 200 条查询上限：更早的任务请用搜索定位（不会漏掉匹配结果）"
@@ -1102,43 +1419,46 @@ export default function ProjectWorkspacePanel({
       )}
 
       {activeModule === "settings" && (
-        <>
-          <section className="ws-card">
-            <header className="ws-card-head"><h3>项目信息</h3></header>
+        <div className="ws-settings">
+          <section className="ws-card ws-settings-info">
+            <header className="ws-card-head">
+              <h3>项目信息</h3>
+              {!editing && <span className="ws-badge ws-badge-soft">{profile.label}</span>}
+            </header>
             {!editing ? (
               <>
-                <div className="ws-row"><span>名称</span><strong>{project.name}</strong></div>
-                <div className="ws-row"><span>类型</span><strong>{profile.label}</strong></div>
-                <div className="ws-row"><span>状态</span><strong>{project.status === "archived" ? "已归档" : "进行中"}</strong></div>
-                <div className="ws-row"><span>工作目录</span><span className="ws-path">{project.rootPath || "—"}</span></div>
-                <div className="ws-row"><span>开发项目</span><strong>{project.devProjectName ?? "—"}</strong></div>
-                <div className="ws-row"><span>备注</span><strong>{project.note || "—"}</strong></div>
+                <div className="ws-fact-list">
+                  <div className="ws-fact"><span>名称</span><strong>{project.name}</strong></div>
+                  <div className="ws-fact"><span>类型</span><strong>{profile.label}</strong></div>
+                  <div className="ws-fact"><span>状态</span><strong>{project.status === "archived" ? "已归档" : "进行中"}</strong></div>
+                  <div className="ws-fact">
+                    <span>工作目录</span>
+                    {project.rootPath ? (
+                      <span className="ws-path ws-path-clamp" data-tip={project.rootPath}>{project.rootPath}</span>
+                    ) : (
+                      <strong>未设置</strong>
+                    )}
+                  </div>
+                  <div className="ws-fact"><span>开发项目</span><strong>{project.devProjectName ?? "未关联"}</strong></div>
+                </div>
+                <div className="ws-note-block">
+                  <span className="ws-note-label">备注</span>
+                  {project.note ? (
+                    <p className="ws-note-text">{project.note}</p>
+                  ) : (
+                    <p className="ws-meta">未填写备注。</p>
+                  )}
+                </div>
                 <div className="ws-form-actions">
-                  <button className="ws-btn" onClick={startEdit}>编辑</button>
-                  <button className="ws-btn" onClick={() => void archiveToggle()}>
-                    {project.status === "archived" ? "恢复" : "归档"}
-                  </button>
-                  <button className="ws-btn ws-btn-danger" onClick={() => setConfirmDelete(true)}>
-                    <Trash2 size={12} /> 删除项目
+                  <button type="button" className="ws-btn" onClick={startEdit}>编辑项目信息</button>
+                  <button type="button" className="ws-btn" onClick={() => void archiveToggle()}>
+                    {project.status === "archived" ? "恢复为进行中" : "归档项目"}
                   </button>
                 </div>
-                {confirmDelete && (
-                  <div className="ws-confirm" role="alertdialog" aria-label="确认删除项目">
-                    <AlertCircle size={14} />
-                    <span>
-                      删除后不可恢复；项目下的计划、功能、步骤与历史将一并删除；外部文件、全局任务、
-                      知识库与共享能力不受影响。
-                    </span>
-                    <button className="ws-btn ws-btn-danger" disabled={busy} onClick={() => void deleteProject()}>
-                      确认删除
-                    </button>
-                    <button className="ws-btn" onClick={() => setConfirmDelete(false)}>取消</button>
-                  </div>
-                )}
               </>
             ) : (
               <>
-                <input className="ws-input" value={editName} placeholder="项目名称" onChange={(e) => setEditName(e.target.value)} />
+                <input className="ws-input" value={editName} placeholder="项目名称" aria-label="项目名称" onChange={(e) => setEditName(e.target.value)} />
                 <div className="ws-gap" />
                 <Select
                   value={editKind}
@@ -1188,16 +1508,17 @@ export default function ProjectWorkspacePanel({
                 <textarea
                   className="ws-textarea"
                   placeholder="备注"
+                  aria-label="项目备注"
                   value={editNote}
                   onChange={(e) => setEditNote(e.target.value)}
                 />
                 <div className="ws-form-actions">
-                  <button className="ws-btn ws-btn-primary" disabled={busy} onClick={() => void saveEdit()}>
+                  <button type="button" className="ws-btn ws-btn-primary" disabled={busy} onClick={() => void saveEdit()}>
                     <CheckCircle2 size={12} /> 保存
                   </button>
-                  <button className="ws-btn" onClick={() => setEditing(false)}>取消</button>
+                  <button type="button" className="ws-btn" onClick={() => setEditing(false)}>取消</button>
                   {devProjects.length === 0 && (
-                    <button className="ws-btn" onClick={() => void onRefreshDevProjects()}>
+                    <button type="button" className="ws-btn" onClick={() => void onRefreshDevProjects()}>
                       <RefreshCw size={12} /> 刷新开发项目
                     </button>
                   )}
@@ -1214,11 +1535,13 @@ export default function ProjectWorkspacePanel({
             }
           />
 
-          <section className="ws-card">
-            <header className="ws-card-head">
-              <h3>能力清单（{profile.label}）</h3>
-              <span className="ws-badge ws-badge-soft">声明式</span>
-            </header>
+          <CollapsibleSection
+            className="ws-cap-section"
+            title={`能力与实现说明（${profile.label}）`}
+            description="四项状态（可用 / 受限 / 计划中 / 未接入）来自声明式能力清单，入口按状态闸门渲染。"
+            badge={<span className="ws-badge ws-badge-soft">声明式</span>}
+            defaultExpanded={false}
+          >
             <div className="ws-cap-list">
               {profile.capabilities.map((id) => {
                 const cap = WORKSPACE_CAPABILITIES[id];
@@ -1238,8 +1561,36 @@ export default function ProjectWorkspacePanel({
                 );
               })}
             </div>
+          </CollapsibleSection>
+
+          <section className="ws-card ws-danger-zone" aria-label="危险操作">
+            <header className="ws-card-head">
+              <h3>危险操作</h3>
+              <span className="ws-badge ws-badge-unavailable">不可恢复</span>
+            </header>
+            <p className="ws-meta">
+              删除项目会移除本项目的事项、关联、章节与专业模块数据；外部文件、全局任务、
+              知识库与共享能力不受影响。
+            </p>
+            {!confirmDelete ? (
+              <button type="button" className="ws-btn ws-btn-danger" onClick={() => setConfirmDelete(true)}>
+                <Trash2 size={12} /> 删除项目
+              </button>
+            ) : (
+              <div className="ws-confirm" role="alertdialog" aria-label="确认删除项目">
+                <AlertCircle size={14} />
+                <span>
+                  删除后不可恢复；项目下的计划、功能、步骤与历史将一并删除；外部文件、全局任务、
+                  知识库与共享能力不受影响。
+                </span>
+                <button type="button" className="ws-btn ws-btn-danger" disabled={busy} onClick={() => void deleteProject()}>
+                  确认删除
+                </button>
+                <button type="button" className="ws-btn" onClick={() => setConfirmDelete(false)}>取消</button>
+              </div>
+            )}
           </section>
-        </>
+        </div>
       )}
     </section>
   );
