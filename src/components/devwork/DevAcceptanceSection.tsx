@@ -155,6 +155,7 @@ function sortRecordsDesc(records: DevAcceptanceRecord[]): DevAcceptanceRecord[] 
 export default function DevAcceptanceSection() {
   const { t } = useLocale();
   const showToast = useUiStore((s) => s.showToast);
+  const setTab = useUiStore((s) => s.setTab);
   const taskId = useSettingsStore((s) => s.settings?.workbench_current_task ?? "") || null;
 
   const [task, setTask] = useState<Task | null>(null);
@@ -413,9 +414,13 @@ export default function DevAcceptanceSection() {
           <ClipboardCheck size={13} aria-hidden="true" /> {t("devwork.acceptance.title")}
         </h3>
         <span className="flex-spacer" />
-        <span className={`badge subtle wb-accept-state tone-${stateMeta.tone}`}>
-          {t(stateMeta.key)}
-        </span>
+        {/* 只有真实加载到任务时才展示派生状态：未选择 / 已删除时显示「未关联」
+            会让人误以为已有验收对象，无任务态改由正文明确引导。 */}
+        {task && (
+          <span className={`badge subtle wb-accept-state tone-${stateMeta.tone}`}>
+            {t(stateMeta.key)}
+          </span>
+        )}
       </div>
 
       {/* 边界明示：两类「完成」都不等于验收通过 */}
@@ -428,8 +433,13 @@ export default function DevAcceptanceSection() {
       )}
 
       {!taskId && (
-        <div className="empty-hint" role="status">
-          {t("devwork.acceptance.noSubject")}
+        <div className="wb-empty">
+          <p className="wb-empty-title" role="status">
+            {t("devwork.acceptance.noSubject")}
+          </p>
+          <button type="button" className="btn sm wb-empty-more" onClick={() => setTab("tasks")}>
+            {t("workbench.goTasks")}
+          </button>
         </div>
       )}
 

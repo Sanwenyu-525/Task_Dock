@@ -392,6 +392,25 @@ describe("ClipboardItemCard 密度呈现", () => {
     expect(card.querySelector(".clip-item-main button")).toBeNull();
   });
 
+  it("舒适方图：is-square 用真实 1:1 舞台居中，不再铺成通栏或压成横条", () => {
+    const { card } = renderCard(
+      { kind: "image", has_thumb: true, image_width: 1200, image_height: 1200 },
+      "comfort",
+    );
+    expect(card.classList.contains("is-square")).toBe(true);
+    expect(card.classList.contains("is-tall")).toBe(false);
+
+    const squareHero = ruleBody(
+      pageCss,
+      ".clipboard-page .clip-item.is-hero.is-square > .clip-hero",
+    );
+    expect(squareHero).toMatch(/--clip-hero-max-h:\s*216px/);
+    // 舞台宽度仍由基类的 min(100%, 上限 × 真实比例) 推导：1:1 时即 216×216。
+    const hero = ruleBody(pageCss, ".clipboard-page .clip-item.is-hero > .clip-hero");
+    expect(hero).toMatch(/aspect-ratio:\s*var\(--clip-img-ratio,\s*3 \/ 2\)/);
+    expect(hero).toMatch(/width:\s*min\(100%,\s*calc\(/);
+  });
+
   it("舒适图片：自动标题「截图 W×H」不重复显示；有真实文件名时保留标题", () => {
     const auto = renderCard(
       { kind: "image", title: "截图 1440×900", preview: "1440×900 · PNG", has_thumb: true },
@@ -436,6 +455,30 @@ describe("ClipboardItemCard 密度呈现", () => {
     expect(card.classList.contains("is-row")).toBe(true);
     expect(card.classList.contains("is-card")).toBe(false);
     expect(card.querySelector(".clip-item-main")).not.toBeNull();
+  });
+
+  it("紧凑/列表不再渲染窗口标题，舒适态仍保留", () => {
+    for (const density of ["compact", "list"] as const) {
+      cleanup();
+      const { card } = renderCard({ source_title: "记事本" }, density);
+      expect(card.querySelector(".clip-meta-window"), `${density} 应隐藏窗口标题`).toBeNull();
+    }
+    cleanup();
+    const comfort = renderCard({ source_title: "记事本" }, "comfort");
+    expect(comfort.card.querySelector(".clip-meta-window")).not.toBeNull();
+  });
+
+  it("列表密度行内只留复制与更多，收藏/置顶收进菜单", async () => {
+    const user = userEvent.setup();
+    const { card } = renderCard({ title: "列表行" }, "list");
+    const actions = card.querySelector<HTMLElement>(".clip-actions")!;
+    expect(within(actions).queryByRole("button", { name: "收藏" })).toBeNull();
+    expect(within(actions).queryByRole("button", { name: "置顶" })).toBeNull();
+
+    await user.click(card.querySelector<HTMLButtonElement>('[aria-label="更多操作"]')!);
+    const menu = await screen.findByRole("menu");
+    expect(within(menu).getByRole("menuitem", { name: /^收藏$/ })).toBeTruthy();
+    expect(within(menu).getByRole("menuitem", { name: /^置顶$/ })).toBeTruthy();
   });
 
   it("文件条目按密度收敛行数：舒适 5 行 + 汇总，紧凑 3 行，列表 2 行", () => {
@@ -585,7 +628,7 @@ describe("styles.css 预览截断契约", () => {
 describe("clipboard-page.css 大卡片契约", () => {
   it("舒适网格以 300px 为最小合理宽度；列数完全交给容器宽度，不写死 4/5 列", () => {
     const grid = ruleBody(pageCss, ".clipboard-page .clip-list-grid");
-    expect(grid).toMatch(/grid-template-columns:\s*repeat\(auto-fill,\s*minmax\(300px,\s*1fr\)\)/);
+    expect(grid).toMatch(/grid-template-columns:\s*repeat\(auto-fill,\s*minmax\(min\(300px,\s*100%\),\s*1fr\)\)/);
     expect(grid).toMatch(/align-items:\s*stretch/);
     // 1320/1920 这类「按窗口宽度硬塞」的列数规则已删除：内容区只有 1294/1614px，
     // 那些断点永远不会命中，反而在 1920 窗口把 5 列锁成 4 列。
@@ -627,20 +670,40 @@ describe("clipboard-page.css 大卡片契约", () => {
     expect(compact).toMatch(/-webkit-line-clamp:\s*unset/);
   });
 
-  it("大图预览：宽图 104–124px 舞台；竖图左侧纵向舞台 186–206px，完整展示不裁切", () => {
+  it("大图预览：舞台宽高都按真实比例推导，宽图吃满卡片，较高的图收窄居中，不留内部空白", () => {
     const hero = ruleBody(pageCss, ".clipboard-page .clip-item.is-hero > .clip-hero");
-    expect(hero).toMatch(/height:\s*clamp\(104px,\s*9cqi,\s*124px\)/);
+    expect(hero).toMatch(/aspect-ratio:\s*var\(--clip-img-ratio,\s*3 \/ 2\)/);
+    expect(hero).toMatch(/min-height:\s*120px/);
+    expect(hero).toMatch(/--clip-hero-max-h:\s*208px/);
+    expect(hero).toMatch(/max-height:\s*var\(--clip-hero-max-h\)/);
+    // 舞台宽度 = 上限高度 × 真实比例：避免 100% 宽舞台包住一张窄图后，
+    // contain 在内部留下大片灰色空气带。
+    expect(hero).toMatch(
+      /width:\s*min\(100%,\s*calc\(var\(--clip-hero-max-h\) \* var\(--clip-img-ratio,\s*1\.5\)\)\)/,
+    );
+    expect(hero).toMatch(/justify-self:\s*center/);
+    expect(hero).toMatch(/background:\s*var\(--inset-face\)/);
     expect(hero).toMatch(/cursor:\s*zoom-in/);
     const tall = ruleBody(pageCss, ".clipboard-page .clip-item.is-hero.is-tall");
     expect(tall).toMatch(/grid-template-columns:\s*minmax\(128px,\s*42%\)/);
     expect(tall).toMatch(/"hero main main"/);
     expect(tall).toMatch(/min-height:\s*220px/);
-    const tallHero = ruleBody(pageCss, ".clipboard-page .clip-item.is-hero.is-tall > .clip-hero");
-    expect(tallHero).toMatch(/min-height:\s*186px/);
-    expect(tallHero).toMatch(/max-height:\s*206px/);
+    const tallHero = ruleBody(
+      pageCss,
+      ".clipboard-page .clip-item.is-hero.is-tall > .clip-hero",
+    );
+    expect(tallHero).toMatch(/--clip-hero-max-h:\s*216px/);
+    expect(tallHero).toMatch(/align-self:\s*center/);
     const img = ruleBody(pageCss, ".clipboard-page .clip-hero-img");
     expect(img).toMatch(/object-fit:\s*contain/);
     expect(img).toMatch(/max-width:\s*100%/);
+    // 回退的 192px 方形缩略图用 cover 填满舞台，避免在宽舞台两侧再留空白。
+    const fallback = ruleBody(
+      pageCss,
+      '.clipboard-page .clip-hero-img[data-preview-state="missing"]',
+    );
+    expect(fallback).toMatch(/object-fit:\s*cover/);
+    expect(fallback).toMatch(/width:\s*100%/);
   });
 
   it("三种密度的正文行数：舒适最多 5 行；紧凑 2 行、列表 1 行", () => {

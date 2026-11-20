@@ -160,7 +160,7 @@ describe("WorkbenchShell", () => {
     expect(screen.getByText("新建任务", { selector: ".wb-quick-tile span" })).toBeTruthy();
   });
 
-  it("新建项目工作目录只提供选择器，不回显可编辑文本框", async () => {
+  it("新建项目工作目录为可编辑输入框，目录选择后回填同一输入框", async () => {
     folderPicker.pickFolder.mockResolvedValue({
       status: "ok",
       path: "D:\\Projects\\demo",
@@ -172,8 +172,11 @@ describe("WorkbenchShell", () => {
     fireEvent.click(await screen.findByRole("menuitem", { name: "新建项目" }));
 
     const dialog = await screen.findByRole("dialog", { name: "新建项目" });
-    const rootLabel = within(dialog).getByText("工作目录（可空）").closest("label");
-    expect(rootLabel?.querySelector("input")).toBeNull();
+    // 宽度档位：md(520)，三行表单在窄窗内换行而不横向溢出。
+    expect(dialog.classList.contains("size-md")).toBe(true);
+    const rootInput = within(dialog).getByRole("textbox", {
+      name: "工作目录（可空）",
+    }) as HTMLInputElement;
 
     const pickButton = within(dialog)
       .getAllByRole("button")
@@ -181,8 +184,9 @@ describe("WorkbenchShell", () => {
     expect(pickButton).toBeTruthy();
     fireEvent.click(pickButton as HTMLButtonElement);
     await waitFor(() => expect(folderPicker.pickFolder).toHaveBeenCalledTimes(1));
-    expect(await within(dialog).findByText("D:\\Projects\\demo")).toBeTruthy();
-    expect(rootLabel?.querySelector("input")).toBeNull();
+    await waitFor(() => expect(rootInput.value).toBe("D:\\Projects\\demo"));
+    // 长路径完整值通过 data-tip 回显（输入框内按可视宽度截断）。
+    expect(rootInput.getAttribute("data-tip")).toBe("D:\\Projects\\demo");
   });
 
   it("状态栏列出全部卷，并可主动刷新（复用 resource_snapshot）", async () => {

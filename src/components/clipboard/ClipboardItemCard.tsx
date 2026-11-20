@@ -13,7 +13,7 @@
 //! 三种密度只影响「呈现」：舒适（大图 + 多行正文）、紧凑（小图 + 少行）、
 //! 列表（单列行）。所有布局由 CSS Grid 区域决定，组件不做宽度测量。
 
-import { useLayoutEffect, useRef } from "react";
+import { useLayoutEffect, useRef, type CSSProperties } from "react";
 import {
   ArrowUpRight, CheckSquare, Code2, Copy, Eye, ExternalLink, Files, Globe,
   Image as ImageIcon, Link2, MoreHorizontal, Pin, Square, Star, Trash2, Type,
@@ -132,9 +132,17 @@ export default function ClipboardItemCard({
   const isCard = density === "comfort" || density === "compact";
   const hasHero = isImage && density === "comfort";
   const hasThumb = isImage && !hasHero;
+  // 图片真实宽高比（只来自后端记录的 image_width/height，不猜、不按占位尺寸反推）。
+  const imgWidth = item.image_width ?? 0;
+  const imgHeight = item.image_height ?? 0;
+  const imgRatio = imgWidth > 0 && imgHeight > 0 ? imgWidth / imgHeight : null;
   // 竖图（长截图 / 手机截图）在固定高度的舞台里会被缩成一条窄带，
   // 无法直接识别内容；给舒适卡一个更高舞台，宽图仍保持矮卡，避免无谓拉高。
-  const isTallImage = hasHero && (item.image_height ?? 0) > (item.image_width ?? 0) * 1.2;
+  const isTallImage = hasHero && imgRatio !== null && imgHeight > imgWidth * 1.2;
+  // 方图（比例接近 1:1）既不是宽横幅也不是长竖图：单独一档舞台高度，
+  // 避免被宽图横幅压低、也避免按竖图挤到侧栏里。
+  const isSquareImage =
+    hasHero && imgRatio !== null && imgRatio >= 1 / 1.2 && imgRatio <= 1.2;
   // 大图只在进入视口后才请求 640px 预览；离场/删除中的卡片不需要。
   const heroEnabled = viewportVisible && !locked && item.has_thumb;
   const fileRows = files.slice(0, fileRowsForDensity(density));
@@ -146,7 +154,10 @@ export default function ClipboardItemCard({
   // 还要放「关联」按钮，二者都保持收进菜单；宽度测量沿用分组卡片的同一 hook，
   // 只在翻转时 setState，不做轮询或高频测量。
   const narrowCard = useCompactViewport(previewRef, AUX_ACTIONS_MIN_WIDTH);
-  const inlineAux = density !== undefined && !linkMode && !narrowCard;
+  // 列表密度是「快速浏览」：行内只留复制/更多，收藏与置顶收进菜单；
+  // 舒适/紧凑卡在宽度足够时仍常显辅助动作（窄卡由窄卡兜底走菜单）。
+  const inlineAux =
+    (density === "comfort" || density === "compact") && !linkMode && !narrowCard;
 
   // 类型专属项先排；删除单独留在菜单末尾。
   // 图片大图与卡片主体预览都由大图/正文入口承担，不在菜单里再放同义项。
@@ -206,11 +217,16 @@ export default function ClipboardItemCard({
       ref={previewRef}
       // 兼容既有滚动锚点/离场快照：id 仍写在卡片根节点。
       data-clip-id={item.id}
+      style={
+        imgRatio !== null
+          ? ({ "--clip-img-ratio": imgRatio } as CSSProperties)
+          : undefined
+      }
       className={`clip-item ${isCard ? "is-card" : "is-row"} ${hasHero ? "is-hero" : ""} ${
         hasThumb ? "is-thumb" : ""
-      } ${isTallImage ? "is-tall" : ""} ${selected ? "selected" : ""} ${
-        previewed ? "previewed" : ""
-      } ${removing ? "removing" : ""} ${pending ? "pending" : ""}`}
+      } ${isTallImage ? "is-tall" : ""} ${isSquareImage ? "is-square" : ""} ${
+        selected ? "selected" : ""
+      } ${previewed ? "previewed" : ""} ${removing ? "removing" : ""} ${pending ? "pending" : ""}`}
       // 离场期间整棵子树不可交互：不能只靠 pointer-events，Tab 仍能把焦点
       // 送进 aria-hidden 的元素（无障碍违规）；inert 把内部控件全部隔离。
       inert={removing || undefined}
@@ -257,7 +273,7 @@ export default function ClipboardItemCard({
         <ClipboardThumb
           itemId={item.id}
           hasThumb={item.has_thumb}
-          size={density === "compact" ? 64 : 44}
+          size={density === "compact" ? 64 : density === "list" ? 36 : 44}
           enabled={viewportVisible && item.has_thumb}
           onOpen={locked ? undefined : onOpenImage}
         />
@@ -339,7 +355,7 @@ export default function ClipboardItemCard({
           <span className="clip-meta-app" title={src.appRaw || undefined}>
             {src.app}
           </span>
-          {src.window && density !== "compact" && !narrowCard && (
+          {src.window && density !== "compact" && density !== "list" && !narrowCard && (
             <span className="clip-meta-window" data-tip={`窗口：${src.window}${src.appRaw ? `（来源进程 ${src.appRaw}）` : ""}`}>
               <span className="clip-meta-window-tag">窗口</span>
               {src.window}

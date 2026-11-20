@@ -66,7 +66,9 @@ html[data-window-maximized="true"] .wb-root .resize-grips {
   /* 对照效果图的窗口构图：顶栏横跨整窗，左导航在顶栏之下，底部状态栏通栏。
      `.wb-main` 用 display:contents 把顶栏 / 工作区 / 状态栏提升为根网格项，
      避免为了视觉顺序复制一套 DOM 或引入绝对定位。 */
-  grid-template-columns: var(--wb-nav-width, 200px) 4px minmax(0, 1fr);
+  /* 分栏命中带不占独立列：4px 拖拽条以负边距跨在导航右边界上，
+     可见细线正好落在边界那一列（见 `.wb-resizer-nav`）。 */
+  grid-template-columns: var(--wb-nav-width, 200px) 0px minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr) auto;
   grid-template-areas:
     "top top top"
@@ -92,7 +94,8 @@ html[data-window-maximized="true"] .wb-root .resize-grips {
   padding: 10px 8px 8px;
   gap: 2px;
   background: var(--surface-raised);
-  border-right: 1px solid var(--border-subtle);
+  /* 右边界细线由分栏拖拽条绘制（`.wb-resizer-nav`），避免 border 与 hover
+     细线并排成两根竖线；极窄窗口隐藏拖拽条时由媒体查询补回这条边界。 */
 }
 
 .wb-nav-head {
@@ -160,7 +163,7 @@ html[data-window-maximized="true"] .wb-root .resize-grips {
   column-gap: 4px;
   align-items: center;
   width: 100%;
-  min-height: 36px;
+  min-height: 40px;
   padding: var(--wb-nav-row-padding);
   border: 1px solid transparent;
   border-radius: var(--radius-card);
@@ -256,12 +259,14 @@ html[data-window-maximized="true"] .wb-root .resize-grips {
   grid-column: 2;
 }
 
-/* ── 图标轨（2026-11-17）─────────────────────────────────────────────
+/* ── 图标轨（2026-11-17，2026-11-20 收紧）──────────────────────────
    判定不是固定 180px，而是实测的“名称所需宽度”（见 workbenchLayout 的
    shouldCompactWorkbenchNavLabels）：宽度一旦低于名称所需宽度，名称就会被
-   省略号遮住，此时整列收成 96px 图标轨，不留半个名称的中间态。
-   图标轨里只画图标：名称与徽标隐藏（计数并入 tooltip），手柄与 × 保留 24px
-   轨道与命中区、悬停/键盘聚焦才显现，因此图标始终居中、悬停也不跳动。 */
+   省略号遮住，此时整列收成 72px 图标轨，不留半个名称的中间态。
+   图标轨里只画图标：名称与徽标隐藏（计数并入 tooltip）。手柄与 × 不再各占
+   一条 24px 网格轨道（那会把轨道撑到 96px、行与行之间显得稀疏），改为
+   行内左右浮层：视觉上 20/22px 命中区贴近边缘，悬停/键盘聚焦才显现，
+   因此图标始终水平垂直居中、行高稳定 40px、悬停也不跳动。 */
 .wb-root[data-nav-compact="true"] .wb-nav-label {
   display: none;
 }
@@ -269,37 +274,75 @@ html[data-window-maximized="true"] .wb-root .resize-grips {
 .wb-root[data-nav-compact="true"] .wb-nav-badge {
   display: none;
 }
-.wb-root[data-nav-compact="true"] .wb-nav-item {
-  grid-template-columns: 24px minmax(0, 1fr) 24px;
-  padding: 3px 0;
+/* 图标轨里分组标题没有横向空间：不隐藏节点，交给下方规则压成 1px 分隔线，
+   保住分节结构（若这里 display:none，后面的 separators 规则永远不会生效）。 */
+/* 图标轨行：不再用三列网格，改为单行居中；手柄 / × 浮在行内两侧。 */
+.wb-root[data-nav-compact="true"] .wb-nav {
+  /* 左右各 4px：72px 轨道内给 20px 图标 + 两侧浮层留出 2px 间隙。 */
+  padding: 8px 4px;
 }
-/* 动态行容器只占中间图标轨道；固定入口的图标本来就在第 2 列。 */
+.wb-root[data-nav-compact="true"] .wb-nav-items {
+  gap: 2px;
+}
+.wb-root[data-nav-compact="true"] .wb-nav-item {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  padding: 0;
+}
+/* 动态行页面按钮：36×36 居中命中块，图标水平垂直居中；行内空白点击仍由
+   整行承接（打开页面），不缩小可点击面积。 */
 .wb-root[data-nav-compact="true"] .wb-nav-page {
-  grid-column: 2;
+  grid-column: auto;
   grid-template-columns: 20px;
   justify-content: center;
+  width: 36px;
+  height: 36px;
+  margin: 0 auto;
 }
 .wb-root[data-nav-compact="true"] .wb-nav-item > .wb-nav-icon {
   justify-self: center;
 }
+/* × 操作区：贴右缘的浮层，避免占据固定轨道把图标挤偏。 */
 .wb-root[data-nav-compact="true"] .wb-nav-actions {
-  grid-column: 3;
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 18px;
+  z-index: 2;
+}
+/* 72px 轨道里 20px 图标居中后左右各余 16px：手柄 18、× 18，
+   命中区由 `.wb-nav-hide::after` 外扩到 26px，视觉上与图标留出 3px 间隙。 */
+.wb-root[data-nav-compact="true"] .wb-nav-hide {
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
 }
 .wb-root[data-nav-compact="true"] .wb-nav-grip {
-  justify-self: center;
-  width: 24px;
-  height: 32px;
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 18px;
+  height: 30px;
   opacity: 0;
+  z-index: 2;
 }
 .wb-root[data-nav-compact="true"] .wb-nav-item:hover .wb-nav-grip,
 .wb-root[data-nav-compact="true"] .wb-nav-item:focus-within .wb-nav-grip {
   opacity: 1;
   color: var(--accent);
 }
-/* 分节标题在图标轨里没有横向空间：压成一条分隔线，不丢分节结构。 */
+/* 分节标题在图标轨里没有横向空间：压成一条分隔线，不丢分节结构。
+   上下留白收到 6/4px：图标轨本来就靠间距分组，过大的空隙会让图标看起来
+   被拆成互不相关的三段。 */
 .wb-root[data-nav-compact="true"] .wb-nav-group {
+  /* 列表可滚动时 flex 子项默认收缩，1px 会被压成 0：显式禁止收缩。 */
+  flex: 0 0 1px;
   height: 1px;
-  margin: 6px 12px 4px;
+  margin: 6px 10px 4px;
   overflow: hidden;
   background: var(--border-subtle);
   color: transparent;
@@ -324,6 +367,13 @@ html[data-window-maximized="true"] .wb-root .resize-grips {
 .wb-root[data-nav-measuring="true"] .wb-nav-label,
 .wb-root[data-nav-measuring="true"] .wb-nav-badge {
   display: inline;
+}
+/* 测量时名称必须按文字固有宽度排版：1fr 列在宽导航下会被撑到整列宽度，
+   直接读 scrollWidth 会把“可用列宽”当成“名称所需宽度”，折叠阈值因此
+   跟着当前宽度虚高（表现为图标态却还留着很宽的面板）。 */
+.wb-root[data-nav-measuring="true"] .wb-nav-label {
+  width: max-content;
+  justify-self: start;
 }
 
 .wb-nav-badge {
@@ -428,7 +478,8 @@ html[data-window-maximized="true"] .wb-root .resize-grips {
 
 /* ── 分栏拖拽 ───────────────────────────────────────────────────────── */
 /* 命中带仍是 4px（好抓），但可见的只有正中 1px 细线：整根 4px 实条在浅色
-   导航旁过深过粗，会被误读成一条分界线而不是拖拽把手。 */
+   导航旁过深过粗，会被误读成一条分界线而不是拖拽把手。导航分栏是例外：
+   细线画在命中带边缘、压在导航右边界上（见 `.wb-resizer-nav`）。 */
 .wb-resizer {
   position: relative;
   flex: 0 0 4px;
@@ -445,9 +496,6 @@ html[data-window-maximized="true"] .wb-root .resize-grips {
   background: transparent;
   transition: background 120ms ease;
 }
-.wb-resizer-nav {
-  grid-area: res;
-}
 .wb-resizer:hover::after {
   background: color-mix(in srgb, var(--accent) 30%, transparent);
 }
@@ -456,6 +504,20 @@ html[data-window-maximized="true"] .wb-root .resize-grips {
 }
 .wb-resizer:focus-visible {
   outline: none;
+}
+/* 导航分栏拖拽条：命中带 4px，跨在导航右边界（轨道左 2px + 右 2px）。
+   可见 1px 细线结束于边界那一列，等价于导航原来的 border-right：
+   悬停/聚焦只改颜色，不会在边界旁多出第二根线。 */
+.wb-resizer-nav {
+  grid-area: res;
+  justify-self: start;
+  width: 4px;
+  margin-left: -2px;
+  z-index: 2;
+}
+.wb-resizer-nav::after {
+  transform: translateX(-100%);
+  background: var(--border-subtle);
 }
 @media (prefers-reduced-motion: reduce) {
   .wb-resizer::after {
@@ -2938,14 +3000,14 @@ body.wb-resizing {
   height: 18px;
 }
 .wb-nav-item {
-  min-height: 36px;
+  min-height: 40px;
 }
 /* 导航文字宽度只由可用宽度决定：超长省略，不换行、不压图标 */
 .wb-nav-label {
   min-width: 0;
   flex: 1 1 auto;
 }
-/* 导航列宽来自用户设置（96–320；96 = 图标轨，宽态下限按实测名称宽度吸附），窗口变窄时只压缩内容区，
+/* 导航列宽来自用户设置（72–320；72 = 图标轨，宽态下限按实测名称宽度吸附），窗口变窄时只压缩内容区，
    不回写用户的导航宽度；根网格模板在 §.wb-root（第 64 行）只有一份，
    这里不再复制，避免两处模板漂移。 */
 

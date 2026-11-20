@@ -16,7 +16,7 @@
 //! - 「生成交接包」跨页入口（TaskContextDrawer）经 revealDevHandoff 滚动定位到本区块。
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ClipboardList, ScrollText, ShieldAlert } from "lucide-react";
+import { ClipboardList, Pencil, Plus, ScrollText, ShieldAlert, X } from "lucide-react";
 import { Checkbox, Combobox, ConfirmDialog } from "../ui";
 import {
   agentHistorySessions,
@@ -96,6 +96,15 @@ function emptySections(): HandoffSections {
     forbidden: "",
     reporting: "",
   };
+}
+
+/** 从已保存 Markdown 只读提取小节标题（摘要展示用；不参与 Markdown 生成规则）。 */
+function packSectionTitles(md: string): string[] {
+  return md
+    .split("\n")
+    .filter((line) => line.startsWith("## "))
+    .map((line) => line.slice(3).trim())
+    .filter(Boolean);
 }
 
 /**
@@ -202,6 +211,12 @@ export default function DevHandoffSection() {
   const [pendingDeletePackId, setPendingDeletePackId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
 
+  // ── 摘要 / 编辑两态（2026-11 治理）：默认只展示最近版本摘要，编辑面板原位展开；
+  // 有未保存修改时关闭必须经确认，不静默丢弃草稿。
+  const [editing, setEditing] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [dirtyCloseOpen, setDirtyCloseOpen] = useState(false);
+
   const labels = useMemo(() => {
     const out = {} as Record<HandoffKey, string>;
     for (const s of HANDOFF_SECTIONS) out[s.key] = t(s.i18n);
@@ -229,6 +244,11 @@ export default function DevHandoffSection() {
     setSelectedMaterials(new Map());
     // 换任务不清空会话候选（全局列表），但必须清空本任务已选关联
     setLinkedSession(null);
+    // 草稿属于上一个任务：换任务时收起编辑面板并清掉未保存标记，
+    // 避免新任务沿用旧任务的「未保存」状态与关闭确认。
+    setEditing(false);
+    setDirty(false);
+    setDirtyCloseOpen(false);
   }, [taskId]);
 
   // 当前任务数据：标题/备注预填来源；任务已删除时如实提示（保存退化为草稿）
@@ -381,6 +401,7 @@ export default function DevHandoffSection() {
         else next.delete(id);
         return next;
       });
+      setDirty(true);
     },
     [],
   );
@@ -397,13 +418,18 @@ export default function DevHandoffSection() {
       }
       return next;
     });
+    setDirty(true);
   }, [notes, shelfItems]);
 
-  const clearSelectedMaterials = useCallback(() => setSelectedMaterials(new Map()), []);
+  const clearSelectedMaterials = useCallback(() => {
+    setSelectedMaterials(new Map());
+    setDirty(true);
+  }, []);
 
   const onSectionChange = useCallback((key: HandoffKey, value: string) => {
     editedRef.current = new Set(editedRef.current).add(key);
     setSections((m) => ({ ...m, [key]: value }));
+    setDirty(true);
   }, []);
 
   /**
@@ -485,6 +511,9 @@ export default function DevHandoffSection() {
     })
       .then(({ pack }) => {
         showToast(t("devwork.handoff.saveDone", { version: pack.version }), { kind: "success" });
+        setDirty(false);
+        // 保存成功后回到摘要态：版本列表重载完成后摘要立即反映新版本
+        setEditing(false);
         return loadPacks(taskId);
       })
       .catch((e) => {
@@ -531,6 +560,19 @@ export default function DevHandoffSection() {
     [labels, t],
   );
 
+  /** 摘要视图取版本列表首条（后端按最近优先返回）；小节标题只读自已保存 Markdown。 */
+  const latestPack = packs && packs.length > 0 ? packs[0] : null;
+  const latestSections = useMemo(
+    () => (latestPack ? packSectionTitles(latestPack.contentMd) : []),
+    [latestPack],
+  );
+
+  /** 关闭编辑面板：有未保存修改先弹确认，避免静默丢弃草稿。 */
+  const requestClose = useCallback(() => {
+    if (dirty) setDirtyCloseOpen(true);
+    else setEditing(false);
+  }, [dirty]);
+
   return (
     <section className="wb-card" id="dev-handoff" aria-label={t("devwork.handoff.title")}>
       <div className="wb-section-head">
@@ -538,26 +580,100 @@ export default function DevHandoffSection() {
           <ClipboardList size={13} aria-hidden="true" /> {t("devwork.handoff.title")}
         </h3>
         <span className="flex-spacer" />
+        {dirty && <span className="badge subtle">{t("notes.save.unsavedBadge")}</span>}
         {taskId ? (
           <span className="badge subtle">{t("devwork.handoff.linkedToTask")}</span>
         ) : (
           <span className="badge subtle">{t("devwork.handoff.draftBadge")}</span>
         )}
+        {editing ? (
+          <button
+            type="button"
+            className="btn sm"
+            onClick={requestClose}
+            data-tip={t("common.close")}
+          >
+            <X size={12} aria-hidden="true" /> {t("common.close")}
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="btn sm"
+            onClick={() => setEditing(true)}
+            data-tip={latestPack ? t("workbench.editTask") : t("quickAdd.create")}
+          >
+            {latestPack || dirty ? (
+              <Pencil size={12} aria-hidden="true" />
+            ) : (
+              <Plus size={12} aria-hidden="true" />
+            )}
+            {latestPack || dirty ? t("workbench.editTask") : t("quickAdd.create")}
+          </button>
+        )}
       </div>
-      <p className="endpoint-hint">{t("devwork.handoff.hint")}</p>
 
-      {/* 当前任务被删除：如实提示，保存退化为无任务草稿，不静默关联 */}
+      {/* 当前任务被删除：如实提示，保存退化为无任务草稿，不静默关联（摘要/编辑两态都展示） */}
       {taskId && taskMissing && (
         <div className="wb-stale" role="alert">
           <span className="wb-stale-text">{t("devwork.acceptance.taskMissing")}</span>
         </div>
       )}
 
+      {/* 摘要视图：最近版本的关键字段 + 更新时间 + 关联会话；无版本给创建引导 */}
+      {!editing && (
+        <div className="wb-handoff-summary">
+          {packs === null ? (
+            <div className="empty-hint" role="status">
+              {t("nav.loading")}
+            </div>
+          ) : latestPack ? (
+            <>
+              <div className="wb-handoff-summary-head">
+                <span className="wb-row-title" title={latestPack.title}>{latestPack.title}</span>
+                <span className="badge subtle">
+                  {t("devwork.handoff.packVersion", { version: latestPack.version })}
+                </span>
+              </div>
+              <div className="wb-handoff-summary-meta">
+                <span className="wb-meta-item">
+                  {latestPack.agentSessionExternalId
+                    ? `${t("devwork.handoff.agentSessionPack", {
+                        title: latestPack.agentSessionTitle || latestPack.agentSessionExternalId,
+                      })}${latestPack.agentSessionAvailable ? "" : ` · ${t("devwork.handoff.agentSessionStale")}`}`
+                    : t("devwork.handoff.agentSessionNone")}
+                </span>
+                <span className="wb-meta-item">{formatRelative(latestPack.createdAt)}</span>
+              </div>
+              {latestSections.length > 0 && (
+                <div className="wb-handoff-section-chips">
+                  {latestSections.map((section) => (
+                    <span className="wb-handoff-section-chip" key={section}>
+                      {section}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="wb-empty">
+              <p className="wb-empty-title">{t("devwork.handoff.versionsEmpty")}</p>
+              <p className="endpoint-hint">{t("devwork.handoff.hint")}</p>
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className={`wb-handoff-body${editing ? " is-open" : " is-collapsed"}`}>
+      <p className="endpoint-hint">{t("devwork.handoff.hint")}</p>
+
       <label className="field">
         <span>{t("devwork.handoff.packTitle")}</span>
         <input
           value={title}
-          onChange={(e) => setTitle(e.target.value)}
+          onChange={(e) => {
+            setTitle(e.target.value);
+            setDirty(true);
+          }}
           aria-label={t("devwork.handoff.packTitle")}
           maxLength={200}
           placeholder={task?.title ?? t("devwork.handoff.untitled")}
@@ -608,9 +724,10 @@ export default function DevHandoffSection() {
           onChange={(key) => {
             if (key === SESSION_NONE) {
               setLinkedSession(null);
-              return;
+            } else {
+              setLinkedSession((sessions ?? []).find((s) => sessionKey(s) === key) ?? null);
             }
-            setLinkedSession((sessions ?? []).find((s) => sessionKey(s) === key) ?? null);
+            setDirty(true);
           }}
           ariaLabel={t("devwork.handoff.agentSessionTitle")}
           searchPlaceholder={t("devwork.handoff.agentSessionSearchPlaceholder")}
@@ -825,77 +942,82 @@ export default function DevHandoffSection() {
           <span>{saveError}</span>
         </div>
       )}
-
-      {/* 版本记录：同 taskId 最近 5 版；查看 / 复制 / 删除（追加式，不提供编辑） */}
-      <div className="wb-accept-block">
-        <div className="wb-links-title">{t("devwork.handoff.versionsTitle")}</div>
-        {packs === null && (
-          <div className="empty-hint" role="status">
-            {t("nav.loading")}
-          </div>
-        )}
-        {packs !== null && packs.length === 0 && (
-          <div className="endpoint-hint">{t("devwork.handoff.versionsEmpty")}</div>
-        )}
-        {packs?.map((p) => (
-          <div className="wb-row wb-handoff-pack" key={p.id}>
-            <span className="wb-row-main">
-              <span className="wb-row-title">
-                {t("devwork.handoff.packVersion", { version: p.version })} · {p.title}
-              </span>
-              <span className="wb-row-sub">
-                {p.agentSessionExternalId && (
-                  <span>
-                    {t("devwork.handoff.agentSessionPack", {
-                      title: p.agentSessionTitle || p.agentSessionExternalId,
-                    })}
-                    {!p.agentSessionAvailable
-                      ? ` · ${t("devwork.handoff.agentSessionStale")}`
-                      : ""}
-                  </span>
-                )}
-                <span>{formatRelative(p.createdAt)}</span>
-              </span>
-            </span>
-            <button
-              type="button"
-              className="btn sm"
-              aria-expanded={viewPackId === p.id}
-              onClick={() => setViewPackId((cur) => (cur === p.id ? null : p.id))}
-            >
-              {viewPackId === p.id ? t("devwork.handoff.viewClose") : t("devwork.handoff.view")}
-            </button>
-            <button
-              type="button"
-              className="icon-btn sm"
-              aria-label={t("devwork.handoff.copyPackAria", { version: p.version })}
-              data-tip={t("devwork.handoff.copyMd")}
-              onClick={() => {
-                void copyText(p.contentMd).then((ok) => {
-                  if (ok) showToast(t("devwork.handoff.copied"), { kind: "success" });
-                  else showToast(t("devwork.handoff.copyFailed"), { kind: "error" });
-                });
-              }}
-            >
-              ⧉
-            </button>
-            <button
-              type="button"
-              className="icon-btn sm"
-              aria-label={t("devwork.handoff.deletePackAria", { version: p.version })}
-              data-tip={t("devwork.handoff.deletePack")}
-              onClick={() => setPendingDeletePackId(p.id)}
-            >
-              ×
-            </button>
-          </div>
-        ))}
-        {viewPackId && (
-          <pre className="wb-handoff-preview wb-handoff-pack-view" aria-live="polite">
-            {packs?.find((p) => p.id === viewPackId)?.contentMd ?? ""}
-          </pre>
-        )}
       </div>
+
+      {/* 版本记录：同 taskId 最近 5 版；查看 / 复制 / 删除（追加式，不提供编辑）。
+          编辑态始终展示；摘要态仅在确有版本时展示，避免与上方「还没有保存的版本」
+          空态重复两遍。 */}
+      {(editing || (packs !== null && packs.length > 0)) && (
+        <div className="wb-accept-block">
+          <div className="wb-links-title">{t("devwork.handoff.versionsTitle")}</div>
+          {packs === null && (
+            <div className="empty-hint" role="status">
+              {t("nav.loading")}
+            </div>
+          )}
+          {packs !== null && packs.length === 0 && (
+            <div className="endpoint-hint">{t("devwork.handoff.versionsEmpty")}</div>
+          )}
+          {packs?.map((p) => (
+            <div className="wb-row wb-handoff-pack" key={p.id}>
+              <span className="wb-row-main">
+                <span className="wb-row-title">
+                  {t("devwork.handoff.packVersion", { version: p.version })} · {p.title}
+                </span>
+                <span className="wb-row-sub">
+                  {p.agentSessionExternalId && (
+                    <span>
+                      {t("devwork.handoff.agentSessionPack", {
+                        title: p.agentSessionTitle || p.agentSessionExternalId,
+                      })}
+                      {!p.agentSessionAvailable
+                        ? ` · ${t("devwork.handoff.agentSessionStale")}`
+                        : ""}
+                    </span>
+                  )}
+                  <span>{formatRelative(p.createdAt)}</span>
+                </span>
+              </span>
+              <button
+                type="button"
+                className="btn sm"
+                aria-expanded={viewPackId === p.id}
+                onClick={() => setViewPackId((cur) => (cur === p.id ? null : p.id))}
+              >
+                {viewPackId === p.id ? t("devwork.handoff.viewClose") : t("devwork.handoff.view")}
+              </button>
+              <button
+                type="button"
+                className="icon-btn sm"
+                aria-label={t("devwork.handoff.copyPackAria", { version: p.version })}
+                data-tip={t("devwork.handoff.copyMd")}
+                onClick={() => {
+                  void copyText(p.contentMd).then((ok) => {
+                    if (ok) showToast(t("devwork.handoff.copied"), { kind: "success" });
+                    else showToast(t("devwork.handoff.copyFailed"), { kind: "error" });
+                  });
+                }}
+              >
+                ⧉
+              </button>
+              <button
+                type="button"
+                className="icon-btn sm"
+                aria-label={t("devwork.handoff.deletePackAria", { version: p.version })}
+                data-tip={t("devwork.handoff.deletePack")}
+                onClick={() => setPendingDeletePackId(p.id)}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+          {viewPackId && (
+            <pre className="wb-handoff-preview wb-handoff-pack-view" aria-live="polite">
+              {packs?.find((p) => p.id === viewPackId)?.contentMd ?? ""}
+            </pre>
+          )}
+        </div>
+      )}
 
       <ConfirmDialog
         open={pendingDeletePackId !== null}
@@ -908,6 +1030,22 @@ export default function DevHandoffSection() {
         busy={deleting}
         onConfirm={() => void deletePack()}
         onCancel={() => setPendingDeletePackId(null)}
+      />
+
+      {/* 未保存修改关闭确认：确认放弃后草稿内容仍保留在内存中，可再次进入编辑；不静默丢弃 */}
+      <ConfirmDialog
+        open={dirtyCloseOpen}
+        title={t("appMgmt.leave.title")}
+        detail={t("appMgmt.leave.detailDirty")}
+        confirmLabel={t("appMgmt.leave.confirm")}
+        cancelLabel={t("common.cancel")}
+        danger
+        onConfirm={() => {
+          setDirtyCloseOpen(false);
+          setDirty(false);
+          setEditing(false);
+        }}
+        onCancel={() => setDirtyCloseOpen(false)}
       />
     </section>
   );

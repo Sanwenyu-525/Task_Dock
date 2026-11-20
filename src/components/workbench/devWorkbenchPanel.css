@@ -1,12 +1,12 @@
-/* 开发工作台页面专属样式（A02，2026-11-17 响应式修复）。
+/* 开发工作台页面专属样式（A02，2026-11 响应式修复）。
  *
  * 仅被 DevWorkbenchPanel.tsx 引用；不追加到 workbench.css，不进入全局样式。
- * 网格列数与容器档位仍由外壳样式层 workbench.css 的 @container wb-content 负责；
- * 本文件只补页面层接入：查询容器挂钩、主滚动分层、动作工具栏换行兜底、
- * 窄内容区最小宽度与长文本防溢出。
+ * 网格断点仍来自外壳样式层 workbench.css 的 @container wb-content；本文件只补
+ * 页面层的列宽比例与分组（复用同一组 1000 / 620 断点，不新增断点），
+ * 以及主滚动分层、动作工具栏换行兜底、窄内容区最小宽度与长文本防溢出。
  *
  * 纪律：按内容容器宽度响应，不写窗口媒体查询；不整体缩放；不用 overflow:hidden
- * 裁切内容；不复制外壳已有的网格断点规则。
+ * 裁切内容；不新增断点、不使用固定高度或 !important。
  */
 
 /* 页面根挂钩类：同时承担 .ui-page-frame 查询容器与本文件作用域前缀。 */
@@ -23,6 +23,63 @@
 
 .a02-dev-workbench .wb-dev-stack {
   min-width: 0;
+}
+
+/* ══ 分层构图（2026-11 治理） ══
+ * 外壳 workbench.css 负责网格与 @container wb-content 断点；这里只补本页的
+ * 列宽比例与分组，不新增断点、不使用固定高度。
+ * - 第一层：当前任务主卡主导（宽列），项目上下文收窄；两卡顶对齐，不互相拉伸成空洞。
+ * - 第二层：Agent 运行 + 交接包同列（紧凑块），验收工作台独立一列（内容块多）。
+ * - 第三层：待处理列表与「最近待办 + 快速操作」分列，避免出现几乎空白的卡片。
+ * 窄内容区顺序降为单列（沿用 shell 的 1000 / 620 断点）。 */
+.a02-dev-workbench .wb-dev-grid {
+  align-items: start;
+}
+
+.a02-dev-workbench .wb-dev-col {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.a02-dev-workbench .wb-dev-col > .wb-card {
+  min-width: 0;
+}
+
+.a02-dev-workbench .wb-dev-grid--primary {
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+}
+
+@container wb-content (min-width: 1000px) {
+  .a02-dev-workbench .wb-dev-grid--triple {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
+  }
+
+  .a02-dev-workbench .wb-dev-grid--tools {
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  }
+}
+
+/* 中窄内容区：主任务仍保留「主 / 次」两列，其余长内容顺序单列，
+ * 避免验收工作台（块多）被压进半列后过高。 */
+@container wb-content (max-width: 999px) and (min-width: 621px) {
+  .a02-dev-workbench .wb-dev-grid--primary {
+    grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+  }
+
+  .a02-dev-workbench .wb-dev-grid--triple,
+  .a02-dev-workbench .wb-dev-grid--tools {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@container wb-content (max-width: 620px) {
+  .a02-dev-workbench .wb-dev-grid--primary,
+  .a02-dev-workbench .wb-dev-grid--triple,
+  .a02-dev-workbench .wb-dev-grid--tools {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 /* 下一步动作组（继续工作 / 打开上下文 / 查看 Agent / 编辑 / 完成）：
@@ -62,4 +119,112 @@
 .a02-dev-workbench .wb-worksite-meta,
 .a02-dev-workbench .wb-accept-evidence-line {
   overflow-wrap: anywhere;
+}
+
+/* ══ 交接包：摘要 / 编辑两态（2026-11 治理） ══ */
+
+/* 编辑面板收起时整体移出布局；表单控件仍挂载以保留草稿，仅视觉隐藏。 */
+.a02-dev-workbench .wb-handoff-body.is-collapsed {
+  display: none;
+}
+
+.a02-dev-workbench .wb-handoff-summary {
+  display: flex;
+  flex-direction: column;
+  gap: var(--layout-gap-compact, 6px);
+}
+
+.a02-dev-workbench .wb-handoff-summary-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.a02-dev-workbench .wb-handoff-summary-head .wb-row-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.a02-dev-workbench .wb-handoff-summary-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 12px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.a02-dev-workbench .wb-handoff-section-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.a02-dev-workbench .wb-handoff-section-chip {
+  font-size: 11px;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  padding: 1px 8px;
+}
+
+/* ══ Agent 五态：图标 + 形状 + 文字 + 数字徽标（不只靠颜色） ══ */
+
+.a02-dev-workbench .wb-chip {
+  gap: 6px;
+}
+
+.a02-dev-workbench .wb-chip-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+/* 形状区分：等待=方角，失败=实心圆底，运行=圆环，断开=虚线环，
+ * 最近完成=对勾圆；颜色仍走既有 tone-* 状态别名。 */
+.a02-dev-workbench .glyph-waiting {
+  border-radius: 4px;
+  color: var(--status-waiting);
+}
+
+.a02-dev-workbench .glyph-failed {
+  border-radius: 50%;
+  color: var(--status-error);
+}
+
+.a02-dev-workbench .glyph-running {
+  border-radius: 50%;
+  color: var(--status-running);
+}
+
+.a02-dev-workbench .glyph-disconnected {
+  border: 1px dashed var(--status-disconnected);
+  border-radius: 50%;
+  color: var(--status-disconnected);
+}
+
+.a02-dev-workbench .glyph-idle {
+  border-radius: 50%;
+  color: var(--status-success);
+}
+
+.a02-dev-workbench .wb-chip-label {
+  white-space: nowrap;
+}
+
+/* 计数为 0 时收敛为中性色：状态色只用来提示真实存在的条目，不让一排 0 抢占注意力。 */
+.a02-dev-workbench .wb-chip.is-zero em,
+.a02-dev-workbench .wb-chip.is-zero .wb-chip-glyph {
+  color: var(--text-tertiary);
+}
+
+/* 列表行状态文字标签：与更新时间并排，不依赖圆点颜色传达状态。 */
+.a02-dev-workbench .wb-row-state {
+  color: var(--text-secondary);
 }

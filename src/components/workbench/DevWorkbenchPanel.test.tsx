@@ -489,6 +489,8 @@ describe("开发工作台", () => {
     expect(root?.querySelector(".wb-dev-stack")).toBeTruthy();
     // 三层栅格（当前任务/项目、Agent/交接/验收、待处理/快速/最近）+ 满宽工作现场
     expect(root?.querySelectorAll(".wb-dev-grid").length).toBe(3);
+    // 核心操作与底部工具按体量分组：两列各自承载紧凑卡片，避免单卡被拉成长条
+    expect(root?.querySelectorAll(".wb-dev-col").length).toBe(2);
     expect(root?.querySelector(".wb-worksite-grid")).toBeTruthy();
     // 下一步动作组接入工具栏原语（窄卡片内整按钮换行，不压缩文字）
     const continueBtn = screen.getByRole("button", { name: "继续工作" });

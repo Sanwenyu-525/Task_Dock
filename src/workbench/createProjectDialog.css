@@ -1,0 +1,55 @@
+/* 新建项目弹窗局部样式（本目录独占；颜色 / 间距 / 圆角全部走语义 Token，不硬编码主题色）。
+   布局基元复用共享 .field-row / .field 与 ws-input / ui Select；本文件只补弹窗专属排布。 */
+
+/* 三行结构（名称+类型 / 工作目录 / 备注）：必须是纵向弹性容器，
+   否则 .field 之间的 gap 不生效，各行会紧贴。 */
+.wb-create-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* 第一行：名称 + 类型并排；窄窗允许换行，不出现横向滚动。 */
+.wb-create-row {
+  flex-wrap: wrap;
+  align-items: flex-start;
+  row-gap: var(--space-2);
+}
+
+/* 名称列拿主要宽度，类型列按固定基准给到约 40%；两者都可增长，
+   因此窄窗换行后各自铺满整行，不会留半行空白。 */
+.wb-create-row .wb-create-name {
+  flex: 1 1 260px;
+  min-width: 160px;
+}
+
+.wb-create-row .wb-create-kind {
+  flex: 1 1 180px;
+  min-width: 140px;
+}
+
+/* 同行输入框与 Select 触发器统一控件高度，避免基线错位；textarea 保持多行高度。 */
+.wb-create-form input.ws-input,
+.wb-create-form .ui-select-trigger {
+  height: var(--control-height);
+  box-sizing: border-box;
+}
+
+/* 工作目录行：可编辑输入框 + 浏览 / 清除按钮。 */
+.wb-create-path-picker {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.wb-create-path-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.wb-create-path-picker .btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}

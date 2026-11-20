@@ -200,8 +200,11 @@ html[data-theme="light"] .fw-root {
   flex: 1 1 auto;
 }
 
+/* 窗格分隔条：视觉为 1px 低存在感细分隔线，可拖拽命中区 8px（与组件 firstStyle
+   的半宽 4px 一致）；不再渲染中间把手药丸装饰。悬停/聚焦/拖拽中提亮线条并在
+   命中区叠加淡强调色作为交互反馈。 */
 .fw-divider {
-  flex: 0 0 16px;
+  flex: 0 0 8px;
   background: transparent;
   position: relative;
   z-index: 1;
@@ -209,22 +212,22 @@ html[data-theme="light"] .fw-root {
   outline: none;
   touch-action: none;
   user-select: none;
+  transition: background 120ms ease;
+}
+
+/* 交互反馈只落在命中区：悬停/键盘聚焦/拖拽中给 8px 命中区一层很淡的强调色，
+   配合 1px 线条提亮，既明确「可拖」又不制造常驻装饰。 */
+.fw-divider:hover,
+.fw-divider:focus-visible,
+.fw-divider.is-dragging {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border-radius: var(--radius-xs);
 }
 
 .fw-divider-line {
   position: absolute;
-  background: color-mix(in srgb, var(--border-strong) 72%, transparent);
+  background: var(--border-subtle);
   transition: background 120ms ease;
-}
-
-.fw-divider-grip {
-  position: absolute;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--text-tertiary) 52%, transparent);
-  opacity: 0.42;
-  transition:
-    opacity 120ms ease,
-    background 120ms ease;
 }
 
 .fw-divider.is-horizontal {
@@ -233,18 +236,10 @@ html[data-theme="light"] .fw-root {
 
 .fw-divider.is-horizontal .fw-divider-line {
   left: 50%;
-  top: 4px;
-  bottom: 4px;
+  top: 0;
+  bottom: 0;
   width: 1px;
   transform: translateX(-0.5px);
-}
-
-.fw-divider.is-horizontal .fw-divider-grip {
-  left: 50%;
-  top: 50%;
-  width: 18px;
-  height: 5px;
-  transform: translate(-50%, -50%);
 }
 
 .fw-divider.is-vertical {
@@ -253,35 +248,16 @@ html[data-theme="light"] .fw-root {
 
 .fw-divider.is-vertical .fw-divider-line {
   top: 50%;
-  left: 4px;
-  right: 4px;
+  left: 0;
+  right: 0;
   height: 1px;
   transform: translateY(-0.5px);
-}
-
-.fw-divider.is-vertical .fw-divider-grip {
-  top: 50%;
-  left: 50%;
-  width: 5px;
-  height: 18px;
-  transform: translate(-50%, -50%);
 }
 
 .fw-divider:hover .fw-divider-line,
 .fw-divider:focus-visible .fw-divider-line,
 .fw-divider.is-dragging .fw-divider-line {
   background: var(--accent);
-}
-
-.fw-divider:hover .fw-divider-grip,
-.fw-divider:focus-visible .fw-divider-grip,
-.fw-divider.is-dragging .fw-divider-grip {
-  opacity: 1;
-  background: var(--accent);
-}
-
-.fw-divider.is-dragging .fw-divider-grip {
-  opacity: 1;
 }
 
 .fw-divider-ratio {
@@ -418,7 +394,7 @@ body.fw-resizing-row * {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
   padding: 4px 4px 0;
   min-height: 28px;
   overflow-x: auto;
@@ -450,18 +426,22 @@ body.fw-resizing-row * {
   outline-offset: -2px;
 }
 
+/* 标签页：统一 24px 高、4px 间距；非激活收敛为透明底+次级文字，激活用实体面+边框
+   抬出。标签最小宽度 64px，再多标签由标签栏横向滚动兜底，不无限挤压到只剩关闭按钮。 */
 .fw-tab {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  height: 24px;
   max-width: 180px;
-  min-width: 0;
-  padding: 3px 6px 3px 10px;
-  border-radius: 6px 6px 0 0;
+  min-width: 64px;
+  padding: 2px 6px 2px 8px;
+  border-radius: var(--radius-xs) var(--radius-xs) 0 0;
   border: 1px solid transparent;
   border-bottom: none;
   color: var(--text-secondary);
   font-size: 12px;
+  white-space: nowrap;
   cursor: pointer;
   user-select: none;
   flex: 0 1 auto;
@@ -476,14 +456,17 @@ body.fw-resizing-row * {
   background: var(--surface-base);
   border-color: var(--border-subtle);
   color: var(--text-primary);
+  font-weight: 500;
 }
 
 .fw-tab-label {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* 关闭按钮默认弱化（次级色 + 低不透明度），悬停/聚焦才提亮并补浅底。 */
 .fw-tab-close {
   flex: 0 0 auto;
   display: inline-flex;
@@ -491,33 +474,41 @@ body.fw-resizing-row * {
   justify-content: center;
   width: 16px;
   height: 16px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   color: var(--text-tertiary);
+  opacity: 0.6;
   cursor: pointer;
   background: transparent;
   border: none;
 }
 
-.fw-tab-close:hover {
+.fw-tab-close:hover,
+.fw-tab-close:focus-visible {
+  opacity: 1;
   background: var(--surface-hover);
   color: var(--text-primary);
 }
 
+/* 标签过多时标签栏横向滚动；「新建标签」保持贴在右边缘，不随标签一起滚出视野。
+   sticky 只在溢出滚动时生效，标签较少时不改变原有位置。 */
 .fw-tab-add {
   flex: 0 0 auto;
+  position: sticky;
+  right: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 22px;
   height: 22px;
-  border-radius: 6px;
+  border-radius: var(--radius-xs);
   color: var(--text-tertiary);
   cursor: pointer;
-  background: transparent;
+  background: var(--surface-raised);
   border: none;
 }
 
-.fw-tab-add:hover {
+.fw-tab-add:hover,
+.fw-tab-add:focus-visible {
   background: var(--surface-overlay);
   color: var(--text-primary);
 }
@@ -1749,13 +1740,28 @@ body.fw-resizing-row * {
 
 /* ── 工具栏细节：主操作 + 打开方式（分割按钮）────────────────────────── */
 
+/* 工具栏分组：文件操作 / 布局操作 / 其他；组间用 1px 竖分隔线，组内 6px 间距。
+   各组 min-width:0 配合窄窗换行，不把整行顶出横向溢出。 */
 .fw-toolbar-group {
   display: inline-flex;
   align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.fw-toolbar-group--history {
+  display: inline-flex;
+  align-items: center;
   gap: 2px;
-  padding: 0 2px;
+  margin-left: 2px;
+  padding-left: 6px;
   border-left: 1px solid var(--fw-border-subtle);
-  border-right: 1px solid var(--fw-border-subtle);
+}
+
+.fw-toolbar-group--layout,
+.fw-toolbar-group--more {
+  padding-left: 6px;
+  border-left: 1px solid var(--fw-border-subtle);
 }
 
 .fw-split-btn {
@@ -2137,9 +2143,17 @@ body.fw-resizing-row * {
   white-space: nowrap;
 }
 
-/* 窄内容区：工具栏次要操作收进「更多」（容器查询按 .fw-root 内容宽度；对应动作同时保留在更多菜单中）。 */
+.fw-btn-label {
+  white-space: nowrap;
+}
+
+/* 窄内容区：工具栏次要操作收进「更多」（容器查询按 .fw-root 内容宽度；对应动作同时保留在更多菜单中）。
+   「加入工作篮」折叠为图标按钮，完整说明由 data-tip 补足，功能不丢。 */
 @container fw-page (max-width: 980px) {
   .fw-hide-narrow {
+    display: none;
+  }
+  .fw-btn-label {
     display: none;
   }
 }

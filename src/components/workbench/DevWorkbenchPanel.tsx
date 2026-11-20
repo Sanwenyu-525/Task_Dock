@@ -28,14 +28,19 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   BookmarkCheck,
   Check,
+  CheckCircle2,
   ChevronRight,
   CircleAlert,
+  Clock3,
   Code2,
   Layers,
   ListTodo,
+  Loader2,
   Pencil,
   Save,
+  WifiOff,
   Zap,
+  type LucideIcon,
 } from "lucide-react";
 import AgentIcon from "../ui/AgentIcon";
 import {
@@ -278,38 +283,44 @@ export default function DevWorkbenchPanel() {
             <DevProjectContext />
           </div>
 
-          {/* 第二层：Agent 运行、交接包、验收工作台。宽屏三列，窄内容区两列。 */}
+          {/* 第二层：核心操作。宽内容区按体量分两列——Agent 运行 + 交接包同列，
+              验收工作台独立一列（内容块多、需要更宽的可读宽度）；窄内容区顺序单列。 */}
           <div className="wb-dev-grid wb-dev-grid--triple">
-            <AgentSummarySection />
-            <DevHandoffSection />
+            <div className="wb-dev-col">
+              <AgentSummarySection />
+              <DevHandoffSection />
+            </div>
             <DevAcceptanceSection />
           </div>
 
-          {/* 第三层：待处理事项、快速操作、最近待办并排；宽屏三列，窄内容区单列。 */}
+          {/* 第三层：待处理事项（高密度列表）与「最近待办 + 快速操作」分列，
+              避免三列里出现一张几乎空白的卡片；窄内容区顺序单列。 */}
           <div className="wb-dev-grid wb-dev-grid--tools">
             <AttentionSection currentId={currentId} />
-            <section className="wb-card" aria-label={t("workbench.quickActionsAria")}>
-              <div className="wb-section-head">
-                <h3 className="wb-section-title">
-                  <Zap size={13} aria-hidden="true" /> {t("workbench.quickActions")}
-                </h3>
-              </div>
-              <p className="endpoint-hint">{t("workbench.quickActionsHint")}</p>
-              <div className="wb-quick-grid">
-                <button type="button" className="btn sm" onClick={() => setTabSafe("tasks")}>
-                  {t("nav.tasks")}
-                </button>
-                <button type="button" className="btn sm" onClick={() => setTabSafe("agents")}>
-                  {t("nav.agents")}
-                </button>
-              </div>
-            </section>
-            <RecentSection
-              excludeId={currentId}
-              restores={restores}
-              onRestore={restoreSnapshot}
-              refreshTick={refreshTick}
-            />
+            <div className="wb-dev-col">
+              <RecentSection
+                excludeId={currentId}
+                restores={restores}
+                onRestore={restoreSnapshot}
+                refreshTick={refreshTick}
+              />
+              <section className="wb-card" aria-label={t("workbench.quickActionsAria")}>
+                <div className="wb-section-head">
+                  <h3 className="wb-section-title">
+                    <Zap size={13} aria-hidden="true" /> {t("workbench.quickActions")}
+                  </h3>
+                </div>
+                <p className="endpoint-hint">{t("workbench.quickActionsHint")}</p>
+                <div className="wb-quick-grid">
+                  <button type="button" className="btn sm" onClick={() => setTabSafe("tasks")}>
+                    {t("nav.tasks")}
+                  </button>
+                  <button type="button" className="btn sm" onClick={() => setTabSafe("agents")}>
+                    {t("nav.agents")}
+                  </button>
+                </div>
+              </section>
+            </div>
           </div>
 
           {/* 第四层：工作现场满宽（不是双列里的一格）。数据来自区域 A 已读取的快照。
@@ -792,12 +803,18 @@ function AgentSummarySection() {
     );
   }, [snapshot]);
 
-  const chips: { label: string; count: number; tone: string }[] = [
-    { label: t("workbench.stateWaiting"), count: summary.waiting, tone: "waiting" },
-    { label: t("workbench.stateFailed"), count: summary.failed, tone: "failed" },
-    { label: t("workbench.stateRunning"), count: summary.running, tone: "running" },
-    { label: t("workbench.stateDisconnected"), count: summary.disconnected, tone: "disconnected" },
-    { label: t("workbench.stateCompleted"), count: recentCompleted, tone: "idle" },
+  // 五态区分不只靠颜色：图标 + 形状容器 + 文字标签 + 徽标数字并用。
+  const chips: {
+    label: string;
+    count: number;
+    tone: string;
+    icon: LucideIcon;
+  }[] = [
+    { label: t("workbench.stateWaiting"), count: summary.waiting, tone: "waiting", icon: Clock3 },
+    { label: t("workbench.stateFailed"), count: summary.failed, tone: "failed", icon: CircleAlert },
+    { label: t("workbench.stateRunning"), count: summary.running, tone: "running", icon: Loader2 },
+    { label: t("workbench.stateDisconnected"), count: summary.disconnected, tone: "disconnected", icon: WifiOff },
+    { label: t("workbench.stateCompleted"), count: recentCompleted, tone: "idle", icon: CheckCircle2 },
   ];
 
   return (
@@ -808,15 +825,22 @@ function AgentSummarySection() {
         </h3>
         <span className="flex-spacer" />
         <button type="button" className="btn sm" onClick={() => setTabSafe("agents")}>
-          {t("workbench.viewAllAgents")}
+          {t("workbench.viewAgents")}
         </button>
       </div>
       <div className="wb-chips" role="list">
         {chips.map((c) => (
-          <span key={c.label} className={`wb-chip tone-${c.tone}`} role="listitem">
+          <span
+            key={c.label}
+            className={`wb-chip tone-${c.tone}${snapshot && c.count === 0 ? " is-zero" : ""}`}
+            role="listitem"
+          >
+            <span className={`wb-chip-glyph glyph-${c.tone}`} aria-hidden="true">
+              <c.icon size={11} className={c.tone === "running" ? "spin" : undefined} />
+            </span>
             {/* 未加载显示中性占位，不把未知伪装成 0 */}
             <em>{snapshot ? c.count : "–"}</em>
-            {c.label}
+            <span className="wb-chip-label">{c.label}</span>
           </span>
         ))}
       </div>
@@ -840,7 +864,12 @@ function AgentSummarySection() {
             <span className="wb-row-title" title={run.task_title || session?.title || ""}>
               {run.task_title || session?.title || session?.external_id || run.id}
             </span>
-            <span className="wb-row-sub">{formatRelative(run.updated_at)}</span>
+            <span className="wb-row-sub">
+              <span className={`wb-row-state state-${run.status}`}>
+                {AGENT_STATE_LABELS[run.status] ?? run.status}
+              </span>
+              <span>{formatRelative(run.updated_at)}</span>
+            </span>
           </span>
           {session ? (
             <button

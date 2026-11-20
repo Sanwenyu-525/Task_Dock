@@ -539,9 +539,9 @@ pub fn validate_setting(key: &str, v: &serde_json::Value) -> AppResult<()> {
             // 宽度按字段分别校验：导航栏与详情栏的合法区间不同，
             // 必须与前端 `src/lib/workbenchLayout.ts` 的常量保持一致，
             // 否则前端归一化出的合法值会被后端拒收（表现为“保存失败 + 宽度回退”）。
-            // 区间：navWidth 96–320（含端点，96 = 图标轨）、detailWidth 260–480（含端点）。
+            // 区间：navWidth 72–320（含端点，72 = 图标轨）、detailWidth 260–480（含端点）。
             for (key, min, max) in [
-                ("navWidth", 96u64, 320u64),
+                ("navWidth", 72u64, 320u64),
                 ("detailWidth", 260u64, 480u64),
             ] {
                 if let Some(width) = obj.get(key) {
@@ -1276,18 +1276,18 @@ mod tests {
 
     /// 工作台分栏宽度：navWidth 与 detailWidth 的合法区间不同，必须按字段分别校验。
     /// 契约（与前端 `src/lib/workbenchLayout.ts` 常量一一对应）：
-    /// navWidth 96–320、detailWidth 260–480，两端点都必须接受。
+    /// navWidth 72–320、detailWidth 260–480，两端点都必须接受。
     #[test]
     fn workbench_layout_width_ranges_are_per_field() {
         let layout = |nav: serde_json::Value, detail: serde_json::Value| {
             serde_json::json!({ "version": 1, "route": "home", "navWidth": nav, "detailWidth": detail })
         };
 
-        // navWidth 端点：96（图标轨）与 320 必须通过。
-        assert!(validate_setting("workbench_layout", &layout(serde_json::json!(96), serde_json::json!(304))).is_ok());
+        // navWidth 端点：72（图标轨）与 320 必须通过。
+        assert!(validate_setting("workbench_layout", &layout(serde_json::json!(72), serde_json::json!(304))).is_ok());
         assert!(validate_setting("workbench_layout", &layout(serde_json::json!(320), serde_json::json!(304))).is_ok());
-        // navWidth 越界：95 / 321 必须拒绝。
-        assert!(validate_setting("workbench_layout", &layout(serde_json::json!(95), serde_json::json!(304))).is_err());
+        // navWidth 越界：71 / 321 必须拒绝。
+        assert!(validate_setting("workbench_layout", &layout(serde_json::json!(71), serde_json::json!(304))).is_err());
         assert!(validate_setting("workbench_layout", &layout(serde_json::json!(321), serde_json::json!(304))).is_err());
 
         // detailWidth 端点：260 与 480 必须通过。

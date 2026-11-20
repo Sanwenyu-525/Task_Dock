@@ -276,6 +276,8 @@ export function SplitWithDivider({
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
   const dragRef = useRef<{
     pointerId: number;
+    /** 实际建立指针捕获的分隔条：嵌套分割时不能用 querySelector 猜第一个。 */
+    divider: HTMLElement;
     startPos: number;
     startRatio: number;
     size: number;
@@ -324,11 +326,11 @@ export function SplitWithDivider({
     setRatioHint(`${pct}% / ${100 - pct}%`);
   };
 
-  const endResizeVisual = useCallback((pointerId?: number) => {
+  const endResizeVisual = useCallback((pointerId?: number, divider?: HTMLElement | null) => {
     document.body.classList.remove("fw-resizing", "fw-resizing-col", "fw-resizing-row");
     if (pointerId !== undefined) {
       try {
-        ref.current?.querySelector<HTMLElement>(".fw-divider")?.releasePointerCapture(pointerId);
+        divider?.releasePointerCapture(pointerId);
       } catch {
         // 指针已释放/捕获已丢失时 releasePointerCapture 会抛 DOMException；无需补偿。
       }
@@ -342,7 +344,7 @@ export function SplitWithDivider({
     if (drag.raf) cancelAnimationFrame(drag.raf);
     dragRef.current = null;
     store.getState().cancelRatioResize();
-    endResizeVisual(drag.pointerId);
+    endResizeVisual(drag.pointerId, drag.divider);
   }, [endResizeVisual, store]);
 
   useEffect(() => {
@@ -374,6 +376,7 @@ export function SplitWithDivider({
     store.getState().beginRatioResize(node.id);
     dragRef.current = {
       pointerId: event.pointerId,
+      divider: event.currentTarget,
       startPos,
       startRatio: node.ratio,
       size,
@@ -423,7 +426,7 @@ export function SplitWithDivider({
       store.getState().previewRatio(node.id, finalRatio);
       store.getState().commitRatioResize();
     }
-    endResizeVisual(drag.pointerId);
+    endResizeVisual(drag.pointerId, drag.divider);
   };
 
   const nudge = (delta: number) => {

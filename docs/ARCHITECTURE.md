@@ -923,6 +923,13 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   的宽度时，只在量到名称宽度后吸附一次。图标轨同时隐藏 `.wb-nav-label` 与 `.wb-nav-badge`，
   行网格收为 `24px 32px 24px`：图标居中、悬停不跳动，手柄与 × 保留 24px 轨道与命中区、
   悬停/键盘聚焦才显现，徽标计数并入名称 tooltip；分节标题压成一条分隔线。
+  **⑦图标轨收紧到 72px / 行高 40px（2026-11-20，更正 ⑥ 的 96px 与三轨网格）**：
+  原图标轨为 24px 手柄轨道 + 20px 图标 + 24px × 轨道，实际渲染宽度 96px、行高 36px，
+  收起态显得稀疏。现改为：`WORKBENCH_NAV_WIDTH_RAIL = 72`，行高 40px，动态行页面按钮
+  收成 36×36 居中命中块；手柄（18px）与 ×（20px）不再占固定网格轨道，改为行内左右浮层，
+  `pointer-events`、24px 以上命中区与悬停显隐规则不变；分节标题仍压成 1px 分隔线
+  （此前 `display:none` 会让分隔线规则失效，已移除）。后端 `settings` 的 `navWidth`
+  校验下限同步从 96 调到 72，旧配置 96 仍按合法宽度加载，不强制迁移。
   Agent 统一图标 `AgentIcon` 由旧 Orbit Core 改为 Lucide `Bot` 机器人（`data-agent-icon="robot"`），
   全项目 Agent 入口/胶囊/面板同步生效，仍只使用 `currentColor`，默认 18px / stroke 1.75。
   测试：`WorkbenchShell.dragSort.test.tsx`（含整行拖拽面、纵向 6px 主导阈值、横向/触屏
@@ -2017,7 +2024,8 @@ CSS `grabbing` 只表达前端会话态，技术边界见本章 1023–1033 节�
      "detailOpen": true, "navWidth": 224, "detailWidth": 320 }
    ```
    路由必须是注册中心逻辑 Tab 或 `home`；项目 ID 去空白/限长；宽度钳制
-   （导航 96–320，右栏 260–480）；版本/对象损坏整体回默认；未知字段忽略。
+   （导航 72–320，右栏 260–480；2026-11-20 前导航下限为 96）；版本/对象损坏整体回默认；
+   未知字段忽略。
    后端 `validate_setting` 只做结构边界校验（对象/版本/路由/项目/布尔/宽度范围），
    语义归一化在 `src/lib/workbenchLayout.ts`，写入经串行链。
 3. **Project Workspace**：`workspace_instances.layout_json`（模块顺序/隐藏/当前模块），

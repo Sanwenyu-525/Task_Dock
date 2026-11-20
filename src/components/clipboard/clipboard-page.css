@@ -14,7 +14,8 @@
  * 2026-11-19 设计目标（第三轮精修）：
  * - 同一行等高、不同行可不同高：`.clip-list-grid` 用 stretch，卡片内部固定
  *   top / main / actions（图片多 hero 行），正文区吃余量，元数据与动作贴底；
- * - 舒适态单卡至少约 184px，宽图舞台 104–124px（竖图左侧 186–206px），正文最多 5 行；
+ * - 舒适态单卡至少约 184px，大图舞台按真实比例 120–208px（方图/竖图上限 216px），
+ *   正文最多 5 行；
  *   列数完全由 `.clip-page` 的实际内容宽度决定：720（约 414px）1 列、1024（718px）2 列、
  *   1280（974px）3 列、1600（1294px）4 列、1920（1614px）5 列，不按窗口宽度硬塞；
  * - 紧凑态 240px 起，保留缩略图但正文 2 行；列表态单列密排，正文 1 行；
@@ -88,8 +89,10 @@
    ════════════════════════════════════════════════════════════════ */
 .clipboard-page .clip-list-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 10px;
+  /* min(300px, 100%)：窄于最小卡宽的容器里轨道先收缩到 100%，不把卡片
+     顶出横向滚动；宽度足够时 auto-fill 按 300px 最小合理宽度自动增列。 */
+  grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr));
+  gap: 12px;
   /* 同一行等高、行与行之间允许不同高度：卡片内部用稳定的四段式结构
      把多余空间收进正文区，动作行始终贴底，不再出现锯齿状底边。 */
   align-items: stretch;
@@ -101,7 +104,7 @@
 }
 
 .clipboard-page .clip-list-grid.clip-density-compact {
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(240px, 100%), 1fr));
   gap: 8px;
 }
 
@@ -151,7 +154,7 @@
     "actions actions";
   align-items: stretch;
   gap: 4px;
-  padding: 8px 12px 6px;
+  padding: 10px 14px 8px;
   /* 短内容卡片也有一个稳定的最小高度，避免一行全是短文本时整行过矮；
      行内有图片卡时由最高卡决定，其余卡在内部把余量收进正文区。
      184px 只保证操作区不被压扁；短文本卡不再为了凑 200px 留下大片空洞。 */
@@ -306,6 +309,10 @@
   gap: 4px;
   padding-top: 4px;
   border-top: 1px solid var(--border-subtle);
+  /* 单行不折行：卡片高度变化不把按钮挤到第二行；overflow:visible 保证
+     图标按钮的 hover 底/焦点环不被卡片边界裁掉。 */
+  flex-wrap: nowrap;
+  overflow: visible;
   /* 复制是最高频操作，常显；收藏/置顶在空间足够时也常显（2026-11-19），
      窄卡或关联模式收回「更多」菜单后同样无需悬停才能看见。 */
   opacity: 1;
@@ -364,6 +371,16 @@
 }
 .clipboard-page .clip-density-compact .clip-item.is-card {
   min-height: 140px;
+  /* 紧凑态：收窄内边距与行间距，同屏容纳更多条目；核心内容（标题/正文/
+     来源/大小）保留，次要元数据按下条规则收敛。 */
+  padding: 8px 10px 6px;
+  gap: 4px;
+}
+
+/* 列表态：单行密排，内边距再收一档，保证多条快速浏览。 */
+.clipboard-page .clip-density-list .clip-item.is-row {
+  padding: 6px 10px;
+  gap: 3px 8px;
 }
 
 /* 紧凑卡宽度只有约 247px：来源名不能被「使用次数」挤成一个字，
@@ -374,6 +391,21 @@
 }
 
 .clipboard-page .clip-density-compact .clip-item.is-card .clip-meta-use {
+  display: none;
+}
+
+/* 紧凑/列表：窗口标题、使用次数、来源目录属于次要元数据，行内收敛；
+   这些信息仍在主按钮 aria-label、右栏与完整详情里可查，不丢失。
+   （窗口标题在组件层已按密度不渲染，这里补 CSS 兜底，避免抽屉以外的
+    行布局误显示。） */
+.clipboard-page .clip-density-compact .clip-item .clip-meta-window,
+.clipboard-page .clip-density-list .clip-item .clip-meta-window {
+  display: none;
+}
+
+.clipboard-page .clip-density-list .clip-item .clip-meta-use,
+.clipboard-page .clip-density-list .clip-item .clip-file-dir,
+.clipboard-page .clip-density-compact .clip-item .clip-file-dir {
   display: none;
 }
 
@@ -398,25 +430,46 @@
 /* ════════════════════════════════════════════════════════════════
    三、大图预览（640px 预览规格，按可视区懒加载）
    ────────────────────────────────────────────────────────────────
-   - 宽图舞台 128–148px：它只是「识别 + 入口」，不是详情阅读区；
-   - 竖图改用左侧纵向舞台（190–210px 高、卡片 42% 宽），右侧放标题/元数据，
+   - 舞台高度由卡片宽度 + 图片真实宽高比（--clip-img-ratio）经 aspect-ratio
+     推导，只给 min/max 上下限，不写死横幅高度；宽图/方图各一档上限；
+   - 竖图改用左侧纵向舞台（上限 216px 高、卡片 42% 宽），右侧放标题/元数据，
      不再把整行拉成两倍高，也不把 900×1600 压成 90px 宽的窄条；
-   - `object-fit: contain` 完整展示，不裁切；
-   - 不用原图：后端按需生成 640px 预览并缓存，失败回退缩略图。
+   - `object-fit: contain` 完整展示，不裁切重要内容；缩略图（紧凑/列表）才用
+     cover 做合理裁切；
+   - 不用原图：后端按需生成 640px 预览并缓存，失败回退缩略图与占位。
    ════════════════════════════════════════════════════════════════ */
 .clipboard-page .clip-item.is-hero > .clip-hero {
+  /* 高度上限集中在局部变量：宽图吃满卡片宽度，4:3 / 3:2 到上限后停止变宽，
+     不会出现「舞台 100% 宽、图片居中、两侧一大片灰色空气带」。 */
+  --clip-hero-max-h: 208px;
   grid-area: hero;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 100%;
-  height: clamp(104px, 9cqi, 124px);
+  /* 宽 = 上限高度 × 真实比例：宽图仍吃满 100%，较高的图在 max-height 处
+     收窄并居中；舞台比例与图片一致，contain 不再产生内部留白。 */
+  width: min(100%, calc(var(--clip-hero-max-h) * var(--clip-img-ratio, 1.5)));
+  justify-self: center;
+  /* 比例缺省时回退 3:2 横幅；高度 = 卡片宽 / 比例，再被 min/max 收敛，
+     卡片高度不会随原图无限增长。 */
+  aspect-ratio: var(--clip-img-ratio, 3 / 2);
+  min-height: 120px;
+  max-height: var(--clip-hero-max-h);
   padding: 0;
   border: 1px solid var(--border-subtle);
   border-radius: 8px;
-  background: color-mix(in srgb, var(--surface-base) 88%, var(--text-tertiary) 4%);
+  /* 用凹陷面而不是窗口级 --surface-base：后者是整窗氛围光渐变，
+     放进小舞台会像一块灰底，且在透明 PNG 后不成立。 */
+  background: var(--inset-face);
   overflow: hidden;
   cursor: zoom-in;
+}
+
+/* 方图：舞台按真实 1:1 比例收窄并居中（216×216），不再保持 100% 宽
+   再在里面显示一张 176px 方图——那会在舞台两侧各留 60px 灰色空带。 */
+.clipboard-page .clip-item.is-hero.is-square > .clip-hero {
+  --clip-hero-max-h: 216px;
+  align-self: center;
 }
 
 .clipboard-page .clip-item.is-hero > .clip-hero:focus-visible {
@@ -437,11 +490,10 @@
 }
 
 .clipboard-page .clip-item.is-hero.is-tall > .clip-hero {
-  width: 100%;
-  height: 100%;
-  min-height: 186px;
-  max-height: 206px;
-  align-self: stretch;
+  /* 竖图按真实比例算宽：9:16 在 216px 高时约 121px 宽；不再把舞台
+     拉伸到左列满宽后再 contain，避免左右或上下出现空白。 */
+  --clip-hero-max-h: 216px;
+  align-self: center;
 }
 
 .clipboard-page .clip-hero-img {
@@ -451,6 +503,14 @@
   width: auto;
   height: auto;
   object-fit: contain;
+}
+
+/* 640px 预览缺失时回退的是 192px 方形缩略图：把方图完整塞进 16:9 舞台
+   会在两侧再留空白，这里让缩略图 cover 填满（正常预览仍是 contain）。 */
+.clipboard-page .clip-hero-img[data-preview-state="missing"] {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .clipboard-page .clip-hero-empty {

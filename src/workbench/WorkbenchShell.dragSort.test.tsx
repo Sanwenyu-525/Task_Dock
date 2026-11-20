@@ -940,7 +940,7 @@ describe("拖拽手柄视觉与整行拖拽语义", () => {
     expect(cssRule(".wb-nav-hide")).toMatch(/width: 24px/);
     expect(cssRule(".wb-nav-hide")).toMatch(/height: 24px/);
     expect(cssRule(".wb-nav-hide")).toMatch(/opacity: 0;/);
-    expect(cssRule(".wb-nav-item")).toMatch(/min-height: 36px/);
+    expect(cssRule(".wb-nav-item")).toMatch(/min-height: 40px/);
     // 宽态行网格抽成自定义属性：名称宽度实测要复用同一份几何。
     expect(cssRule(".wb-nav-item")).toContain(
       "--wb-nav-row-columns: 24px 20px minmax(0, 1fr) auto 24px",
@@ -1068,23 +1068,24 @@ describe("导航宽度临界点与名称 tooltip", () => {
     expect(page?.querySelector(".wb-nav-label")).toBeTruthy();
   });
 
-  it("96px 图标轨：整列收窄为图标，名称/徽标隐藏并补名称 tooltip", async () => {
+  it("72px 图标轨：整列收窄为居中图标，名称/徽标隐藏并补名称 tooltip", async () => {
     useSettingsStore.setState({
       settings: {
         ...baseSettings(),
-        workbench_layout: { ...defaultWorkbenchLayout(), navWidth: 96 },
+        workbench_layout: { ...defaultWorkbenchLayout(), navWidth: 72 },
       } as never,
     });
     await renderShell();
     const root = document.querySelector<HTMLElement>(".wb-root");
     expect(root?.hasAttribute("data-nav-compact")).toBe(true);
-    expect(root?.style.getPropertyValue("--wb-nav-width")).toBe("96px");
+    expect(root?.style.getPropertyValue("--wb-nav-width")).toBe("72px");
     // 图标态靠 tooltip 补名称（TooltipLayer 在本文件是替身，只断言挂载数据）。
     const nav = screen.getByRole("navigation", { name: "工作台功能导航" });
     expect(nav.querySelectorAll("[data-tip]").length).toBeGreaterThan(0);
-    // 图标轨几何：24px 手柄轨道 / 32px 图标轨道 / 24px × 轨道，名称与徽标隐藏。
-    expect(cssRule('.wb-root[data-nav-compact="true"] .wb-nav-item')).toContain(
-      "24px minmax(0, 1fr) 24px",
+    // 图标轨几何：不再保留三条固定轨道，行高 40px，手柄 / × 浮动在行内两侧。
+    expect(cssRule('.wb-root[data-nav-compact="true"] .wb-nav-item')).toContain("min-height: 40px");
+    expect(cssRule('.wb-root[data-nav-compact="true"] .wb-nav-actions')).toContain(
+      "position: absolute",
     );
     expect(cssRule('.wb-root[data-nav-compact="true"] .wb-nav-label')).toMatch(/display: none/);
     expect(cssRule('.wb-root[data-nav-compact="true"] .wb-nav-badge')).toMatch(/display: none/);
@@ -1137,6 +1138,24 @@ describe("导航宽度临界点与名称 tooltip", () => {
     expect(shouldCompactWorkbenchNavLabels(180.4)).toBe(false);
     expect(shouldCompactWorkbenchNavLabels(179.4)).toBe(true);
     expect(shouldCompactWorkbenchNavLabels(56)).toBe(true);
+  });
+
+  it("拖拽条跨在导航右边界；名称折叠阈值按文字固有宽度量取", () => {
+    // 命中带不占独立 4px 列：0px 轨道 + 负边距让 4px 拖拽条跨在边界上，
+    // 可见细线结束于原 `border-right` 那一列，悬停不会出现并排双线。
+    const css = readFileSync(resolve(process.cwd(), "src/workbench/workbench.css"), "utf8");
+    expect(css).toContain(
+      "grid-template-columns: var(--wb-nav-width, 200px) 0px minmax(0, 1fr)",
+    );
+    expect(cssRule(".wb-nav")).not.toContain("border-right");
+    expect(cssRule(".wb-resizer-nav")).toContain("width: 4px");
+    expect(cssRule(".wb-resizer-nav")).toContain("margin-left: -2px");
+    expect(cssRule(".wb-resizer-nav::after")).toContain("translateX(-100%)");
+    expect(cssRule(".wb-resizer-nav::after")).toContain("var(--border-subtle)");
+    // 测量态把名称按 max-content 排：不能把 1fr 的可用列宽当成名称所需宽度。
+    expect(cssRule('.wb-root[data-nav-measuring="true"] .wb-nav-label')).toContain(
+      "width: max-content",
+    );
   });
 });
 

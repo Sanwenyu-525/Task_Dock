@@ -68,11 +68,12 @@ export interface WorkbenchLayout {
 }
 
 /**
- * 图标轨宽度（CSS px）：导航左右内边距 16 + 手柄轨道 24 + 图标轨道 32 + × 轨道 24。
- * 名称放不下时整列收成这个宽度：只剩图标，手柄与 × 保留 24px 命中区，
- * 悬停/键盘聚焦才显现（见 `workbench.css` 的 `data-nav-compact` 规则）。
+ * 图标轨宽度（CSS px）：左右内边距 12 + 居中图标 20 + 两侧浮动命中区余量。
+ * 名称放不下时整列收成这个宽度：只剩居中图标，手柄与 × 改为行内浮层，
+ * 保留 24px 命中区、悬停/键盘聚焦才显现（见 `workbench.css` 的
+ * `data-nav-compact` 规则），因此宽度不再需要为三条轨道预留 96px。
  */
-export const WORKBENCH_NAV_WIDTH_RAIL = 96;
+export const WORKBENCH_NAV_WIDTH_RAIL = 72;
 /** 最小可拖拽宽度 = 图标轨；宽态下限由实测的“名称所需宽度”决定。 */
 export const WORKBENCH_NAV_WIDTH_MIN = WORKBENCH_NAV_WIDTH_RAIL;
 export const WORKBENCH_NAV_WIDTH_MAX = 320;
@@ -82,6 +83,13 @@ export const WORKBENCH_NAV_WIDTH_MAX = 320;
  * 名称所需宽度，名称就会被省略号遮盖，此时整列收成图标轨，不留“半个名称”的中间态。
  */
 export const WORKBENCH_NAV_LABELS_COMPACT_BELOW_WIDTH = 180;
+
+/**
+ * 名称折叠余量（CSS px）：名称固有宽度之外再留几像素。
+ * 只在宽态下限（名称刚好放得下）上生效，避免文字右缘与分栏边界顶死的临界抖动；
+ * 图标轨本身是 72px，因此这个余量不会把折叠阈值推到 180px 兜底附近。
+ */
+export const WORKBENCH_NAV_LABEL_TRAILING_GAP = 4;
 
 /** 名称折叠判据：实际宽度按整像素取整后低于名称所需宽度即进入图标轨。 */
 export function shouldCompactWorkbenchNavLabels(

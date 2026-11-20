@@ -9,7 +9,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 vi.mock("../../hooks/useLocale", () => ({
   useLocale: () => ({ t: (key: string) => key, locale: "zh-CN" }),
@@ -138,7 +138,8 @@ function expectRatioConsistent(
   // 分隔条命中区 8px，首侧内联宽度按半宽 4px 扣除（视觉线条 1px 居中）。
   const widthMatch = /calc\(([\d.]+)% - 4px\)/.exec(els.first.style.width);
   expect(widthMatch).toBeTruthy();
-  expect(Number(widthMatch![1])).toBeCloseTo(ratio * 100, 6);
+  // jsdom 会对 calc() 中的百分比做约 4 位小数的序列化，按 3 位精度比较。
+  expect(Number(widthMatch![1])).toBeCloseTo(ratio * 100, 3);
   expect(els.second.className).toContain("fw-split-child-second");
   expect(els.second.style.width).toBe("");
 }
@@ -244,6 +245,47 @@ describe("容器尺寸变化后的 ARIA 边界", () => {
     fireEvent.keyDown(els.divider, { key: "End" });
     els.refresh();
     expectRatioConsistent(els, { ratio: bounds400.max, ...bounds400 });
+  });
+});
+
+describe("分割线双击与右键比例菜单", () => {
+  it("双击复位为 50:50，且仍只渲染 1px 线条（无把手药丸）", () => {
+    const els = renderSplitter();
+    expect(els.divider.querySelector(".fw-divider-grip")).toBeNull();
+    expect(els.divider.querySelector(".fw-divider-line")).toBeTruthy();
+
+    fireEvent.keyDown(els.divider, { key: "ArrowRight" });
+    els.refresh();
+    expectRatioConsistent(els, { ratio: 0.53, ...bounds800 });
+
+    fireEvent.doubleClick(els.divider);
+    els.refresh();
+    expectRatioConsistent(els, { ratio: 0.5, ...bounds800 });
+  });
+
+  it("右键比例菜单选择 33:67 后比例/aria/宽度一致，菜单关闭", () => {
+    const els = renderSplitter();
+    fireEvent.contextMenu(els.divider, { clientX: 200, clientY: 200 });
+
+    const menu = screen.getByRole("menu", { name: "fw.divider.ratioMenu" });
+    expect(menu).toBeTruthy();
+    fireEvent.click(screen.getByRole("menuitem", { name: /33\s*:\s*67/ }));
+
+    els.refresh();
+    expectRatioConsistent(els, { ratio: 1 / 3, ...bounds800 });
+    expect(screen.queryByRole("menu", { name: "fw.divider.ratioMenu" })).toBeNull();
+  });
+
+  it("右键比例菜单 Escape 关闭且不改比例", () => {
+    const els = renderSplitter();
+    fireEvent.contextMenu(els.divider, { clientX: 200, clientY: 200 });
+    expect(screen.getByRole("menu", { name: "fw.divider.ratioMenu" })).toBeTruthy();
+
+    fireEvent.keyDown(window, { key: "Escape" });
+
+    els.refresh();
+    expectRatioConsistent(els, { ratio: 0.5, ...bounds800 });
+    expect(screen.queryByRole("menu", { name: "fw.divider.ratioMenu" })).toBeNull();
   });
 });
 

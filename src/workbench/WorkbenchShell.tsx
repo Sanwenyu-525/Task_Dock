@@ -85,6 +85,7 @@ import WorkbenchPinButton from "./WorkbenchPinButton";
 import WorkbenchToolbarMore from "./WorkbenchToolbarMore";
 import WorkbenchWindowControls from "./WorkbenchWindowControls";
 import { WorkbenchDetailHostProvider } from "./pageDetail";
+import "./createProjectDialog.css";
 
 import { useLocale } from "../hooks/useLocale";
 import { useNavDragSort } from "../hooks/useNavDragSort";
@@ -117,6 +118,8 @@ import {
 import {
   WORKBENCH_DETAIL_WIDTH_MAX,
   WORKBENCH_DETAIL_WIDTH_MIN,
+  WORKBENCH_NAV_LABEL_TRAILING_GAP,
+  WORKBENCH_NAV_LABELS_COMPACT_BELOW_WIDTH,
   WORKBENCH_NAV_WIDTH_MAX,
   WORKBENCH_NAV_WIDTH_MIN,
   WORKBENCH_NAV_WIDTH_RAIL,
@@ -138,6 +141,7 @@ import {
 // 页面内部按内容容器宽度响应（见 docs/ui-responsive-layout.md）。
 import { shouldCollapseWorkbenchDetail } from "../lib/layoutMetrics";
 import {
+  clipboardPathStatus,
   devProjectList,
   fetchTask,
   onSettingsChanged,
@@ -272,10 +276,10 @@ function clamp(value: number, min: number, max: number): number {
  * 量取“名称完整显示所需的最小导航宽度”。
  *
  * 不依赖当前导航宽度：先给根节点挂 `data-nav-measuring`，让 CSS 把名称、徽标与
- * 宽态行网格临时恢复（同步量完立即撤销，浏览器不会画出中间态），再取名称文字的
- * 固有宽度（`scrollWidth`，内容被挤压时仍返回完整文字宽），加上行内固定轨道
- * （手柄 / 图标 / × / 4 段列间距）、行内边距与徽标宽度。量不到（jsdom 无布局、
- * 名称缺失）返回 null，调用方回退 180px 兜底阈值。
+ * 宽态行网格临时恢复（同步量完立即撤销，浏览器不会画出中间态），并把名称按
+ * `width: max-content` 排成文字固有宽度；再取名称文字的固有宽度（`scrollWidth`），
+ * 加上行内固定轨道（手柄 / 图标 / × / 4 段列间距）、行内边距、徽标宽度与
+ * 文字右缘余量。量不到（jsdom 无布局、名称缺失）返回 null，调用方回退 180px 兜底阈值。
  */
 function measureWorkbenchNavLabelFit(root: HTMLElement): number | null {
   const nav = root.querySelector<HTMLElement>(".wb-nav");
@@ -311,7 +315,9 @@ function measureWorkbenchNavLabelFit(root: HTMLElement): number | null {
       widest = Math.max(widest, fixed + labelWidth + badgeWidth);
     }
     if (widest <= 0) return null;
-    return Math.ceil(widest + navPadX);
+    // 名称固有宽度 + 行内固定轨道 + 几像素余量：宽度一旦低于它，名称就会被
+    // 省略号遮住，此时整列收成图标轨，不留“半个名称”的中间态。
+    return Math.ceil(widest + navPadX + WORKBENCH_NAV_LABEL_TRAILING_GAP);
   } finally {
     root.removeAttribute("data-nav-measuring");
   }
@@ -863,13 +869,40 @@ export default function WorkbenchShell() {
       showToast("项目名称不能为空", { kind: "error" });
       return;
     }
-    if (
-      createRoot.trim() &&
-      !/^[a-zA-Z]:[\\/]/.test(createRoot.trim()) &&
-      !createRoot.trim().startsWith("\\\\")
-    ) {
-      showToast("根目录必须是绝对路径（如 D:\\\\Projects\\\\demo）", { kind: "error" });
-      return;
+    const root = createRoot.trim();
+    if (root) {
+      const isAbsolute = /^[a-zA-Z]:[\\/]/.test(root) || root.startsWith("\\\\");
+      if (!isAbsolute) {
+        showToast("根目录必须是绝对路径（如 D:\\\\Projects\\\\demo）", { kind: "error" });
+        return;
+      }
+      // 去掉盘符冒号后再查非法字符：盘符冒号本身合法，其余位置不允许 Windows 保留字符与控制字符。
+      const checkTarget = /^[a-zA-Z]:[\\/]/.test(root) ? root.slice(2) : root;
+      if (/[<>:"|?*\u0000-\u001f]/.test(checkTarget)) {
+        showToast("工作目录含非法字符（< > : \" | ? *）", { kind: "error" });
+        return;
+      }
+      // 复用现有路径状态批量查询：ok / missing / inaccessible；查询失败按未知处理，不视为存在。
+      let statuses: string[];
+      try {
+        statuses = await clipboardPathStatus([root]);
+      } catch (e) {
+        showToast(`无法检查工作目录状态：${errorMessage(e)}`, { kind: "error" });
+        return;
+      }
+      const status = statuses[0];
+      if (status === "missing") {
+        showToast("工作目录不存在，请检查路径后重试", { kind: "error" });
+        return;
+      }
+      if (status === "inaccessible") {
+        showToast("无法访问工作目录（可能是权限不足）", { kind: "error" });
+        return;
+      }
+      if (status !== "ok") {
+        showToast("无法确认工作目录状态，请重试", { kind: "error" });
+        return;
+      }
     }
     setCreateBusy(true);
     try {
@@ -877,7 +910,7 @@ export default function WorkbenchShell() {
         id: null,
         name,
         kind: createKind,
-        rootPath: createRoot.trim() || null,
+        rootPath: root || null,
         devProjectId: null,
         note: createNote.trim() || null,
       });
@@ -1736,7 +1769,11 @@ export default function WorkbenchShell() {
         if (kind === "nav") {
           // 松手才吸附：名称放不下就收成图标轨；拖拽过程中保持连续跟手，
           // 名称在过程中按 data-nav-compact 规则隐藏，不会出现被遮住的半截名称。
-          const resolved = resolveWorkbenchNavWidth(live, navLabelFitRef.current);
+          // 尚未量到名称宽度时用 180px 兜底阈值，避免停在“图标态但面板很宽”。
+          const resolved = resolveWorkbenchNavWidth(
+            live,
+            navLabelFitRef.current ?? WORKBENCH_NAV_LABELS_COMPACT_BELOW_WIDTH,
+          );
           if (resolved !== live) setNavWidth(resolved);
           void setWorkbenchNavWidth(resolved).catch((e) =>
             toastErrorRef.current("workbench.layoutSaveFailed", e),
@@ -1756,17 +1793,17 @@ export default function WorkbenchShell() {
   const nudgePane = useCallback((kind: "nav" | "detail", delta: number) => {
     if (kind === "nav") {
       const current = navWidthRef.current;
-      const fit = navLabelFitRef.current;
+      // 尚未量到名称宽度时用 180px 兜底阈值：与 data-nav-compact 的判据保持一致，
+      // 键盘调整也不会停在“图标态但面板很宽”的中间宽度。
+      const fit = navLabelFitRef.current ?? WORKBENCH_NAV_LABELS_COMPACT_BELOW_WIDTH;
       let next = clamp(current + delta, WORKBENCH_NAV_WIDTH_MIN, WORKBENCH_NAV_WIDTH_MAX);
-      if (fit !== null) {
-        const fitWidth = Math.round(fit);
-        if (delta > 0 && Math.round(current) < fitWidth) {
-          // 图标轨 → 一步展开到“名称刚好放得下”的最小宽态。
-          next = fitWidth <= WORKBENCH_NAV_WIDTH_MAX ? fitWidth : WORKBENCH_NAV_WIDTH_RAIL;
-        } else if (Math.round(next) < fitWidth) {
-          // 名称放不下 → 收成图标轨，不留半个名称的中间宽度。
-          next = WORKBENCH_NAV_WIDTH_RAIL;
-        }
+      const fitWidth = Math.round(fit);
+      if (delta > 0 && Math.round(current) < fitWidth) {
+        // 图标轨 → 一步展开到“名称刚好放得下”的最小宽态。
+        next = fitWidth <= WORKBENCH_NAV_WIDTH_MAX ? fitWidth : WORKBENCH_NAV_WIDTH_RAIL;
+      } else if (Math.round(next) < fitWidth) {
+        // 名称放不下 → 收成图标轨，不留半个名称的中间宽度。
+        next = WORKBENCH_NAV_WIDTH_RAIL;
       }
       setNavWidth(next);
       void setWorkbenchNavWidth(next).catch((e) =>
@@ -2760,7 +2797,7 @@ export default function WorkbenchShell() {
         open={createOpen}
         onClose={() => setCreateOpen(false)}
         title={t("workbench.newProject")}
-        size="sm"
+        size="md"
         ariaLabel={t("workbench.newProject")}
         footer={
           <>
@@ -2779,38 +2816,44 @@ export default function WorkbenchShell() {
         }
       >
         <div className="wb-create-form">
-          <label>
-            <span>项目名称</span>
-            <input
-              className="ws-input"
-              value={createName}
-              autoFocus
-              onChange={(event) => setCreateName(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") void submitCreateProject();
-              }}
-            />
-          </label>
-          <label>
-            <span>项目类型</span>
-            <Select
-              value={createKind}
-              options={KIND_OPTIONS}
-              onChange={(value) => setCreateKind(value)}
-              block
-              ariaLabel="项目类型"
-            />
-          </label>
-          <label>
+          <div className="field-row wb-create-row">
+            <label className="field wb-create-name">
+              <span>项目名称</span>
+              <input
+                className="ws-input"
+                value={createName}
+                autoFocus
+                onChange={(event) => setCreateName(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") void submitCreateProject();
+                }}
+              />
+            </label>
+            {/* Select 触发器本身是 <button>，不是 labelable 元素：用 div + 文本保持视觉结构，
+                可访问名由 Select 的 ariaLabel 提供，避免 label 内嵌交互控件。 */}
+            <div className="field wb-create-kind">
+              <span>项目类型</span>
+              <Select
+                value={createKind}
+                options={KIND_OPTIONS}
+                onChange={(value) => setCreateKind(value)}
+                block
+                ariaLabel="项目类型"
+              />
+            </div>
+          </div>
+          <div className="field wb-create-root">
             <span>工作目录（可空）</span>
-            <div className="wb-path-picker">
-              <div
-                className="ws-input wb-path-value"
-                data-empty={createRoot ? "false" : "true"}
+            <div className="wb-create-path-picker">
+              <input
+                className="ws-input wb-create-path-input"
+                aria-label="工作目录（可空）"
+                value={createRoot}
+                placeholder="选择或输入目录，可留空"
+                spellCheck={false}
                 data-tip={createRoot || undefined}
-              >
-                {createRoot || "尚未选择目录"}
-              </div>
+                onChange={(event) => setCreateRoot(event.target.value)}
+              />
               <button
                 type="button"
                 className="btn"
@@ -2832,11 +2875,11 @@ export default function WorkbenchShell() {
                 </button>
               )}
             </div>
-          </label>
-          <label>
+          </div>
+          <label className="field">
             <span>备注</span>
             <textarea
-              className="ws-input"
+              className="ws-textarea"
               value={createNote}
               onChange={(event) => setCreateNote(event.target.value)}
             />

@@ -95,7 +95,7 @@ describe("workbenchLayout", () => {
 
   it("导航宽度只留两个稳态：图标轨或 ≥ 名称所需宽度（2026-11-17）", () => {
     expect(WORKBENCH_NAV_WIDTH_MIN).toBe(WORKBENCH_NAV_WIDTH_RAIL);
-    // 名称需要 200px：199/150 都会被名称遮住，一律吸附到 96px 图标轨。
+    // 名称需要 200px：199/150 都会被名称遮住，一律吸附到 72px 图标轨。
     expect(resolveWorkbenchNavWidth(199.4, 200)).toBe(WORKBENCH_NAV_WIDTH_RAIL);
     expect(resolveWorkbenchNavWidth(150, 200)).toBe(WORKBENCH_NAV_WIDTH_RAIL);
     expect(resolveWorkbenchNavWidth(WORKBENCH_NAV_WIDTH_RAIL, 200)).toBe(WORKBENCH_NAV_WIDTH_RAIL);

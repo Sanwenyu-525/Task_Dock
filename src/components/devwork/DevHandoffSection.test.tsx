@@ -11,7 +11,7 @@
 //!    无任务隐藏/sourceSummary 含 selectedNotes + selectedShelfItems。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useUiStore } from "../../store/useUiStore";
@@ -393,9 +393,13 @@ describe("DevHandoffSection · 保存版本", () => {
     const source = JSON.parse(arg.sourceSummary) as { taskId: string; projectId: string | null };
     expect(source.taskId).toBe("t1");
     expect(source.projectId).toBe("p1");
-    // 保存成功后重读版本列表，v1 出现
-    expect(await screen.findByText(/v1/)).toBeTruthy();
+    // 保存成功后重读版本列表，v1 出现（摘要徽标与版本行都会出现，故用 AllBy）
+    expect((await screen.findAllByText(/v1/)).length).toBeGreaterThan(0);
     expect(devHandoffList.mock.calls.length).toBeGreaterThanOrEqual(2);
+    // 保存成功回到摘要态：摘要立即反映新版本，而不是停留在编辑面板
+    expect(
+      document.querySelector(".wb-handoff-body")?.classList.contains("is-collapsed"),
+    ).toBe(true);
   });
 
   it("保存失败：错误提示且编辑内容不丢失", async () => {
@@ -414,7 +418,7 @@ describe("DevHandoffSection · 保存版本", () => {
   it("版本列表操作：查看展开只读正文、删除走确认框", async () => {
     devHandoffList.mockResolvedValue({ packs: [packOf({})] });
     render(<DevHandoffSection />);
-    expect(await screen.findByText(/v1/)).toBeTruthy();
+    expect((await screen.findAllByText(/v1/)).length).toBeGreaterThan(0);
     // 查看：展开只读正文
     fireEvent.click(screen.getByRole("button", { name: "查看" }));
     expect(await screen.findByText("# 任务交接包：重构剪贴板模块")).toBeTruthy();
@@ -427,6 +431,86 @@ describe("DevHandoffSection · 保存版本", () => {
     await waitFor(() => {
       expect(devHandoffDelete).toHaveBeenCalledWith("pk1");
     });
+  });
+});
+
+describe("DevHandoffSection · 摘要/编辑两态（2026-11 治理）", () => {
+  it("默认收起编辑面板：摘要区可见；点「创建/编辑」原位展开", async () => {
+    render(<DevHandoffSection />);
+    const titleInput = (await screen.findByLabelText("交接包标题")) as HTMLInputElement;
+    await waitFor(() => expect(titleInput.value).not.toBe(""));
+    // 初始为折叠态
+    expect(
+      document.querySelector(".wb-handoff-body")?.classList.contains("is-collapsed"),
+    ).toBe(true);
+    const entry = screen.getByRole("button", { name: /编辑|创建/ });
+    fireEvent.click(entry);
+    await waitFor(() => {
+      expect(
+        document.querySelector(".wb-handoff-body")?.classList.contains("is-collapsed"),
+      ).toBe(false);
+    });
+  });
+
+  it("有未保存修改时点关闭先弹确认；取消留在编辑态，确认放弃后收起且草稿不静默丢失", async () => {
+    render(<DevHandoffSection />);
+    const goal = (await screen.findByLabelText("任务目标")) as HTMLTextAreaElement;
+    await waitFor(() => expect(goal.value).not.toBe(""));
+    fireEvent.click(screen.getByRole("button", { name: /编辑|创建/ }));
+    fireEvent.change(goal, { target: { value: "改动后的目标内容" } });
+
+    // 关闭 → 未保存确认框
+    fireEvent.click(screen.getByRole("button", { name: "关闭" }));
+    expect(await screen.findByText("放弃未保存的更改？")).toBeTruthy();
+    // 取消：仍在编辑态
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    await waitFor(() => {
+      expect(
+        document.querySelector(".wb-handoff-body")?.classList.contains("is-collapsed"),
+      ).toBe(false);
+    });
+
+    // 再次关闭 → 确认放弃后收起
+    fireEvent.click(screen.getByRole("button", { name: "关闭" }));
+    await screen.findByText("放弃未保存的更改？");
+    fireEvent.click(screen.getByRole("button", { name: "放弃更改" }));
+    await waitFor(() => {
+      expect(
+        document.querySelector(".wb-handoff-body")?.classList.contains("is-collapsed"),
+      ).toBe(true);
+    });
+    // 草稿内容保留在内存：重新进入仍可见
+    fireEvent.click(screen.getByRole("button", { name: /编辑|创建/ }));
+    await waitFor(() => {
+      expect((screen.getByLabelText("任务目标") as HTMLTextAreaElement).value).toBe(
+        "改动后的目标内容",
+      );
+    });
+  });
+
+  it("摘要态没有版本时不重复渲染「版本记录」空块", async () => {
+    render(<DevHandoffSection />);
+    expect(await screen.findByText("还没有保存的版本")).toBeTruthy();
+    expect(screen.queryByText("版本记录（最近 5 版）")).toBeNull();
+  });
+
+  it("切换当前任务：收起编辑面板并清除未保存标记，不把旧任务草稿状态带过去", async () => {
+    render(<DevHandoffSection />);
+    const goal = (await screen.findByLabelText("任务目标")) as HTMLTextAreaElement;
+    await waitFor(() => expect(goal.value).not.toBe(""));
+    fireEvent.click(screen.getByRole("button", { name: /编辑|创建/ }));
+    fireEvent.change(goal, { target: { value: "旧任务草稿" } });
+    expect(screen.getByText("未保存")).toBeTruthy();
+
+    await act(async () => {
+      seedSettings({ workbench_current_task: "t2" });
+    });
+    await waitFor(() => {
+      expect(
+        document.querySelector(".wb-handoff-body")?.classList.contains("is-collapsed"),
+      ).toBe(true);
+    });
+    expect(screen.queryByText("未保存")).toBeNull();
   });
 });
 
@@ -697,7 +781,8 @@ describe("DevHandoffSection · Agent 会话关联（v50）", () => {
       ],
     });
     render(<DevHandoffSection />);
-    expect(await screen.findByText("会话：实现交接包关联")).toBeTruthy();
+    // 摘要与版本行都会展示关联会话，故用 AllBy
+    expect((await screen.findAllByText("会话：实现交接包关联")).length).toBeGreaterThan(0);
     // 失效会话没有标题：退回展示 external id，并明确标注已失效
     expect(await screen.findByText("会话：sess-gone · 会话已失效")).toBeTruthy();
   });

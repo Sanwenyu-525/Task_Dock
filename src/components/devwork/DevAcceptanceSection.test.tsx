@@ -227,10 +227,13 @@ describe("DevAcceptanceSection · 派生状态徽章", () => {
     expect(screen.getByText(/不能视为通过或失败/)).toBeTruthy();
   });
 
-  it("未设置当前任务：空态文案，不显示验收动作", async () => {
+  it("未设置当前任务：空态文案，不显示验收动作，也不伪装「未关联」状态", async () => {
     seedSettings({ workbench_current_task: "" });
     render(<DevAcceptanceSection />);
     expect(await screen.findByText(/未设置当前任务/)).toBeTruthy();
+    // 没有验收对象时不展示派生状态徽章，避免被读成「已有对象但未关联」
+    expect(screen.queryByText("未关联")).toBeNull();
+    expect(screen.getByRole("button", { name: "打开任务页" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "验收通过" })).toBeNull();
   });
 });
