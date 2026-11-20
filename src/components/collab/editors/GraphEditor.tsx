@@ -362,12 +362,14 @@ export default function GraphEditor({ doc, onSaved, onError }: GraphEditorProps)
     }
   };
 
-  const exportFile = async () => {
+  const exportFile = async (format: "svg" | "json") => {
     setBusy(true);
     setError("");
     try {
-      const result = await collabVisualExport(doc.id, "svg");
-      const blob = new Blob([result.content], { type: "image/svg+xml" });
+      const result = await collabVisualExport(doc.id, format);
+      const blob = new Blob([result.content], {
+        type: format === "svg" ? "image/svg+xml" : "application/json",
+      });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
@@ -408,6 +410,7 @@ export default function GraphEditor({ doc, onSaved, onError }: GraphEditorProps)
         {
           sourceContent: proposal.proposedContent,
           authoringMode: "ai_assisted",
+          aiJobId: proposal.job.id,
         },
         proposal.summary,
       );
@@ -488,8 +491,11 @@ export default function GraphEditor({ doc, onSaved, onError }: GraphEditorProps)
         <button className={`btn ghost small ${preview ? "is-active" : ""}`} onClick={() => setPreview((v) => !v)}>
           {preview ? <Pencil size={14} /> : <Eye size={14} />} {preview ? "继续编辑" : "预览"}
         </button>
-        <button className="btn ghost small" onClick={() => void exportFile()} disabled={busy}>
+        <button className="btn ghost small" onClick={() => void exportFile("svg")} disabled={busy}>
           <Download size={14} /> 导出 SVG
+        </button>
+        <button className="btn ghost small" onClick={() => void exportFile("json")} disabled={busy}>
+          <Download size={14} /> 导出 JSON
         </button>
         <div className="graph-toolbar-spacer" />
         <input

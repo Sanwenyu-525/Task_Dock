@@ -17,6 +17,8 @@ import {
   Square,
   Trash2,
   Type,
+  ZoomIn,
+  ZoomOut,
 } from "lucide-react";
 import Select from "../../ui/Select";
 import {
@@ -123,6 +125,7 @@ export default function ImageAnnotator({ doc, onSaved, onError }: ImageAnnotator
   const [error, setError] = useState("");
   const [summary, setSummary] = useState("");
   const [dirty, setDirty] = useState(false);
+  const [zoom, setZoom] = useState(1);
   const [draft, setDraft] = useState<Annotation | null>(null);
   const startRef = useRef<{ x: number; y: number } | null>(null);
   const overlayRef = useRef<SVGSVGElement>(null);
@@ -335,6 +338,24 @@ export default function ImageAnnotator({ doc, onSaved, onError }: ImageAnnotator
             placeholder="选择已有资产"
           />
         ) : null}
+        <span className="graph-toolbar-sep" />
+        <button
+          className="btn icon-btn"
+          aria-label="缩小图片"
+          data-tip="缩小"
+          onClick={() => setZoom((z) => Math.max(0.4, Number((z - 0.1).toFixed(2))))}
+        >
+          <ZoomOut size={14} />
+        </button>
+        <span className="collab-zoom-label">{Math.round(zoom * 100)}%</span>
+        <button
+          className="btn icon-btn"
+          aria-label="放大图片"
+          data-tip="放大"
+          onClick={() => setZoom((z) => Math.min(2, Number((z + 0.1).toFixed(2))))}
+        >
+          <ZoomIn size={14} />
+        </button>
         {annotate ? (
           <>
             <span className="graph-toolbar-sep" />
@@ -390,7 +411,11 @@ export default function ImageAnnotator({ doc, onSaved, onError }: ImageAnnotator
         <div className="image-annotator-stage">
           <div
             className="image-annotator-canvas"
-            style={{ aspectRatio: `${content.width} / ${content.height}` }}
+            style={{
+              aspectRatio: `${content.width} / ${content.height}`,
+              width: zoom <= 1 ? undefined : Math.min(1800, Math.round(880 * zoom)),
+              maxWidth: zoom <= 1 ? undefined : "none",
+            }}
           >
             <AssetImage
               assetId={content.assetId}

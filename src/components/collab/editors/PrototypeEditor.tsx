@@ -432,6 +432,7 @@ export default function PrototypeEditor({ doc, onSaved, onError }: PrototypeEdit
         {
           sourceContent: proposal.proposedContent,
           authoringMode: "ai_assisted",
+          aiJobId: proposal.job.id,
         },
         proposal.summary,
       );

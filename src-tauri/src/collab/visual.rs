@@ -930,7 +930,7 @@ pub fn create_document(
             rusqlite::params![new_id("pl"), plan_id, doc.id, now],
         )?;
     }
-    write_version(conn, &doc, actor, &authoring_mode, "创建")?;
+    write_version(conn, &doc, actor, &authoring_mode, None, "创建")?;
     write_audit(
         conn,
         project_id,
@@ -1049,7 +1049,14 @@ pub fn update_document(
     } else {
         change_summary.trim()
     };
-    write_version(conn, &next, actor, &version_mode, summary)?;
+    write_version(
+        conn,
+        &next,
+        actor,
+        &version_mode,
+        patch.ai_job_id.as_deref(),
+        summary,
+    )?;
     write_audit(
         conn,
         &current.project_id,
@@ -1131,8 +1138,8 @@ pub fn list_documents(
 
 // ── 版本 ─────────────────────────────────────────────────────────────────
 
-fn snapshot(doc: &VisualDocument) -> String {
-    json!({
+fn snapshot(doc: &VisualDocument, ai_job_id: Option<&str>) -> String {
+    let mut value = json!({
         "title": doc.title,
         "description": doc.description,
         "kind": doc.kind,
@@ -1146,8 +1153,11 @@ fn snapshot(doc: &VisualDocument) -> String {
         "renderer": doc.renderer,
         "previewAsset": doc.preview_asset,
         "status": doc.status
-    })
-    .to_string()
+    });
+    if let Some(job_id) = ai_job_id {
+        value["aiJobId"] = Value::String(job_id.to_string());
+    }
+    value.to_string()
 }
 
 fn write_version(
@@ -1155,6 +1165,7 @@ fn write_version(
     doc: &VisualDocument,
     actor: &Actor,
     authoring_mode: &str,
+    ai_job_id: Option<&str>,
     summary: &str,
 ) -> AppResult<()> {
     conn.execute(
@@ -1166,7 +1177,7 @@ fn write_version(
             new_id("vv"),
             doc.id,
             doc.version,
-            snapshot(doc),
+            snapshot(doc, ai_job_id),
             summary,
             authoring_mode,
             actor.id,
@@ -1342,6 +1353,7 @@ pub fn restore_version(
         &restored,
         actor,
         &restore_mode,
+        None,
         &format!("恢复到版本 {version}"),
     )?;
     write_audit(

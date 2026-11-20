@@ -445,6 +445,9 @@ pub struct VisualPatch {
     /// 仅内部/AI 路径使用：显式写入创作来源（如应用 AI 建议后置为 ai_assisted）。
     #[serde(default)]
     pub authoring_mode: Option<String>,
+    /// AI 修改提案的 Job ID；写入版本快照，便于追溯是哪次生成被应用。
+    #[serde(default)]
+    pub ai_job_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

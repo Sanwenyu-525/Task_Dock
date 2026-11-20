@@ -295,6 +295,7 @@ fn authoring_mode_and_ai_proposal_require_confirmation() {
                 &VisualPatch {
                     source_content: Some(proposal.proposed_content.clone()),
                     authoring_mode: Some("ai_assisted".to_string()),
+                    ai_job_id: Some(proposal.job.id.clone()),
                     ..Default::default()
                 },
                 &proposal.summary,
@@ -303,6 +304,13 @@ fn authoring_mode_and_ai_proposal_require_confirmation() {
         .expect("应用提案");
     assert_eq!(applied.version, edited.version + 1);
     assert_eq!(applied.authoring_mode, "ai_assisted");
+    let versions = db
+        .with_conn(|conn| Core::new(conn).visual_versions(&ui, &doc_id, Some(1), Some(10)))
+        .expect("版本");
+    assert!(
+        versions.items[0].snapshot.contains(&proposal.job.id),
+        "版本快照必须记录 AI Job ID"
+    );
 }
 
 #[test]

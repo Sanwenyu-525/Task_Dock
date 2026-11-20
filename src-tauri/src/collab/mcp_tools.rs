@@ -830,6 +830,7 @@ fn call_owned(
                 preview_asset: None,
                 status: None,
                 authoring_mode: None,
+                ai_job_id: None,
             };
             let summary = args
                 .get("change_summary")
