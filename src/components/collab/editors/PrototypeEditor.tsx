@@ -110,6 +110,23 @@ export default function PrototypeEditor({ doc, onSaved, onError }: PrototypeEdit
     () => page?.components.find((c) => c.id === selectedId) ?? null,
     [page, selectedId],
   );
+  const proposalPreview = useMemo(() => {
+    if (!proposal) return null;
+    const after = parsePrototype(proposal.proposedContent);
+    const beforeComponents = new Set(
+      content.pages.flatMap((p) => p.components.map((c) => `${p.id}/${c.id}`)),
+    );
+    const afterComponents = new Set(
+      after.pages.flatMap((p) => p.components.map((c) => `${p.id}/${c.id}`)),
+    );
+    return {
+      pagesBefore: content.pages.length,
+      pagesAfter: after.pages.length,
+      added: [...afterComponents].filter((id) => !beforeComponents.has(id)).length,
+      removed: [...beforeComponents].filter((id) => !afterComponents.has(id)).length,
+      retained: [...afterComponents].filter((id) => beforeComponents.has(id)).length,
+    };
+  }, [proposal, content]);
 
   const fail = (e: unknown) => {
     const message = errorMessage(e);
@@ -640,6 +657,16 @@ export default function PrototypeEditor({ doc, onSaved, onError }: PrototypeEdit
           {proposal ? (
             <div className="graph-ai-proposal">
               <div>{proposal.summary}</div>
+              {proposalPreview ? (
+                <div className="graph-ai-preview">
+                  <div>
+                    页面：{proposalPreview.pagesBefore} → {proposalPreview.pagesAfter}
+                  </div>
+                  <div>新增组件：{proposalPreview.added}</div>
+                  <div>保留组件：{proposalPreview.retained}</div>
+                  <div>删除组件：{proposalPreview.removed}</div>
+                </div>
+              ) : null}
               <div className="collab-muted">基于 revision {proposal.baseRevision}；应用后生成新版本。</div>
             </div>
           ) : null}

@@ -300,11 +300,24 @@
 }
 
 .graph-ai-proposal {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   padding: 8px;
   border: 1px dashed var(--border-strong);
   border-radius: 8px;
   font-size: 12px;
   color: var(--text-secondary);
+}
+
+.graph-ai-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  border-radius: 6px;
+  background: var(--surface-sunken);
+  color: var(--text-tertiary);
 }
 
 @container collab (max-width: 720px) {

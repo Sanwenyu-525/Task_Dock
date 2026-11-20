@@ -122,6 +122,21 @@ export default function GraphEditor({ doc, onSaved, onError }: GraphEditorProps)
     () => graph.edges.find((e) => e.id === selectedEdgeId) ?? null,
     [graph.edges, selectedEdgeId],
   );
+  const proposalPreview = useMemo(() => {
+    if (!proposal) return null;
+    const after = parseGraph(proposal.proposedContent);
+    const beforeIds = new Set(graph.nodes.map((n) => n.id));
+    const afterIds = new Set(after.nodes.map((n) => n.id));
+    const beforeLabels = new Map(graph.nodes.map((n) => [n.id, n.label]));
+    return {
+      added: after.nodes.filter((n) => !beforeIds.has(n.id)),
+      removed: graph.nodes.filter((n) => !afterIds.has(n.id)),
+      changed: after.nodes.filter(
+        (n) => beforeLabels.has(n.id) && beforeLabels.get(n.id) !== n.label,
+      ),
+      newEdges: after.edges.filter((e) => !graph.edges.some((x) => x.id === e.id)),
+    };
+  }, [proposal, graph]);
   const bounds = useMemo(() => graphBounds(graph.nodes), [graph.nodes]);
   const canvasWidth = Math.max(320, graph.layout.width ?? bounds.width + 120);
   const canvasHeight = Math.max(320, graph.layout.height ?? bounds.height + 120);
@@ -663,6 +678,31 @@ export default function GraphEditor({ doc, onSaved, onError }: GraphEditorProps)
                     }
                   />
                 </label>
+                <label>
+                  节点配置（JSON）
+                  <textarea
+                    key={`${selectedNode.id}-config`}
+                    className="input small"
+                    rows={3}
+                    defaultValue={JSON.stringify(selectedNode.config ?? {}, null, 2)}
+                    onBlur={(e) => {
+                      try {
+                        const parsed = JSON.parse(e.target.value);
+                        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+                          throw new Error("must be object");
+                        }
+                        pushHistory();
+                        updateNode(selectedNode.id, (n) => ({
+                          ...n,
+                          config: parsed as Record<string, unknown>,
+                        }));
+                        setError("");
+                      } catch {
+                        setError("节点配置必须是 JSON 对象");
+                      }
+                    }}
+                  />
+                </label>
                 <div className="graph-color-row" role="group" aria-label="节点颜色">
                   {NODE_COLORS.map((color) => (
                     <button
@@ -818,6 +858,16 @@ export default function GraphEditor({ doc, onSaved, onError }: GraphEditorProps)
           {proposal ? (
             <div className="graph-ai-proposal">
               <div>{proposal.summary}</div>
+              {proposalPreview ? (
+                <div className="graph-ai-preview">
+                  <div>新增节点：{proposalPreview.added.map((n) => n.label).join("、") || "无"}</div>
+                  <div>修改节点：{proposalPreview.changed.map((n) => n.label).join("、") || "无"}</div>
+                  <div>
+                    删除节点：{proposalPreview.removed.map((n) => n.label).join("、") || "无"}
+                  </div>
+                  <div>新增连线：{proposalPreview.newEdges.length} 条</div>
+                </div>
+              ) : null}
               <div className="collab-muted">基于 revision {proposal.baseRevision}；应用后生成新版本。</div>
             </div>
           ) : null}
