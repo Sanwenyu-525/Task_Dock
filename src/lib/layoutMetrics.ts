@@ -29,12 +29,36 @@ export const WINDOW_METRICS = {
  * - `compact`：900–1099，收起右侧上下文栏，顶栏隐藏快捷键/品牌名等低优先信息；
  * - `narrow`：780–899，工具组收纳进「更多」菜单；
  * - `cramped`：<780，顶栏换行，项目选择器独占第二行（仅小屏降级窗口会到这里）。
+ *
+ * 阈值口径：下列数值是「低于该值进入下一档」的**排他下界**，对应 CSS
+ * `@media (max-width: <阈值−1>px)`。另有一个 inclusive 上界常量
+ * `ULTRA_NARROW_WIDTH`（≤560，图标轨兜底带），口径不同，不要混用。
  */
 export const WINDOW_TIERS = {
   compact: 1100,
   narrow: 900,
   cramped: 780,
 } as const;
+
+/**
+ * 超窄「图标轨」兜底宽度（DIP，含边界：`≤560`）。
+ *
+ * 这**不是第五个窗口档位**：`WindowTier` 仍是 full/compact/narrow/cramped 四档，
+ * 560 以下在 `windowTier` 里归入 `cramped`。它是 cramped 档内的附加兜底带子，
+ * 由 CSS `@media (max-width: 560px)` 命中：工作台顶栏图标轨（窗口控制绝对定位、
+ * 搜索收成 32px 图标）、导航极窄规则；同一边界也被主窗（400×560）页头的视口
+ * 兜底规则复用——主窗没有 `.wb-content` 容器，容器查询不生效，只能用视口断点
+ * 兜同一套换行。
+ *
+ * 可达性：Rust 侧 `clamp_floor` 在小屏可用区不足时跟随可用区（≥320 DIP），远程
+ * 桌面/极小屏上工作台窗口可以落到 560 以下，因此这档是真实兜底，不是死代码。
+ */
+export const ULTRA_NARROW_WIDTH = 560 as const;
+
+/** 窗口宽度是否进入超窄图标轨兜底带（≤560 DIP）。 */
+export function isUltraNarrow(width: number): boolean {
+  return width <= ULTRA_NARROW_WIDTH;
+}
 
 /**
  * 全局搜索的共享几何（CSS px）。

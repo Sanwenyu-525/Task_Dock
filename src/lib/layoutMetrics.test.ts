@@ -19,8 +19,10 @@ import globalSearchCss from "../components/global-search/global-search.css?raw";
 import globalSearchDialogSource from "../components/global-search/GlobalSearchDialog.tsx?raw";
 import {
   SEARCH_METRICS,
+  ULTRA_NARROW_WIDTH,
   WINDOW_METRICS,
   WINDOW_TIERS,
+  isUltraNarrow,
   shouldCollapseWorkbenchDetail,
   windowTier,
 } from "./layoutMetrics";
@@ -83,6 +85,8 @@ describe("窗口尺寸规范三处一致", () => {
     expect(workbenchCss).toContain(`@media (max-width: ${WINDOW_TIERS.compact - 1}px)`);
     expect(workbenchCss).toContain(`@media (max-width: ${WINDOW_TIERS.narrow - 1}px)`);
     expect(workbenchCss).toContain(`@media (max-width: ${WINDOW_TIERS.cramped - 1}px)`);
+    // 超窄图标轨是 inclusive 上界（≤560），不是档位下界，查询口径不同（见常量注释）。
+    expect(workbenchCss).toContain(`@media (max-width: ${ULTRA_NARROW_WIDTH}px)`);
     // 低优先级工具在窄档位收进「更多」，不能直接消失
     expect(workbenchCss).toMatch(
       new RegExp(
@@ -147,6 +151,32 @@ describe("窗口档位判定", () => {
   it("窗口变大后档位回到 full（常用操作恢复内联）", () => {
     expect(windowTier(1200)).toBe("full");
     expect(windowTier(1440)).toBe("full");
+  });
+});
+
+describe("超窄图标轨兜底带（ULTRA_NARROW_WIDTH）", () => {
+  it("边界判定：≤560 进入兜底带，561 不进入；仍归入 cramped 档", () => {
+    expect(isUltraNarrow(560)).toBe(true);
+    expect(isUltraNarrow(559)).toBe(true);
+    expect(isUltraNarrow(561)).toBe(false);
+    // 不新增第五档：图标轨是 cramped 档内的子带。
+    expect(windowTier(560)).toBe("cramped");
+    expect(windowTier(400)).toBe("cramped");
+  });
+
+  it("图标轨档位保留窗口控制与搜索入口，核心操作不被 display:none", () => {
+    // 窗口控制绝对钉在右上，而不是被 flex 换行挤到左侧或隐藏。
+    expect(workbenchCss).toMatch(
+      new RegExp(
+        `@media \\(max-width: ${ULTRA_NARROW_WIDTH}px\\)[\\s\\S]*?\\.wb-window-controls\\s*{[^}]*position:\\s*absolute`,
+      ),
+    );
+    // 搜索收成 32px 图标，但字段容器本身保留（仍是可点入口）。
+    expect(workbenchCss).toMatch(
+      new RegExp(
+        `@media \\(max-width: ${ULTRA_NARROW_WIDTH}px\\)[\\s\\S]*?\\.wb-search-field\\s*{[^}]*flex:\\s*0 0 32px`,
+      ),
+    );
   });
 });
 

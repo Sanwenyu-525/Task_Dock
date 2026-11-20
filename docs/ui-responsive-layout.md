@@ -151,3 +151,85 @@
 - **2026-11-16**：新增几何 Token、`.ui-page-frame` / `.ui-adaptive-grid` / `.ui-toolbar-row` / `.ui-content-pad`；
   修复 `WorkspaceSplit` 容器查询自引用（查询容器移到 `.workspace-split-frame`），补齐窄容器上下分区、
   中等宽度 38% 侧栏封顶、分隔条键盘操作与宽度记忆；剪贴板页接入三档密度与右栏检查器。
+- **2026-11-20**：统一窗口 chrome 档位事实源（见 §10）；登记 ≤560 图标轨兜底带常量；更正两处
+  与实际阈值漂移的注释（未改任何断点数值）。
+
+## 10. 窗口 chrome 档位与顶栏收纳（2026-11-20）
+
+本节只描述**窗口等宽结构**（顶栏工具收纳、右栏显隐）；页面卡片列数、页头换行仍按
+`@container wb-content` 容器宽度响应（见 §1、§5），两套口径不得混用。
+
+### 10.1 档位事实源对照
+
+唯一 TS 事实源：`src/lib/layoutMetrics.ts`。CSS 媒体查询在 `src/workbench/workbench.css`
+末尾「窗口档位与顶栏空间分配」一节；`layoutMetrics.test.ts` 有契约守卫。
+
+| 档位 | TS 常量 / 判定 | CSS 视口查询 | 口径 | 一致性 |
+|---|---|---|---|---|
+| `full` | ≥ `WINDOW_TIERS.compact`（1100） | 基础块（无查询） | 排他下界 | 一致 |
+| `compact` | 900–1099，`<1100` | `@media (max-width: 1099px)` | 排他下界，查询写 `阈值−1` | 一致 |
+| `narrow` | 780–899，`<900` | `@media (max-width: 899px)` | 排他下界，查询写 `阈值−1` | 一致 |
+| `cramped` | `<780` | `@media (max-width: 779px)` | 排他下界，查询写 `阈值−1` | 一致 |
+| 图标轨子带 | `ULTRA_NARROW_WIDTH = 560`，`isUltraNarrow(width)`（≤560） | `@media (max-width: 560px)` 顶栏块；同阈值另用于导航极窄规则与主窗页头兜底 | **inclusive 上界**，查询写 560 | 本次登记 |
+| 状态栏降级 | 不登记为窗口档位 | `@media (max-width: 760px)` | 独立密度断点 | 仅文档登记 |
+
+两种阈值口径不可混用：`WINDOW_TIERS.*` 是「低于该值进入下一档」的排他下界（CSS `X−1`）；
+`ULTRA_NARROW_WIDTH` 是媒体查询的 inclusive 上界（CSS `560`）。
+
+### 10.2 560 图标轨档位的处置
+
+- **决定**：登记为独立常量 `ULTRA_NARROW_WIDTH = 560` 与判定函数 `isUltraNarrow(width)`，
+  **不新增第五个 `WindowTier`**：≤560 在 `windowTier` 里仍归入 `cramped`。
+- **理由**：560 规则同时覆盖工作台顶栏/导航极窄布局，以及主窗（400×560）页头的视口兜底
+  （主窗没有 `.wb-content` 容器，容器查询不生效），并不等价于工作台窗口档位；四档枚举只描述
+  窗口等宽 chrome 主档。
+- **可达性**：Rust 侧 `clamp_floor` 在小屏可用区不足时跟随可用区（≥320 DIP），远程桌面/
+  极小屏上工作台窗口可以落到 560 以下，该兜底带是真实可达的，不是死代码。
+- 560 块内核心操作不被 `display:none`：窗口控制绝对钉在右上，搜索收成 32px 图标按钮，
+  「更多」入口保留；契约由 `layoutMetrics.test.ts` 守卫。
+
+### 10.3 顶栏逐档收纳规则
+
+不变量：图标按钮与窗口控制 `flex: 0 0 auto`，永不被 flex 压缩；项目选择器可收缩但保留合理
+最小宽度；任何退出都以「收进更多菜单 / 保持可点」为前提，不隐藏功能；窗口变大后内联恢复
+（纯 CSS 档位，不做 JS 宽度轮询）。
+
+| 档位 | 顶栏行为 |
+|---|---|
+| `full` ≥1100 | 品牌 + 项目选择器 + 搜索 + 快速创建 + 收集入口 + 右栏开关 + 主题/预设/置顶内联 + 窗口控制全量显示 |
+| `compact` 900–1099 | 隐藏搜索快捷键提示、品牌名、创建按钮文案；右栏由 JS 收起 |
+| `narrow` 780–899 | 外观工具组（主题 / 视觉预设 / 置顶）整体收进「更多」菜单；搜索 basis 200、项目选择器 170（min 140） |
+| `cramped` 560–779 | 顶栏换行，项目选择器独占第二行；搜索 basis 160 |
+| 图标轨 ≤560 | 窗口控制绝对定位右上；搜索收成 32px 图标；工具组绝对定位第二行右侧；项目选择器整行；「更多」菜单仍是外观工具唯一入口 |
+
+退出优先级（低优先信息先退）：品牌名 → 搜索快捷键 → 创建文案 → 外观工具组。
+
+### 10.4 「更多」菜单清单与复用契约
+
+- 组件：`src/workbench/WorkbenchToolbarMore.tsx`，经 `DropdownMenu`（`placement="bottom-end"`）
+  渲染，定位走共享 Popover 定位核心；组件内不手写 `getBoundingClientRect` / `window.innerWidth`
+  做边界计算。
+- 菜单项顺序：明暗主题三选（浅色 / 深色 / 跟随系统）→ 分隔线 → 视觉预设二选（柔光玻璃 /
+  梦幻渐变）→ 分隔线 → 置顶切换。
+- 复用同一份逻辑：`useThemeMenuItems` / `usePresetMenuItems` / `useWorkbenchPin`，与内联的
+  `WorkbenchThemeMenu` / `WorkbenchPresetMenu` / `WorkbenchPinButton` 共用设置写入管道与置顶
+  状态；不存在第二套 theme/preset/pin 实现。
+- 回归测试：`src/workbench/WorkbenchToolbarMore.test.tsx`（触发器语义、展开顺序与分隔线、
+  主题/预设写入、置顶 no-op 兜底、再次点击与 Esc 关闭）。
+
+### 10.5 边界与未纳入档位模型的视口规则
+
+- `@media (max-width: 760px)`：状态栏密度降级（次要文案/磁盘状态隐藏）与创建按钮文案，
+  不是窗口档位，不登记进 `WINDOW_TIERS`。
+- `@media (max-width: 560px)` 页头兜底块：服务主窗 400×560 面板（无 `.wb-content` 容器），
+  与工作台图标轨共用同一上界，但语义是页面页头换行兜底。
+- 页面 1440 阅读宽封顶（`.wb-home` / `.wb-project`）、卡片网格降列仍走容器查询；窄内容区
+  （`<900px` 容器宽）解除封顶。
+
+### 10.6 本次更正（不推翻既有行为）
+
+- 更正注释：`WorkbenchToolbarMore` 原注释写「960 DIP（原生最小尺寸）/ 780 DIP 收纳」，
+  与实际不符；外观工具收纳阈值是 **`<900 DIP`**（CSS `899px`，`WINDOW_TIERS.narrow = 900`）。
+  本次只更正注释，**断点数值未改**。
+- 更正注释：`workbench.css` 原注释写「JS compact（<1000px）」；实际阈值是 **`<1100 DIP`**
+  （`shouldCollapseWorkbenchDetail` / `WINDOW_TIERS.compact`）。

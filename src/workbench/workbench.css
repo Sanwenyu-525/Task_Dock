@@ -2111,11 +2111,14 @@ body.wb-resizing {
   user-select: text;
 }
 
-/* 顶栏/状态栏窄窗收敛：跟随 JS compact（<1000px）与极窄媒体查询 */
+/* 顶栏/状态栏窄窗收敛：跟随 JS compact（<1100 DIP，即
+   `shouldCollapseWorkbenchDetail` / `WINDOW_TIERS.compact`）与极窄媒体查询 */
 .wb-root.is-compact .wb-search-ph,
 .wb-root.is-compact .wb-brand-name {
   display: none;
 }
+/* 760 是**状态栏密度降级**的独立视口断点，不是窗口档位（不登记进 WINDOW_TIERS）：
+   只收状态栏次要文案/磁盘状态与创建按钮文案；顶栏档位以 1100/900/780/560 为准。 */
 @media (max-width: 760px) {
   .wb-create-btn span {
     display: none;
@@ -2795,7 +2798,8 @@ body.wb-resizing {
    ───────────────────────────────────────────────────────────────────
    事实源：
    - 原生尺寸：`src-tauri/src/window_layout.rs`（默认 1200×760、最小 960×600 DIP）；
-   - 前端档位：`src/lib/layoutMetrics.ts`（1100 / 900 / 780）；
+   - 前端档位：`src/lib/layoutMetrics.ts`（1100 / 900 / 780 四档；另有 ≤560 图标轨
+     兜底带 `ULTRA_NARROW_WIDTH`，口径是 inclusive 上界，不是第五个窗口档位）；
    - 这里的媒体查询是**窗口 chrome**（顶栏横跨整窗、与窗口等宽），
      页面内容仍然按容器宽度响应（`@container wb-content`），不要混用。
 
