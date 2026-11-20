@@ -804,7 +804,13 @@ export default function CollabPanel() {
                 setError={setError}
               />
             ) : selectedVisual ? (
-              <VisualViewer doc={selectedVisual} onUpdate={(next) => void openVisual(next)} />
+              <VisualViewer
+                doc={selectedVisual}
+                onUpdate={(next) => {
+                  setSelectedVisual(next);
+                  void reload();
+                }}
+              />
             ) : (
               <div className="collab-detail-empty">
                 {view === "visuals" ? (
