@@ -143,6 +143,8 @@ mod imp {
         in_gesture: bool,
         gesture_start_w: i32,
         gesture_start_h: i32,
+        /// 位图已在"即将显示"阶段备好，等窗口真正可见时只需提交（ULW + 显示）。
+        pending_show: bool,
     }
 
     /// 宿主窗口当前几何 / 外形快照（由 Win32 读取后填入）。
@@ -177,6 +179,9 @@ mod imp {
         MoveOnly,
         /// 非手势期间尺寸 / 外形 / margin 变化：重建位图后再提交。
         RebuildAndSubmit,
+        /// 位图已备好且几何未变、宿主刚刚变为可见：只提交已有位图（ULW + 显示），
+        /// 不重建。这是"阴影与窗口同一帧出现"的落地路径。
+        SubmitOnly,
         /// 手势期间尺寸已变：把最近一次完整质量的位图**缩放**成应急位图提交，
         /// 保持阴影全程可见；旧 DIB 本身绝不以新尺寸直接提交，松手后按最终尺寸重建。
         ScaleDuringGesture,
@@ -217,6 +222,9 @@ mod imp {
         if size_or_shape_changed {
             return Decision::RebuildAndSubmit;
         }
+        if snap.pending_show {
+            return Decision::SubmitOnly;
+        }
         if moved {
             Decision::MoveOnly
         } else {
@@ -251,6 +259,8 @@ mod imp {
         gesture_h: i32,
         /// 阴影当前是否处于隐藏态（由同步决策维护）。
         hidden: bool,
+        /// 位图已在"即将显示"阶段备好，等窗口真正可见时只提交、不重建。
+        pending_show: bool,
         /// 上次定位的阴影窗口左上角（物理 px），用于纯移动判定。
         cached_x: i32,
         cached_y: i32,
@@ -560,6 +570,8 @@ mod imp {
         //    分开模糊再合成，才能同时得到"远处的柔和衰减"和"近处的清晰轮廓"；
         //    单层大模糊会让近边缘被抹平（上一版峰值只有 0.20、边缘只剩 ~0.10，
         //    在亮桌面上几乎看不出投影）。
+        let t_mask = t0.elapsed().as_secs_f64() * 1000.0;
+        let t_blur0 = std::time::Instant::now();
         state.ambient.clear();
         state.ambient.resize(total, 0.0);
         state.contact.clear();
@@ -582,6 +594,8 @@ mod imp {
             h as usize,
             con_pass,
         );
+        let t_blur = t_blur0.elapsed().as_secs_f64() * 1000.0;
+        let t_compose0 = std::time::Instant::now();
 
         // 4) 合成并写预乘 alpha 的 BGRA（垂直偏移在窗口定位时施加，见 sync_state）。
         //    窗口轮廓**内部**的 alpha 一律归零：位图里的掩码是整块窗口填充，
@@ -610,6 +624,7 @@ mod imp {
         }
 
         if debug_on() {
+            let t_compose = t_compose0.elapsed().as_secs_f64() * 1000.0;
             // 沿"窗口左边外 0/4/10/20/34 px"采一行，报告衰减曲线：这比"看起来有阴影"
             // 可复核，也能区分"位图边界截断"与"峰值太低"两种不同毛病。
             let cy = ((h / 2) as usize).min(h as usize - 1);
@@ -632,8 +647,8 @@ mod imp {
                 &pr,
             );
             eprintln!(
-                "[shadow] bitmap {}x{} margin={}px amb_pass={} con_pass={} edge_alpha(outside) {} center_alpha(inside):{:.3} elapsed_ms={:.2}",
-                w, h, margin, amb_pass, con_pass, samples, center, t0.elapsed().as_secs_f64() * 1000.0
+                "[shadow] bitmap {}x{} margin={}px amb_pass={} con_pass={} edge_alpha(outside) {} center_alpha(inside):{:.3} elapsed_ms={:.2} mask_ms={:.2} blur_ms={:.2} compose_ms={:.2}",
+                w, h, margin, amb_pass, con_pass, samples, center, t0.elapsed().as_secs_f64() * 1000.0, t_mask, t_blur, t_compose
             );
         }
         true
@@ -849,6 +864,15 @@ mod imp {
     }
 
     fn sync_state(state: &mut State, owner: isize) {
+        sync_state_with(state, owner, false)
+    }
+
+    /// `show_imminent`：当前处于 `WM_SHOWWINDOW(TRUE)`，窗口还没真正可见但几何已定型。
+    ///
+    /// 此时把宿主当作"即将可见"来同步，位图在这次消息里就建好并提交；等窗口真的画出来
+    /// 时阴影已经就位，不会再出现「窗口先出现、阴影 200–400ms 后才跟上来」的观感差异。
+    /// 代价是建位图的时间落在 `ShowWindow` 返回之前（窗口出现晚一段），而不是出现在之后。
+    fn sync_state_with(state: &mut State, owner: isize, show_imminent: bool) {
         unsafe {
             // 伴随窗口失效（被外部销毁）时不在死句柄上提交 ULW；下一次消息会先重建。
             if state.shadow == 0 || IsWindow(state.shadow as _) == 0 {
@@ -856,11 +880,26 @@ mod imp {
                 return;
             }
             let owner_hwnd = owner as HWND;
-            let Some(win) = read_window_snapshot(state, owner_hwnd) else {
+            let Some(mut win) = read_window_snapshot(state, owner_hwnd) else {
                 hide_shadow(state);
                 state.hidden = true;
                 return;
             };
+            let real_visible = win.visible;
+
+            if show_imminent && !win.visible {
+                // 即将显示：按"可见"推进同步，趁窗口还没上屏把位图建好；真正提交
+                // （ULW + 显示）留到紧随其后的可见消息，避免阴影先于窗口单独闪过。
+                win.visible = true;
+                win.iconic = false;
+                state.pending_show = true;
+                if debug_on() {
+                    eprintln!(
+                        "[shadow] show_imminent prepare {}x{} hash={:#x}",
+                        win.win_w, win.win_h, win.hash
+                    );
+                }
+            }
 
             let snap = ShadowSnapshot {
                 cached_w: state.bmp_w,
@@ -872,14 +911,26 @@ mod imp {
                 in_gesture: state.defer_rebuild,
                 gesture_start_w: state.gesture_start_w,
                 gesture_start_h: state.gesture_start_h,
+                pending_show: state.pending_show,
             };
 
             match decide(&snap, &win) {
                 Decision::Hide => {
                     hide_shadow(state);
                     state.hidden = true;
+                    state.pending_show = false;
                 }
                 Decision::NoChange => {}
+                Decision::SubmitOnly => {
+                    // 位图已在"即将显示"阶段备好：这里只做 ULW 与显示（亚毫秒级），
+                    // 阴影与窗口在同一帧出现。
+                    submit_layered(state, owner_hwnd, &win);
+                    state.suspended = false;
+                    state.hidden = false;
+                    state.pending_show = false;
+                    state.cached_x = win.x;
+                    state.cached_y = win.y;
+                }
                 Decision::MoveOnly => {
                     move_shadow(state, win.x, win.y);
                     state.cached_x = win.x;
@@ -923,11 +974,18 @@ mod imp {
                     {
                         state.shape_hash = win.hash;
                         state.cached_margin = win.margin;
-                        submit_layered(state, owner_hwnd, &win);
-                        state.suspended = false;
-                        state.hidden = false;
-                        state.cached_x = win.x;
-                        state.cached_y = win.y;
+                        if state.pending_show && !real_visible {
+                            // 位图备好但窗口尚未上屏：先不提交，等可见消息走 SubmitOnly。
+                            state.suspended = false;
+                            state.hidden = true;
+                        } else {
+                            submit_layered(state, owner_hwnd, &win);
+                            state.suspended = false;
+                            state.hidden = false;
+                            state.pending_show = false;
+                            state.cached_x = win.x;
+                            state.cached_y = win.y;
+                        }
                     } else {
                         hide_shadow(state);
                         state.hidden = true;
@@ -964,6 +1022,13 @@ mod imp {
         }
 
         match msg {
+            // `WM_SHOWWINDOW(TRUE)` 是"窗口即将可见、几何已定型"的唯一可靠时机：
+            // 在这里就把位图建好，阴影才能和窗口同一帧出现（不再落后 200–400ms）。
+            WM_SHOWWINDOW if wparam != 0 => {
+                with_state(owner, |state| {
+                    sync_state_with(state, owner, true);
+                });
+            }
             WM_WINDOWPOSCHANGED | WM_SIZE | WM_MOVE | WM_SIZING | WM_MOVING
             | WM_SHOWWINDOW | WM_ACTIVATE | WM_DPICHANGED => {
                 with_state(owner, |state| {
@@ -1180,6 +1245,7 @@ mod imp {
                 gesture_w: 0,
                 gesture_h: 0,
                 hidden: true,
+                pending_show: false,
                 cached_x: 0,
                 cached_y: 0,
                 cached_margin: 0,
@@ -1230,7 +1296,7 @@ mod imp {
                 bmp_w: 0, bmp_h: 0, margin: 0, scale: 1.0, shape_hash: 0,
                 topmost: false, defer_rebuild: false,
                 gesture_start_w: 0, gesture_start_h: 0,
-                suspended: false, hidden: true,
+                suspended: false, hidden: true, pending_show: false,
                 gesture_hdc: 0, gesture_dib: 0, gesture_bits: std::ptr::null_mut(),
                 gesture_w: 0, gesture_h: 0,
                 cached_x: 0, cached_y: 0, cached_margin: 0,
@@ -1336,7 +1402,24 @@ mod imp {
                 in_gesture: false,
                 gesture_start_w: 400,
                 gesture_start_h: 560,
+                pending_show: false,
             }
+        }
+
+        /// 备好位图后的"即将显示"：几何未变时应只提交，不重建。
+        #[test]
+        fn pending_show_submits_without_rebuild() {
+            let w = visible_win(400, 560, 40, 7, 100, 120);
+            let snap = ShadowSnapshot { pending_show: true, ..base_snap() };
+            assert_eq!(decide(&snap, &w), Decision::SubmitOnly);
+        }
+
+        /// "即将显示"但尺寸/外形变了：仍要先重建，提交交给可见消息。
+        #[test]
+        fn pending_show_with_new_size_still_rebuilds() {
+            let w = visible_win(500, 560, 40, 7, 100, 120);
+            let snap = ShadowSnapshot { pending_show: true, ..base_snap() };
+            assert_eq!(decide(&snap, &w), Decision::RebuildAndSubmit);
         }
 
         #[test]
