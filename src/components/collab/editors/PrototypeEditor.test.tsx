@@ -12,7 +12,11 @@ vi.mock("../../../lib/collab", () => ({
   collabAiModify: vi.fn(),
   collabVisualUpdate: vi.fn(),
   collabVisualExport: vi.fn(),
+  collabVisualAssetList: vi.fn(async () => []),
+  collabVisualAssetImport: vi.fn(),
 }));
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 
 const CONTENT = {
   schemaVersion: 1,

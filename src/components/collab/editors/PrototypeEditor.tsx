@@ -24,13 +24,17 @@ import {
   Undo2,
   X,
 } from "lucide-react";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   collabAiModify,
   collabPrototypePatch,
   collabPrototypeValidate,
+  collabVisualAssetImport,
+  collabVisualAssetList,
   collabVisualExport,
   collabVisualUpdate,
   type AiProposal,
+  type VisualAsset,
   type VisualDocument,
 } from "../../../lib/collab";
 import { errorMessage } from "../../../lib/errors";
@@ -85,6 +89,7 @@ export default function PrototypeEditor({ doc, onSaved, onError }: PrototypeEdit
   const [aiOpen, setAiOpen] = useState(false);
   const [aiInstruction, setAiInstruction] = useState("");
   const [proposal, setProposal] = useState<AiProposal | null>(null);
+  const [assets, setAssets] = useState<VisualAsset[]>([]);
   const dragRef = useRef<DragState>(null);
 
   useEffect(() => {
@@ -101,6 +106,43 @@ export default function PrototypeEditor({ doc, onSaved, onError }: PrototypeEdit
     setIssues([]);
     setProposal(null);
   }, [doc.id, doc.revision, doc.sourceContent]);
+
+  useEffect(() => {
+    let cancelled = false;
+    collabVisualAssetList(doc.projectId, doc.id)
+      .then((list) => {
+        if (!cancelled) setAssets(list);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [doc.projectId, doc.id]);
+
+  const importAsset = async (): Promise<VisualAsset | null> => {
+    setError("");
+    try {
+      const path = await openDialog({
+        multiple: false,
+        directory: false,
+        title: "选择图片（png/jpg/jpeg/webp/gif，≤32 MiB）",
+      });
+      if (typeof path !== "string") return null;
+      setBusy(true);
+      const asset = await collabVisualAssetImport(doc.projectId, {
+        path,
+        title: doc.title,
+        documentId: doc.id,
+      });
+      setAssets((list) => [asset, ...list.filter((a) => a.id !== asset.id)]);
+      return asset;
+    } catch (e) {
+      fail(e);
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const page = useMemo(
     () => content.pages.find((p) => p.id === activeId) ?? content.pages[0],
@@ -608,6 +650,8 @@ export default function PrototypeEditor({ doc, onSaved, onError }: PrototypeEdit
             <PrototypePropertiesPanel
               component={selected}
               pages={content.pages}
+              assets={assets}
+              onImportAsset={importAsset}
               onChange={(mutate) => {
                 if (selected) updateComponent(selected.id, mutate);
               }}

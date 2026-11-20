@@ -2,6 +2,7 @@
 
 import { ArrowDown, ArrowUp, Copy, Trash2 } from "lucide-react";
 import Select from "../../ui/Select";
+import type { VisualAsset } from "../../../lib/collab";
 import {
   COMPONENT_PALETTE,
   EVENT_ACTIONS,
@@ -14,10 +15,12 @@ import {
 export interface PrototypePropertiesPanelProps {
   component: ProtoComponent | null;
   pages: ProtoPage[];
+  assets: VisualAsset[];
   onChange: (mutate: (component: ProtoComponent) => ProtoComponent) => void;
   onDelete: () => void;
   onDuplicate: () => void;
   onLayer: (direction: "up" | "down" | "top" | "bottom") => void;
+  onImportAsset: () => Promise<VisualAsset | null>;
 }
 
 const EVENT_KEYS = ["onClick", "onChange", "onSubmit"] as const;
@@ -37,10 +40,12 @@ const STYLE_HINTS: Record<string, string> = {
 export default function PrototypePropertiesPanel({
   component,
   pages,
+  assets,
   onChange,
   onDelete,
   onDuplicate,
   onLayer,
+  onImportAsset,
 }: PrototypePropertiesPanelProps) {
   if (!component) {
     return (
@@ -123,14 +128,33 @@ export default function PrototypePropertiesPanel({
       ) : null}
 
       {component.type === "image" ? (
-        <label>
-          图片资产 ID（va_…）
-          <input
-            className="input"
+        <div className="proto-prop-group">
+          <strong>图片资产</strong>
+          <Select
             value={String(component.props.assetId ?? "")}
-            onChange={(e) => setProp("assetId", e.target.value)}
+            options={[
+              { value: "", label: "未选择" },
+              ...assets.map((asset) => ({
+                value: asset.id,
+                label: asset.title || asset.sha256.slice(0, 8),
+              })),
+            ]}
+            onChange={(value) => setProp("assetId", value)}
+            ariaLabel="图片资产"
+            size="sm"
+            block
           />
-        </label>
+          <button
+            className="btn ghost small"
+            onClick={() => {
+              void onImportAsset().then((asset) => {
+                if (asset) setProp("assetId", asset.id);
+              });
+            }}
+          >
+            导入图片
+          </button>
+        </div>
       ) : null}
 
       {component.type === "button" ? (
