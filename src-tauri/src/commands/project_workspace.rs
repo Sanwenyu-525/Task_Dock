@@ -927,31 +927,42 @@ pub fn workspace_task_link_add_impl(
     project_id: &str,
     task_id: &str,
 ) -> AppResult<()> {
+    db.with_conn(|conn| workspace_task_link_add_tx(conn, project_id, task_id))
+}
+
+/// 连接级关联（v82）：供文件导入在**带守卫的写事务**内复用。
+///
+/// 与 [`workspace_task_link_add_impl`] 语义一致，唯一区别是复用调用方提供的连接，
+/// 让「建任务 + 关联项目」与「导入租约校验」落在同一个事务边界内：
+/// 不会出现「任务已建、关联失败」导致重试时重复建任务。
+pub fn workspace_task_link_add_tx(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    task_id: &str,
+) -> AppResult<()> {
     let task_id = task_id.trim();
     if task_id.is_empty() {
         return Err(AppError::Validation("任务 ID 不能为空".into()));
     }
     let now = now_iso();
-    db.with_conn(|conn| {
-        ensure_project_exists(conn, project_id)?;
-        let task_exists = conn
-            .query_row(
-                "SELECT 1 FROM tasks WHERE id = ?1",
-                params![task_id],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_some();
-        if !task_exists {
-            return Err(AppError::NotFound(format!("任务不存在: {task_id}")));
-        }
-        conn.execute(
-            "INSERT OR IGNORE INTO workspace_task_links (project_id, task_id, created_at)
-             VALUES (?1, ?2, ?3)",
-            params![project_id, task_id, now],
-        )?;
-        Ok(())
-    })
+    ensure_project_exists(conn, project_id)?;
+    let task_exists = conn
+        .query_row(
+            "SELECT 1 FROM tasks WHERE id = ?1",
+            params![task_id],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if !task_exists {
+        return Err(AppError::NotFound(format!("任务不存在: {task_id}")));
+    }
+    conn.execute(
+        "INSERT OR IGNORE INTO workspace_task_links (project_id, task_id, created_at)
+         VALUES (?1, ?2, ?3)",
+        params![project_id, task_id, now],
+    )?;
+    Ok(())
 }
 
 pub fn workspace_task_unlink_impl(

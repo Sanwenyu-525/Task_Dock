@@ -180,6 +180,7 @@ export default function Combobox<T extends string = string>({
           ref={inputRef}
           id={id}
           type="text"
+          className="ui-combobox-input input-embedded"
           role="combobox"
           aria-expanded={open}
           aria-controls={open ? listId : undefined}

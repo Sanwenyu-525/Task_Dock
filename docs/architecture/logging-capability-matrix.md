@@ -343,3 +343,82 @@ print(len(rows)); [print(k,v) for k,v in cnt.most_common()]
 | **P2** | 诊断中心交互增强（暂停、虚拟滚动、导出预览） | I-12、I-16、I-18、I-19 |
 | **P2** | 错误提示与 operationId 对账 | J-17 |
 | **P3** | 生产 `console.*` 收敛、命名消歧、脚本日志格式 | B-06、C-2/3/4/5 |
+
+---
+
+## M. 第二阶段回填（2026-11-20，logging-phase2）
+
+> 本节为第二阶段开发后的状态回填。**上方 A–K 表与 §L 统计是 2026-11-19 审计快照，
+> 未按本轮重算**；以本节带日期的逐条结论为准。状态三分法：**已实现且已验证**（有真实执行
+> 通过的测试/命令证据）/ **已实现未验证**（代码存在，无设备、无 Dev 实例、未跑全量或被环境
+> 阻塞）/ **延期**（本阶段明确不做，理由与将来约定见 `logging-current-state.md` §10.4）。
+> 证据目录：`tmp/acceptance/logging-phase2/`。
+
+### M.1 Android 日志体系
+
+| 矩阵项 | 回填状态 | 依据 |
+|---|---|---|
+| B-07 Android 采集适配层 | **已实现未验证**：`SafeLog.kt` 唯一日志入口，tag 归一 + 原生脱敏；生产 `HandlerThread/Handler` 分发路径未在 JVM 执行（测试经 `LogDispatcher` 接缝注入手动队列）；真机/模拟器未执行 | `android-logger/report.md` |
+| B-08 Android JS/TS 采集 | **已实现且已验证**：`safeLog.ts` 规则表与 Kotlin 同序对照；定向 13 用例、移动端全量 86 文件 / 926 用例通过，`tsc --noEmit` 退出码 0 | 同上 |
+| C-14 Android 敏感信息处理 | **已实现且已验证（JVM/JS 层）**：原生侧先脱敏，Logcat 与文件共用同一份结果；Kotlin `RULES` ↔ JS `REDACT_RULES` 同序同规则，双侧对照矩阵用例通过；真机行为未验证 | 同上 |
+| D-09 Android 缓冲/背压 | **已实现且已验证（JVM 层）**：有界队列 256 / 高级别预留 32，分级配额与按级别丢弃计数；8 线程并发、shutdown 竞态、占用降级与退避序列均有用例；真机未验证 | 同上 |
+| E-16 Android 本地持久化 | **已实现未验证**：滚动文件 2 MB×3、总量 ≤6 MB、保留 7 天、活动文件硬上限 4 MB；轮转/降级/退避由 JVM 单测覆盖，真机落盘与跨天清理未执行 | 同上 |
+| J-07 Android UncaughtException | **已实现未验证**：`CrashHandler.kt` 随布局迁移（install 幂等、崩溃线程同步写文件、委托原 handler、5 文件/7 天）；Expo Module 运行时上下文未在 JVM 实例化，端到端未覆盖 | 同上 |
+| K-17 Android 日志生命周期测试 | **已实现且已验证**：Kotlin 27 用例（SafeLogTest 15 / FileLogSinkTest 12）failures=0 errors=0；机器可读结果在模块 `build/test-results/` | 同上 |
+
+### M.2 Trace 与跨模块追踪
+
+| 矩阵项 | 回填状态 | 依据 |
+|---|---|---|
+| G-04 `trace_id` | **已实现且已验证（模块级）**：事件契约新增 `trace_id: Option<String>`；前端 `startTracedOperation`；mobile_sync 会话级共享；shelf addPaths/runFileOp、`create_task`、`open_agent_session` 三处、工作区 copy/move 端到端接通（16 个 trace_wiring 用例通过）。Dev 真机端到端未执行；工作流执行链路仍未挂 trace | `trace-id/report.md`、`trace-wiring/report.md` |
+| G-05 `span_id` | **延期**：只有 `operation_id` + `trace_id`；`new_span_id()` 生成函数存在，事件结构未加字段。将来预留 `span_id` / `parent_span_id` 可选字段（见现状报告 §10.4） | `trace-id/report.md` §5 |
+| G-09 不信任外部 Trace ID | **已实现且已验证**：`validate_external_id` 限 16 位小写 hex；大写/非 hex/超长/不足/空串丢弃并重新生成；trace 与事件归一校验二次兜底 | `trace-id/report.md`；`trace.rs` 用例 |
+| G-11 Trace 不替代认证/授权 | **已实现且已验证**：鉴权路径不读 trace；`trace_value_does_not_change_authentication_outcome` 验证无效令牌+traceId 仍 401、有效令牌+畸形 trace 仍 200 | `trace-id/report.md` |
+| G-13 Desktop↔Android 关联 | **部分实现**：桌面 server 按设备会话下发/沿用 traceId；移动端链路（`pullAll` 存 `trace.id` → `pushBatch` 回传）既有测试通过；真机跨端链路未执行 | 同上 |
+| G-14 MCP↔诊断关联 | **部分实现**：`tools/call` 经 `with_trace` 包裹同步段；非 tools/call 的 MCP 方法（resources/list、prompts/get 等）未建上下文；`mcp::protocol` Rust 单测本轮被其他任务在途编译错误阻塞（ENVIRONMENT BLOCKED） | `trace-id/report.md` §7 |
+| K-11 Trace ID 传播测试 | **已实现且已验证（定向）**：mobile_sync 90 passed、diagnostics::trace 5 passed、trace_wiring 8 passed、前端 diagnostics.test.ts 40 passed、移动端 sync 4 文件 30 passed | 同上 |
+
+### M.3 安全审计统一视图
+
+| 矩阵项 | 回填状态 | 依据 |
+|---|---|---|
+| F-05 配对/鉴权/撤销审计 | **已实现且已验证（Rust 适配层模块级）**：`securityAuditLog`（主库 v82）真接入，`DEVICE_REVOKED` → `deviceRevoke`，pairing/auth 直通；16 个 `security_audit` 用例通过。真机与前端联调未在 Dev 实例走查 | `security-audit/report.md` |
+| F-06 信任变更审计（Hub） | **延期接线（notWired）**：`personalHub` 运行在独立进程，主进程无审计只读管道；`HubAuditReader` trait 已预留；未绕过去直连他人库文件 | 同上 |
+| F-16 审计查询入口统一 | **已实现且已验证（Rust 适配层）**：四源投影、合并排序分页、来源状态 `available/empty/locked/notWired/error`；条目 `id=<source>:<原始 id>`，不伪装同一物理表；前端安全审计视图由 E 任务组件级测试覆盖。vault 解锁态真实 `VaultState` 路径未验证 | 同上；`diagnostics-ui/report.md` |
+| K-15 设备配对审计测试 | **已实现且已验证**：适配层用例覆盖来源标识分离、合并分页无重叠、设备过滤、authz 映射、traceId 形态校验、vault locked、hub notWired、撤销事件映射 | `security-audit/report.md` §3 |
+
+### M.4 性能指标
+
+| 矩阵项 | 回填状态 | 依据 |
+|---|---|---|
+| H-01 通用耗时测量 API | **已实现且已验证（Rust 聚合层）**：`record_duration_async` + `OperationTimer`（显式 finish / Drop 兜底防重复入账 / `Send` 可跨 await）；14 个 metrics 用例通过 | `metrics/report.md` |
+| H-02 桌面启动耗时 | **已实现且 Dev 实测（单次样本）**：阈值表含 `startup` 3000 ms；起点/收尾接线完成；Dev 实测 3879 ms / P95 3879 ms / 慢操作 1，正式基线未执行 | `final/dev-ui.md` §3.1 |
+| H-03 文件工作区耗时 | **已实现未验证**：`file/list_dir` 埋点（1500 ms 阈值）；命令模块内无单元测试，测试 harness 编译通过，运行时表现待 Dev 实例 | 同上 §1.2 |
+| H-04 回收站耗时 | **已实现未验证**：`recycle/list` 走默认 1000 ms 阈值；recycle 套件前台 42 passed / 1 ignored，指标断言未单列 | 同上 |
+| H-05 资源扫描耗时 | **已实现未验证**：`resource/snapshot|preview|disk_analyze|junk_scan` 埋点（5000 ms）；模块内无单测 | 同上 |
+| H-06 剪贴板捕获延迟 | **已实现未验证**：`clipboard/capture` 200 ms 阈值；clipboard 套件前台 6 passed / 260 passed / 1 ignored，捕获延迟运行时未测 | 同上 |
+| H-08 设备通信耗时 | **已实现未验证**：`mobile_sync/pull`、`apply_push` 各 5000 ms 阈值；sync 套件前台 17 passed | 同上 |
+| H-09 MCP 工具调用耗时/错误率 | **部分实现**：`mcp/tool_call` 10000 ms 阈值；`ToolError::Authz` 拒绝不计失败聚合（与 MCP 审计分工）；mcp 套件 71 passed / 1 既有失败（`tool_defs_are_complete_and_unique`，collab 工具 schema 问题，非本任务引入） | 同上 §4.1 |
+| H-10 Agent 任务耗时 | **部分实现**：`agent/submit` 30000 ms 阈值，管线拆出私有 `submit_inner`；agents::pipeline 前台 31 passed | 同上 |
+| K-29 / K-30 / K-34 性能基准与阈值校准 | **未执行（证据不足）**：阈值表为候选值；无「日志开/关业务耗时差异」基准脚本、无高频 CPU/内存采样、无 Release 基线。Debug 测试二进制数字不外推为正式性能结论 | `export-preview/report.md` §3.2；`metrics/report.md` §4.4 |
+
+### M.5 诊断中心 UI 与导出
+
+| 矩阵项 | 回填状态 | 依据 |
+|---|---|---|
+| I-08 Trace ID 展示/检索 | **部分实现**：安全审计视图行展开展示关联 Trace ID（verbose）；诊断 JSONL 的 trace 检索随 G-04 链路推进；`eventType` 筛选项未在 UI 暴露 | `diagnostics-ui/report.md` §3.2、§4 |
+| I-12 导出前预览 + 确认 | **已实现且已验证（组件级 + Rust 定向）**：`export_preview` 只读扫描（20 万行 / 400 ms 预算）不落盘不连库；预览对话框展示条数/错误/警告/模块/估算/脱敏状态；安全审计默认关闭、显式勾选；取消不落地文件。Rust 13 个 query 用例、前端 29 个诊断用例 + 51 个弹层定位用例通过；真机/窄窗/主题走查未执行 | `export-preview/report.md`；`diagnostics-ui/report.md` |
+| K-19 诊断包导出测试 | **已实现且已验证**：含空目录、级别/时间筛选、不落盘、估算单调、无审计段委托、授权段脱敏、50k 行有界导出等用例 | `export-preview/report.md` §3.1 |
+
+### M.6 本轮仍未执行 / 环境阻塞
+
+- **整 `cargo test --lib`**：被其他任务在途未跟踪文件 `src-tauri/src/agent_access/tests_v82_rest.rs`
+  （非 ASCII 字节串语法错误）阻塞，**ENVIRONMENT BLOCKED，非本任务缺陷**；各模块以定向测试 +
+  `cargo check --lib`（退出码 0，36 条既有警告，无新增阻断）证明改动。
+- **真机/Dev 实例走查**：未启动 `npm run tauri dev`；真实 WebView2/Win32 链路 trace 贯通、
+  320/400 窄窗、深浅主题、液态玻璃可读性、系统剪贴板/通知/焦点等原生通道未取证。
+- **Release 正式验收**：安装包生成、安装/升级/卸载、签名与更新、生产资源加载、正式性能基线
+  均未执行；本批结论为 Dev 功能验收，不推进 Release 状态机、无 buildId。
+- **D: 盘 ENOSPC 事故**：当日 D: 盘写满至 0 字节，主智能体删除可再生的 `src-tauri/target/debug`
+  （约 8.0 GB）后恢复约 7.0 GB；部分套件仅前台控制台通过，落盘复测为 ENOSPC 记录，不能作为
+  测试失败证据。详见验收报告环境一节。

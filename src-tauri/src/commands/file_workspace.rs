@@ -35,9 +35,22 @@ pub async fn fs_list_dir(
     fw::ensure_not_protected(&path, &protected_dirs(&app))?;
     let offset = offset.unwrap_or(0).min(fw::MAX_LIST_OFFSET);
     // 目录 IO 可能落在慢速/网络盘上：放到阻塞线程，避免占住 IPC 线程。
-    tauri::async_runtime::spawn_blocking(move || fw::list_dir(&path, show_hidden, offset))
-        .await
-        .map_err(|e| AppError::Agent(format!("列目录任务失败: {e}")))?
+    let started = std::time::Instant::now();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        fw::list_dir(&path, show_hidden, offset)
+    })
+    .await
+    .map_err(|e| AppError::Agent(format!("列目录任务失败: {e}")));
+    match result {
+        Ok(Ok(listing)) => {
+            crate::diagnostics::metrics::record_duration_async("file", "list_dir", started);
+            Ok(listing)
+        }
+        Ok(Err(e)) | Err(e) => {
+            crate::diagnostics::metrics::record_failure("file", "list_dir", &e);
+            Err(e)
+        }
+    }
 }
 
 #[tauri::command]

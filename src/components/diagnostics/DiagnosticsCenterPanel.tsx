@@ -37,12 +37,12 @@ import { ConfirmDialog, Select } from "../ui";
 import { errorMessage } from "../../lib/errors";
 import {
   diagnosticsClear,
-  diagnosticsExport,
   diagnosticsOpenDir,
   diagnosticsQuery,
   diagnosticsStatus,
   diagnosticsSummary,
   type DiagnosticEventRecord,
+  type DiagnosticExportResult,
   type DiagnosticLevel,
   type DiagnosticPage,
   type DiagnosticQuery,
@@ -54,6 +54,9 @@ import {
 import { setClientVerboseMode } from "../../lib/diagnostics";
 import type { MessageKey } from "../../i18n";
 import FeatureLoadSection from "./FeatureLoadSection";
+import SecurityAuditSection from "./SecurityAuditSection";
+import PerformanceSection from "./PerformanceSection";
+import ExportPreviewDialog from "./ExportPreviewDialog";
 import "./diagnostics-workspace.css";
 
 const PAGE_SIZE = 30;
@@ -69,6 +72,9 @@ type RangeKey = "1h" | "24h" | "7d" | "all";
 type LevelKey = "ALL" | "WARN" | "ERROR" | "CRITICAL";
 /** 三类异步动作各自持有状态，互不覆盖（加载中导出/清理时 spinner 不应提前恢复）。 */
 type BusyKey = "load" | "export" | "clear";
+
+/** 顶层三视图：运行诊断（现有日志/异常/Trace）、安全审计、性能分析。 */
+type DiagnosticsView = "runtime" | "security" | "performance";
 
 interface FilterDraft {
   range: RangeKey;
@@ -98,16 +104,6 @@ interface ChainState {
   loading: boolean;
   error: string | null;
 }
-
-/** 导出结果：`complete` / `flushIssue` 来自后端导出契约（旧后端缺省时按 truncated 推断）。 */
-type ExportOutcome = {
-  path: string;
-  bytes: number;
-  records: number;
-  truncated: boolean;
-  complete?: boolean;
-  flushIssue?: string | null;
-};
 
 /** 清理结果：`completed=false` 表示超时/取消，日志未被删除。 */
 type ClearOutcome = {
@@ -252,6 +248,9 @@ export default function DiagnosticsCenterPanel() {
   const [cleared, setCleared] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [chain, setChain] = useState<ChainState | null>(null);
+  const [view, setView] = useState<DiagnosticsView>("runtime");
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportFilter, setExportFilter] = useState<DiagnosticQuery>({});
   const [lastExport, setLastExport] = useState<{
     path: string;
     complete: boolean;
@@ -560,40 +559,45 @@ export default function DiagnosticsCenterPanel() {
     await copyText(lines.join("\n"), t("diagnosticsCenter.toast.copied"));
   }
 
-  async function onExport() {
-    setBusy("export", true);
+  /** 点导出：先进入预览确认对话框；预览只读不落盘，确认后才真正导出。 */
+  function onExport() {
     setActionError(null);
-    try {
-      // 链视图下导出当前操作链（只按 operationId），列表视图才带列表筛选。
-      let filter: DiagnosticQuery;
-      if (chain) {
-        filter = { operationId: chain.operationId };
-      } else {
-        filter = buildListFilter(applied);
-        delete filter.offset;
-        delete filter.limit;
-      }
-      const result = (await diagnosticsExport(filter)) as ExportOutcome;
-      const complete = result.complete ?? !result.truncated;
-      setLastExport({
-        path: result.path,
-        complete,
-        truncated: result.truncated,
-        flushIssue: result.flushIssue ?? null,
-      });
-      showToast(
-        t("diagnosticsCenter.toast.exported", {
-          records: result.records,
-          size: formatBytes(result.bytes),
-        }),
-        { kind: complete ? "success" : "warning" },
-      );
-    } catch (e) {
-      // 原样展示后端错误（磁盘满、权限不足等），不做静默重试。
-      setActionError(errorMessage(e));
-    } finally {
-      setBusy("export", false);
+    // 链视图下导出当前操作链（只按 operationId），列表视图才带列表筛选。
+    let filter: DiagnosticQuery;
+    if (chain) {
+      filter = { operationId: chain.operationId };
+    } else {
+      filter = buildListFilter(applied);
+      delete filter.offset;
+      delete filter.limit;
     }
+    setExportFilter(filter);
+    setBusy("export", true);
+    setExportOpen(true);
+  }
+
+  function onExported(result: DiagnosticExportResult) {
+    setExportOpen(false);
+    setBusy("export", false);
+    const complete = result.complete ?? !result.truncated;
+    setLastExport({
+      path: result.path,
+      complete,
+      truncated: result.truncated,
+      flushIssue: result.flushIssue ?? null,
+    });
+    showToast(
+      t("diagnosticsCenter.toast.exported", {
+        records: result.records,
+        size: formatBytes(result.bytes),
+      }),
+      { kind: complete ? "success" : "warning" },
+    );
+  }
+
+  function onExportCancel() {
+    setExportOpen(false);
+    setBusy("export", false);
   }
 
   async function onOpenDir() {
@@ -673,6 +677,8 @@ export default function DiagnosticsCenterPanel() {
     status.written === 0 &&
     (page?.scanned ?? 0) === 0;
   const loading = busy.load;
+  /** 详细诊断模式：新视图据此隐藏 Trace ID / 原因码 / 指纹等技术字段。 */
+  const verboseMode = status?.mode === "verbose";
 
   const chainStarted =
     chain?.items.some((item) => item.status === "started" || item.event === "started") ?? false;
@@ -1050,29 +1056,33 @@ export default function DiagnosticsCenterPanel() {
         subtitle={t("diagnosticsCenter.subtitle")}
         actions={
           <>
+            {view === "runtime" && (
+              <>
+                <button
+                  type="button"
+                  className="btn sm"
+                  onClick={onRefresh}
+                  disabled={chain ? chain.loading : loading || !fullVisible}
+                  aria-label={t("diagnosticsCenter.action.refresh")}
+                  data-tip={t("diagnosticsCenter.action.refresh")}
+                >
+                  <RefreshCw
+                    size={12}
+                    className={(chain ? chain.loading : loading) ? "spin" : undefined}
+                    aria-hidden="true"
+                  />
+                  <span>{t("diagnosticsCenter.action.refresh")}</span>
+                </button>
+                <button type="button" className="btn sm" onClick={() => void onCopySummary()}>
+                  <Copy size={12} aria-hidden="true" />
+                  <span>{t("diagnosticsCenter.action.copySummary")}</span>
+                </button>
+              </>
+            )}
             <button
               type="button"
               className="btn sm"
-              onClick={onRefresh}
-              disabled={chain ? chain.loading : loading || !fullVisible}
-              aria-label={t("diagnosticsCenter.action.refresh")}
-              data-tip={t("diagnosticsCenter.action.refresh")}
-            >
-              <RefreshCw
-                size={12}
-                className={(chain ? chain.loading : loading) ? "spin" : undefined}
-                aria-hidden="true"
-              />
-              <span>{t("diagnosticsCenter.action.refresh")}</span>
-            </button>
-            <button type="button" className="btn sm" onClick={() => void onCopySummary()}>
-              <Copy size={12} aria-hidden="true" />
-              <span>{t("diagnosticsCenter.action.copySummary")}</span>
-            </button>
-            <button
-              type="button"
-              className="btn sm"
-              onClick={() => void onExport()}
+              onClick={onExport}
               disabled={busy.export}
             >
               <Download size={12} aria-hidden="true" />
@@ -1082,7 +1092,39 @@ export default function DiagnosticsCenterPanel() {
         }
       />
 
-      <div className={`page-scroll diag-body${chain ? " is-chain" : ""}${detailHost ? " has-detail-host" : ""}`}>
+      <div className="diag-tabs seg-group" role="tablist" aria-label={t("diagnosticsCenter.tabs.aria")}>
+        <button
+          type="button"
+          className={`seg-btn${view === "runtime" ? " active" : ""}`}
+          role="tab"
+          aria-selected={view === "runtime"}
+          onClick={() => setView("runtime")}
+        >
+          {t("diagnosticsCenter.tabs.runtime")}
+        </button>
+        <button
+          type="button"
+          className={`seg-btn${view === "security" ? " active" : ""}`}
+          role="tab"
+          aria-selected={view === "security"}
+          onClick={() => setView("security")}
+        >
+          {t("diagnosticsCenter.tabs.security")}
+        </button>
+        <button
+          type="button"
+          className={`seg-btn${view === "performance" ? " active" : ""}`}
+          role="tab"
+          aria-selected={view === "performance"}
+          onClick={() => setView("performance")}
+        >
+          {t("diagnosticsCenter.tabs.performance")}
+        </button>
+      </div>
+
+      <div className={`page-scroll diag-body${chain ? " is-chain" : ""}${detailHost ? " has-detail-host" : ""} is-view-${view}`}>
+        {view === "runtime" && (
+        <>
         {loadError && (
           <div className="diag-center-state is-error" role="alert">
             <AlertTriangle size={13} aria-hidden="true" />
@@ -1541,7 +1583,19 @@ export default function DiagnosticsCenterPanel() {
             {renderInspectorContent()}
           </aside>
         )}
+        </>
+        )}
+
+        {view === "security" && <SecurityAuditSection verbose={verboseMode} />}
+        {view === "performance" && <PerformanceSection verbose={verboseMode} />}
       </div>
+
+      <ExportPreviewDialog
+        open={exportOpen}
+        filter={exportFilter}
+        onCancel={onExportCancel}
+        onExported={onExported}
+      />
 
       <ConfirmDialog
         open={confirmClear}

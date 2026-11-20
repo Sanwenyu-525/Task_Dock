@@ -10,9 +10,10 @@
 //! - 配对接口无鉴权（凭一次性码），其余接口用 Bearer 设备令牌；
 //! - 同步与文件载荷用设备令牌哈希派生的密钥做 XSalsa20-Poly1305 加密，业务数据不明文上线。
 
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -33,8 +34,8 @@ use crate::error::AppError;
 use crate::mobile_sync::files;
 use crate::shelf;
 use crate::mobile_sync::sync::{
-    apply_push, decrypt_envelope, derive_key, encrypt_envelope, pull, PushRequest, AAD_PULL,
-    AAD_PUSH, MAX_PULL_LIMIT, MAX_PUSH_OPS, SYNC_MAX_BODY,
+    apply_push_with_trace, decrypt_envelope, derive_key, encrypt_envelope, pull_with_trace,
+    PushRequest, AAD_PULL, AAD_PUSH, MAX_PULL_LIMIT, MAX_PUSH_OPS, SYNC_MAX_BODY,
 };
 use crate::mobile_sync::{
     authenticate_device, complete_pairing, hash_token, MobileDevice, MobileSyncState, PairFailure,
@@ -64,6 +65,44 @@ pub struct ServerCtx {
     request_sem: Arc<Semaphore>,
     /// TLS-only 身份：所有连接必须先过这一关，没有明文路径。
     tls: TlsIdentity,
+    /// 按设备会话关联的链路 ID：同一设备一次同步周期内的分页 pull / push /
+    /// 后续 pull 共用同一 trace_id。只用于诊断事件关联，**不参与鉴权**；
+    /// 进程内有界 Map，撤销设备后不主动清理（条目数受配对设备数约束）。
+    trace_sessions: Arc<Mutex<HashMap<String, String>>>,
+}
+
+/// 会话 trace 映射的条目上限：配对设备数量很少，超限后淘汰一个任意旧条目兜底。
+const MAX_TRACE_SESSIONS: usize = 32;
+
+/// 解析本次同步请求应使用的链路 ID（按设备会话关联）：
+///
+/// - 外部传入合法（16 位小写 hex）→ 采用并记入会话，后续请求沿用；
+/// - 非法 / 缺失 → 沿用本设备已有会话 trace；仍无则新生成；
+/// - 非法值静默丢弃，**不拒绝请求、不透传原值**；trace 绝不进入鉴权判断。
+///
+/// 显式传参：返回值随 pull/push 参数与诊断事件携带，跨 `.await` 不依赖线程局部上下文。
+fn resolve_session_trace(
+    sessions: &Mutex<HashMap<String, String>>,
+    device_id: &str,
+    incoming: Option<&str>,
+) -> String {
+    let validated = incoming.and_then(|raw| crate::diagnostics::trace::validate_external_id(raw));
+    let mut map = sessions.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(trace) = validated {
+        map.insert(device_id.to_string(), trace.clone());
+        return trace;
+    }
+    if let Some(existing) = map.get(device_id) {
+        return existing.clone();
+    }
+    let trace = crate::diagnostics::trace::new_trace_id();
+    if map.len() >= MAX_TRACE_SESSIONS {
+        if let Some(oldest) = map.keys().next().cloned() {
+            map.remove(&oldest);
+        }
+    }
+    map.insert(device_id.to_string(), trace.clone());
+    trace
 }
 
 /// 绑定局域网全部 IPv4 接口。Windows 防火墙首次可能弹窗询问，属预期行为。
@@ -354,38 +393,64 @@ async fn handle_changes(
         Ok(permit) => permit,
         Err(response) => return response,
     };
-    let (_device, token_hash) = match authenticate_request(&req, &ctx, peer).await {
+    let (device, token_hash) = match authenticate_request(&req, &ctx, peer).await {
         Ok(value) => value,
         Err(response) => return response,
     };
+    // 链路 trace 在鉴权之后解析：trace 不参与设备信任判断，只做诊断关联。
+    let trace = resolve_session_trace(&ctx.trace_sessions, &device.id, None);
     let (since, limit) = parse_pull_query(req.uri().query());
     let db = ctx.db.clone();
-    let result = tokio::task::spawn_blocking(move || pull(&db, since, limit)).await;
+    let trace_for_task = trace.clone();
+    let result =
+        tokio::task::spawn_blocking(move || pull_with_trace(&db, since, limit, Some(&trace_for_task)))
+            .await;
     let key = derive_key(&token_hash);
 
     match result {
-        Ok(Ok(page)) => match serde_json::to_value(page) {
-            Ok(value) => match encrypt_envelope(&key, AAD_PULL, &value) {
-                Ok(envelope) => json_response(StatusCode::OK, envelope),
+        Ok(Ok(page)) => {
+            let changes_len = page.changes.len();
+            crate::diagnostics::event(
+                crate::diagnostics::DiagLevel::Info,
+                "mobile_sync",
+                "pull",
+                "success",
+            )
+            .trace(&trace)
+            .metadata("changes", serde_json::json!(changes_len))
+            .emit();
+            match serde_json::to_value(page) {
+                Ok(value) => match encrypt_envelope(&key, AAD_PULL, &value) {
+                    Ok(envelope) => json_response(StatusCode::OK, envelope),
+                    Err(error) => {
+                        tracing::warn!("手机同步响应加密失败: {error}");
+                        api_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "internal_error",
+                            "同步处理失败，请重试",
+                        )
+                    }
+                },
                 Err(error) => {
-                    tracing::warn!("手机同步响应加密失败: {error}");
+                    tracing::warn!("手机同步响应序列化失败: {error}");
                     api_error(
                         StatusCode::INTERNAL_SERVER_ERROR,
                         "internal_error",
                         "同步处理失败，请重试",
                     )
                 }
-            },
-            Err(error) => {
-                tracing::warn!("手机同步响应序列化失败: {error}");
-                api_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal_error",
-                    "同步处理失败，请重试",
-                )
             }
-        },
+        }
         Ok(Err(error)) => {
+            crate::diagnostics::event(
+                crate::diagnostics::DiagLevel::Warn,
+                "mobile_sync",
+                "pull",
+                "failed",
+            )
+            .trace(&trace)
+            .from_error(&error)
+            .emit();
             tracing::warn!("手机同步拉取失败: {error}");
             api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -394,6 +459,15 @@ async fn handle_changes(
             )
         }
         Err(join_error) => {
+            crate::diagnostics::event(
+                crate::diagnostics::DiagLevel::Error,
+                "mobile_sync",
+                "pull",
+                "failed",
+            )
+            .trace(&trace)
+            .metadata("join", serde_json::json!(join_error.to_string()))
+            .emit();
             tracing::warn!("手机同步拉取任务异常: {join_error}");
             api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -470,15 +544,34 @@ async fn handle_ops(
         );
     }
 
+    // 鉴权与设备身份确认后才解析链路 trace：外部传入值经 validate_external_id
+    // 校验，非法丢弃并沿用/生成会话 trace；trace 不参与任何鉴权判断。
+    let incoming_trace = request.trace_id.clone();
+    let trace = resolve_session_trace(&ctx.trace_sessions, &device.id, incoming_trace.as_deref());
     let db = ctx.db.clone();
     let device_id = device.id.clone();
     let ops = request.ops;
-    let result =
-        tokio::task::spawn_blocking(move || apply_push(&db, &device_id, &ops)).await;
+    let trace_for_task = trace.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        apply_push_with_trace(&db, &device_id, &ops, Some(&trace_for_task))
+    })
+    .await;
     match result {
         Ok(Ok(mut response)) => {
-            // traceId 原样回传：不校验语义、不参与任何鉴权（认证路径不读该字段）。
-            response.trace_id = request.trace_id;
+            // 回传会话解析后的合法 trace；非法请求值已在 resolve 阶段丢弃，不原样回显。
+            response.trace_id = Some(trace.clone());
+            let ack_len = response.ack.len();
+            let conflict_len = response.conflicts.len();
+            crate::diagnostics::event(
+                crate::diagnostics::DiagLevel::Info,
+                "mobile_sync",
+                "push",
+                "success",
+            )
+            .trace(&trace)
+            .metadata("ack", serde_json::json!(ack_len))
+            .metadata("conflicts", serde_json::json!(conflict_len))
+            .emit();
             match serde_json::to_value(response) {
                 Ok(value) => match encrypt_envelope(&key, AAD_PUSH, &value) {
                     Ok(envelope) => json_response(StatusCode::OK, envelope),
@@ -502,6 +595,15 @@ async fn handle_ops(
             }
         }
         Ok(Err(error)) => {
+            crate::diagnostics::event(
+                crate::diagnostics::DiagLevel::Warn,
+                "mobile_sync",
+                "push",
+                "failed",
+            )
+            .trace(&trace)
+            .from_error(&error)
+            .emit();
             tracing::warn!("手机同步写入失败: {error}");
             api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -510,6 +612,15 @@ async fn handle_ops(
             )
         }
         Err(join_error) => {
+            crate::diagnostics::event(
+                crate::diagnostics::DiagLevel::Error,
+                "mobile_sync",
+                "push",
+                "failed",
+            )
+            .trace(&trace)
+            .metadata("join", serde_json::json!(join_error.to_string()))
+            .emit();
             tracing::warn!("手机同步写入任务异常: {join_error}");
             api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1188,6 +1299,7 @@ pub async fn serve(
         state,
         request_sem: Arc::new(Semaphore::new(MAX_INFLIGHT)),
         tls,
+        trace_sessions: Arc::new(Mutex::new(HashMap::new())),
     });
     let conn_sem = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     // 在途连接任务台账：监听器退出（关服务/换端口/应用退出）时必须把它们一起
@@ -1609,6 +1721,97 @@ mod tests {
         let key = derive_key(&hash_token(&token));
         let data = decrypt_envelope(&key, AAD_PULL, &serde_json::from_str(&resp).unwrap()).unwrap();
         assert_eq!(data["changes"][0]["fields"]["title"], "机密任务");
+    }
+
+    /// 构造一个加密 push 信封；`trace_id` 为 None 时字段整个省略（旧客户端形态）。
+    fn push_envelope(device_id: &str, token: &str, trace_id: Option<&str>) -> String {
+        let key = derive_key(&hash_token(token));
+        let mut payload = json!({ "device_id": device_id, "ops": [] });
+        if let Some(trace) = trace_id {
+            payload["traceId"] = json!(trace);
+        }
+        let envelope = encrypt_envelope(&key, AAD_PUSH, &payload).unwrap();
+        serde_json::to_string(&envelope).unwrap()
+    }
+
+    fn decrypt_push(token: &str, resp: &str) -> Value {
+        let key = derive_key(&hash_token(token));
+        decrypt_envelope(&key, AAD_PUSH, &serde_json::from_str(resp).unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn pull_issues_session_trace_shared_across_subsequent_pulls() {
+        let db = Arc::new(crate::db::Db::open_in_memory().unwrap());
+        let state = test_state();
+        let port = spawn_server(&db, &state).await;
+        let token = device_token_fixture();
+        insert_device(&db, "device-trace-pull", &token);
+
+        async fn pull_trace(port: u16, token: &str) -> String {
+            let (status, resp) =
+                tls_request(port, "GET", "/v1/changes?since=0", Some(token), None).await;
+            assert_eq!(status, 200, "{resp}");
+            let key = derive_key(&hash_token(token));
+            let data =
+                decrypt_envelope(&key, AAD_PULL, &serde_json::from_str(&resp).unwrap()).unwrap();
+            data["traceId"]
+                .as_str()
+                .expect("pull 必须下发会话 traceId")
+                .to_string()
+        }
+
+        let first = pull_trace(port, &token).await;
+        let second = pull_trace(port, &token).await;
+        assert_eq!(first, second, "同一设备的后续 pull 必须共享同一 trace_id");
+        assert!(crate::diagnostics::trace::validate_external_id(&first).is_some());
+    }
+
+    #[tokio::test]
+    async fn push_adopts_valid_trace_discards_invalid_and_reuses_session() {
+        let db = Arc::new(crate::db::Db::open_in_memory().unwrap());
+        let state = test_state();
+        let port = spawn_server(&db, &state).await;
+        let token = device_token_fixture();
+        insert_device(&db, "device-trace-push", &token);
+
+        // 合法外部 trace：采用并回传。
+        let body1 = push_envelope("device-trace-push", &token, Some("0123456789abcdef"));
+        let (status, resp) = tls_request(port, "POST", "/v1/ops", Some(&token), Some(&body1)).await;
+        assert_eq!(status, 200, "{resp}");
+        assert_eq!(decrypt_push(&token, &resp)["traceId"], "0123456789abcdef");
+
+        // 非法 trace（大写/非 hex）：静默丢弃，沿用会话 trace，请求不被拒绝。
+        let body2 = push_envelope("device-trace-push", &token, Some("NOT-HEX!!"));
+        let (status, resp) = tls_request(port, "POST", "/v1/ops", Some(&token), Some(&body2)).await;
+        assert_eq!(status, 200, "{resp}");
+        assert_eq!(decrypt_push(&token, &resp)["traceId"], "0123456789abcdef");
+
+        // 旧客户端不传 traceId：仍沿用会话 trace，字段不缺失。
+        let body3 = push_envelope("device-trace-push", &token, None);
+        let (status, resp) = tls_request(port, "POST", "/v1/ops", Some(&token), Some(&body3)).await;
+        assert_eq!(status, 200, "{resp}");
+        assert_eq!(decrypt_push(&token, &resp)["traceId"], "0123456789abcdef");
+    }
+
+    #[tokio::test]
+    async fn trace_value_does_not_change_authentication_outcome() {
+        let db = Arc::new(crate::db::Db::open_in_memory().unwrap());
+        let state = test_state();
+        let port = spawn_server(&db, &state).await;
+        let token = device_token_fixture();
+        insert_device(&db, "device-trace-auth", &token);
+
+        // 无效令牌：即使请求体携带 traceId，认证路径不读 trace，仍返回 401。
+        let bad_token = "c".repeat(64);
+        let bad_body = push_envelope("device-trace-auth", &bad_token, Some("0123456789abcdef"));
+        let (status, _) =
+            tls_request(port, "POST", "/v1/ops", Some(&bad_token), Some(&bad_body)).await;
+        assert_eq!(status, 401);
+
+        // 有效令牌 + 畸形 trace：鉴权通过（200），trace 不影响信任判断。
+        let body = push_envelope("device-trace-auth", &token, Some("zzz-garbage-value"));
+        let (status, resp) = tls_request(port, "POST", "/v1/ops", Some(&token), Some(&body)).await;
+        assert_eq!(status, 200, "{resp}");
     }
 
     #[test]

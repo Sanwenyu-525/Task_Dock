@@ -60,6 +60,16 @@ fn small_config() -> WriterConfig {
     }
 }
 
+/// 故障注入用的轮转阈值：隐私层会把单条 message 截到 500 字节左右，
+/// 用 1024 阈值时一条 1100 字符的填充事件落盘后仅 ~700 字节，无法触发轮转。
+/// 这里把阈值降到 400，确保「填充后占用」必然在下一写入前触发 rotate。
+fn rotation_trigger_config() -> WriterConfig {
+    WriterConfig {
+        max_file_bytes: 400,
+        ..small_config()
+    }
+}
+
 fn event(level: DiagLevel, module: &str, action: &str, message: &str) -> DiagnosticEvent {
     DiagnosticEvent::new(level, module, action, "failed").with_message(message)
 }
@@ -1051,7 +1061,7 @@ fn degraded_should_drop_enforces_hard_cap_and_level_policy() {
 #[test]
 fn rotation_lock_enters_degradation_without_rename_storm() {
     let dir = temp_dir("rotate-lock");
-    let diag = Diagnostics::init_at(dir.clone(), small_config());
+    let diag = Diagnostics::init_at(dir.clone(), rotation_trigger_config());
 
     // 1) 先把活动文件推过 1024 字节阈值（首条写入时 bytes=0，不触发轮转判断）。
     diag.record(event(
@@ -1165,7 +1175,7 @@ fn rotation_lock_enters_degradation_without_rename_storm() {
 #[test]
 fn rotation_recovers_after_lock_released() {
     let dir = temp_dir("rotate-recover");
-    let diag = Diagnostics::init_at(dir.clone(), small_config());
+    let diag = Diagnostics::init_at(dir.clone(), rotation_trigger_config());
     diag.flush_blocking();
 
     diag.record(event(DiagLevel::Info, "probe", "fill", &"x".repeat(1100)));
@@ -1178,6 +1188,9 @@ fn rotation_recovers_after_lock_released() {
     drop(holder);
     std::thread::sleep(Duration::from_millis(1200));
     diag.record(event(DiagLevel::Warn, "probe", "after", "占用释放后写入"));
+    diag.flush_blocking();
+    // rotate 成功时 writer 会在处理本条事件后**再入队** recovered 里程碑；
+    // 第一次 flush 的屏障可能排在该事件之前，因此再等一个屏障确保其落盘。
     diag.flush_blocking();
 
     let snapshot = diag.counters().snapshot();

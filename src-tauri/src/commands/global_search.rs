@@ -25,9 +25,20 @@ pub async fn global_search(
 ) -> AppResult<GlobalSearchResponse> {
     let db = db.inner().clone();
     let cats = categories.unwrap_or_default();
-    tauri::async_runtime::spawn_blocking(move || {
+    let started = std::time::Instant::now();
+    let result = tauri::async_runtime::spawn_blocking(move || {
         run_search(&db, &query, &cats, limit_per_category.unwrap_or(0))
     })
     .await
-    .map_err(|e| crate::error::AppError::Agent(format!("搜索任务失败: {}", e)))?
+    .map_err(|e| crate::error::AppError::Agent(format!("搜索任务失败: {}", e)));
+    match result {
+        Ok(Ok(response)) => {
+            crate::diagnostics::metrics::record_duration_async("search", "query", started);
+            Ok(response)
+        }
+        Ok(Err(e)) | Err(e) => {
+            crate::diagnostics::metrics::record_failure("search", "query", &e);
+            Err(e)
+        }
+    }
 }

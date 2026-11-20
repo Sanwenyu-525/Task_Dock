@@ -23,6 +23,7 @@ const ipc = vi.hoisted(() => ({
   historyGroups: vi.fn(),
   planningFeatureLinks: vi.fn(),
   onAgentChanged: vi.fn(),
+  openAgentSession: vi.fn(async () => {}),
 }));
 
 vi.mock("../../lib/bridge", async (importOriginal) => {
@@ -42,7 +43,7 @@ vi.mock("../../lib/bridge", async (importOriginal) => {
     adapterUninstall: vi.fn(async () => ({})),
     setSourceEnabled: vi.fn(async () => {}),
     getAgentInboxDir: vi.fn(async () => "C:\\inbox"),
-    openAgentSession: vi.fn(async () => {}),
+    openAgentSession: ipc.openAgentSession,
     pendingItemsToTasks: vi.fn(async () => 0),
     createSource: vi.fn(async () => {}),
     deleteSource: vi.fn(async () => {}),
@@ -745,6 +746,68 @@ describe("运行监控 · 历史会话后端分页", () => {
     expect(await screen.findByText("历史轮次任务 2")).toBeTruthy();
     expect(ipc.historyRuns).toHaveBeenLastCalledWith("s1", "run-cursor", 10, false, false);
     expect(screen.queryByRole("button", { name: "显示更多轮次" })).toBeNull();
+  });
+
+  it("实时会话「打开」携带合法 16-hex traceId，既有跳转入参与结果语义不变", async () => {
+    render(<AgentPanel />);
+    await screen.findByText("Codex CLI");
+    fireEvent.click(screen.getByText("Codex CLI"));
+
+    fireEvent.click(screen.getByRole("button", { name: "打开 Codex CLI" }));
+
+    await waitFor(() => expect(ipc.openAgentSession).toHaveBeenCalledTimes(1));
+    // 前两个入参仍是 sourceId / externalId；第三参数只追加链路 ID，不改导航行为。
+    expect(ipc.openAgentSession).toHaveBeenCalledWith(
+      "codex",
+      "e1",
+      expect.stringMatching(/^[0-9a-f]{16}$/),
+    );
+  });
+
+  it("实时溢出续页会话「打开」携带合法 16-hex traceId；失败路径仍按原语义提示", async () => {
+    const base = snapshot();
+    const counts = {
+      active_session_total: 2,
+      session_total: 2,
+      run_total: 2,
+      running: 1,
+      waiting: 1,
+      failed: 0,
+      disconnected: 0,
+    };
+    useAgentsStore.setState({
+      snapshot: {
+        ...base,
+        live_summary: {
+          ...counts,
+          by_source: { codex: counts },
+          sessions_truncated: true,
+          runs_truncated: false,
+          next_cursor: "overflow-cursor",
+        },
+      },
+      snapshotError: null,
+    });
+    ipc.historySessions.mockResolvedValue({
+      items: [historyItem(0, { live_state: "waiting" })],
+      total: 2,
+      next_cursor: null,
+    });
+    ipc.openAgentSession.mockRejectedValueOnce(new Error("no capability"));
+
+    render(<AgentPanel />);
+    await screen.findByText("Codex CLI");
+    fireEvent.click(screen.getByRole("button", { name: "查看更多实时会话" }));
+    await screen.findByText("历史会话 0");
+
+    fireEvent.click(screen.getByRole("button", { name: "打开会话 历史会话 0" }));
+
+    await waitFor(() => expect(ipc.openAgentSession).toHaveBeenCalledTimes(1));
+    expect(ipc.openAgentSession).toHaveBeenCalledWith(
+      "codex",
+      "ext-hist-0",
+      expect.stringMatching(/^[0-9a-f]{16}$/),
+    );
   });
 });
 

@@ -1,7 +1,7 @@
 // SafeLog：移动端 JS 侧统一日志入口（设计 docs/architecture/unified-observability-design.md §5）。
 //
 // 定位：本文件是生产代码唯一的日志调用面（生产 console 为 0 是本仓库红线）；
-// 原生侧 modules/logger/SafeLog.kt 是 Logcat 的唯一入口，**双端脱敏规则互相引用，
+// 原生侧 modules/logger/android/src/main/java/.../SafeLog.kt 是 Logcat 的唯一入口，**双端脱敏规则互相引用，
 // 改一处必须同步另一处**（本文件 REDACT 与 SafeLog.kt sanitizeText 一一对应）。
 //
 // 行为契约：
@@ -40,16 +40,22 @@ const LEVEL_WEIGHT: Record<SafeLogLevel, number> = {
   error: 4,
 };
 
-// 脱敏规则（与 modules/logger/SafeLog.kt sanitizeText 同套，改一处必须同步另一处）：
-// token/password/secret/api_key/authorization/bearer 标记、≥32 位 hex（令牌/密钥形态）、
-// sk- 前缀密钥 → [redacted]；Windows 盘符路径 / file|content URI / 常见 POSIX 系统路径 → [path]。
+// 脱敏规则（与 modules/logger/.../SafeLog.kt sanitizeText 同套，**改一处必须同步另一处**，
+// 双侧规则对照测试见 safeLog.test.ts 与 Kotlin SafeLogTest）：
+// - Bearer 前缀、token/password/passwd/secret/apiKey/api_key/api-key/apikey/authorization/
+//   auth/sig/key 赋值形态（含 URL 查询参数 ?key= / ?auth= / ?sig=）→ [redacted]；
+// - 邮箱地址、≥32 位 hex（令牌/密钥形态）、sk- 前缀密钥 → [redacted]；
+// - Windows 盘符路径 / file|content URI / 常见 POSIX 系统路径 → [path]。
 // 16 位 traceId 与普通错误码不受影响。
 // 每条规则自带替换标记：凭据类 → [redacted]，路径类 → [path]。
 const REDACT_RULES: ReadonlyArray<readonly [RegExp, string]> = [
   // Bearer 先于 authorization 标记规则：否则 "Authorization: Bearer <token>" 的
   // token 值会被标记规则吃掉前缀后残留下来。
   [/\bBearer\s+\S+/gi, "[redacted]"],
-  [/(?:token|password|secret|api[_-]?key|authorization)\s*[:=]\s*\S+/gi, "[redacted]"],
+  // authorization 排在 auth 前，避免前缀被短标记吃掉；key/auth/sig 覆盖 URL 查询参数。
+  [/\b(?:authorization|token|password|passwd|secret|api[_-]?key|apikey|auth|sig|key)\s*[:=]\s*\S+/gi, "[redacted]"],
+  // 邮箱地址（不依赖标记前缀，正文里出现即脱敏）。
+  [/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, "[redacted]"],
   [/\b[0-9a-f]{32,}\b/gi, "[redacted]"],
   [/\bsk-[A-Za-z0-9_-]{8,}\b/g, "[redacted]"],
   [/[A-Za-z]:\\\S*/g, "[path]"],

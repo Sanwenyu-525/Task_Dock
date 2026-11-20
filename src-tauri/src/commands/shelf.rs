@@ -13,7 +13,8 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::clipboard::platform::ClipboardPayload;
 use crate::db::Settings;
-use crate::diagnostics::Diagnostics;
+use crate::diagnostics::{self, DiagLevel, DiagStatus, Diagnostics};
+use crate::diagnostics::trace;
 use crate::error::{AppError, AppResult};
 use crate::shelf::{self, ShelfState};
 
@@ -87,6 +88,64 @@ fn rt<'a>(root: &'a State<'_, Arc<ShelfState>>) -> &'a Arc<ShelfState> {
     root.inner()
 }
 
+/// 解析前端传入的可选 `trace_id`：
+/// - `None`（旧调用方不传）→ `None`，事件不挂链路，行为与旧版完全一致；
+/// - 合法 16 位小写 hex → 沿用；
+/// - 非法（大写/超长/非 hex/空）→ 丢弃并重新生成一个新链路 ID，不报错、不透传。
+///
+/// **只用于诊断事件关联，绝不参与任何认证/授权判断。**
+fn resolve_external_trace(raw: &Option<String>) -> Option<String> {
+    match raw.as_deref().and_then(trace::validate_external_id) {
+        Some(valid) => Some(valid),
+        None => match raw {
+            Some(_) => Some(trace::new_trace_id()),
+            None => None,
+        },
+    }
+}
+
+/// 把事件 builder 挂上解析后的链路 ID 并入队；写日志失败绝不影响业务结果。
+fn record_trace_event(
+    diag: &Diagnostics,
+    trace: &Option<String>,
+    builder: diagnostics::EventBuilder,
+) {
+    let mut builder = builder;
+    if let Some(trace_id) = trace {
+        builder = builder.trace(trace_id);
+    }
+    let _ = diag.record(builder.build());
+}
+
+/// 批量移动/复制报告的统一诊断事件：成功全绿 INFO；有失败项 ERROR（部分成功标 `partial`）。
+/// 计数只取稳定汇总字段，不写路径/文件名。
+fn record_op_report(
+    diag: &Diagnostics,
+    trace: &Option<String>,
+    action: &str,
+    report: &shelf::fsops::ShelfOpReport,
+    elapsed: u64,
+) {
+    let failed = report.failed;
+    record_trace_event(
+        diag,
+        trace,
+        diagnostics::event(
+            if failed > 0 { DiagLevel::Error } else { DiagLevel::Info },
+            "file",
+            action,
+            if failed > 0 { "failed" } else { "success" },
+        )
+        .status(if failed > 0 { DiagStatus::Failed } else { DiagStatus::Success })
+        .stage("persist")
+        .duration_ms(elapsed)
+        .metadata("success", serde_json::json!(report.success))
+        .metadata("skipped", serde_json::json!(report.skipped))
+        .metadata("failed", serde_json::json!(failed))
+        .metadata("partial", serde_json::json!(failed > 0 && report.success > 0)),
+    );
+}
+
 // ── 列表 / 统计 / 分组 ──────────────────────────────────────
 
 #[tauri::command]
@@ -152,32 +211,69 @@ pub fn shelf_group_delete(state: State<'_, Arc<ShelfState>>, id: String) -> AppR
 /// storage_mode: "reference"（不复制）| "managed"（复制到 shelf 目录）。
 /// source_kind: "picker"（文件选择器）| "drag"（拖入）| "manual"。
 /// 托管复制在阻塞线程中流式执行，受并发闸限制；单条失败不影响其余条目。
+/// `trace_id` 为可选诊断链路标识：合法沿用、非法丢弃并重新生成、None 不挂链路；
+/// 只用于诊断事件关联，**不参与认证/授权**。
 #[tauri::command]
 pub async fn shelf_add_paths(
     state: State<'_, Arc<ShelfState>>,
+    diag: State<'_, Arc<Diagnostics>>,
     paths: Vec<String>,
     storage_mode: String,
     source_kind: Option<String>,
     group_id: Option<String>,
+    trace_id: Option<String>,
 ) -> AppResult<ShelfAddReport> {
+    let diag = diag.inner().clone();
+    let trace = resolve_external_trace(&trace_id);
+    let started = std::time::Instant::now();
+
+    // 预检失败同样挂链路：诊断中心能按 trace 串起「前端预检 → 后端预检拒绝」。
+    let reject_validation = |code: &str, message: String| -> AppError {
+        record_trace_event(
+            &diag,
+            &trace,
+            diagnostics::event(DiagLevel::Warn, "file", "shelf_add_paths", "failed")
+                .status(DiagStatus::Failed)
+                .stage("validate")
+                .error_code(code)
+                .error_category("validation")
+                .message(message.clone())
+                .metadata("count", serde_json::json!(paths.len())),
+        );
+        AppError::Validation(message)
+    };
+
     if paths.is_empty() {
-        return Err(AppError::Validation("未提供任何路径".into()));
+        return Err(reject_validation("SHELF_ADD_NO_INPUT", "未提供任何路径".into()));
     }
     if paths.len() > 500 {
-        return Err(AppError::Validation("单批最多添加 500 个路径".into()));
+        return Err(reject_validation(
+            "SHELF_ADD_TOO_MANY",
+            "单批最多添加 500 个路径".into(),
+        ));
     }
     match storage_mode.as_str() {
         shelf::MODE_REFERENCE | shelf::MODE_MANAGED => {}
-        other => return Err(AppError::Validation(format!("未知存储模式: {other}"))),
+        other => {
+            return Err(reject_validation(
+                "VALIDATION_ERROR",
+                format!("未知存储模式: {other}"),
+            ))
+        }
     }
     let source = match source_kind.as_deref() {
         None | Some("picker") => "picker",
         Some("drag") => "drag",
         Some("manual") => "manual",
-        Some(other) => return Err(AppError::Validation(format!("未知来源类型: {other}"))),
+        Some(other) => {
+            return Err(reject_validation(
+                "VALIDATION_ERROR",
+                format!("未知来源类型: {other}"),
+            ))
+        }
     };
     let st = state.inner().clone();
-    let report = tauri::async_runtime::spawn_blocking(move || {
+    let report = match tauri::async_runtime::spawn_blocking(move || {
         let mut added = Vec::new();
         let mut failed = Vec::new();
         for raw in paths {
@@ -196,7 +292,43 @@ pub async fn shelf_add_paths(
         ShelfAddReport { added, failed }
     })
     .await
-    .map_err(|e| AppError::Agent(format!("添加任务失败: {e}")))?;
+    {
+        Ok(report) => report,
+        Err(e) => {
+            record_trace_event(
+                &diag,
+                &trace,
+                diagnostics::event(DiagLevel::Error, "file", "shelf_add_paths", "failed")
+                    .status(DiagStatus::Failed)
+                    .stage("persist")
+                    .error_code("ADD_TASK_JOIN_FAILED")
+                    .error_category("ipc")
+                    .message(format!("添加任务失败: {e}")),
+            );
+            return Err(AppError::Agent(format!("添加任务失败: {e}")));
+        }
+    };
+
+    let added = report.added.len();
+    let failed = report.failed.len();
+    let elapsed = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+    record_trace_event(
+        &diag,
+        &trace,
+        diagnostics::event(
+            if failed == 0 { DiagLevel::Info } else { DiagLevel::Error },
+            "file",
+            "shelf_add_paths",
+            if failed == 0 { "success" } else { "failed" },
+        )
+        .status(if failed == 0 { DiagStatus::Success } else { DiagStatus::Failed })
+        .stage("persist")
+        .duration_ms(elapsed)
+        .metadata("count", serde_json::json!(added + failed))
+        .metadata("added", serde_json::json!(added))
+        .metadata("failed", serde_json::json!(failed))
+        .metadata("partial", serde_json::json!(failed > 0 && added > 0)),
+    );
     Ok(report)
 }
 
@@ -1031,45 +1163,124 @@ pub fn shelf_ocr_cancel(app: AppHandle, request_id: String) -> AppResult<bool> {
 // ── 文件操作（移动 / 复制 / 重定位） ────────────────────────
 
 /// 移动原文件/文件夹到目标目录；managed、link、text 明确拒绝。
+/// `trace_id` 语义同 [`shelf_add_paths`]：只做诊断关联，不参与鉴权。
 #[tauri::command]
 pub async fn shelf_move_items(
     state: State<'_, Arc<ShelfState>>,
+    diag: State<'_, Arc<Diagnostics>>,
     ids: Vec<String>,
     target_dir: String,
     conflict_strategy: Option<String>,
     remove_after: Option<bool>,
+    trace_id: Option<String>,
 ) -> AppResult<shelf::fsops::ShelfOpReport> {
+    let diag = diag.inner().clone();
+    let trace = resolve_external_trace(&trace_id);
+    let started = std::time::Instant::now();
     let st = state.inner().clone();
     let strategy =
         shelf::fsops::parse_conflict_strategy(conflict_strategy.as_deref().unwrap_or("skip"))?;
     let remove_after = remove_after.unwrap_or(false);
-    tauri::async_runtime::spawn_blocking(move || {
+    match tauri::async_runtime::spawn_blocking(move || {
         shelf::fsops::move_items(&st.db, &st.root, &ids, &target_dir, strategy, remove_after)
     })
     .await
-    .map_err(|e| AppError::Agent(format!("移动任务失败: {e}")))?
+    {
+        Ok(inner) => match inner {
+            Ok(report) => {
+                let elapsed = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+                record_op_report(&diag, &trace, "shelf_move_items", &report, elapsed);
+                Ok(report)
+            }
+            Err(err) => {
+                let level = DiagLevel::from_category(err.category().as_str());
+                record_trace_event(
+                    &diag,
+                    &trace,
+                    diagnostics::event(level, "file", "shelf_move_items", "failed")
+                        .status(DiagStatus::Failed)
+                        .stage("persist")
+                        .from_error(&err)
+                        .message("批量移动失败"),
+                );
+                Err(err)
+            }
+        },
+        Err(e) => {
+            record_trace_event(
+                &diag,
+                &trace,
+                diagnostics::event(DiagLevel::Error, "file", "shelf_move_items", "failed")
+                    .status(DiagStatus::Failed)
+                    .stage("persist")
+                    .error_code("MOVE_TASK_JOIN_FAILED")
+                    .error_category("ipc")
+                    .message(format!("移动任务失败: {e}")),
+            );
+            Err(AppError::Agent(format!("移动任务失败: {e}")))
+        }
+    }
 }
 
-/// 复制到目标目录（含托管副本导出）；源文件始终保留。
+/// 复制到目标目录（含托管副本导出）；源文件始终保留。`trace_id` 语义同 [`shelf_add_paths`]。
 #[tauri::command]
 pub async fn shelf_copy_to(
     state: State<'_, Arc<ShelfState>>,
+    diag: State<'_, Arc<Diagnostics>>,
     ids: Vec<String>,
     target_dir: String,
     conflict_strategy: Option<String>,
     remove_after: Option<bool>,
+    trace_id: Option<String>,
 ) -> AppResult<shelf::fsops::ShelfOpReport> {
+    let diag = diag.inner().clone();
+    let trace = resolve_external_trace(&trace_id);
+    let started = std::time::Instant::now();
     let st = state.inner().clone();
     let strategy =
         shelf::fsops::parse_conflict_strategy(conflict_strategy.as_deref().unwrap_or("skip"))?;
     let remove_after = remove_after.unwrap_or(false);
-    tauri::async_runtime::spawn_blocking(move || {
+    match tauri::async_runtime::spawn_blocking(move || {
         // 复用现有复制并发闸：整批占用一个名额，避免与托管添加并发叠加 IO。
         let _permit = st.acquire_copy_permit();
         shelf::fsops::copy_items(&st.db, &st.root, &ids, &target_dir, strategy, remove_after)
     })
     .await
-    .map_err(|e| AppError::Agent(format!("复制任务失败: {e}")))?
+    {
+        Ok(inner) => match inner {
+            Ok(report) => {
+                let elapsed = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+                record_op_report(&diag, &trace, "shelf_copy_to", &report, elapsed);
+                Ok(report)
+            }
+            Err(err) => {
+                let level = DiagLevel::from_category(err.category().as_str());
+                record_trace_event(
+                    &diag,
+                    &trace,
+                    diagnostics::event(level, "file", "shelf_copy_to", "failed")
+                        .status(DiagStatus::Failed)
+                        .stage("persist")
+                        .from_error(&err)
+                        .message("批量复制失败"),
+                );
+                Err(err)
+            }
+        },
+        Err(e) => {
+            record_trace_event(
+                &diag,
+                &trace,
+                diagnostics::event(DiagLevel::Error, "file", "shelf_copy_to", "failed")
+                    .status(DiagStatus::Failed)
+                    .stage("persist")
+                    .error_code("COPY_TASK_JOIN_FAILED")
+                    .error_category("ipc")
+                    .message(format!("复制任务失败: {e}")),
+            );
+            Err(AppError::Agent(format!("复制任务失败: {e}")))
+        }
+    }
 }
 
 /// 失效引用条目重新指向用户选择的外部文件/文件夹。
@@ -1362,5 +1573,58 @@ mod paste_report_tests {
         assert!(report.requires_user_action);
         assert!(report.retryable);
         assert_eq!(report.code.as_deref(), Some("CLIPBOARD_BUSY"));
+    }
+}
+
+#[cfg(test)]
+mod trace_wiring_tests {
+    use super::*;
+    use crate::diagnostics::trace;
+
+    #[test]
+    fn valid_trace_is_adopted() {
+        let valid = "0123456789abcdef";
+        assert_eq!(
+            resolve_external_trace(&Some(valid.to_string())).as_deref(),
+            Some(valid)
+        );
+    }
+
+    #[test]
+    fn invalid_trace_is_dropped_and_regenerated() {
+        let cases = [
+            "0123456789ABCDEF", // 大写非法
+            "not-a-trace!!",   // 非 hex
+            "0123456789abcde", // 长度不足
+            "",                // 空串
+        ];
+        for bad in cases {
+            let resolved = resolve_external_trace(&Some(bad.to_string()))
+                .expect("非法 trace 应被替换为新生成的链路 ID");
+            assert_ne!(resolved, bad);
+            assert!(
+                trace::validate_external_id(&resolved).is_some(),
+                "重新生成的 ID 必须合法: {resolved}"
+            );
+        }
+        // 超长同样丢弃并重新生成。
+        let overlong = "x".repeat(64);
+        let resolved = resolve_external_trace(&Some(overlong)).expect("超长 trace 应被替换");
+        assert!(trace::validate_external_id(&resolved).is_some());
+    }
+
+    #[test]
+    fn none_trace_keeps_no_context() {
+        // 旧调用方不传：保持无链路上下文，行为与旧版一致。
+        assert!(resolve_external_trace(&None).is_none());
+    }
+
+    #[test]
+    fn event_builder_attaches_trace_to_event() {
+        let trace_id = trace::new_trace_id();
+        let event = diagnostics::event(DiagLevel::Info, "file", "shelf_add_paths", "success")
+            .trace(&trace_id)
+            .build();
+        assert_eq!(event.trace_id.as_deref(), Some(trace_id.as_str()));
     }
 }

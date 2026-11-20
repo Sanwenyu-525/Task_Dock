@@ -1,5 +1,5 @@
 // 本地 Expo 模块：SafeLog / CrashHandler / FileLogSink（Android 本地日志）。
-// 写法与 modules/device-identity、modules/clipboard 一致；无第三方依赖。
+// 写法与 modules/device-identity、modules/clipboard 一致；无第三方业务依赖。
 plugins {
   id 'com.android.library'
   id 'expo-module-gradle-plugin'
@@ -14,4 +14,16 @@ android {
     versionCode 1
     versionName "0.1.0"
   }
+  // JVM 单测不启动真机：android.util.Log 等框架方法返回默认值（0/null），
+  // 与 device-identity 模块一致。
+  testOptions {
+    unitTests.returnDefaultValues = true
+  }
+}
+
+dependencies {
+  testImplementation "junit:junit:4.13.2"
+  // JVM 单测需要真实 org.json（android.jar 内是返回默认值的桩）；仅测试类路径，
+  // 不进入生产产物（Android 系统自带 org.json）。
+  testImplementation "org.json:json:20240303"
 }

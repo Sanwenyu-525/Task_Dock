@@ -787,6 +787,23 @@ impl IngestPipeline {
     /// - `wait=false`：running 等非关键事件可快速入队；队列满时进入合并缓冲。
     pub async fn submit(
         &self,
+        events: Vec<AgentEvent>,
+        transport: Transport,
+        submitter: &'static str,
+        wait: bool,
+    ) -> AppResult<SubmitReceipt> {
+        // 按一次提交请求聚合（不逐条事件打点）；失败路径记失败计数。
+        let started = Instant::now();
+        let result = self.submit_inner(events, transport, submitter, wait).await;
+        match &result {
+            Ok(_) => crate::diagnostics::metrics::record_duration_async("agent", "submit", started),
+            Err(e) => crate::diagnostics::metrics::record_failure("agent", "submit", e),
+        }
+        result
+    }
+
+    async fn submit_inner(
+        &self,
         mut events: Vec<AgentEvent>,
         transport: Transport,
         _submitter: &'static str,

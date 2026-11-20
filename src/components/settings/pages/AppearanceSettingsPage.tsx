@@ -130,7 +130,10 @@ export default function AppearanceSettingsPage() {
       {/* 工作台分栏默认值：解决「代码里的 DEFAULTS 改不动用户已保存宽度」。
           只重置导航宽度 / 详情栏宽度 / 详情栏开关，主题与导航排序不受影响。 */}
       <div className="setting-row">
-        <span>{t("settings.appearance.workbenchLayout")}</span>
+        <div className="setting-label">
+          <span>{t("settings.appearance.workbenchLayout")}</span>
+          <small>{t("settings.appearance.workbenchLayoutNote")}</small>
+        </div>
         <button
           type="button"
           className="btn sm"
@@ -151,9 +154,6 @@ export default function AppearanceSettingsPage() {
         >
           <RotateCcw size={11} /> {t("settings.appearance.workbenchLayoutReset")}
         </button>
-      </div>
-      <div className="setting-note">
-        {t("settings.appearance.workbenchLayoutNote")}
       </div>
       <div className="setting-note">
         {settings.material === "glass" ? (

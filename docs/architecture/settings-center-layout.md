@@ -181,3 +181,83 @@ settings/
 1. 文档（本文件）→ 2. section 持久化 + 响应式 hook → 3. SettingsNavigation →
 4. 页面拆分 → 5. NavigationPreview + 导航页 → 6. SettingsPanel 组合层 + 搜索 →
 7. CSS（容器查询 + 旧类清理）→ 8. i18n → 9. 测试 → 10. Dev 验收。
+
+---
+
+## 7. 第二阶段：视觉规范、溢出防线与滚动所有权（2026-11-20）
+
+> 不改第一阶段的信息架构（六分类 / 17 子页面 / 树形二级导航 / 页面级滚动），
+> 只收敛「页面内部怎么排版、溢出从哪来、滚动归谁」。
+
+### 7.1 分组：新增 `SettingsGroup`，只有一种分组视觉
+
+`src/components/settings/SettingsGroup.tsx`（标题 + 说明 + 右侧动作 + 内容），渲染
+`.settings-group`。这是全设置中心唯一的分组视觉，页面卡片由 `.settings-page-body` 提供
+（`styles-pages.css`），组间用「12px 留白 + 1px 细线」区分。
+
+| 布局 | 载体 | 适用 |
+|---|---|---|
+| A 普通设置行 | `.setting-row`（左名称，右控件）+ `.setting-label`（名称 + 说明两行） | 功能、通知、外观、HTTP 接入 |
+| B 设置分组 | `SettingsGroup` | 数据与备份（策略/操作/记录/审计）、诊断（采样/指标/保留）、MCP（访问/身份/审计） |
+| C 独立管理面板 | `SettingsPageLayout variant="list"` + 记录卡/身份卡 | 应用管理、剪贴板、备份记录、Agent 身份 |
+| D 配置 + 预览 | `variant="split"` + `.settings-page-aside` | 导航自定义 |
+
+约束：**不允许**再出现第三种分组容器（页面级自绘 `.xxx-section`）；说明文字不再单独占一行
+`.setting-note`，能并进 `.setting-label > small` 的就并进去。
+
+### 7.2 横向溢出的真实成因与本轮防线
+
+`.settings-page-host` 只声明了 `overflow-y: auto`。按 CSS 规范，另一轴由 `visible` 计算为
+`auto`，因此**任何**子元素溢出都会长出横向滚动条。所以修复必须落在产生处，不能在外层隐藏。
+
+本轮实测到的高风险点与对应规则（全部在 `settings-page.css`，作用域 `.settings-panel`）：
+
+| 风险 | 规则 |
+|---|---|
+| 全局 `.btn-row` 是 `nowrap + flex-shrink: 0`（工具条语义），4 个按钮在中等宽度直接顶出 | `.settings-panel .btn-row { flex-wrap: wrap; flex-shrink: 1; max-width: 100% }` |
+| `.settings-select-trigger` 在 520–760 固定 150px 不收缩 | `flex: 0 1 150px; width: auto; min-width: 0` |
+| `.preset-picker` 用 `1fr 1fr`，长 tagline 撑破列 | `repeat(2, minmax(0, 1fr))` + `.preset-card { min-width: 0 }` |
+| `.setting-note` 无 `overflow-wrap`，长路径/英文串溢出 | `overflow-wrap: anywhere` |
+| `.backup-item > span` 第二列 `nowrap + ellipsis`，审计明细被吞 | 值列改 `white-space: normal` |
+| `.empty-hint` `max-width: 260px` 且不换行 | `max-width: none; overflow-wrap: anywhere` |
+| 行本身不换行，长标签把控件挤出 | `.setting-row { flex-wrap: wrap }`（窄档仍转列） |
+| 真正的数据表格 | 只有 `.settings-table-scroll` 允许 `overflow-x: auto`（当前设置页无表格） |
+
+**禁止**用 `overflow-x: hidden` 掩盖；验收脚本会同时比对 `scrollWidth/clientWidth` 与
+「元素右边界是否越过宿主内容盒」。
+
+### 7.3 滚动所有权（修正两处实测缺陷）
+
+1. **配置+预览页没有占满高度**：原来写的是 `min-height: 100%`（只是下限），列表内容更高时
+   页面继续长高、页面级滚动被抢走。1024×700 实测列表 814px、页面在滚。改为
+   `height: 100%`，窄档「预览展开」时回到自然高度（`height: auto`）。
+2. **列表宿主的 flex 链断了**：DOM 是 `host > .nav-visibility-body > list`，只给 host 声明
+   flex 不会让列表收缩，列表仍按内容长高。补 `.nav-visibility-body { flex: 1 1 auto;
+   min-height: 0 }` 与 `.nav-visibility-row { flex: 0 0 auto }`（行不能被压缩）。
+   该页现在：列表内部滚动，页面自身不滚，拖拽自动滚动（依赖 `list.scrollTop`）恢复可用。
+3. **导航行被通用设置行规则误伤**：`.nav-visibility-row` 同时带 `.setting-row`，窄档「转列」
+   会把显隐/排序控件推到行外（640 宽只剩半截）。窄档规则加 `:not(.nav-visibility-row)` 例外。
+
+### 7.4 搜索语义（页面级，明确边界）
+
+- 事实源仍是 `SETTINGS_SECTION_META`（标题 + 分类 + 别名），**结果粒度是「设置页面」**，
+  不是单条设置项；因此提示文案从「搜索分组或分类」改为「搜索设置页面或关键词」，
+  空态改为「没有匹配的设置页面」。
+- 别名按页面补充到「用户会输入的中文设置名」（自动备份/保留天数/投递目录/凭据/静默/试听…），
+  中英文同步；匹配逻辑不变（大小写不敏感 + 中文连续子串）。
+- 选中结果后：切页面 → **页面滚动区归零** → 焦点落到 `.settings-page-title`。滚动归零是本轮
+  修的缺陷：此前切页沿用上一页的 `scrollTop`，短页面会呈现「点了结果却看不到内容」。
+  同一页面重复命中也会重新定位（`focusNonce`）。
+
+### 7.5 辅助文字对比度
+
+`--text-tertiary`（浅色 `#8b96a8`）压在页面底色 `#f5f7fa` 上只有 4.43:1，低于 AA。设置页
+新增局部变量 `--settings-text-muted`（muted 86% + primary 14%），用于说明、状态值、备份时间/
+文件名：浅色 5.35–5.74:1、深色 7.16–7.84:1，仍低于设置项名称（secondary），保留层级。
+
+### 7.6 验收方法
+
+浏览器 harness（真实 `dist` 产物 + IPC 模拟）出 17 页 × 5 尺寸 × 明暗矩阵与交互断言；
+脚本与结果在 `tmp/acceptance/settings-center-2/`，报告见
+`docs/acceptance/settings-center-phase2.md`。浏览器合成**不等于**原生窗口验收，原生侧仍需
+单独 Dev 走查。

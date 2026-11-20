@@ -1880,6 +1880,12 @@ unsupported`，字节与流落到 `data_dir/drag-incoming` 的暂存副本，前
 预设切换会改 `--radius-window`（柔光玻璃 20 / 梦幻渐变 18），工作台圆角由
 `windowFrame` 观察 `data-preset` 后重算并下发 Win32 区域，与主窗同一份窗口外形逻辑。
 
+原生伴随阴影 `window_shadow` 的注册表只在取出/归还状态时持锁，禁止持锁调用
+`SetWindowPos` / `UpdateLayeredWindow` 等可同步重入窗口过程的 Win32 API。更新期间保留
+原窗口过程与阴影身份，嵌套回调正常转交宿主、合并重复阴影更新；宿主在回调中销毁时，
+外层只释放资源，不恢复旧状态。此约束修复了工作台恢复/热重载时的 UI 线程自锁，见
+[根因与验证记录](development/2026-11-20-startup-shadow-deadlock.md)。
+
 顶栏整条是 `data-tauri-drag-region="deep"` 的拖动区（Tauri 的 deep 语义：子树任意后代可拖，
 按钮/输入等可交互元素与 `="false"` 子树阻断）。悬停显示 `grab`、按住拖动期间 `grabbing`，
 复用主窗口的 `src/lib/dragCursorSession.ts` 会话机制（`.ui-drag-surface` / `.ui-drag-session`）；

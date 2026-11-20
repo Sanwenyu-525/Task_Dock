@@ -55,7 +55,7 @@ import {
   type ShelfTrashRestoreReport,
   type ShelfUpdatePatch,
 } from "../lib/bridge";
-import { logEvent, startOperation, type DiagLevel } from "../lib/diagnostics";
+import { logEvent, startOperation, startTracedOperation, type DiagLevel } from "../lib/diagnostics";
 import type { DragFailure } from "../lib/dragPayload";
 
 /** 分页大小：与剪贴板面板一致的后端分页节奏。 */
@@ -605,7 +605,8 @@ export const useShelfStore = create<ShelfState>((set, get) => ({
     // 一次投递 = 一个 operation_id；预检与后端提交共用同一生命周期，只记录
     // 数量/来源/存储模式，绝不记录文件路径。total = 原始输入总数（含无效项），
     // 与返回给 UI 的 { added, failed } 数量一致。
-    const op = startOperation("file", "shelf_add_paths");
+    // traceId 贯穿前端 operation → IPC → Rust 诊断事件；只做诊断关联，不参与鉴权。
+    const { operation: op, traceId } = startTracedOperation("file", "shelf_add_paths");
     const total = paths.length;
 
     // ── 预检：空白/相对路径不进后端（原 UI 层 splitDropPaths 下沉）──
@@ -644,7 +645,7 @@ export const useShelfStore = create<ShelfState>((set, get) => ({
       op.stage("validate");
       op.stage("persist");
       // 只把有效路径提交后端；无效项不浪费一次 IPC，也不产生后端逐项失败。
-      report = await shelfAddPaths(valid, mode, source, groupId ?? null);
+      report = await shelfAddPaths(valid, mode, source, groupId ?? null, traceId);
     } catch (e) {
       // 参数/IPC 失败仍抛给 UI（保持既有行为）；业务失败在下面按 report 记录。
       op.fail(e);
@@ -691,6 +692,7 @@ export const useShelfStore = create<ShelfState>((set, get) => ({
           event: "refresh_failed",
           stage: "finalize",
           operation_id: op.id,
+          trace_id: traceId,
           error_code: SHELF_ADD_REFRESH_FAILED,
           error_category: "unknown",
           message: "暂存内容已添加，但列表刷新失败，界面可能不是最新状态",
@@ -1099,10 +1101,41 @@ export const useShelfStore = create<ShelfState>((set, get) => ({
   },
 
   runFileOp: async (op, ids, targetDir, strategy, removeAfter) => {
-    const report =
-      op === "move"
-        ? await shelfMoveItems(ids, targetDir, strategy, removeAfter)
-        : await shelfCopyTo(ids, targetDir, strategy, removeAfter);
+    // 一次批量移动/复制 = 一个 trace 贯穿前端 operation → IPC → Rust 诊断事件；
+    // trace 只做诊断关联，不参与鉴权。
+    const action = op === "move" ? "shelf_move_items" : "shelf_copy_to";
+    const { operation: diagOp, traceId } = startTracedOperation("file", action);
+    let report: ShelfOpReport;
+    try {
+      diagOp.stage("persist");
+      report =
+        op === "move"
+          ? await shelfMoveItems(ids, targetDir, strategy, removeAfter, traceId)
+          : await shelfCopyTo(ids, targetDir, strategy, removeAfter, traceId);
+    } catch (e) {
+      diagOp.fail(e);
+      throw e;
+    }
+    const total = ids.length;
+    const failed = report.failed;
+    if (failed > 0 && report.success === 0) {
+      diagOp.fail(
+        { code: "SHELF_FILE_OP_FAILED", category: "io" },
+        {
+          metadata: { total, success: report.success, failed, skipped: report.skipped },
+        },
+      );
+    } else if (failed > 0) {
+      diagOp.fail(
+        { code: "SHELF_FILE_OP_PARTIAL_FAILED", category: "io" },
+        {
+          severity: "WARN",
+          metadata: { total, success: report.success, failed, skipped: report.skipped },
+        },
+      );
+    } else {
+      diagOp.success({ metadata: { total, success: report.success, failed: 0 } });
+    }
     // 移动会改写路径、移除会删记录，统一以服务端列表为准刷新（保留失败项）。
     invalidateRecent();
     await get().load({ silent: true });

@@ -232,6 +232,7 @@ describe("InboxRecentShelf 拖入接收区", () => {
         "reference",
         "picker",
         null,
+        expect.stringMatching(/^[0-9a-f]{16}$/),
       ),
     );
   });

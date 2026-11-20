@@ -678,3 +678,131 @@ apps/mobile/modules/logger/android/.../FileLogSink.kt ← 新增
 
 以上将在 `docs/acceptance/logging-acceptance-report.md`、
 `logging-performance-report.md`、`logging-security-report.md` 中以真实输出回填。
+
+---
+
+## 11. 第二阶段落地回填（2026-11-20，logging-phase2）
+
+> 本节回填第二阶段（M4 部分 / M6 部分 / M7–M10 / M12 部分）的真实落地状态。§1–§10 的
+> 设计意图与候选参数保留原样；与本节冲突处以本节带日期的落地结论为准。证据目录
+> `tmp/acceptance/logging-phase2/`，三份验收报告见 `docs/acceptance/logging-phase2-*.md`。
+
+### 11.1 迁移路线执行对照（§6 M1–M17）
+
+| 步骤 | 设计目标 | 第二阶段落地状态 |
+|---|---|---|
+| M4 契约扩展 | `trace_id` / `span_id` / `device_id` / `kind` | **部分落地**：`trace_id` 已入 `DiagnosticEvent`（`Option<String>`，serde default + skip）；**`span_id` 延期**（§11.3）；`device_id`、`kind` 本阶段未引入 |
+| M6 性能指标 API | 阈值触发 + 聚合 + 异步计时 | **Rust 侧落地并模块级验证**（§11.4）；前端门面方法未在本阶段专项验收 |
+| M7 配对/信任/鉴权审计 + `security_audit_log` | 独立审计存储 | **落地**：主库 `security_audit_log` 经适配层真接入；两段式清理沿用；启动路径不调用 prune |
+| M8 统一审计视图 | 诊断中心安全审计标签页 | **落地（Rust 适配层 + 前端组件级）**；四源状态显式标注；`personalHub` 未接线（§11.2） |
+| M9 诊断包预览 + 确认 | 预览 → 确认 → 导出 | **落地**：只读预览 + 显式授权勾选 + 取消不落地（§11.5） |
+| M10 Android SafeLog + CrashHandler + FileLogSink | 沙盒滚动文件 + 脱敏 + 崩溃捕获 | **落地（JVM/JS 单测级）**；真机/模拟器运行验收未执行（§11.6） |
+| M12 诊断中心交互增强 | 三视图、Trace 展示 | **部分落地**：三视图（运行诊断/安全审计/性能分析）完成；Trace 搜索、设备筛选、暂停刷新、滚动保持未在本阶段完成 |
+| M13 性能基准脚本与阈值校准 | 可复现基准 + 阈值固化 | **未执行**：阈值仍为候选值；无 Release 基线、无 CPU/内存采样 |
+| M14 故障注入测试套件 | 磁盘满/权限/占用注入 | **部分**：Android 文件占用降级有 JVM 用例；桌面端真实磁盘满/权限注入未执行 |
+| M5 TS Logger 门面 / M11 Kotlin 吞异常修复 / M15 错误对账 / M16 console 收敛 / M17 catch_unwind 统一 | 见 §6 | 本阶段未作为独立批次验收；现状以 `logging-capability-matrix.md` §M 为准 |
+
+### 11.2 统一审计视图落地口径（对应 §4.3.1）
+
+- **查询层而非存储层**的决策保持：未搬迁三套既有审计表；适配层只读投影合并。
+- 来源与覆盖状态（`available` / `empty` / `locked` / `notWired` / `error`）：
+
+| 来源 | 状态 | 说明 |
+|---|---|---|
+| `securityAuditLog` | **available（真接入）** | 主库 `security_audit_log`（迁移 v82），只读连接；`DEVICE_REVOKED` → `deviceRevoked`；pairing/auth/mcp 直通；其余 `other`；`correlation_id` 过 16-hex 校验后才作 traceId |
+| `mcpAuditLog` | **available（真接入）** | 主库 `mcp_audit_log`（迁移 v37）；`authz=0` → `denied`，`success=1 && authz=1` → `ok`，其余 → `failed`；`request_id` 过校验后作 traceId |
+| `vault` | **条件接入** | trait 已接线，运行态按会话判定：`Unlocked` 才读审计；`Locked`/`Recovery`/`NoVault` → `locked`（附 note）；读取异常 → `error`。未解锁不返回空列表冒充无事件。解锁态真实 `VaultState` 路径未在 Dev/Release 环境验证 |
+| `personalHub` | **notWired（延期）** | Hub 在独立进程 `taskdock-personal-hub`；主进程未托管 Hub State，Named Pipe 无审计读取方法；`ph_audit_log` 仅在独立进程 `hub.db` 内可写。`HubAuditReader` trait 预留，待管道协议/State 增加只读方法后接入 |
+| 远控（remote control） | **不适用** | 仓库不存在远控功能模块；未新增来源、未伪造事件 |
+
+- **不把不同库伪装成同一物理表**：统一条目 `id = <source>:<原始 id>`；`total` 为各源 COUNT 之和，
+  合并后切片；来源不可读时 `sources[].status` 显式说明。
+- 已知口径偏差（见 `security-audit/report.md` §8）：vault 解锁态 `total` 受 `AUDIT_MAX_ROWS=1000`
+  上限约束；mcp 源 COUNT 仅纳入时间边界，`result`/`eventType`/`device` 过滤在内存层应用；
+  各源 fetch 内部兜底上限 200，`limit` 钳制 1..=100（默认 50）。
+
+### 11.3 Trace 契约落地与 span 延期（对应 §4.4）
+
+- **已落地**：`trace_id` 16 位小写 hex；外部传入经 `validate_external_id`，非法丢弃并重新生成，
+  不报错、不透传；显式传参（不依赖 thread_local 跨 await）；同一次同步周期的分页 pull、push、
+  后续 pull 共享会话 trace（`trace_sessions` 进程内有界 32 条，设备撤销后不主动清理，重启即清空）。
+- **安全边界保持**：trace 只写入诊断事件 `trace_id` 字段；认证/授权/设备信任/SPKI/管线 origin
+  路径完全不读 trace。
+- **`span_id` 延期（更正 §3.2 / §4.4.1 的字段规划）**：当前业务链路为单层操作，一次用户操作
+  对应一个 `operation_id`，起止事件经 `trace_id` 即可串起；`new_span_id()` 生成函数已存在但
+  事件结构未引入 span 字段。延期理由：① `operation_id` 已承担父子关联；② 批量导入/移动等扇出
+  场景的子阶段边界尚未定稿；③ 高频事件（拖拽、轮询、通知对账）按契约不建 span。将来落地预留：
+  `DiagnosticEvent` 增加可选 `span_id: Option<String>` 与 `parent_span_id: Option<String>`，
+  serde `default` + `skip_serializing_if = "Option::is_none"`；span 仅挂扇出父操作与子阶段事件。
+- **已接通的主要入口**（2026-11-20 收尾补齐）：shelf 批量导入/移动/复制、`create_task`、
+  `open_agent_session` 三处前端入口、工作区 copy/move、mobile_sync pull/push、MCP 工具调用。
+- **尚未接线的入口**：工作流执行链路（明确缺口，见验收报告 P2-1）；`span_id` 体系按 §3.2 延期。
+
+### 11.4 指标体系落地口径（对应 §4.5）
+
+- **数据窗口：进程启动以来累计**（`window="process"` + `startedAt`/`generatedAt`），
+  **不是滚动「最近 24 小时」**；重启进程即重置。诊断中心性能视图固定展示「进程启动以来」与
+  起始/生成时刻，不使用 24 小时表述。
+- **聚合模型**：指纹（module+action）容量 256，每指纹最近 64 个耗时样本环形窗口算 p95；
+  超限淘汰最久未活跃指纹并计 `evicted`；聚合在调用线程完成，不新增常驻线程、无全局可变状态。
+- **异步计时**：`record_duration_async(module, action, started: Instant)`；`OperationTimer`
+  显式 `finish()` 消费，未 finish 即 Drop（早退/取消/panic 展开）由 Drop 兜底记录一次，
+  `finished` 标志防重复入账，`Send` 可跨 await 持有；失败计数由调用方在错误路径显式记录，
+  计时器不推断失败。
+- **阈值表（ms，当前候选值，待 Release 基线校准）**：
+
+  | module | action | 阈值 |
+  |---|---|---|
+  | `file` | `list_dir` | 1500 |
+  | `search` | `query` | 1000 |
+  | `recycle` | `list` | 默认 1000（表内未单列） |
+  | `resource` | `snapshot` / `preview` / `disk_analyze` / `junk_scan` | 5000 |
+  | `clipboard` | `capture` | 200 |
+  | `mobile_sync` | `pull` / `apply_push` | 5000 |
+  | `mcp` | `tool_call` | 10000 |
+  | `agent` | `submit` | 30000 |
+  | `startup` | `first_ready` | 3000（已接线；Dev 实测 3879 ms / P95 3879 ms，单次 Debug 样本） |
+
+- **不逐帧/逐条打点**：投屏逐帧、剪贴板逐条原始事件、高频轮询均未打点；剪贴板按一次入库
+  捕获聚合一次，同步按一次 pull / 一批 push 聚合，Agent 管线按一次 submit 请求聚合。
+- **MCP 授权拒绝**（`ToolError::Authz`）不计入失败聚合：授权拒绝已走 MCP 审计表，与
+  `record_failure` 面向「真实故障」的语义分工。
+
+### 11.5 导出预览落地口径（对应 §4.6 诊断包流程）
+
+- 预览 `export_preview` 只读扫描：复用扫描器 `MAX_SCAN_LINES=200_000` 与 `SCAN_BUDGET=400ms`，
+  **不生成文件、不落盘、不打开数据库连接**；超限 `truncated=true`。
+- 导出有界性：命中事件受 `MAX_EXPORT_RECORDS=5_000` 上限；`BufWriter` +
+  `serde_json::to_writer_pretty` 流式落盘，临时文件 rename 原子替换。
+- 授权并入审计段：`include_security_audit=false` 完全不触碰数据库；`true` 经
+  `security_audit::list_page` 只读查询，审计段请求上限 `MAX_AUDIT_RECORDS=100`（与既有
+  100 条/页钳制对齐）；查询失败标记 `error` 并降级保留其它报告内容，不使整份导出失败。
+- 估算口径：固定外壳 `REPORT_ENVELOPE_BYTES=4096`，授权审计段另加
+  `AUDIT_SECTION_ENVELOPE_BYTES=512`；每条命中事件按落盘 JSON 重序列化字节累加；预览不读
+  审计表，单条审计事件字节未计入，属保守下限。
+- **实测样本（Debug 测试二进制，不外推为正式性能结论）**：合成 50,000 行日志 →
+  `records=5000`（封顶），报告 `bytes=1,348,773`（约 1.29 MiB），导出耗时 `810.97ms`；
+  未做 RSS/堆采样。
+
+### 11.6 Android 落地口径（对应 §5）
+
+- 模块位置：`apps/mobile/modules/logger/android/src/main/java/dev/taskdock/modules/logger/`
+  （`SafeLog.kt` / `FileLogSink.kt` / `LoggerModule.kt` / `CrashHandler.kt`）；JS 侧
+  `apps/mobile/src/lib/safeLog.ts`。
+- 容量与背压常量：单文件软目标 2 MB、归档 3 个、总量 ≤6 MB、保留 7 天；活动文件硬上限 4 MB；
+  队列 `MAX_PENDING_LOGS=256`、高级别预留 `HIGH_PRIORITY_RESERVED=32`；分级丢弃与退避策略
+  详见 `logging-current-state.md` §10.3。
+- **未验证项**：真机/模拟器运行（环境无 emulator、`adb devices` 为空）；Expo Module 实例化与
+  JS→原生 IPC 端到端链路；生产 `HandlerThread/Handler` 分发路径（测试经 `LogDispatcher` 接缝
+  注入手动队列）。Release 专属项（安装包、升级/卸载、签名、生产资源加载）未执行。
+
+### 11.7 仍未决 / 阻塞项
+
+- **整 `cargo test --lib` 被其他任务在途未跟踪文件
+  `src-tauri/src/agent_access/tests_v82_rest.rs`（非 ASCII 字节串语法错误）阻塞**：
+  ENVIRONMENT BLOCKED，非本任务缺陷；阻塞解除后需复测全量。
+- 本轮主智能体静态检查：`npm run typecheck` 退出码 0；`npm run cargo -- check --lib` 退出码 0
+  （36 条既有警告，无新增阻断性错误）。
+- **D: 盘 ENOSPC 事故**：当日 D: 盘写满至 0 字节，主智能体删除可再生构建产物
+  `src-tauri/target/debug`（约 8.0 GB）后恢复约 7.0 GB；部分定向套件仅前台控制台通过，
+  落盘复测为环境阻塞记录。基准脚本、真机走查、Release 验收须在磁盘充足且阻塞解除后补做。

@@ -1,4 +1,6 @@
 //! 功能管理页（自 SettingsPanel「功能管理」分组原样迁移，2026-11-20）。
+//! 2026-11-20 第二阶段：说明文字并入设置项标签块（布局 A），不再让说明单独
+//! 占一行、与下一个设置项混在一起。
 
 import { Layers } from "lucide-react";
 import { Select, Switch } from "../../ui";
@@ -20,25 +22,32 @@ export default function FeaturesSettingsPage() {
       description={t("settings.section.featuresDesc")}
     >
       <div className="setting-row">
-        <span>{t("settings.features.workspace")}</span>
+        <div className="setting-label">
+          <span>{t("settings.features.workspace")}</span>
+          <small>{t("settings.features.workspaceNote")}</small>
+        </div>
         <Switch
           checked={settings.workspace_enabled}
           ariaLabel={t("settings.features.workspace")}
           onChange={(v) => update({ workspace_enabled: v })}
         />
       </div>
-      <div className="setting-note">{t("settings.features.workspaceNote")}</div>
       <div className="setting-row">
-        <span>{t("settings.features.actions")}</span>
+        <div className="setting-label">
+          <span>{t("settings.features.actions")}</span>
+          <small>{t("settings.features.actionsNote")}</small>
+        </div>
         <Switch
           checked={settings.actions_enabled}
           ariaLabel={t("settings.features.actions")}
           onChange={(v) => update({ actions_enabled: v })}
         />
       </div>
-      <div className="setting-note">{t("settings.features.actionsNote")}</div>
       <div className="setting-row">
-        <span>{t("settings.features.lifeCurrency")}</span>
+        <div className="setting-label">
+          <span>{t("settings.features.lifeCurrency")}</span>
+          <small>{t("settings.features.lifeCurrencyNote")}</small>
+        </div>
         <Select
           ariaLabel={t("settings.features.lifeCurrency")}
           size="sm"
@@ -57,7 +66,6 @@ export default function FeaturesSettingsPage() {
           onChange={(v) => update({ life_default_currency: v })}
         />
       </div>
-      <div className="setting-note">{t("settings.features.lifeCurrencyNote")}</div>
       <div className="setting-note">{t("settings.features.clipboardNote")}</div>
     </SettingsPageLayout>
   );

@@ -52,7 +52,7 @@ import {
   Archive,
 } from "lucide-react";
 
-import DropdownMenu from "../ui/DropdownMenu";
+import DropdownMenu, { type DropdownMenuItem } from "../ui/DropdownMenu";
 import PointerMenu from "../ui/PointerMenu";
 import { centerPopupInViewport } from "../ui/positioning";
 import { ConfirmDialog, Dialog } from "../ui/Dialog";
@@ -60,7 +60,7 @@ import Popover from "../ui/Popover";
 import "./files.css";
 import { useLocale } from "../../hooks/useLocale";
 import { errorMessage } from "../../lib/errors";
-import { isLogged, startOperation } from "../../lib/diagnostics";
+import { isLogged, startOperation, startTracedOperation } from "../../lib/diagnostics";
 import { showFileJobOutcome, showFsOpOutcome } from "./fsOpFeedback";
 import {
   fsCopyJobStart,
@@ -436,10 +436,10 @@ export function SplitWithDivider({
     setRatioMenu(null);
   };
 
-  // 比例按整块容器计：先去一半 16px 分割线，保证 50% 时两侧等宽、分割线居中。
+  // 比例按整块容器计：先去一半 8px 命中区，保证 50% 时两侧等宽、分割线居中。
   const firstStyle = horizontal
-    ? { width: `calc(${bounds.value * 100}% - 8px)` }
-    : { height: `calc(${bounds.value * 100}% - 8px)` };
+    ? { width: `calc(${bounds.value * 100}% - 4px)` }
+    : { height: `calc(${bounds.value * 100}% - 4px)` };
 
   return (
     <div ref={ref} className={`fw-split fw-split-${node.direction}`}>
@@ -509,9 +509,7 @@ export function SplitWithDivider({
         }}
       >
         <span className="fw-divider-line" aria-hidden="true" />
-        <span className="fw-divider-grip" aria-hidden="true">
-          {ratioHint && <span className="fw-divider-ratio">{ratioHint}</span>}
-        </span>
+        {ratioHint && <span className="fw-divider-ratio">{ratioHint}</span>}
       </div>
       {ratioMenu && (
         <PointerMenu
@@ -928,18 +926,36 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
       effect: "copy" | "move",
       strategy: ConflictStrategy = "rename",
     ): Promise<FsOpReport | null> => {
-      // 操作 ID 由前端生成、Rust 沿用：诊断与任务服务共享同一个 ID。
-      const op = startOperation("file", effect === "copy" ? "workspace_copy" : "workspace_move", {
-        component: "文件工作区",
-        metadata: { count: paths.length },
-      });
+      // 操作 ID 与 trace 由前端生成、Rust 沿用：诊断与任务服务共享同一个 ID；
+      // traceId 贯穿前端 operation → IPC → Rust 异步 worker 诊断事件，只做关联、不参与鉴权。
+      const { operation: op, traceId } = startTracedOperation(
+        "file",
+        effect === "copy" ? "workspace_copy" : "workspace_move",
+        {
+          component: "文件工作区",
+          metadata: { count: paths.length },
+        },
+      );
       try {
         op.stage("job");
         const initial = await withFileOperationSlot(() =>
           effect === "copy"
-            ? fsCopyJobStart(paths, targetDir, strategy, op.id)
-            : fsMoveJobStart(paths, targetDir, strategy, op.id),
+            ? fsCopyJobStart(paths, targetDir, strategy, op.id, traceId)
+            : fsMoveJobStart(paths, targetDir, strategy, op.id, traceId),
         );
+        // 即时快照只反映入队/预检结果：终态失败或取消如实归因；运行中不伪造成功或实时进度，
+        // 业务终态由 Rust 按同一 operation_id 写入权威诊断。
+        if (initial.status === "failed") {
+          op.fail(
+            {
+              code: initial.failures[0]?.code ?? "FS_OP_JOB_FAILED",
+              message: initial.message ?? undefined,
+            },
+            { stage: "job", metadata: { total: initial.total, failed: initial.failed } },
+          );
+        } else if (initial.status === "cancelled" || initial.status === "cancelling") {
+          op.cancel(initial.message ?? undefined);
+        }
         // 立即登记快照：终态任务（空选择/全部预检失败）不必等 2.5s 轮询。
         registerFileJob(initial);
         const { job: final, report } = await finishFileJob(initial.id);
@@ -1846,7 +1862,7 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
     }
   }
 
-  const moreItems = [
+  const moreItems: DropdownMenuItem[] = [
     {
       key: "editLayout",
       label: layoutEditMode ? t("fw.layout.exitEdit") : t("fw.layout.edit"),
@@ -1887,6 +1903,7 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
         if (!store.getState().redoLayout()) showToast(t("fw.layout.nothingToRedo"), { kind: "info" });
       },
     },
+    { key: "sep-history", separator: true },
     {
       key: "path",
       label: t("fw.layout.openByPath"),
@@ -1909,6 +1926,7 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
         if (n > 0) showToast(t("fw.layout.closeEmptyPanesDone", { count: n }), { kind: "success" });
       },
     },
+    { key: "sep-tools", separator: true },
     { key: "workspaceSearch", label: t("fw.search.workspace"), icon: <Search size={13} />, onSelect: () => setWorkspaceSearchOpen(true) },
     { key: "duplicates", label: t("fw.duplicates.find"), icon: <Files size={13} />, onSelect: () => setDuplicateOpen(true) },
     { key: "reset", label: t("fw.layout.resetDefault"), onSelect: () => applyLayoutPreset("single") },
@@ -1962,6 +1980,8 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
         </div>
 
         <div className="fw-toolbar-actions">
+          {/* 文件操作组：打开文件夹 / 加入工作篮 / 撤销 / 重做 */}
+          <div className="fw-toolbar-group fw-toolbar-group--files">
           {/* 主操作：系统文件夹选择器 → 当前窗格新标签 */}
           <div className="fw-split-btn">
             <button
@@ -2018,10 +2038,11 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
             data-tip="把当前窗格选中的文件/目录引用加入全局工作篮"
             onClick={() => void addSelectedToTray()}
           >
-            <Archive size={13} aria-hidden="true" /> 加入工作篮
+            <Archive size={13} aria-hidden="true" />
+            <span className="fw-btn-label">加入工作篮</span>
           </button>
 
-          <div className="fw-toolbar-group" role="group" aria-label={t("fw.layout.history")}>
+          <div className="fw-toolbar-group fw-toolbar-group--history" role="group" aria-label={t("fw.layout.history")}>
             <button
               type="button"
               className="fw-icon-btn"
@@ -2047,7 +2068,10 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
               <Redo2 size={14} aria-hidden="true" />
             </button>
           </div>
+          </div>
 
+          {/* 布局操作组：当前布局 / 布局模板 / 保存为布局模板；模板入口紧邻布局切换入口 */}
+          <div className="fw-toolbar-group fw-toolbar-group--layout" role="group" aria-label={t("fw.toolbar.layout")}>
           <DropdownMenu
             menuLabel={t("fw.layout.menu")}
             placement="bottom-start"
@@ -2063,17 +2087,6 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
               { key: "topBottom", label: t("fw.preset.topBottom"), icon: <Rows2 size={13} />, onSelect: () => applyLayoutPreset("topBottom") },
               { key: "threeLeft", label: t("fw.preset.three"), icon: <Columns3 size={13} />, onSelect: () => applyLayoutPreset("threeLeft") },
               { key: "quad", label: t("fw.preset.quad"), icon: <LayoutGrid size={13} />, onSelect: () => applyLayoutPreset("quad") },
-              { key: "sep1", separator: true },
-              {
-                key: "edit",
-                label: layoutEditMode ? t("fw.layout.exitEdit") : t("fw.layout.edit"),
-                icon: layoutEditMode ? <Check size={13} /> : <PenLine size={13} />,
-                onSelect: () => store.getState().setLayoutEditMode(!layoutEditMode),
-              },
-              { key: "undoMenu", label: t("fw.layout.undo"), icon: <Undo2 size={13} />, disabled: undoCount === 0, onSelect: () => store.getState().undoLayout() },
-              { key: "redoMenu", label: t("fw.layout.redo"), icon: <Redo2 size={13} />, disabled: redoCount === 0, onSelect: () => store.getState().redoLayout() },
-              { key: "sep2", separator: true },
-              { key: "customize", label: t("fw.layout.customizeHint"), description: t("fw.layout.customizeBody"), onSelect: () => { setDrawerAnchor("more"); setLayoutOpen(true); } },
             ]}
           />
 
@@ -2097,7 +2110,10 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
             <Save size={13} aria-hidden="true" />
             {t("fw.toolbar.saveLayout")}
           </button>
+          </div>
 
+          {/* 其他组：低频操作；窄窗被收纳的模板/存为模板/撤销重做在此兜底 */}
+          <div className="fw-toolbar-group fw-toolbar-group--more">
           <DropdownMenu
             menuLabel={t("fw.toolbar.more")}
             placement="bottom-end"
@@ -2120,6 +2136,7 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
             )}
             items={moreItems}
           />
+          </div>
         </div>
       </header>
 

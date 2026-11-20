@@ -314,7 +314,13 @@ describe("完整暂存架拖入 · 真实事件链", () => {
     act(() => emitSession(paths, { x: 100, y: 100 }));
 
     await waitFor(() => expect(api.shelfAddPaths).toHaveBeenCalledTimes(1));
-    expect(api.shelfAddPaths).toHaveBeenCalledWith(paths, "reference", "drag", null);
+    expect(api.shelfAddPaths).toHaveBeenCalledWith(
+      paths,
+      "reference",
+      "drag",
+      null,
+      expect.stringMatching(/^[0-9a-f]{16}$/),
+    );
 
     for (const name of names) {
       expect(await screen.findByText(name)).toBeTruthy();
@@ -362,7 +368,13 @@ describe("完整暂存架拖入 · 真实事件链", () => {
     act(() => emitSession(["C:\\tmp\\a.png"]));
 
     await waitFor(() => expect(api.shelfAddPaths).toHaveBeenCalledTimes(1));
-    expect(api.shelfAddPaths).toHaveBeenCalledWith(["C:\\tmp\\a.png"], "reference", "drag", null);
+    expect(api.shelfAddPaths).toHaveBeenCalledWith(
+      ["C:\\tmp\\a.png"],
+      "reference",
+      "drag",
+      null,
+      expect.stringMatching(/^[0-9a-f]{16}$/),
+    );
     expect(await screen.findByText("a.png")).toBeTruthy();
   });
 
@@ -423,6 +435,7 @@ describe("完整暂存架拖入 · 真实事件链", () => {
       "reference",
       "drag",
       null,
+      expect.stringMatching(/^[0-9a-f]{16}$/),
     ]);
 
     fireEvent.click(screen.getByRole("button", { name: "更多添加方式" }));
@@ -435,6 +448,7 @@ describe("完整暂存架拖入 · 真实事件链", () => {
       "managed",
       "drag",
       null,
+      expect.stringMatching(/^[0-9a-f]{16}$/),
     ]);
     await waitFor(() =>
       expect(
@@ -522,7 +536,13 @@ describe("完整暂存架拖入 · 失败与空批次", () => {
     act(() => emitSession(["C:\\tmp\\ok.png", "relative\\a.png"], { x: 10, y: 10 }));
 
     await waitFor(() => expect(api.shelfAddPaths).toHaveBeenCalledTimes(1));
-    expect(api.shelfAddPaths).toHaveBeenCalledWith(["C:\\tmp\\ok.png"], "reference", "drag", null);
+    expect(api.shelfAddPaths).toHaveBeenCalledWith(
+      ["C:\\tmp\\ok.png"],
+      "reference",
+      "drag",
+      null,
+      expect.stringMatching(/^[0-9a-f]{16}$/),
+    );
     await waitFor(() =>
       expect(lastToast()?.message).toBe(
         "已暂存 1 项，1 项失败：a.png — 只接受绝对路径",
@@ -761,7 +781,13 @@ describe("完整面板投递区 · 拖放路由", () => {
     act(() => emitSession(["C:\\tmp\\stage.png"], { x: 300, y: 300 }));
 
     await waitFor(() => expect(api.shelfAddPaths).toHaveBeenCalledTimes(1));
-    expect(api.shelfAddPaths).toHaveBeenCalledWith(["C:\\tmp\\stage.png"], "reference", "drag", null);
+    expect(api.shelfAddPaths).toHaveBeenCalledWith(
+      ["C:\\tmp\\stage.png"],
+      "reference",
+      "drag",
+      null,
+      expect.stringMatching(/^[0-9a-f]{16}$/),
+    );
     expect(api.shelfDropToDirectory).not.toHaveBeenCalled();
   });
 
@@ -770,7 +796,13 @@ describe("完整面板投递区 · 拖放路由", () => {
     act(() => emitSession(["C:\\tmp\\nostage.png"]));
 
     await waitFor(() => expect(api.shelfAddPaths).toHaveBeenCalledTimes(1));
-    expect(api.shelfAddPaths).toHaveBeenCalledWith(["C:\\tmp\\nostage.png"], "reference", "drag", null);
+    expect(api.shelfAddPaths).toHaveBeenCalledWith(
+      ["C:\\tmp\\nostage.png"],
+      "reference",
+      "drag",
+      null,
+      expect.stringMatching(/^[0-9a-f]{16}$/),
+    );
     expect(api.shelfDropToDirectory).not.toHaveBeenCalled();
   });
 

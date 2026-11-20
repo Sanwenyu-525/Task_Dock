@@ -136,9 +136,9 @@ pub struct SyncChange {
 pub struct PullPage {
     pub cursor: String,
     pub changes: Vec<SyncChange>,
-    /// 跨端链路 ID（JSON 字段名 `traceId`）：桌面端发出时若当前链路有 trace_id
-    /// 则带上。trace 契约（`diagnostics::trace::new_trace_id`，批次 C）就绪前恒为
-    /// `None` 且序列化时省略；注入点在 server.rs `handle_changes`，接线由主智能体完成。
+    /// 跨端链路 ID（JSON 字段名 `traceId`）：由 server.rs 按设备会话解析后显式传入。
+    /// 同一设备一次同步周期内的分页 pull / push / 后续 pull 共用同一 trace_id；
+    /// 无链路时为 `None` 且序列化时省略（旧客户端不受影响）。
     #[serde(skip_serializing_if = "Option::is_none", rename = "traceId")]
     pub trace_id: Option<String>,
 }
@@ -147,9 +147,9 @@ pub struct PullPage {
 pub struct PushRequest {
     pub device_id: String,
     pub ops: Vec<SyncOp>,
-    /// 手机端原样携带的可选链路 ID（`traceId`）：桌面端只透传回包，不校验语义、
-    /// **绝不参与任何鉴权**（`authenticate_device` 不读该字段）；16 位 hex 形态由
-    /// 桌面诊断层统一兜底校验（C 契约 `validate_external_id`），mobile_sync 侧不校验。
+    /// 手机端原样携带的可选链路 ID（`traceId`）：反序列化层不做语义校验；
+    /// server.rs `resolve_session_trace` 统一走 `validate_external_id`，非法丢弃并
+    /// 沿用/生成会话 trace。**绝不参与任何鉴权**（`authenticate_device` 不读该字段）。
     #[serde(default, rename = "traceId")]
     pub trace_id: Option<String>,
 }
@@ -179,15 +179,34 @@ pub struct SyncConflict {
 pub struct PushResponse {
     pub ack: Vec<String>,
     pub conflicts: Vec<SyncConflict>,
-    /// 原样回传请求里的 `traceId`（不校验语义）；无值时省略字段，旧客户端不受影响。
+    /// 回传本会话解析后的 `traceId`（合法值沿用/采用，非法请求值已丢弃）；
+    /// 无链路时省略字段，旧客户端不受影响。
     #[serde(skip_serializing_if = "Option::is_none", rename = "traceId")]
     pub trace_id: Option<String>,
 }
 
 /// 拉取 `since` 之后的变更。游标就是 seq，不透明字符串由调用方原样保存。
+///
+/// 兼容入口：不带链路上下文（`trace_id = None`）。同步链路请用
+/// [`pull_with_trace`] 显式传入会话 trace_id。
 pub fn pull(db: &Db, since: i64, limit: usize) -> AppResult<PullPage> {
+    pull_with_trace(db, since, limit, None)
+}
+
+/// 拉取变更并显式携带跨端链路 ID。
+///
+/// `trace_id` 由调用方（server.rs 会话解析）保证是 16 位小写 hex；这里只做
+/// 透传，不再二次校验。跨 `.await` / 跨线程时由调用方显式传参，不依赖线程局部上下文。
+pub fn pull_with_trace(
+    db: &Db,
+    since: i64,
+    limit: usize,
+    trace_id: Option<&str>,
+) -> AppResult<PullPage> {
     let limit = limit.clamp(1, MAX_PULL_LIMIT) as i64;
-    db.with_conn(|conn| {
+    let trace_id = trace_id.map(str::to_string);
+    let started = std::time::Instant::now();
+    let result = db.with_conn(|conn| {
         let mut stmt = conn.prepare(
             "SELECT seq, entity, id, deleted FROM sync_changes
              WHERE seq > ?1 ORDER BY seq ASC LIMIT ?2",
@@ -229,9 +248,15 @@ pub fn pull(db: &Db, since: i64, limit: usize) -> AppResult<PullPage> {
         Ok(PullPage {
             cursor: cursor.to_string(),
             changes,
-            trace_id: None,
+            trace_id: trace_id.clone(),
         })
-    })
+    });
+    // 按一次 pull 请求聚合（不逐分页/逐变更打点）。
+    match &result {
+        Ok(_) => crate::diagnostics::metrics::record_duration_async("mobile_sync", "pull", started),
+        Err(e) => crate::diagnostics::metrics::record_failure("mobile_sync", "pull", e),
+    }
+    result
 }
 
 fn tombstone(entity: &str, id: &str, rev: i64) -> SyncChange {
@@ -246,13 +271,28 @@ fn tombstone(entity: &str, id: &str, rev: i64) -> SyncChange {
 }
 
 /// 应用一批 push 操作；所有操作与幂等记录在同一事务内。
+///
+/// 兼容入口：不带链路上下文（`trace_id = None`）。同步链路请用
+/// [`apply_push_with_trace`] 显式传入会话 trace_id。
 pub fn apply_push(db: &Db, device_id: &str, ops: &[SyncOp]) -> AppResult<PushResponse> {
+    apply_push_with_trace(db, device_id, ops, None)
+}
+
+/// 应用一批 push 操作并显式携带跨端链路 ID（透传调用方解析后的合法值）。
+pub fn apply_push_with_trace(
+    db: &Db,
+    device_id: &str,
+    ops: &[SyncOp],
+    trace_id: Option<&str>,
+) -> AppResult<PushResponse> {
     if ops.len() > MAX_PUSH_OPS {
         return Err(AppError::Validation(format!(
             "单批操作不能超过 {MAX_PUSH_OPS} 条"
         )));
     }
-    db.with_conn(|conn| {
+    let trace_id = trace_id.map(str::to_string);
+    let started = std::time::Instant::now();
+    let result = db.with_conn(|conn| {
         let tx = conn.unchecked_transaction()?;
         let mut ack = Vec::new();
         let mut conflicts = Vec::new();
@@ -300,9 +340,14 @@ pub fn apply_push(db: &Db, device_id: &str, ops: &[SyncOp]) -> AppResult<PushRes
         Ok(PushResponse {
             ack,
             conflicts,
-            trace_id: None,
+            trace_id: trace_id.clone(),
         })
-    })
+    });
+    match &result {
+        Ok(_) => crate::diagnostics::metrics::record_duration_async("mobile_sync", "apply_push", started),
+        Err(e) => crate::diagnostics::metrics::record_failure("mobile_sync", "apply_push", e),
+    }
+    result
 }
 
 fn conflict(op: &SyncOp, reason: &str, server_record: Option<SyncChange>) -> SyncConflict {
@@ -1251,8 +1296,8 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(carried.trace_id.as_deref(), Some("abcdef0123456789"));
-        // 手机端只回传不生成；桌面侧不做格式校验（由诊断层统一兜底），
-        // 因此任意字符串都按不透明值透传。
+        // 反序列化层按不透明值保留任意字符串；格式校验在 server.rs
+        // `resolve_session_trace`（validate_external_id）统一完成，非法值丢弃。
         let opaque: PushRequest = serde_json::from_value(json!({
             "device_id": "d1",
             "ops": [],
@@ -1282,13 +1327,34 @@ mod tests {
     }
 
     #[test]
-    fn pull_page_has_no_trace_id_until_link_context_exists() {
-        // 桌面发出侧留空 Option（trace 生成在批次 C）；序列化时字段省略。
+    fn pull_without_trace_context_omits_trace_field_for_legacy_clients() {
+        // 兼容入口不带链路上下文：trace_id 恒 None，序列化时字段省略（旧客户端不受影响）。
         let db = test_db();
         let page = pull(&db, 0, 500).unwrap();
         assert!(page.trace_id.is_none());
         let value = serde_json::to_value(&page).unwrap();
         assert!(value.get("traceId").is_none());
+    }
+
+    #[test]
+    fn pull_and_push_carry_explicit_trace_id() {
+        // 同步链路：server.rs 解析出的会话 trace 显式传入，pull 页与 push 回包都带值。
+        let db = test_db();
+        let trace = "0123456789abcdef";
+
+        let page = pull_with_trace(&db, 0, 500, Some(trace)).unwrap();
+        assert_eq!(page.trace_id.as_deref(), Some(trace));
+        let value = serde_json::to_value(&page).unwrap();
+        assert_eq!(value["traceId"], trace);
+
+        let response = apply_push_with_trace(&db, "device-1", &[], Some(trace)).unwrap();
+        assert_eq!(response.trace_id.as_deref(), Some(trace));
+        let value = serde_json::to_value(&response).unwrap();
+        assert_eq!(value["traceId"], trace);
+
+        // 显式传 None 与兼容入口行为一致：字段省略。
+        let legacy = apply_push_with_trace(&db, "device-1", &[], None).unwrap();
+        assert!(legacy.trace_id.is_none());
     }
 
     #[test]

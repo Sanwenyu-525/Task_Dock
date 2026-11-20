@@ -174,8 +174,9 @@ describe("McpAccessSection", () => {
     render(<McpAccessSection />);
     await screen.findByRole("heading", { name: "Codex" });
 
-    // 作用域切换 / 授权项目两组常驻按钮都带可换行容器类（窄宽度下不挤成一行溢出）。
-    expect(document.querySelectorAll(".mcp-access .mcp-btn-group").length).toBeGreaterThanOrEqual(2);
+    // 作用域切换（分段控件）与授权项目/操作按钮都走可换行容器（窄宽度下不挤成一行溢出）。
+    expect(document.querySelectorAll(".mcp-access .settings-segmented").length).toBeGreaterThanOrEqual(1);
+    expect(document.querySelectorAll(".mcp-access .settings-actions-row").length).toBeGreaterThanOrEqual(1);
 
     fireEvent.click(screen.getByRole("button", { name: "settings.mcpAccess.revoke" }));
     const dialog = await screen.findByRole("alertdialog");
@@ -272,6 +273,16 @@ describe("McpAccessSection", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "settings.mcpAccess.workspace.remove" }));
     await waitFor(() => expect(mocks.revokeRoot).toHaveBeenCalledWith(AGENT.id, "root-1"));
+  });
+
+  it("后端返回 null 列表时按空集合渲染，不白屏", async () => {
+    // 回归：IPC 在服务未启动等分支可能返回 null，`setAgents(null)` 会让渲染期
+    // 的 `.filter` 抛错并触发整个设置页错误边界（实测白屏）。
+    mocks.list.mockResolvedValueOnce(null as never);
+    mocks.projects.mockResolvedValueOnce(null as never);
+    render(<McpAccessSection />);
+    expect(await screen.findByText("settings.mcpAccess.noIdentities")).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toContain("settings.mcpAccess.status.running");
   });
 
   it("filters identities by name or agent id and reports empty results", async () => {

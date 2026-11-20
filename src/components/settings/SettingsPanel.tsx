@@ -102,6 +102,10 @@ export default function SettingsPanel() {
    * 抢走会打断键盘连续移动。
    */
   const focusHeadingRef = useRef(false);
+  /** 外部定位序号：同一页面重复选中时也要重新定位（activeSection 不变）。 */
+  const [focusNonce, setFocusNonce] = useState(0);
+  /** 页面级滚动容器：切页/定位要回到顶部，否则新页面从上一页的滚动位置开始。 */
+  const pageHostRef = useRef<HTMLDivElement | null>(null);
 
   /** 切换二级页面：持久化 + 状态更新。草稿保护由各页面卸载守卫承担。 */
   const selectSection = useCallback((section: SettingsSectionId) => {
@@ -113,6 +117,8 @@ export default function SettingsPanel() {
   const navigateToSection = useCallback((section: SettingsSectionId) => {
     focusHeadingRef.current = true;
     selectSection(section);
+    // 同一页面再次命中时 activeSection 不变，用序号驱动一次重新定位。
+    setFocusNonce((n) => n + 1);
   }, [selectSection]);
 
   // 跨模块定位（「更多 → 自定义导航」/全局搜索/剪贴板工作区）：
@@ -160,12 +166,19 @@ export default function SettingsPanel() {
     setAppPickerOpen(true);
   }, [pendingPicker, snapPhase]);
 
-  // 外部定位切页后把焦点移到页面标题（DOM 提交后一帧内查询）。
+  // 外部定位切页后：先把页面滚动区归零，再把焦点移到页面标题（DOM 提交后一帧内查询）。
+  // 滚动归零是搜索定位正确性的前提——否则搜索命中一个短页面时，用户看到的是
+  // 上一页遗留的滚动位置（表现为「点了结果却找不到那个设置」）。
   // rAF 生命周期与组件一致，卸载时统一取消。
   const headingFocusRaf = useRef<number | null>(null);
   useEffect(() => {
+    if (pageHostRef.current) pageHostRef.current.scrollTop = 0;
+  }, [activeSection]);
+
+  useEffect(() => {
     if (!focusHeadingRef.current) return;
     focusHeadingRef.current = false;
+    if (pageHostRef.current) pageHostRef.current.scrollTop = 0;
     headingFocusRaf.current = requestAnimationFrame(() => {
       headingFocusRaf.current = null;
       containerRef.current
@@ -178,7 +191,7 @@ export default function SettingsPanel() {
         headingFocusRaf.current = null;
       }
     };
-  }, [activeSection]);
+  }, [activeSection, focusNonce]);
 
   /** 添加应用：进入 AppPicker 整页子视图（替换设置内容，返回后状态不丢）。 */
   const openAppPicker = useCallback(() => setAppPickerOpen(true), []);
@@ -274,7 +287,7 @@ export default function SettingsPanel() {
           onSelectSection={selectSection}
           layoutMode={layoutMode}
         />
-        <div className="settings-page-host page-scroll">
+        <div className="settings-page-host page-scroll" ref={pageHostRef}>
           {/* 二级页面：只挂载当前页面，切页即卸载（数据读取随页面挂载走，
               草稿保护由页面卸载守卫承担；外壳层对整个设置页保活）。 */}
           {PageComponent}

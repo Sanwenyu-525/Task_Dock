@@ -59,6 +59,8 @@ import {
 const SRC = "D:\\src";
 const DST = "D:\\dst";
 const SOURCE_FILE = `${SRC}\\a.txt`;
+// 与 Rust `trace::validate_external_id` / 前端 `isValidTraceId` 同一契约：16 位小写 hex。
+const TRACE_ID_PATTERN = /^[0-9a-f]{16}$/;
 
 const report = {
   operationId: "test-op",
@@ -279,9 +281,11 @@ describe("面板级正常释放：IPC 恰为预期", () => {
 
     await waitFor(() => expect(bridgeMocks.fsCopyJobStart).toHaveBeenCalledTimes(1));
     expect(bridgeMocks.fsMoveJobStart).not.toHaveBeenCalled();
-    const [paths, targetDir] = bridgeMocks.fsCopyJobStart.mock.calls[0];
+    const [paths, targetDir, , operationId, traceId] = bridgeMocks.fsCopyJobStart.mock.calls[0];
     expect(paths).toEqual([SOURCE_FILE]);
     expect(targetDir).toBe(DST);
+    expect(operationId).toBeTruthy();
+    expect(traceId).toMatch(TRACE_ID_PATTERN);
   });
 
   it("Shift 按住：解析为移动，pointerup 后 fsMoveJobStart 恰一次", async () => {
@@ -293,9 +297,11 @@ describe("面板级正常释放：IPC 恰为预期", () => {
 
     await waitFor(() => expect(bridgeMocks.fsMoveJobStart).toHaveBeenCalledTimes(1));
     expect(bridgeMocks.fsCopyJobStart).not.toHaveBeenCalled();
-    const [paths, targetDir] = bridgeMocks.fsMoveJobStart.mock.calls[0];
+    const [paths, targetDir, , operationId, traceId] = bridgeMocks.fsMoveJobStart.mock.calls[0];
     expect(paths).toEqual([SOURCE_FILE]);
     expect(targetDir).toBe(DST);
+    expect(operationId).toBeTruthy();
+    expect(traceId).toMatch(TRACE_ID_PATTERN);
   });
 
   it("无合法落点（hover 为空）时 pointerup 早退，不产生 IPC", async () => {
@@ -361,9 +367,11 @@ describe("剪切链路（FW-FILE-004）", () => {
 
     await waitFor(() => expect(bridgeMocks.fsMoveJobStart).toHaveBeenCalledTimes(1));
     expect(bridgeMocks.fsCopyJobStart).not.toHaveBeenCalled();
-    const [paths, targetDir] = bridgeMocks.fsMoveJobStart.mock.calls[0];
+    const [paths, targetDir, , operationId, traceId] = bridgeMocks.fsMoveJobStart.mock.calls[0];
     expect(paths).toEqual([SOURCE_FILE]);
     expect(targetDir).toBe(DST);
+    expect(operationId).toBeTruthy();
+    expect(traceId).toMatch(TRACE_ID_PATTERN);
     // 报告 ok → 剪切收尾清空内部剪贴板。
     await waitFor(() => expect(getFwClipboard()).toBeNull());
   });

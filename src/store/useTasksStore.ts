@@ -14,7 +14,7 @@ import {
   type TaskStats,
 } from "../lib/bridge";
 import { errorMessage } from "../lib/errors";
-import { startOperation } from "../lib/diagnostics";
+import { startOperation, startTracedOperation } from "../lib/diagnostics";
 
 /** 轻量列表的在途请求代际：只认最后一次，旧响应不覆盖新列表 */
 let liteSeq = 0;
@@ -270,10 +270,11 @@ export const useTasksStore = create<{
   },
   create: async (input) => {
     // 一次用户保存 = 一个 operation_id；参数只记录阶段，不记录标题/正文。
-    const op = startOperation("task", "create_task");
+    // traceId 随同一操作贯穿前端 → IPC → Rust 诊断事件；复用既有生命周期，不另建。
+    const { operation: op, traceId } = startTracedOperation("task", "create_task");
     try {
       op.stage("persist");
-      const t = await createTask(input);
+      const t = await createTask(input, traceId);
       op.success();
       await get().refresh();
       return t;

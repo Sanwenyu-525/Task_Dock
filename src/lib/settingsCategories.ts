@@ -108,108 +108,121 @@ export const SETTINGS_SECTION_META: readonly SettingsSectionMeta[] = [
     id: "appearance",
     labelKey: "settings.section.appearance",
     category: "general",
-    aliases: ["主题", "深色", "浅色", "材质", "玻璃", "语言", "theme", "material", "language"],
+    aliases: [
+      "主题", "深色", "浅色", "材质", "玻璃", "语言", "外观", "预设", "配色", "工作台布局",
+      "theme", "material", "language", "preset", "appearance",
+    ],
   },
   {
     id: "navigation",
     labelKey: "settings.section.navigation",
     category: "general",
-    aliases: ["侧栏", "入口", "排序", "显隐", "nav", "sidebar"],
+    aliases: [
+      "侧栏", "入口", "排序", "显隐", "导航", "显示", "隐藏", "恢复默认", "预览",
+      "nav", "sidebar", "navigation",
+    ],
   },
   {
     id: "window-hotkeys",
     labelKey: "settings.section.windowHotkeys",
     category: "general",
-    aliases: ["快捷键", "吸附", "停靠", "窗口", "hotkey", "snap"],
+    aliases: ["快捷键", "热键", "吸附", "停靠", "窗口", "hotkey", "snap", "shortcut"],
   },
   // 功能与应用
   {
     id: "features",
     labelKey: "settings.section.features",
     category: "features",
-    aliases: ["模块", "开关", "启用", "module"],
+    aliases: ["模块", "开关", "启用", "功能", "工作空间", "行动中心", "货币", "module", "feature"],
   },
   {
     id: "apps",
     labelKey: "settings.section.apps",
     category: "features",
-    aliases: ["应用", "快捷方式", "启动", "app", "launcher"],
+    aliases: ["应用", "快捷方式", "启动", "应用管理", "扫描", "app", "launcher", "scan"],
   },
   {
     id: "clipboard",
     labelKey: "settings.section.clipboard",
     category: "features",
-    aliases: ["复制", "粘贴", "剪贴", "clipboard"],
+    aliases: ["复制", "粘贴", "剪贴", "图片文字", "OCR", "敏感", "排除", "clipboard"],
   },
   // 通知与语音
   {
     id: "notifications",
     labelKey: "settings.section.notifications",
     category: "notify-voice",
-    aliases: ["提醒", "静音", "免打扰", "notification", "reminder"],
+    aliases: [
+      "提醒", "静音", "免打扰", "通知", "聚合", "速率", "超时", "notification", "reminder",
+    ],
   },
   {
     id: "audio-sound",
     labelKey: "settings.section.audioSound",
     category: "notify-voice",
-    aliases: ["提示音", "声音", "音效", "sound"],
+    aliases: ["提示音", "声音", "音效", "音量", "事件提示", "sound", "audio"],
   },
   {
     id: "tts",
     labelKey: "settings.section.tts",
     category: "notify-voice",
-    aliases: ["语音播报", "朗读", "音色", "voice", "speech"],
+    aliases: ["语音播报", "朗读", "音色", "语音", "试听", "语音包", "voice", "speech", "tts"],
   },
   {
     id: "tts-cache",
     labelKey: "settings.section.ttsCache",
     category: "notify-voice",
-    aliases: ["语音缓存", "清理缓存", "cache"],
+    aliases: ["语音缓存", "清理缓存", "缓存", "清理", "cache"],
   },
   // 数据与资源
   {
     id: "resource-cleanup",
     labelKey: "settings.section.resourceCleanup",
     category: "data-resources",
-    aliases: ["磁盘", "缓存", "占用", "清理", "disk", "cleanup"],
+    aliases: ["磁盘", "缓存", "占用", "清理", "资源", "进程", "disk", "cleanup", "resource"],
   },
   {
     id: "data",
     labelKey: "settings.section.data",
     category: "data-resources",
-    aliases: ["备份", "恢复", "导入", "导出", "backup", "import", "export"],
+    aliases: [
+      "备份", "恢复", "导入", "导出", "自动备份", "保留天数", "快照", "测试数据", "审计",
+      "backup", "import", "export", "restore", "snapshot",
+    ],
   },
   // 接入与诊断
   {
     id: "agent",
     labelKey: "settings.section.agent",
     category: "integration",
-    aliases: ["接入", "端口", "令牌", "mcp", "agent"],
+    aliases: [
+      "接入", "本地接入", "端口", "令牌", "投递目录", "凭据", "身份", "审计", "mcp", "agent",
+    ],
   },
   {
     id: "diagnostics-logs",
     labelKey: "settings.section.diagnosticsLogs",
     category: "integration",
-    aliases: ["日志", "异常", "报错", "log", "error"],
+    aliases: ["日志", "异常", "报错", "容量", "log", "error", "logfile"],
   },
   {
     id: "diagnostics",
     labelKey: "settings.section.diagnostics",
     category: "integration",
-    aliases: ["性能", "延迟", "队列", "retention", "performance"],
+    aliases: ["性能", "延迟", "队列", "保留", "快照", "retention", "performance"],
   },
   {
     id: "developer",
     labelKey: "settings.section.developer",
     category: "integration",
-    aliases: ["开发者", "调试", "mock", "developer"],
+    aliases: ["开发者", "调试", "mock", "developer", "debug"],
   },
   // 帮助与教程
   {
     id: "help",
     labelKey: "settings.section.help",
     category: "help",
-    aliases: ["教程", "引导", "帮助中心", "help", "onboarding"],
+    aliases: ["教程", "引导", "帮助中心", "帮助", "help", "onboarding"],
   },
 ];
 

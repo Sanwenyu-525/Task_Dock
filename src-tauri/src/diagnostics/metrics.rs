@@ -46,6 +46,8 @@ fn default_threshold_ms(module: &str) -> u64 {
         "startup" | "system" => 3000,
         // 文件工作区目录加载
         "file" => 1500,
+        // 全局搜索（与前端 moduleForCommand 的 "search" 命名对齐）
+        "search" => 1000,
         // 资源扫描
         "resource" | "ocr" => 5000,
         // 剪贴板捕获
@@ -270,9 +272,23 @@ fn percentile(samples: &VecDeque<u64>, pct: u32) -> u64 {
 
 static REGISTRY: OnceLock<Mutex<MetricsRegistry>> = OnceLock::new();
 
+/// 聚合窗口起始时刻（RFC3339）。注册表首次初始化时记录，供诊断中心如实说明
+/// 「进程启动以来累计」这一数据窗口：重启进程即重置，**不存在**滚动 24 小时窗口。
+static REGISTRY_STARTED: OnceLock<String> = OnceLock::new();
+
+pub fn started_at() -> String {
+    REGISTRY_STARTED
+        .get_or_init(|| chrono::Utc::now().to_rfc3339())
+        .clone()
+}
+
 /// 全局注册表；锁中毒时恢复内部数据（聚合非关键路径，绝不 panic）。
 fn global() -> &'static Mutex<MetricsRegistry> {
-    REGISTRY.get_or_init(|| Mutex::new(MetricsRegistry::new()))
+    REGISTRY.get_or_init(|| {
+        // 先固定窗口起点，再建注册表：保证 started_at 不晚于任何一条观测。
+        let _ = started_at();
+        Mutex::new(MetricsRegistry::new())
+    })
 }
 
 /// 构造慢操作诊断事件（超过阈值才调用；WARN + stage=slow + 耗时元数据）。
@@ -308,6 +324,70 @@ pub fn record_duration(module: &str, action: &str, ms: u64) {
 /// 记录一次耗时（显式阈值）：超过 `threshold_ms` 才产生一条 WARN 诊断事件。
 pub fn record_slow_operation(module: &str, action: &str, ms: u64, threshold_ms: u64) {
     record_slow_if_exceeds(module, action, ms, threshold_ms);
+}
+
+/// 异步操作收尾：用调用方在操作起点取得的 [`Instant`] 计算耗时并记录一次。
+///
+/// 适用于跨 `.await` 的命令：起点在进入命令时取得，await 结束后调用本函数；
+/// 与同步 [`measure_operation`] 共用同一阈值表与有界聚合。不新增常驻线程、
+/// 不引入全局可变状态；`Instant` 可跨 await 持有。失败路径由调用方另行
+/// [`record_failure`]，本函数只记耗时。
+pub fn record_duration_async(module: &str, action: &str, started: Instant) {
+    let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    record_duration(module, action, ms);
+}
+
+/// 异步操作计时器：跨 `.await` 可安全持有，结束时一次性记录耗时。
+///
+/// 语义：
+/// - [`OperationTimer::new`] 记录起点；计时器只持有 `Instant` 与自有字符串，
+///   无全局可变状态、不新增线程，`Send` 可移入 async 闭包；
+/// - 显式 [`OperationTimer::finish`] 消费计时器并记录一次耗时；
+/// - 若在 `finish` 前被丢弃（提前返回、任务取消或 panic 展开），`Drop` 兜底
+///   记录一次耗时，保证失败/早退路径也有观测；`finished` 标志保证同一次操作
+///   绝不重复入账；
+/// - 失败计数由调用方在错误路径显式 [`record_failure`]，计时器本身不推断失败。
+#[derive(Debug)]
+pub struct OperationTimer {
+    module: String,
+    action: String,
+    started: Instant,
+    finished: bool,
+}
+
+impl OperationTimer {
+    /// 开始计时（起点为当前时刻）。
+    pub fn new(module: &str, action: &str) -> Self {
+        Self {
+            module: module.to_string(),
+            action: action.to_string(),
+            started: Instant::now(),
+            finished: false,
+        }
+    }
+
+    /// 显式收尾：记录一次耗时并返回经过的毫秒数。消费计时器；随后 Drop 不会重复入账。
+    pub fn finish(mut self) -> u64 {
+        let ms = self.elapsed_ms();
+        if !self.finished {
+            self.finished = true;
+            record_duration(&self.module, &self.action, ms);
+        }
+        ms
+    }
+
+    fn elapsed_ms(&self) -> u64 {
+        u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX)
+    }
+}
+
+impl Drop for OperationTimer {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.finished = true;
+            record_duration(&self.module, &self.action, self.elapsed_ms());
+        }
+    }
 }
 
 fn record_slow_if_exceeds(module: &str, action: &str, ms: u64, threshold_ms: u64) {
@@ -472,6 +552,7 @@ mod tests {
         assert_eq!(default_threshold_ms("mcp"), 10_000);
         assert_eq!(default_threshold_ms("agent"), 30_000);
         assert_eq!(default_threshold_ms("db"), 500);
+        assert_eq!(default_threshold_ms("search"), 1000);
         // 回收站枚举等未单列模块走默认 1000ms。
         assert_eq!(default_threshold_ms("recycle"), 1000);
     }
@@ -532,5 +613,58 @@ mod tests {
         let wide = "中".repeat(200);
         assert!(truncate_ident(&wide).is_char_boundary(0));
         assert!(truncate_ident(&wide).len() <= IDENT_MAX + 3);
+    }
+
+    #[test]
+    fn async_record_duration_aggregates_once() {
+        // 与生产一致的异步收尾入口：起点 Instant 跨 await 后入账，只记一次。
+        let started = Instant::now();
+        record_duration_async("bench-async", "pull", started);
+        let summary = summary();
+        let entry = summary
+            .entries
+            .iter()
+            .find(|e| e.module == "bench-async" && e.action == "pull")
+            .expect("异步收尾指纹必须存在");
+        assert_eq!(entry.count, 1);
+        assert!(entry.avg_ms <= entry.max_ms);
+    }
+
+    #[test]
+    fn timer_explicit_finish_does_not_record_twice_on_drop() {
+        let timer = OperationTimer::new("bench-timer", "finish");
+        let ms = timer.finish();
+        assert!(ms <= u64::MAX);
+        // finish 后 Drop 兜底不得重复入账。
+        let summary = summary();
+        let entry = summary
+            .entries
+            .iter()
+            .find(|e| e.module == "bench-timer" && e.action == "finish")
+            .expect("显式 finish 指纹必须存在");
+        assert_eq!(entry.count, 1, "finish + Drop 只能入账一次");
+    }
+
+    #[test]
+    fn timer_drop_fallback_records_once_when_never_finished() {
+        {
+            let _timer = OperationTimer::new("bench-timer", "drop-fallback");
+            // 不调用 finish：离开作用域由 Drop 兜底记录。
+        }
+        let summary = summary();
+        let entry = summary
+            .entries
+            .iter()
+            .find(|e| e.module == "bench-timer" && e.action == "drop-fallback")
+            .expect("Drop 兜底指纹必须存在");
+        assert_eq!(entry.count, 1, "未 finish 的计时器只能兜底入账一次");
+    }
+
+    #[test]
+    fn timer_is_send_for_async_ownership() {
+        // 编译期约束：计时器必须能移入 async 闭包/跨 await 持有。
+        fn assert_send<T: Send>(_: &T) {}
+        let timer = OperationTimer::new("bench-timer", "send");
+        assert_send(&timer);
     }
 }

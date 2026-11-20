@@ -409,6 +409,36 @@ describe("trace 上下文", () => {
       expect(event.trace_id).toBeUndefined();
     }
   });
+
+  it("startTracedOperation 无外部 trace 时生成合法链路 ID，终态事件携带同一值", async () => {
+    const { operation, traceId } = diag.startTracedOperation("file", "batch_import");
+    expect(traceId).toMatch(/^[0-9a-f]{16}$/);
+    operation.success();
+    await flushAll();
+
+    const events = allEvents().filter((event) => event.operation_id === operation.id);
+    expect(events.map((event) => event.trace_id)).toEqual([traceId, traceId]);
+  });
+
+  it("startTracedOperation 沿用合法外部 traceId；非法值重新生成且不透传", async () => {
+    const external = "0123456789abcdef";
+    const kept = diag.startTracedOperation("agent", "run_task", { traceId: external });
+    kept.operation.success();
+
+    const regenerated = diag.startTracedOperation("mcp", "tool_call", {
+      traceId: "ZZZ-not-hex!!",
+    });
+    expect(regenerated.traceId).toMatch(/^[0-9a-f]{16}$/);
+    expect(regenerated.traceId).not.toBe("ZZZ-not-hex!!");
+    regenerated.operation.success();
+    await flushAll();
+
+    const keptEvents = allEvents().filter((event) => event.operation_id === kept.operation.id);
+    expect(keptEvents.map((event) => event.trace_id)).toEqual([external, external]);
+    for (const event of allEvents().filter((event) => event.operation_id === regenerated.operation.id)) {
+      expect(event.trace_id).toBe(regenerated.traceId);
+    }
+  });
 });
 
 describe("logIpcFailure", () => {

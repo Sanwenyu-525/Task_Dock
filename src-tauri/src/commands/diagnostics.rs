@@ -11,6 +11,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tauri::State;
 
+use crate::db::Db;
 use crate::diagnostics::{
     self, query, DiagnosticPage, DiagnosticQuery, DiagnosticSummary, Diagnostics,
 };
@@ -198,20 +199,74 @@ pub async fn diagnostics_summary(
 }
 
 /// 生成脱敏诊断报告（本机文件，不上传）。
+///
+/// `includeSecurityAudit` 默认 false：安全审计事件只能由用户显式授权后并入，
+/// 未授权时导出路径**完全不读**审计表。
 #[tauri::command]
 pub async fn diagnostics_export(
     diag: State<'_, Arc<Diagnostics>>,
+    db: State<'_, Arc<Db>>,
     filter: DiagnosticQuery,
+    include_security_audit: Option<bool>,
 ) -> AppResult<query::ExportResult> {
     let diag = diag.inner().clone();
+    let db = db.inner().clone();
+    let include_security_audit = include_security_audit.unwrap_or(false);
     tauri::async_runtime::spawn_blocking(move || {
         // 先刷盘并取得**可信结果**：无法确认时报告里如实标记，不伪装完整。
         let flush = diag.flush_blocking();
         let dir = diag.dir().to_path_buf();
-        query::export(&dir, &diag, &filter, flush)
+        query::export_with_db(&dir, &diag, &filter, flush, include_security_audit, Some(db.as_ref()))
     })
     .await
     .map_err(|e| AppError::Agent(format!("诊断导出任务失败: {e}")))?
+}
+
+/// 导出前预览：只读统计，**不生成文件、不落盘、不上传**。
+///
+/// 用户确认后才调用 [`diagnostics_export`]；取消预览不会留下任何文件。
+#[tauri::command]
+pub async fn diagnostics_export_preview(
+    diag: State<'_, Arc<Diagnostics>>,
+    filter: DiagnosticQuery,
+    include_security_audit: Option<bool>,
+) -> AppResult<query::ExportPreview> {
+    let diag = diag.inner().clone();
+    let include_security_audit = include_security_audit.unwrap_or(false);
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = diag.dir().to_path_buf();
+        Ok(query::export_preview(&dir, &filter, include_security_audit))
+    })
+    .await
+    .map_err(|e| AppError::Agent(format!("诊断预览任务失败: {e}")))?
+}
+
+/// 性能指标快照（有界聚合，进程生命周期累计窗口）。
+///
+/// 返回的 `window="process"` 与 `startedAt` 是**数据窗口的真实说明**：
+/// 进程重启即清空，不能表述为「最近 24 小时」。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetricsSummaryReport {
+    pub window: String,
+    pub started_at: String,
+    pub generated_at: String,
+    pub fingerprints: usize,
+    pub entries: Vec<diagnostics::metrics::MetricsEntry>,
+    pub evicted: u64,
+}
+
+#[tauri::command]
+pub fn diagnostics_metrics_summary() -> AppResult<MetricsSummaryReport> {
+    let summary = diagnostics::metrics::summary();
+    Ok(MetricsSummaryReport {
+        window: "process".to_string(),
+        started_at: diagnostics::metrics::started_at(),
+        generated_at: chrono::Utc::now().to_rfc3339(),
+        fingerprints: summary.fingerprints,
+        entries: summary.entries,
+        evicted: summary.evicted,
+    })
 }
 
 /// 清空诊断日志（只动诊断目录，不触碰任务/工作流/备份/恢复记录）。

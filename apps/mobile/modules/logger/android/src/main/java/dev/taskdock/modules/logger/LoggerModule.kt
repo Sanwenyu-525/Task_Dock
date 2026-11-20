@@ -7,7 +7,10 @@
 //
 // 生命周期：模块创建（即 App 首次 import safeLog）时安装 CrashHandler 并初始化文件
 // sink——这是 JS 侧能做到的最早时机；OnDestroy 刷盘后停掉写线程，无常驻定时器。
-// 日志纪律：本模块自身不记录任何业务数据；metadata 由 JS 侧脱敏后才传入。
+//
+// 脱敏纪律：**原生侧独立脱敏一次**，Logcat 与文件日志共用同一份脱敏结果；metadata
+// 经白名单 + 类型/长度限制后重新序列化。不依赖 JS 侧已脱敏的前提（原生可被其他入口
+// 直接调用）。
 package dev.taskdock.modules.logger
 
 import expo.modules.kotlin.Promise
@@ -28,8 +31,12 @@ class LoggerModule : Module() {
     }
 
     Function("write") { level: String, tag: String, message: String, metadataJson: String? ->
-      SafeLog.write(level, tag, message)
-      FileLogSink.append(level, tag, message, metadataJson)
+      // 原生侧先脱敏：tag/message/metadata 各清洗一次，Logcat 与文件共用结果。
+      val cleanTag = SafeLog.normalizeTag(tag)
+      val cleanMessage = SafeLog.sanitizeText(message)
+      val cleanMetadata = SafeLog.sanitizeMetadataJson(metadataJson)
+      SafeLog.writeClean(level, cleanTag, cleanMessage)
+      FileLogSink.append(level, cleanTag, cleanMessage, cleanMetadata?.toString())
     }
 
     AsyncFunction("flush") { promise: Promise ->

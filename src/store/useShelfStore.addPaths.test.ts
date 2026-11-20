@@ -91,14 +91,17 @@ import {
 } from "../lib/diagnostics";
 import {
   shelfAddPaths,
+  shelfCopyTo,
   shelfList,
+  shelfMoveItems,
   shelfStats,
   type ShelfFailedEntry,
   type ShelfItem,
 } from "../lib/bridge";
 
-/** 捕获一次操作产生的 `shelf_add_paths` 诊断事件（先清掉旧队列）。 */
-async function captureShelfAddEvents(
+/** 捕获一次操作产生的指定 action 诊断事件（先清掉旧队列）。 */
+async function captureEvents(
+  action: string,
   run: () => Promise<unknown>,
 ): Promise<DiagnosticInput[]> {
   // 先清空此前用例可能残留的队列，确保只断言本用例产生的事件。
@@ -115,7 +118,14 @@ async function captureShelfAddEvents(
   } finally {
     setDiagnosticTransport(null);
   }
-  return events.filter((event) => event.action === "shelf_add_paths");
+  return events.filter((event) => event.action === action);
+}
+
+/** 捕获一次操作产生的 `shelf_add_paths` 诊断事件（先清掉旧队列）。 */
+async function captureShelfAddEvents(
+  run: () => Promise<unknown>,
+): Promise<DiagnosticInput[]> {
+  return captureEvents("shelf_add_paths", run);
 }
 
 describe("useShelfStore.addPaths 预检下沉与诊断一致性", () => {
@@ -152,12 +162,17 @@ describe("useShelfStore.addPaths 预检下沉与诊断一致性", () => {
       expect(result).toEqual({ added: 2, failed: [] });
     });
 
-    // 后端收到的就是原始路径（UI 不再预过滤，也不做 trim 后的二次拆分）。
+    // 后端收到的就是原始路径（UI 不再预过滤，也不做 trim 后的二次拆分）；
+    // 第 5 个参数是本次链路 traceId（16 位小写 hex），只做诊断关联。
+    const traceId = (shelfAddPaths as Mock).mock.calls[0][4];
+    expect(typeof traceId).toBe("string");
+    expect(traceId).toMatch(/^[0-9a-f]{16}$/);
     expect(shelfAddPaths).toHaveBeenCalledWith(
       ["D:\\a.txt", "D:\\b.txt"],
       "reference",
       "drag",
       null,
+      traceId,
     );
     // store 合并新增条目并刷新元数据。
     expect(useShelfStore.getState().items).toHaveLength(2);
@@ -165,9 +180,13 @@ describe("useShelfStore.addPaths 预检下沉与诊断一致性", () => {
     expect(terminal).toMatchObject({
       level: "INFO",
       status: "success",
+      trace_id: traceId,
       metadata: { count: 2, total: 2, added: 2, failed: 0, mode: "reference", source: "drag" },
     });
     expect(events.find((e) => e.status === "failed")).toBeUndefined();
+    // started 与终态共用同一 traceId。
+    const started = events.find((e) => e.status === "started");
+    expect(started?.trace_id).toBe(traceId);
   });
 
   it("2. 混合输入后端全成功：诊断 total=原始总数，failed 含预检项，stage=validate", async () => {
@@ -506,5 +525,84 @@ describe("useShelfStore.addPaths 预检下沉与诊断一致性", () => {
     const payload = JSON.stringify(events);
     expect(payload).not.toContain("secret");
     expect(payload).not.toContain("note.txt");
+  });
+
+  it("12. 批量移动：traceId 透传 bridge，started/终态共用同一 trace", async () => {
+    (shelfMoveItems as Mock).mockResolvedValueOnce({
+      success: 2,
+      skipped: 0,
+      failed: 0,
+      partial: 0,
+      removed: 1,
+      entries: [],
+    });
+
+    const events = await captureEvents("shelf_move_items", () =>
+      useShelfStore.getState().runFileOp("move", ["a", "b"], "D:\\out", "skip", false),
+    );
+
+    const traceId = (shelfMoveItems as Mock).mock.calls[0][4];
+    expect(typeof traceId).toBe("string");
+    expect(traceId).toMatch(/^[0-9a-f]{16}$/);
+    expect(shelfMoveItems).toHaveBeenCalledWith(
+      ["a", "b"],
+      "D:\\out",
+      "skip",
+      false,
+      traceId,
+    );
+
+    const started = events.find((e) => e.status === "started");
+    const terminal = events.find((e) => e.status === "success");
+    expect(started?.trace_id).toBe(traceId);
+    expect(terminal?.trace_id).toBe(traceId);
+    expect(terminal).toMatchObject({
+      status: "success",
+      metadata: { total: 2, success: 2, failed: 0 },
+    });
+  });
+
+  it("13. 批量复制部分失败：失败终态同样携带 traceId", async () => {
+    (shelfCopyTo as Mock).mockResolvedValueOnce({
+      success: 1,
+      skipped: 0,
+      failed: 1,
+      partial: 1,
+      removed: 0,
+      entries: [],
+    });
+
+    const events = await captureEvents("shelf_copy_to", () =>
+      useShelfStore.getState().runFileOp("copy", ["a", "b"], "D:\\out", "rename", true),
+    );
+
+    const traceId = (shelfCopyTo as Mock).mock.calls[0][4];
+    expect(traceId).toMatch(/^[0-9a-f]{16}$/);
+    expect(shelfCopyTo).toHaveBeenCalledWith(
+      ["a", "b"],
+      "D:\\out",
+      "rename",
+      true,
+      traceId,
+    );
+
+    const terminal = events.find((e) => e.status === "failed");
+    expect(terminal?.trace_id).toBe(traceId);
+  });
+
+  it("14. 后端拒绝移动：失败事件携带同一 traceId，错误原样向上抛出", async () => {
+    const boom = new Error("boom");
+    (shelfMoveItems as Mock).mockRejectedValueOnce(boom);
+
+    const events = await captureEvents("shelf_move_items", async () => {
+      await expect(
+        useShelfStore.getState().runFileOp("move", ["a"], "D:\\out", "skip", false),
+      ).rejects.toBe(boom);
+    });
+
+    const traceId = (shelfMoveItems as Mock).mock.calls[0][4];
+    expect(traceId).toMatch(/^[0-9a-f]{16}$/);
+    const terminal = events.find((e) => e.status === "failed");
+    expect(terminal?.trace_id).toBe(traceId);
   });
 });

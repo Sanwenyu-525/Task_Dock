@@ -14,7 +14,34 @@ use crate::agents::managed;
 use crate::agents::mock::{self, MockScenario};
 use crate::agents::{AgentHub, AgentSnapshot};
 use crate::db::{Db, NotificationRow};
+use crate::diagnostics::{self, DiagLevel, DiagStatus, Diagnostics};
+use crate::diagnostics::trace;
 use crate::error::{AppError, AppResult};
+
+/// 解析前端传入的可选 `trace_id`：合法沿用；非法丢弃并重新生成；None 不挂链路。
+/// **只用于诊断事件关联，绝不参与任何认证/授权判断。**（与 shelf 命令同契约）
+fn resolve_external_trace(raw: &Option<String>) -> Option<String> {
+    match raw.as_deref().and_then(trace::validate_external_id) {
+        Some(valid) => Some(valid),
+        None => match raw {
+            Some(_) => Some(trace::new_trace_id()),
+            None => None,
+        },
+    }
+}
+
+/// 把事件 builder 挂上解析后的链路 ID 并入队；写日志失败绝不影响业务结果。
+fn record_trace_event(
+    diag: &Diagnostics,
+    trace: &Option<String>,
+    builder: diagnostics::EventBuilder,
+) {
+    let mut builder = builder;
+    if let Some(trace_id) = trace {
+        builder = builder.trace(trace_id);
+    }
+    let _ = diag.record(builder.build());
+}
 
 #[tauri::command]
 pub fn agent_snapshot(hub: State<'_, std::sync::Arc<AgentHub>>) -> AppResult<AgentSnapshot> {
@@ -416,14 +443,21 @@ pub async fn codex_hooks_uninstall(
 /// 跳转到 Agent 会话（v0.4 起走统一导航系统：证据化能力 + 诚实降级）。
 /// 导航会探测/唤起第三方进程（秒级），移出主线程避免 UI 冻结。
 /// 返回结构化结果；前端也可用 nav_navigate(target_id) 获得相同语义。
+/// `trace_id` 为可选诊断链路标识：合法沿用、非法丢弃并重新生成、None 不挂链路；
+/// 只用于诊断事件关联，**不参与认证/授权或设备信任判断**。
 #[tauri::command]
 pub async fn open_agent_session(
     db: State<'_, Arc<Db>>,
+    diag: State<'_, Arc<Diagnostics>>,
     source_id: String,
     session_id: String,
+    trace_id: Option<String>,
 ) -> AppResult<crate::navigation::NavigationResult> {
+    let diag = diag.inner().clone();
+    let trace = resolve_external_trace(&trace_id);
+    let started = std::time::Instant::now();
     let db = db.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let result = tauri::async_runtime::spawn_blocking(move || {
         let settings = crate::db::Settings::load(&db).unwrap_or_default();
         let r = crate::navigation::agent_navigation::resume_session(
             &db,
@@ -444,8 +478,47 @@ pub async fn open_agent_session(
             ))
         }
     })
-    .await
-    .map_err(|e| AppError::Agent(format!("会话跳转任务失败: {e}")))?
+    .await;
+
+    match result {
+        Ok(Ok(report)) => {
+            let elapsed = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+            record_trace_event(
+                &diag,
+                &trace,
+                diagnostics::event(DiagLevel::Info, "agent", "open_agent_session", "success")
+                    .status(DiagStatus::Success)
+                    .duration_ms(elapsed),
+            );
+            Ok(report)
+        }
+        Ok(Err(err)) => {
+            // 业务失败（未命中能力/会话不可用等）：失败事件同样挂链路，便于按 trace 串联。
+            let level = DiagLevel::from_category(err.category().as_str());
+            record_trace_event(
+                &diag,
+                &trace,
+                diagnostics::event(level, "agent", "open_agent_session", "failed")
+                    .status(DiagStatus::Failed)
+                    .from_error(&err)
+                    .message("Agent 会话跳转失败"),
+            );
+            Err(err)
+        }
+        Err(join) => {
+            let err = AppError::Agent(format!("会话跳转任务失败: {join}"));
+            record_trace_event(
+                &diag,
+                &trace,
+                diagnostics::event(DiagLevel::Error, "agent", "open_agent_session", "failed")
+                    .status(DiagStatus::Failed)
+                    .error_code("OPEN_SESSION_JOIN_FAILED")
+                    .error_category("ipc")
+                    .message(format!("会话跳转任务失败: {join}")),
+            );
+            Err(err)
+        }
+    }
 }
 
 // ── 通知收件箱 ──────────────────────────────────────────────
@@ -737,4 +810,43 @@ pub fn agent_archive_list(app: tauri::AppHandle) -> AppResult<Vec<serde_json::Va
 #[tauri::command]
 pub fn agent_inbox_retry(app: tauri::AppHandle) -> AppResult<usize> {
     crate::agents::file_drop::retry_failed_inbox(&app)
+}
+
+#[cfg(test)]
+mod trace_wiring_tests {
+    use super::*;
+    use crate::diagnostics::trace;
+
+    #[test]
+    fn valid_trace_is_adopted() {
+        let valid = "abcdef0123456789";
+        assert_eq!(
+            resolve_external_trace(&Some(valid.to_string())).as_deref(),
+            Some(valid)
+        );
+    }
+
+    #[test]
+    fn invalid_trace_is_dropped_and_regenerated() {
+        for bad in ["ABCDEF0123456789", "!!", "0123456789abcdef0"] {
+            let resolved = resolve_external_trace(&Some(bad.to_string()))
+                .expect("非法 trace 应被替换为新生成的链路 ID");
+            assert_ne!(resolved, bad);
+            assert!(trace::validate_external_id(&resolved).is_some());
+        }
+    }
+
+    #[test]
+    fn none_trace_keeps_no_context() {
+        assert!(resolve_external_trace(&None).is_none());
+    }
+
+    #[test]
+    fn open_session_event_builder_attaches_trace() {
+        let trace_id = trace::new_trace_id();
+        let event = diagnostics::event(DiagLevel::Info, "agent", "open_agent_session", "success")
+            .trace(&trace_id)
+            .build();
+        assert_eq!(event.trace_id.as_deref(), Some(trace_id.as_str()));
+    }
 }

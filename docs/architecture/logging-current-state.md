@@ -380,6 +380,10 @@ Android 端、配对/远控审计、性能指标、跨进程 Trace、Panic 捕�
 
 ## 8. 未执行 / 无法验证的检查（诚实声明）
 
+> **本表是审计当时（2026-11-19）的状态快照**；第二阶段收尾已真实执行 `typecheck`、`cargo check`、
+> Rust/Kotlin/前端定向测试与一次 Dev 诊断中心实测，进展见 §10.4 与
+> `docs/acceptance/logging-phase2-acceptance-report.md` §8.2/§8.3；未执行项以验收报告为准。
+
 | 项 | 状态 | 原因 |
 |---|---|---|
 | Rust 单元测试实际执行 | **未执行** | 本阶段为只读审计，未执行 `cargo test` |
@@ -426,3 +430,104 @@ grep -rn "INSERT INTO.*audit" src-tauri/src --include=*.rs
 # 前端 console 调用点
 grep -rn "console\.(log|error|warn|info|debug)(" src --include=*.ts --include=*.tsx | grep -v "\.test\."
 ```
+
+---
+
+## 10. 第二阶段复核与回填（2026-11-20，logging-phase2）
+
+> 本节是 2026-11-20 第二阶段开发后的**复核回填**；§1–§8 的 2026-11-19 审计结论保留原样，
+> 与本节冲突时以本节带日期的复核为准。证据目录：`tmp/acceptance/logging-phase2/`
+> （8 个子任务报告；其中 `metrics/report.md`、`trace-wiring/report.md` 因当日 D: 盘 ENOSPC
+> 未落盘仓库，兜底副本在会话工作区，见验收报告证据清单）。
+>
+> **状态三分法**（本节与后续矩阵/报告统一口径）：
+> - **已实现且已验证**：代码存在，且本轮有真实执行通过的自动化测试/命令证据；
+> - **已实现未验证**：代码存在，但无设备、无 Dev 实例、未跑全量或被环境阻塞，运行时表现未取证；
+> - **延期**：本阶段明确不做，记录理由与将来字段/接线约定。
+
+### 10.1 逐项复核结论（对照 §1–§6 的 2026-11-19 缺口）
+
+| 2026-11-19 缺口 | 第二阶段状态 | 复核依据（证据路径） |
+|---|---|---|
+| Android 无日志体系（B-07/B-08/C-14/D-09/E-16/J-07/K-17） | **已实现未验证**：`SafeLog.kt` / `FileLogSink.kt` / `LoggerModule.kt` / `CrashHandler.kt` 已落地 `apps/mobile/modules/logger/android/src/main/java/dev/taskdock/modules/logger/`；JVM 单测与 JS 单测真实通过；**真机/模拟器运行验收未执行**（环境无 emulator、`adb devices` 为空） | `android-logger/report.md`；Kotlin 27 用例（SafeLogTest 15 / FileLogSinkTest 12）、JS 定向 13、JS 全量 926（86 文件），`tsc --noEmit` 退出码 0 |
+| `trace_id` 跨端链路（G-04/G-13/G-14） | **已实现且已验证（模块级）**：`DiagnosticEvent.trace_id` 已入契约（`diagnostics/mod.rs:226`），`validate_external_id` 16 位小写 hex 校验；mobile_sync pull/push 会话级共享；前端 `startTracedOperation`；shelf addPaths/runFileOp、`create_task`、`open_agent_session` 三处、工作区 copy/move 已端到端接通（16 个 trace_wiring 用例通过）。**Dev 真机端到端未执行**；工作流执行链路仍未挂 trace（P2-1） | `trace-id/report.md`（mobile_sync 90 passed、diagnostics::trace 5 passed、前端 diagnostics.test.ts 40 passed、移动端 sync 4 文件 30 passed）；`trace-wiring/report.md`（trace_wiring 16 passed、tasks 45 passed、agent/胶囊组件 130 passed） |
+| `span_id` 阶段级标识（G-05） | **延期**：当前只有 `operation_id` + `trace_id`；`new_span_id()` 生成函数存在但事件结构未引入 span 字段。理由与将来字段约定见 §10.4 | `trace-id/report.md` §5 |
+| 统一安全审计视图（F-06/F-16） | **已实现且已验证（Rust 适配层 + Dev 实测）**：`security_audit/adapter.rs` 四源统一投影、合并排序分页、来源覆盖状态；16 个 `security_audit` 用例通过；Dev 实测四源状态（审计日志/MCP `无事件`、保险库 `未解锁`、个人中枢 `未接入`）。`personalHub` 源 **notWired（延期接线）**；vault 解锁态真实 `VaultState` 路径未在真机验证 | `security-audit/report.md`；`final/dev-ui.md` §3.1 |
+| 通用性能指标体系（H-01/H-03…H-10） | **已实现且已验证（聚合层模块级）**：`diagnostics/metrics.rs` 阈值触发 + 有界聚合 + `record_duration_async` / `OperationTimer`；14 个 metrics 用例通过；12 个业务入口已埋点（含桌面 startup/first_ready，2026-11-20 由主智能体接线，**Dev 实测 3879 ms / P95 3879 ms / 慢操作 1，单次 Debug 样本**）。**正式性能基线未执行**（无 Release 采样） | `metrics/report.md`；`final/dev-ui.md` §3.1 |
+| 导出前预览 + 显式授权（I-12） | **已实现且已验证（Rust 定向 + Dev 实测）**：`export_preview` 只读扫描不落盘；前端 `ExportPreviewDialog`；13 个 query 用例、29 个诊断中心用例 + 51 个弹层定位用例通过；Dev 实测默认不勾选审计、勾选后 5→6 条/5.5→6.3 KB、取消不落盘（`final/dev-ui.md`）。**确认导出后的原生保存与窄窗/主题未走查** | `export-preview/report.md`；`diagnostics-ui/report.md`；`final/dev-ui.md` |
+| 诊断中心三视图（运行诊断 / 安全审计 / 性能分析） | **已实现且 Dev 实测**：三视图、安全审计四来源状态、性能窗口与 startup 入账已在真实 Debug 实例渲染（`final/dev-ui.md`）；组件级 29 用例通过。**320/400 窄窗、深浅主题、焦点顺序未走查** | `diagnostics-ui/report.md` §5；`final/dev-ui.md` |
+
+### 10.2 安全口径（第二阶段定稿）
+
+- **Android 原生日志无脱敏绕过**：`LoggerModule.write` 先在原生侧独立清洗 tag/message/metadata，
+  Logcat 与 `FileLogSink` **共用同一份脱敏结果**，不依赖 JS 已脱敏前提；metadata 解析失败只丢
+  metadata、不丢整条日志。Kotlin `RULES` 与 JS `REDACT_RULES` 同序同规则，双侧各有对照矩阵用例。
+- **trace_id 只做诊断关联**：绝不参与认证/授权/设备信任判断；`authenticate_device`、MCP token
+  校验路径不读取 trace；非法外部 trace（大写/非 hex/长度不符/空串）丢弃并重新生成，不报错、
+  不透传。测试 `trace_value_does_not_change_authentication_outcome` 验证无效令牌 + 携带 traceId
+  仍 401、有效令牌 + 畸形 trace 仍 200。
+- **导出含安全审计须用户显式勾选**：预览对话框中安全审计段默认关闭，勾选后才重新拉取预览；
+  取消/关闭/Escape/点遮罩均不产生文件；未授权导出不触碰审计表。
+- **审计来源不伪装同一张物理表**：统一视图条目 `id = <source>:<原始 id>`；不可读来源在
+  `sources[]` 显式标注 `locked` / `notWired` / `error`，不返回空列表冒充无事件。
+
+### 10.3 Android 日志容量与背压常量（取自 `FileLogSink.kt` 与 `android-logger/report.md`）
+
+| 项 | 常量 / 策略 |
+|---|---|
+| 单文件软目标 | 2 MB（`MAX_FILE_BYTES`）；活动文件硬上限 4 MB（`MAX_FILE_HARD_BYTES`），超限有界丢弃并计入 `writeFailures` |
+| 归档数 / 总量 | 最多 3 个（`app.log` / `app.1.log` / `app.2.log`），总量 ≤ 6 MB |
+| 保留期 | 7 天（`RETENTION_MS`），init 按 mtime 清理（含崩溃文件） |
+| 有界队列 | `MAX_PENDING_LOGS=256`，`HIGH_PRIORITY_RESERVED=32`；入队成功才计 pending，任务 `finally` 减 pending |
+| 分级丢弃 | TRACE/DEBUG/INFO 占低级别槽位（总量 − 预留），WARN/ERROR 独立预留配额；队列满优先丢低级别，按 trace/debug/info/warn/error/other 分别计数 + `droppedCount` 总量；未初始化/已关闭/dispatcher 拒绝均静默丢弃计数，绝不阻塞调用线程、绝不抛错崩溃 |
+| 轮转降级 | rename/移动失败进入降级：`rotateFailures` 连续失败计数（恢复成功后清零）用于 `rotateBackoff` 5 s 起翻倍、封顶 60 s（位移上限 10）；退避窗口内不重复 rename；每条 `writeLine` 与 `flushWriter` 都是恢复检查点（无常驻轮询定时器），**硬上限分支在退避到期时也会先尝试 rotate**，文件可用后由下一条写入自动恢复 |
+
+### 10.4 延期项与将来约定
+
+- **span_id 完整 Span 体系（延期）**：现状 `diagnostics::trace::new_span_id()` 生成函数已存在，
+  `DiagnosticEvent` 尚未引入 `span_id` 字段。延期理由：① 现有 `operation_id` 已承担父子关联
+  （父操作 ID + 阶段标识）；② 批量导入/移动等扇出场景的子阶段边界尚未定稿，先定 span 命名与
+  父子约定容易返工；③ 高频事件（拖拽、轮询、通知对账）按契约不建 span。将来落地预留：
+  `DiagnosticEvent` 增加可选 `span_id: Option<String>` 与 `parent_span_id: Option<String>`，
+  serde `default` + `skip_serializing_if = "Option::is_none"`；span 仅挂在扇出父操作与其子阶段
+  事件上，高频链路事件不分配 span。本次未改事件序列化结构，旧日志读入不受影响。
+- **personalHub 审计源未接线（notWired）**：Hub 运行在独立进程二进制 `taskdock-personal-hub`，
+  主 Tauri 进程未托管任何 `HubApi`/`HubStore` State；Named Pipe 协议仅暴露 identity/pairing/
+  devices，无审计读取方法；`ph_audit_log` 只在独立进程的 `hub.db` 连接内可写。`HubAuditReader`
+  trait 已预留，待管道协议/主进程 State 增加只读方法后接入。
+- **Release 专属项未执行**：安装包生成、安装/升级/卸载、签名与更新机制、生产环境资源加载、
+  正式性能基线，本阶段均为 Dev 模块级验收，未出安装包、无 buildId。
+- **整 `cargo test --lib` 受其他任务在途文件阻塞（ENVIRONMENT BLOCKED，非本任务缺陷）**：
+  在途未跟踪文件 `src-tauri/src/agent_access/tests_v82_rest.rs` 存在 raw byte string 含非 ASCII
+  字节的语法错误，导致测试目标整包无法编译；本阶段各子任务以定向 `cargo test --lib <模块>` +
+  `cargo check --lib` 证明改动，阻塞解除后需复测全量。
+- **桌面 startup（startup/first_ready）埋点：已实现且 Dev 实测单次入账**。`metrics.rs` 阈值表
+  已含 `startup` 3000 ms；`lib.rs` 的 `STARTUP_START` 在 `run()` 入口置起点，
+  `commands::system::notify_ui_ready` 首次就绪时调用
+  `metrics::record_duration_async("startup", "first_ready", start)` 收尾。Dev 诊断中心实测
+  3879 ms / P95 3879 ms / 慢操作 1（`final/dev-ui.md` §3.1），单次 Debug 样本；正式 Release
+  性能基线仍未执行。
+
+### 10.5 本轮主智能体静态检查（来源：主智能体执行）
+
+| 命令（工作目录 `D:\Develop\task_dock`） | 退出码 | 结果 |
+|---|---|---|
+| `npm run typecheck`（`tsc --noEmit`） | 0 | 无类型错误（2026-11-20 16:xx 复跑，53.1 s） |
+| `npm run cargo -- check --lib`（`CARGO_TARGET_DIR=C:\taskdock-target-lp2`） | 0 | lib 编译通过；36 条既有警告（均为其他在途文件既有告警），无新增阻断性错误（40.3 s） |
+| `gradlew.bat :logger:testDebugUnitTest --rerun-tasks` | 0 | BUILD SUCCESSFUL；27 用例（SafeLog 15 / FileLogSink 12），failures=0 errors=0 |
+| Rust 定向套件（经嵌入 Common-Controls 清单的测试二进制） | 0 | trace_wiring 16、security_audit 16、mobile_sync 90、tasks 45、shelf 7、agents 4、fsops 35、recycle 4 全部通过；diagnostics 109 通过 / 2 ignored |
+| `cargo test --lib mcp` | 101 | 71 passed / 1 failed：`taskdock_collab_create_issue` 缺并发令牌字段（其他任务在途 schema，非本任务） |
+
+> 测试二进制说明：本机 GNU toolchain 的 `task_dock_lib-*.exe` 未内嵌 Common-Controls 6.0
+> 清单，链接到的 `comctl32!TaskDialogIndirect` 在加载期报 `STATUS_ENTRYPOINT_NOT_FOUND`
+> （0xc0000139）。收尾复验用 `mt.exe` 将主程序清单嵌入测试二进制副本后执行；这是环境/构建
+> 缺口，不是测试失败，正式修复需在构建脚本为测试目标补清单。
+
+### 10.6 环境事故记录（D: 盘 ENOSPC）
+
+本轮收尾阶段 D: 盘写满至 **0 字节可用**，多个子任务的后台复测与报告落盘失败（`os error 112`）。
+主智能体删除可再生构建产物 `src-tauri/target/debug`（约 8.0 GB）后恢复约 7.0 GB 可用空间。
+受影响：部分定向套件仅在前台控制台真实执行通过，落盘复测日志为 ENOSPC 阻塞记录（不作为测试
+失败证据）；`metrics`、`trace-wiring` 两份 `report.md` 兜底落在会话工作区（**收尾阶段已复制入
+仓库 `tmp/acceptance/logging-phase2/{metrics,trace-wiring}/`**）。事故不影响已在绿构上跑通的
+用例结论，但全量复测与真机验收需在磁盘空间充足后补做。

@@ -240,8 +240,10 @@ export default function Select<T extends string = string>({
               >
                 {o.icon ? <span className="ui-option-icon">{o.icon}</span> : null}
                 <span className="ui-option-label">{o.label}</span>
-                {o.hint ? <span className="ui-option-hint">{o.hint}</span> : null}
+                {/* 勾选标记紧邻 hint（类型/说明）左侧，不再挂在行尾：
+                    名字始终左对齐，右侧只剩「✓ 类型」一组收束信息。 */}
                 {isSelected && <Check size={13} className="ui-option-check" aria-hidden="true" />}
+                {o.hint ? <span className="ui-option-hint">{o.hint}</span> : null}
               </div>
             );
           })}

@@ -70,6 +70,26 @@ describe("Select 基元", () => {
     expect(screen.getByRole("combobox", { name: "来源筛选" }).getAttribute("aria-expanded")).toBe("true");
   });
 
+  it("选中项的勾选标记位于 hint 左侧，名称仍是首个子节点（左对齐基准）", async () => {
+    const user = userEvent.setup();
+    render(
+      <Select
+        ariaLabel="项目"
+        value="novel"
+        options={[{ value: "novel", label: "最后一种打法", hint: "小说" }]}
+        onChange={() => {}}
+      />,
+    );
+    await user.click(screen.getByRole("combobox", { name: "项目" }));
+    const selected = document.querySelector(".ui-option.is-selected") as HTMLElement;
+    const label = selected.querySelector(".ui-option-label") as HTMLElement;
+    const check = selected.querySelector(".ui-option-check") as HTMLElement;
+    const hint = selected.querySelector(".ui-option-hint") as HTMLElement;
+    expect(selected.firstElementChild).toBe(label);
+    expect(label.compareDocumentPosition(check) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(check.compareDocumentPosition(hint) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it("方向键导航 + Enter 选择", async () => {
     const user = userEvent.setup();
     const onChange = vi.fn();

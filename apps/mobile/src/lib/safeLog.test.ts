@@ -87,6 +87,54 @@ describe("createSafeLog 脱敏", () => {
     expect(message).not.toContain("\n");
   });
 
+  it("规则对照矩阵：与 Kotlin SafeLogTest 同一组输入 → 同一组期望（改一处必须同步另一处）", () => {
+    const { sink, rec } = recordingSink();
+    const log = createSafeLog({ sink, now: () => 1000 });
+
+    // 与 SafeLogTest.kt 的 `message redaction mirrors JS rule matrix` 输入/断言一一对应；
+    // 修改任一正则必须双侧同步（safeLog.ts REDACT_RULES ↔ SafeLog.kt RULES）。
+    const raw = [
+      "Authorization: Bearer abcdef0123456789abcdef0123456789",
+      "token=abcdef0123456789abcdef0123456789",
+      "password:hunter2",
+      "secret=topsecretvalue",
+      "apikey=abcd1234efgh5678",
+      "api_key=abcd1234",
+      "api-key=abcd1234",
+      "key=sk-abcdef1234567890",
+      "https://host/path?key=querysecret&auth=authtok&sig=sigval123",
+      "contact alice@example.com here",
+      "C:\\Users\\ASUS\\secret.txt",
+      "file:///data/0/secret",
+      "/data/user/0/dev.taskdock/files/x",
+      "trace abcdef0123456789 ok",
+      "hex deadbeefdeadbeefdeadbeefdeadbeef done",
+    ].join("\n");
+    log.warn("sync", raw);
+
+    const message = rec.entries[0].message;
+    // 单行化：换行被折叠。
+    expect(message).not.toContain("\n");
+    // 凭据/邮箱/密钥/路径原值不得残留。
+    expect(message).not.toContain("hunter2");
+    expect(message).not.toContain("topsecretvalue");
+    expect(message).not.toContain("abcd1234efgh5678");
+    expect(message).not.toContain("querysecret");
+    expect(message).not.toContain("authtok");
+    expect(message).not.toContain("sigval123");
+    expect(message).not.toContain("alice@example.com");
+    expect(message).not.toContain("C:\\");
+    expect(message).not.toContain("file://");
+    expect(message).not.toContain("/data/user");
+    expect(message).not.toContain("deadbeefdeadbeefdeadbeefdeadbeef");
+    expect(message).not.toContain("sk-abcdef1234567890");
+    // 替换标记保留。
+    expect(message).toContain("[redacted]");
+    expect(message).toContain("[path]");
+    // 16 位 traceId 不属于密钥形态，必须保留。
+    expect(message).toContain("abcdef0123456789");
+  });
+
   it("超长消息截断到 200 字符", () => {
     const { sink, rec } = recordingSink();
     const log = createSafeLog({ sink, now: () => 1000 });

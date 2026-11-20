@@ -908,6 +908,13 @@ impl EventBuilder {
         self
     }
 
+    /// 显式关联跨端链路 ID（16 位小写 hex）。落盘前 `normalize` 会再次校验，
+    /// 非法值丢弃；跨 `.await` / 跨线程由调用方显式传参，不依赖线程局部上下文。
+    pub fn trace(mut self, trace_id: &str) -> Self {
+        self.event.trace_id = Some(trace_id.to_string());
+        self
+    }
+
     pub fn window(mut self, window_id: &str) -> Self {
         self.event.window_id = Some(window_id.to_string());
         self

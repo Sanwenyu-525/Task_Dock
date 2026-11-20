@@ -6,7 +6,7 @@
 //! - **容忍半截行**：解析失败只计 `skipped`，不影响其它行；
 //! - 导出走临时文件 + rename，失败不会破坏已有报告。
 
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
@@ -18,7 +18,9 @@ use super::{
     now_iso, Counters, DiagLevel, DiagStatus, DiagnosticEvent, Diagnostics, ACTIVE_FILE,
     ARCHIVE_PREFIX,
 };
+use crate::db::Db;
 use crate::error::{AppError, AppResult};
+use crate::security_audit::{self, AuditFilter};
 
 /// 单次扫描的最大行数（防止一次请求扫爆大目录）。
 const MAX_SCAN_LINES: u64 = 200_000;
@@ -32,6 +34,13 @@ const MAX_OFFSET: usize = 100_000;
 const MAX_GROUPS: usize = 50;
 /// 导出最多包含的事件条数。
 const MAX_EXPORT_RECORDS: usize = 5_000;
+/// 审计段请求并入的事件条数上限；`security_audit::list_page` 既有分页钳制为
+/// 100 条/页（`MAX_PAGE_LIMIT`），实际生效上限以该只读查询为准，防止审计段撑爆报告。
+const MAX_AUDIT_RECORDS: u32 = 100;
+/// 预览估算：报告固定外壳（schema/app/range/summary/log_system/privacy 等）字节数。
+const REPORT_ENVELOPE_BYTES: u64 = 4_096;
+/// 预览不扫描审计表：审计段只计入固定外壳；单条审计事件字节未计入（保守下限）。
+const AUDIT_SECTION_ENVELOPE_BYTES: u64 = 512;
 
 /// 目录中的一个日志文件（只包含本模块命名规则的文件）。
 #[derive(Debug, Clone, Serialize)]
@@ -606,6 +615,100 @@ fn top_counts(map: std::collections::HashMap<String, u64>) -> Vec<CountItem> {
     items
 }
 
+/// 导出前预览（契约 §3.3）：只读扫描日志目录，**不生成文件、不落盘、不访问数据库**。
+///
+/// 字段与前端 `DiagnosticsExportPreview` 一一对应；`redaction` 恒为 `applied`
+/// （脱敏在导出路径强制执行，预览侧不存在“可关闭脱敏”的分支）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportPreview {
+    pub since: Option<String>,
+    pub until: Option<String>,
+    /// 将包含的事件条数（未加权，与导出 `records` 口径一致）。
+    pub records: u64,
+    pub errors: u64,
+    pub warnings: u64,
+    /// 涉及模块（≤20，按事件数降序，并列按模块名升序）。
+    pub modules: Vec<String>,
+    /// 导出文件大小估算（字节，口径见 [`export_preview`] 注释）。
+    pub estimated_bytes: u64,
+    pub includes_security_audit: bool,
+    pub includes_device_diagnostics: bool,
+    /// 恒 `"applied"`：导出前强制脱敏。
+    pub redaction: String,
+    /// 扫描或条数上限触发截断。
+    pub truncated: bool,
+}
+
+/// 只读扫描并统计导出预览。取消语义由前端保证：本函数不创建任何文件、不写目录、
+/// 不打开数据库连接；扫描上限复用 [`Scanner`] 的行数与时间预算（超限 `truncated=true`）。
+///
+/// 估算口径（`estimated_bytes`）：
+/// - 固定报告外壳 [`REPORT_ENVELOPE_BYTES`]；
+/// - 每条命中事件按其落盘 JSON 重新序列化后的字节数累加（落盘行已经过脱敏，
+///   以此作为脱敏后样本体积的代理；不读原始未脱敏内存）；
+/// - `include_security_audit=true` 时另加审计段固定外壳 [`AUDIT_SECTION_ENVELOPE_BYTES`]；
+///   预览阶段不读审计表，单条审计事件字节未计入，因此审计段体积为保守下限。
+pub fn export_preview(
+    dir: &Path,
+    filter: &DiagnosticQuery,
+    include_security_audit: bool,
+) -> ExportPreview {
+    let levels = filter.levels();
+    let since = filter.since_dt();
+    let until = filter.until_dt();
+    let mut records: u64 = 0;
+    let mut errors: u64 = 0;
+    let mut warnings: u64 = 0;
+    let mut module_counts: std::collections::HashMap<String, u64> = Default::default();
+    let mut matched_bytes: u64 = 0;
+
+    let mut scanner = Scanner::new(dir);
+    scanner.scan(|event| {
+        if !filter.matches(&event, &levels, since.as_ref(), until.as_ref()) {
+            return true;
+        }
+        records += 1;
+        match event.level {
+            DiagLevel::Critical | DiagLevel::Error => errors += 1,
+            DiagLevel::Warn => warnings += 1,
+            _ => {}
+        }
+        *module_counts.entry(event.module.clone()).or_default() += 1;
+        if let Ok(bytes) = serde_json::to_vec(&event) {
+            matched_bytes += bytes.len() as u64;
+        }
+        true
+    });
+
+    let mut modules: Vec<(String, u64)> = module_counts.into_iter().collect();
+    modules.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    modules.truncate(20);
+    let modules = modules.into_iter().map(|(key, _)| key).collect();
+
+    let audit_envelope = if include_security_audit {
+        AUDIT_SECTION_ENVELOPE_BYTES
+    } else {
+        0
+    };
+    let truncated = scanner.truncated || records > MAX_EXPORT_RECORDS as u64;
+    let estimated_bytes = REPORT_ENVELOPE_BYTES + matched_bytes + audit_envelope;
+
+    ExportPreview {
+        since: filter.since.clone(),
+        until: filter.until.clone(),
+        records,
+        errors,
+        warnings,
+        modules,
+        estimated_bytes,
+        includes_security_audit: include_security_audit,
+        includes_device_diagnostics: true,
+        redaction: "applied".to_string(),
+        truncated,
+    }
+}
+
 /// 导出结果。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -622,6 +725,9 @@ pub struct ExportResult {
     pub flush_issue: Option<String>,
     /// 报告内容是否完整可信（flushed && !truncated）。
     pub complete: bool,
+    /// 本次导出是否包含安全审计事件（默认不含，须用户显式授权）。
+    #[serde(default)]
+    pub includes_security_audit: bool,
 }
 
 /// 脱敏诊断报告（开发 Agent 的机器可读入口，字段稳定 + 版本标识）。
@@ -637,6 +743,9 @@ struct DiagnosticReport {
     records: Vec<DiagnosticEvent>,
     log_system: ReportLogSystem,
     privacy: ReportPrivacy,
+    /// 安全审计段；`None` 表示本次导出未并入审计事件（默认 / 未显式授权）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    security_audit: Option<ReportSecurityAudit>,
 }
 
 #[derive(Debug, Serialize)]
@@ -690,12 +799,153 @@ struct ReportPrivacy {
     note: &'static str,
 }
 
-/// 生成并写入脱敏报告。返回文件路径与统计。
+/// 并入诊断报告的安全审计段（独立顶层段落；来源显式标注，不伪装成诊断日志）。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReportSecurityAudit {
+    /// 来源标识：固定 `securityAuditLog`。
+    source: &'static str,
+    /// `available` / `empty` / `not_wired` / `error`。
+    status: String,
+    total: u64,
+    items: Vec<ReportAuditItem>,
+    note: String,
+}
+
+/// 审计条目导出投影：最小字段集，标识符经诊断侧规范化/脱敏后并入报告。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReportAuditItem {
+    id: String,
+    source: &'static str,
+    event_type: String,
+    category: String,
+    subject: Option<String>,
+    action: String,
+    result: String,
+    reason_code: Option<String>,
+    correlation_id: Option<String>,
+    created_at: String,
+}
+
+/// 只读查询审计表并投影为报告段落。**仅在 `include_security_audit=true` 时调用**；
+/// `false` 路径绝不进入本函数、不打开数据库连接。
+///
+/// 脱敏复用诊断侧白名单/规范化（`privacy::normalize_ident` / `sanitize_message`），
+/// 不新增绕过分支；审计表落库时已不含配对码、token、密钥或业务正文（见
+/// `mobile_sync::audit_events` 模块注释）。查询走 `security_audit::list_page`
+/// 的只读连接池，本函数不执行任何写语句。
+fn read_audit_section(
+    db: Option<&Db>,
+    filter: &DiagnosticQuery,
+) -> AppResult<ReportSecurityAudit> {
+    let Some(db) = db else {
+        return Ok(ReportSecurityAudit {
+            source: "securityAuditLog",
+            status: "not_wired".to_string(),
+            total: 0,
+            items: Vec::new(),
+            note: "命令层未注入数据库句柄，本次导出未并入审计事件。".to_string(),
+        });
+    };
+    let audit_filter = AuditFilter {
+        category: None,
+        event_type: None,
+        from: filter.since.clone(),
+        to: filter.until.clone(),
+        limit: Some(MAX_AUDIT_RECORDS),
+        offset: None,
+    };
+    let page = match security_audit::list_page(db, audit_filter) {
+        Ok(page) => page,
+        Err(e) => {
+            return Ok(ReportSecurityAudit {
+                source: "securityAuditLog",
+                status: "error".to_string(),
+                total: 0,
+                items: Vec::new(),
+                note: e.to_string(),
+            });
+        }
+    };
+    let items = page
+        .items
+        .into_iter()
+        .map(|a| ReportAuditItem {
+            id: a.id,
+            source: "securityAuditLog",
+            event_type: super::privacy::normalize_ident(&a.event_type, 48, "unknown"),
+            category: super::privacy::normalize_ident(&a.category, 24, "other"),
+            subject: a.subject.and_then(|s| {
+                let cleaned = super::privacy::sanitize_message(&s);
+                (!cleaned.is_empty()).then_some(cleaned)
+            }),
+            action: super::privacy::normalize_ident(&a.action, 64, "unknown"),
+            result: super::privacy::normalize_ident(&a.result, 24, "unknown"),
+            reason_code: a.reason_code.and_then(|c| {
+                let cleaned = super::privacy::normalize_ident(&c, 40, "unknown");
+                (!cleaned.is_empty()).then_some(cleaned)
+            }),
+            correlation_id: a.correlation_id.and_then(|c| {
+                let cleaned = super::privacy::normalize_ident(&c, 64, "");
+                (!cleaned.is_empty()).then_some(cleaned)
+            }),
+            created_at: a.created_at,
+        })
+        .collect();
+    let status = if page.total == 0 { "empty" } else { "available" };
+    Ok(ReportSecurityAudit {
+        source: "securityAuditLog",
+        status: status.to_string(),
+        total: page.total as u64,
+        items,
+        note: "审计事件为库内 UUID / 最小化网段与稳定枚举；不含配对码、token、密钥或业务正文。"
+            .to_string(),
+    })
+}
+
+/// 生成并写入脱敏报告（旧签名保持不变）：等价于 `include_security_audit=false`，
+/// 不读取审计表。
 pub fn export(
     dir: &Path,
     diag: &Diagnostics,
     filter: &DiagnosticQuery,
     flush: super::FlushOutcome,
+) -> AppResult<ExportResult> {
+    export_with_db(dir, diag, filter, flush, false, None)
+}
+
+/// 带选项导出（契约 §3.3）：`include_security_audit=true` 时把安全审计事件作为
+/// 独立顶层段落并入报告；`false` 时绝不读取审计表。
+///
+/// `flush_ok` 为调用方已确认的刷盘结果；超时/队列满等细分降级分类由命令层保留。
+pub fn export_with_options(
+    dir: &Path,
+    diag: &Diagnostics,
+    filter: &DiagnosticQuery,
+    flush_ok: bool,
+    include_security_audit: bool,
+) -> AppResult<ExportResult> {
+    let flush = super::FlushOutcome {
+        flushed: flush_ok,
+        timed_out: false,
+        queue_full: false,
+    };
+    export_with_db(dir, diag, filter, flush, include_security_audit, None)
+}
+
+/// 内部版本：命令层注入已打开的数据库句柄做只读审计查询。
+///
+/// - `include_security_audit=false`：完全不触碰 `db`，不打开审计表连接；
+/// - `include_security_audit=true` 且 `db=None`：审计段标记 `not_wired`，不报错；
+/// - 审计查询只走只读连接池，本模块不提供任何写库路径。
+pub(crate) fn export_with_db(
+    dir: &Path,
+    diag: &Diagnostics,
+    filter: &DiagnosticQuery,
+    flush: super::FlushOutcome,
+    include_security_audit: bool,
+    db: Option<&Db>,
 ) -> AppResult<ExportResult> {
     let export_dir = dir.join("exports");
     std::fs::create_dir_all(&export_dir)?;
@@ -709,13 +959,19 @@ pub fn export(
         page_filter.export_limit(),
     );
     let summary = summary(dir, filter, diag.counters());
-    // 刷盘结果由调用方传入前已获取；这里只负责把它写进报告（见 export_with_flush）。
+    // 刷盘结果由调用方传入前已获取；这里只负责把它写进报告。
 
     let observed_last = page.items.first().map(|e| e.timestamp.clone());
     let observed_first = page.items.last().map(|e| e.timestamp.clone());
     let files = list_files(dir);
     let total_bytes = files.iter().map(|f| f.bytes).sum();
     let counters = diag.counters().snapshot();
+
+    // 只有显式授权时才读审计表；false 路径下面 db 保持未使用。
+    let security_audit = match include_security_audit {
+        true => Some(read_audit_section(db, filter)?),
+        false => None,
+    };
 
     let report = DiagnosticReport {
         schema: "taskdock.diagnostic-report/1",
@@ -769,21 +1025,30 @@ pub fn export(
             ],
             note: "本报告仅在本机生成，不包含剪贴板正文/图片、凭证明文、用户目录、Agent 对话正文或 HTTP 请求体。",
         },
+        security_audit,
     };
 
-    let text = serde_json::to_string_pretty(&report)
-        .map_err(|e| AppError::Validation(format!("诊断报告序列化失败: {e}")))?;
+    // 流式写：BufWriter 分块落盘，`serde_json` 直接序列化到写入器，
+    // 不先把整份报告拼成一个中间 String。命中事件受 MAX_EXPORT_RECORDS 上限约束；
+    // 扫描器逐行读取（单文件缓冲为既有设计，受 MAX_FILE_BYTES 约束）。
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
     let target = export_dir.join(format!("diagnostic-report-{stamp}-{}.json", short_id()));
     let tmp = export_dir.join(format!(".{}.tmp", short_id()));
-    std::fs::write(&tmp, text.as_bytes())?;
+    {
+        let file = std::fs::File::create(&tmp)?;
+        let mut writer = std::io::BufWriter::new(file);
+        serde_json::to_writer_pretty(&mut writer, &report)
+            .map_err(|e| AppError::Validation(format!("诊断报告序列化失败: {e}")))?;
+        writer.flush()?;
+    }
+    let bytes = std::fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0);
     if let Err(e) = std::fs::rename(&tmp, &target) {
         let _ = std::fs::remove_file(&tmp);
         return Err(e.into());
     }
     Ok(ExportResult {
         path: target.display().to_string(),
-        bytes: text.len() as u64,
+        bytes,
         records: report.records.len() as u64,
         truncated: page.truncated,
         flushed: flush.flushed,
@@ -799,6 +1064,7 @@ pub fn export(
             None
         },
         complete: flush.flushed && !page.truncated,
+        includes_security_audit: include_security_audit,
     })
 }
 
@@ -810,6 +1076,12 @@ fn short_id() -> String {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    use crate::db::Db;
+    use crate::diagnostics::WriterConfig;
+    use crate::security_audit::{
+        insert_event, AuditEvent, CATEGORY_PAIRING, EVENT_PAIRING_SUCCEEDED, RESULT_OK,
+    };
 
     fn temp_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -979,6 +1251,279 @@ mod tests {
         assert_eq!(files.len(), 1);
         assert!(files[0].active);
         assert!(files[0].bytes > 0);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ── 导出预览（契约 §3.3）─────────────────────────────────────────────
+
+    fn fixed_event(level: DiagLevel, module: &str, ts: &str) -> DiagnosticEvent {
+        let mut event = sample(level, module, "act", None);
+        event.timestamp = ts.to_string();
+        event
+    }
+
+    fn read_report(path: &str) -> serde_json::Value {
+        let text = std::fs::read(path).expect("报告文件应存在");
+        serde_json::from_slice(&text).expect("报告应为合法 JSON")
+    }
+
+    fn seed_audit_db() -> Db {
+        let db = Db::open_in_memory().unwrap();
+        for idx in 0..2 {
+            let event = AuditEvent {
+                subject: Some(format!("device-{idx}-uuid")),
+                ..AuditEvent::new(
+                    CATEGORY_PAIRING,
+                    EVENT_PAIRING_SUCCEEDED,
+                    "complete_pairing",
+                    RESULT_OK,
+                )
+            };
+            db.with_conn(|conn| insert_event(conn, &event)).unwrap();
+        }
+        db
+    }
+
+    #[test]
+    fn preview_empty_dir_returns_zero_without_panic() {
+        let dir = temp_dir("preview-empty");
+        let preview = export_preview(&dir, &DiagnosticQuery::default(), false);
+        assert_eq!(preview.records, 0);
+        assert_eq!(preview.errors, 0);
+        assert_eq!(preview.warnings, 0);
+        assert!(preview.modules.is_empty());
+        assert!(!preview.truncated);
+        assert_eq!(preview.redaction, "applied");
+        assert!(!preview.includes_security_audit);
+        assert!(preview.includes_device_diagnostics);
+        assert_eq!(preview.estimated_bytes, REPORT_ENVELOPE_BYTES);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn preview_level_and_time_filters_count() {
+        let dir = temp_dir("preview-filter");
+        let old_err = fixed_event(DiagLevel::Error, "task", "2026-01-01T00:00:00.000+08:00");
+        let new_err = fixed_event(DiagLevel::Error, "clipboard", "2026-06-01T00:00:00.000+08:00");
+        let new_info = fixed_event(DiagLevel::Info, "clipboard", "2026-06-01T00:01:00.000+08:00");
+        write_events(&dir, &[old_err, new_err, new_info]);
+
+        let all = export_preview(&dir, &DiagnosticQuery::default(), false);
+        assert_eq!(all.records, 3);
+        assert_eq!(all.errors, 2);
+        assert_eq!(all.warnings, 0);
+        assert_eq!(
+            all.modules,
+            vec!["clipboard".to_string(), "task".to_string()]
+        );
+
+        let errors_only = export_preview(
+            &dir,
+            &DiagnosticQuery {
+                levels: vec!["ERROR".into()],
+                ..Default::default()
+            },
+            false,
+        );
+        assert_eq!(errors_only.records, 2);
+        assert_eq!(errors_only.errors, 2);
+
+        let since = export_preview(
+            &dir,
+            &DiagnosticQuery {
+                since: Some("2026-05-01T00:00:00+08:00".into()),
+                ..Default::default()
+            },
+            false,
+        );
+        assert_eq!(since.records, 2);
+        assert_eq!(since.errors, 1);
+
+        let since_error = export_preview(
+            &dir,
+            &DiagnosticQuery {
+                levels: vec!["ERROR".into()],
+                since: Some("2026-05-01T00:00:00+08:00".into()),
+                ..Default::default()
+            },
+            false,
+        );
+        assert_eq!(since_error.records, 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn preview_writes_no_files() {
+        let dir = temp_dir("preview-nofile");
+        write_events(&dir, &[sample(DiagLevel::Info, "task", "create", None)]);
+        let before: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok().map(|x| x.file_name().to_string_lossy().to_string()))
+            .collect();
+        // include_security_audit=true 也只置标记，预览阶段不打开数据库、不产生文件。
+        let _ = export_preview(&dir, &DiagnosticQuery::default(), true);
+        let after: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok().map(|x| x.file_name().to_string_lossy().to_string()))
+            .collect();
+        assert_eq!(before, after);
+        assert!(!dir.join("exports").exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn estimated_bytes_grows_with_records() {
+        let one = temp_dir("preview-bytes-1");
+        write_events(&one, &[sample(DiagLevel::Info, "task", "create", None)]);
+        let p1 = export_preview(&one, &DiagnosticQuery::default(), false);
+
+        let three = temp_dir("preview-bytes-3");
+        let events: Vec<DiagnosticEvent> = (0..3)
+            .map(|_| sample(DiagLevel::Info, "task", "create", None))
+            .collect();
+        write_events(&three, &events);
+        let p3 = export_preview(&three, &DiagnosticQuery::default(), false);
+
+        assert!(p1.estimated_bytes >= REPORT_ENVELOPE_BYTES);
+        assert!(
+            p3.estimated_bytes > p1.estimated_bytes,
+            "{} > {}",
+            p3.estimated_bytes,
+            p1.estimated_bytes
+        );
+        std::fs::remove_dir_all(&one).ok();
+        std::fs::remove_dir_all(&three).ok();
+    }
+
+    #[test]
+    fn export_audit_disabled_never_reads_table() {
+        let dir = temp_dir("export-noaudit");
+        let handle = Diagnostics::init_at(dir.clone(), WriterConfig::default());
+        write_events(&dir, &[sample(DiagLevel::Error, "task", "create", Some("IO_ERROR"))]);
+        let db = seed_audit_db();
+
+        let result = export_with_db(
+            &dir,
+            &handle,
+            &DiagnosticQuery::default(),
+            crate::diagnostics::FlushOutcome::ok(),
+            false,
+            Some(&db),
+        )
+        .expect("导出应成功");
+        assert!(!result.includes_security_audit);
+        let report = read_report(&result.path);
+        assert!(
+            report.get("securityAudit").is_none(),
+            "未授权时不得并入审计段"
+        );
+        // 未授权路径不得读写审计表：导出后行数保持不变（只读 COUNT 复核）。
+        let remaining: i64 = db
+            .with_read(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM security_audit_log", [], |r| {
+                    r.get(0)
+                })
+                .map_err(crate::error::AppError::from)
+            })
+            .unwrap();
+        assert_eq!(remaining, 2);
+        handle.shutdown();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn export_audit_enabled_includes_redacted_section() {
+        let dir = temp_dir("export-audit");
+        let handle = Diagnostics::init_at(dir.clone(), WriterConfig::default());
+        write_events(&dir, &[sample(DiagLevel::Warn, "clipboard", "paste", Some("IO_ERROR"))]);
+        let db = seed_audit_db();
+
+        let result = export_with_db(
+            &dir,
+            &handle,
+            &DiagnosticQuery::default(),
+            crate::diagnostics::FlushOutcome::ok(),
+            true,
+            Some(&db),
+        )
+        .expect("导出应成功");
+        assert!(result.includes_security_audit);
+        let report = read_report(&result.path);
+        let section = report.get("securityAudit").expect("授权后应包含审计段");
+        assert_eq!(section["source"], "securityAuditLog");
+        assert_eq!(section["status"], "available");
+        assert_eq!(section["total"], 2);
+        let items = section["items"].as_array().unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["source"], "securityAuditLog");
+        // subject 经规范化保留设备标识形态；不含原始敏感正文。
+        assert!(items[0]["subject"].as_str().unwrap().starts_with("device-"));
+        let redacted = report["privacy"]["redactedFields"].as_array().unwrap();
+        assert!(!redacted.is_empty());
+        handle.shutdown();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn export_with_options_delegates_without_db() {
+        let dir = temp_dir("export-opts");
+        let handle = Diagnostics::init_at(dir.clone(), WriterConfig::default());
+        write_events(&dir, &[sample(DiagLevel::Info, "task", "create", None)]);
+        let result = export_with_options(
+            &dir,
+            &handle,
+            &DiagnosticQuery::default(),
+            true,
+            false,
+        )
+        .expect("导出应成功");
+        assert!(!result.includes_security_audit);
+        let report = read_report(&result.path);
+        assert!(report.get("securityAudit").is_none());
+        handle.shutdown();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn large_log_export_is_bounded() {
+        let dir = temp_dir("export-large");
+        let handle = Diagnostics::init_at(dir.clone(), WriterConfig::default());
+        let events: Vec<DiagnosticEvent> = (0..50_000)
+            .map(|i| {
+                let mut event = sample(DiagLevel::Info, "task", &format!("create-{}", i % 16), None);
+                event.message = Some(format!("批量事件 {i}"));
+                event
+            })
+            .collect();
+        write_events(&dir, &events);
+
+        let started = Instant::now();
+        let result = export_with_db(
+            &dir,
+            &handle,
+            &DiagnosticQuery::default(),
+            crate::diagnostics::FlushOutcome::ok(),
+            false,
+            None,
+        )
+        .expect("大日志导出应成功");
+        let elapsed = started.elapsed();
+
+        assert_eq!(
+            result.records,
+            MAX_EXPORT_RECORDS as u64,
+            "命中事件必须被导出上限截断"
+        );
+        assert!(result.bytes > 0);
+        eprintln!(
+            "[large-log] 50000 行导出: records={} bytes={} elapsed={:?}",
+            result.records, result.bytes, elapsed
+        );
+        assert!(
+            elapsed < Duration::from_secs(15),
+            "导出超时边界: {elapsed:?}"
+        );
+        handle.shutdown();
         std::fs::remove_dir_all(&dir).ok();
     }
 }

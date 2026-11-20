@@ -11,6 +11,12 @@
  * 文件不带 @layer，每条选择器以 .settings-panel / settings-* 前缀做作用域隔离。
  */
 
+.settings-panel {
+  /* 辅助文字色：muted 混一点主文字，保证在浅色面（#f5f7fa / #fff）上都过 AA 4.5:1。
+     纯 muted（#64748b）压在页面底色上只有 4.43:1，11px 说明文字会偏灰。 */
+  --settings-text-muted: color-mix(in srgb, var(--color-text-muted) 86%, var(--color-text-primary));
+}
+
 .settings-panel.page-fill {
   gap: 10px;
   /* 页面内容区查询容器：只测量自身宽度，后代布局按内容宽度响应。
@@ -294,9 +300,13 @@
 
 /* ══ 配置 + 预览模板（导航自定义页）══════════════════════════════ */
 .settings-panel .settings-page--split {
-  /* 页面占满滚动区高度：列表区拿到真实可用高度，页面自身不滚动，
-     滚动发生在列表内部（拖拽自动滚动依赖列表可滚）。 */
-  min-height: 100%;
+  /* 页面必须**占满**滚动区高度（height 而非 min-height）：
+     列表区拿到真实可用高度，页面自身不滚动，滚动发生在列表内部。
+     写成 min-height 只是「下限」：列表内容更高时页面继续长高，
+     页面级滚动被抢走，拖拽自动滚动（依赖列表自身 scrollTop）随之失效
+     —— 2026-11-20 第二阶段实测：1024×700 时列表 814px 高、页面在滚。 */
+  height: 100%;
+  min-height: 0;
 }
 
 .settings-panel .settings-page--split .settings-page-body {
@@ -324,7 +334,37 @@
   display: block;
 }
 
-/* 导航列表宿主：占满剩余高度，列表内部滚动。 */
+/* 导航自定义行自带专用布局（左：名称+快捷键，右：显隐/排序），
+   不能叠加通用设置行的换行与「窄容器转列」规则——两者同时命中会把右侧
+   控件推到行外（2026-11-20 实测 640 宽：开关与排序按钮只剩半截在右边缘）。 */
+.settings-panel .setting-row.nav-visibility-row {
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* 列表本身就是滚动容器：行不能被 flex 压缩（否则 18 行被挤进可视高度，
+   行与行叠在一起）。行高按内容固定，溢出由列表滚动承接。 */
+.settings-panel .nav-visibility-list > .nav-visibility-row {
+  flex: 0 0 auto;
+  min-height: 32px;
+}
+
+.settings-panel .setting-row.nav-visibility-row > .nav-visibility-entry {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.settings-panel .setting-row.nav-visibility-row > .nav-visibility-actions {
+  flex: 0 0 auto;
+  width: auto;
+}
+
+/* 导航列表宿主：占满剩余高度，列表内部滚动。
+   注意 DOM 是 host > .nav-visibility-body（tabs/hint/list）> list：
+   只给 host 声明 flex 不够——body 是自然高度的块，列表会按内容长高，
+   页面级滚动被抢走、拖拽自动滚动失效（2026-11-20 实测 1024×700 列表 814px）。 */
 .settings-panel .nav-visibility-host {
   display: flex;
   flex-direction: column;
@@ -332,9 +372,23 @@
   min-height: 0;
 }
 
+.settings-panel .nav-visibility-host > .nav-visibility-body {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
 .settings-panel .nav-visibility-host .nav-visibility-list {
   flex: 1 1 auto;
-  min-height: 200px;
+  min-height: 160px;
+}
+
+/* 窄容器「预览展开」时预览是整宽区块：此时页面回到自然高度，
+   由页面滚动区承接滚动，避免内部列表与页面同时抢滚轮。 */
+@container settings-page (max-width: 1099px) {
+  .settings-panel .settings-page--split:has(.settings-page-split.is-preview-open) {
+    height: auto;
+    min-height: 100%;
+  }
 }
 
 /* ══ 容器查询断点（与 useSettingsResponsiveLayout 互为镜像）════════ */
@@ -366,6 +420,483 @@
   width: 300px;
   max-width: 100%;
   min-width: 200px;
+}
+
+/* ══ 设置分组（2026-11-20 第二阶段统一层级）════════════════════════
+   页面卡片由 `.settings-page-body` 提供（styles-pages.css），组只负责
+   「标题 + 说明 + 动作 + 内容」的业务分组，组间用间距 + 一条细线区分。
+   这是全设置中心唯一的分组视觉，不再新增「页面级自绘容器」。 */
+.settings-panel .settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* 组间隔：留白优先，细线只作为弱提示（不叠加在组标题下，避免双线）。 */
+.settings-panel .settings-group + .settings-group {
+  margin-top: 2px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.settings-panel .settings-group-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  min-width: 0;
+}
+
+.settings-panel .settings-group-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.settings-panel .settings-group-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.35;
+  color: var(--text-primary);
+}
+
+.settings-panel .settings-group-desc {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  /* 辅助文字用 muted（AA 对比度），不用更浅的 tertiary。 */
+  color: var(--settings-text-muted);
+  overflow-wrap: anywhere;
+}
+
+.settings-panel .settings-group-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.settings-panel .settings-group-body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* 组内最后一行不再画分隔线（避免与组间细线重叠）。 */
+.settings-panel .settings-group-body > .setting-row:last-child {
+  border-bottom: none;
+}
+
+/* 组内空状态：不再用裸 <p>，统一 EmptyState 且不撑高。 */
+.settings-panel .settings-group .empty-state {
+  padding: 14px 12px;
+  border: 1px dashed var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--surface-base);
+}
+
+/* ══ 键值指标列表（诊断/审计等只读数据）════════════════════════════
+   替代此前借用 `.backup-list/.backup-item` 的做法：语义独立、值可换行，
+   长路径与长计数不会因为 nowrap 丢失信息。 */
+.settings-panel .settings-kv-list {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.settings-panel .settings-kv-row {
+  display: grid;
+  grid-template-columns: minmax(0, 150px) minmax(0, 1fr);
+  align-items: baseline;
+  gap: 2px 10px;
+  padding: 5px 8px;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--settings-text-muted);
+  background: var(--surface-base);
+  border-radius: 6px;
+  min-width: 0;
+}
+
+.settings-panel .settings-kv-label {
+  color: var(--text-secondary);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.settings-panel .settings-kv-value {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-panel .settings-kv-value code {
+  overflow-wrap: anywhere;
+}
+
+/* ══ 横向溢出防线（2026-11-20 第二阶段）════════════════════════════
+   规则：普通设置内容一律不得产生横向滚动；真正的数据表格由
+   `.settings-table-scroll` 自己滚（唯一允许的横向滚动容器）。
+   **不在这里写 `overflow-x: hidden`**——隐藏只会让「内容看不见」。 */
+.settings-panel .settings-page-body,
+.settings-panel .settings-group,
+.settings-panel .settings-group-body,
+.settings-panel .setting-row {
+  min-width: 0;
+}
+
+/* 行：允许换行而不是把控件挤出容器；标签可任意断行。 */
+.settings-panel .setting-row {
+  flex-wrap: wrap;
+  min-height: 32px;
+  row-gap: 6px;
+}
+
+/* 标签只负责收缩与断行；flex 基准只在「行方向」生效（见下方 521px 查询）。
+   写成基础规则会在窄容器（行转列）时把 flex-basis 当高度用，行高被撑到 180px。 */
+.settings-panel .setting-row > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* 按钮组：全局 `.btn-row` 是 nowrap + flex-shrink:0（桌面工具条语义），
+   在设置行里必须允许换行，否则 4 个按钮在中等宽度下直接顶出滚动条。 */
+.settings-panel .btn-row {
+  flex-wrap: wrap;
+  flex-shrink: 1;
+  justify-content: flex-end;
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* 下拉触发器：520–760 区间此前固定 150px 不收缩，把标签压成竖排。 */
+.settings-panel .settings-select-trigger {
+  flex: 0 1 150px;
+  width: auto;
+  min-width: 0;
+  max-width: 150px;
+}
+
+/* 说明文字：长英文/路径任意断行（全局 `.setting-note` 没有 overflow-wrap）。 */
+.settings-panel .setting-note,
+.settings-panel .setting-note * {
+  overflow-wrap: anywhere;
+}
+
+/* 备份/审计指标：第二列（值）允许换行，长计数与路径不再被省略号吞掉。 */
+.settings-panel .backup-item > span {
+  min-width: 0;
+}
+
+.settings-panel .backup-item > span + span {
+  white-space: normal;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+}
+
+/* 空/错误提示：全局限制 260px 宽且不换行，长错误信息会溢出。 */
+.settings-panel .empty-hint {
+  max-width: none;
+  overflow-wrap: anywhere;
+}
+
+/* 令牌/路径：窄容器里最多占满一行，可断行。 */
+.settings-panel .token-box {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+@container settings-page (min-width: 521px) {
+  /* 只对「行方向」的行生效：`.setting-row.column` 是纵向布局，
+     flex-basis 会变成高度，把预设卡那一行撑出上百像素空白。 */
+  .settings-panel .setting-row:not(.column):not(.setting-row-block) > span {
+    flex: 1 1 180px;
+  }
+}
+
+/* 预设卡：`1fr 1fr` 在窄容器里会被长 tagline 撑破，改为可收缩列。 */
+.settings-panel .preset-picker {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.settings-panel .preset-card {
+  min-width: 0;
+}
+
+/* 备份记录：文件名/时间此前 10px + tertiary，缩到窄容器几乎读不清；
+   提到 10.5px 并改用 muted（仍低于设置项名称的 secondary，保留层级）。 */
+.settings-panel .backup-record-time,
+.settings-panel .backup-record-name,
+.settings-panel .backup-record-size {
+  font-size: 10.5px;
+  color: var(--settings-text-muted);
+}
+
+.settings-panel .backup-record-name {
+  opacity: 1;
+}
+
+/* 唯一允许横向滚动的容器：真正的数据表格（当前设置页无表格，预留）。 */
+.settings-panel .settings-table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+
+/* ══ 通用组合件（第二阶段：各子页面共用，避免每页自绘）════════════ */
+
+/* 行内标签块：左侧「名称 + 说明」，右侧控件（布局 A 的说明载体）。
+   说明不再单独占一行 `.setting-note`，避免「设置项说明」看起来像独立设置。 */
+.settings-panel .setting-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.settings-panel .setting-label > span {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.settings-panel .setting-label > small {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--settings-text-muted);
+  overflow-wrap: anywhere;
+}
+
+/* 行内控件组：同一设置项需要多个输入（如速率窗口 + 突发上限）。
+   不要复用 `.btn-row`——那是按钮组语义。 */
+.settings-panel .settings-inline-controls {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* 操作条：只有动作没有「名称/控件」配对时用它（备份、诊断、分页）。 */
+.settings-panel .settings-actions-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  padding: 4px 0;
+}
+
+/* 状态条：带语义圆点的只读状态（MCP 运行状态等）。 */
+.settings-panel .settings-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--surface-base);
+  min-width: 0;
+}
+
+.settings-panel .settings-status-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+}
+
+.settings-panel .settings-status-dot.is-on {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.settings-panel .settings-status-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--settings-text-muted);
+  overflow-wrap: anywhere;
+}
+
+.settings-panel .settings-status-text strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+/* 子面板：页面内的一个可展开/可填写的操作区（创建凭据、添加路径等）。 */
+.settings-panel .settings-subpanel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--surface-base);
+  min-width: 0;
+}
+
+.settings-panel .settings-subpanel-title {
+  margin: 0;
+  font-size: 11.5px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+/* 表单字段：标签在上、控件在下，控件占满可用宽度。 */
+.settings-panel .settings-field-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.settings-panel .settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.settings-panel .settings-field > span {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.settings-panel .settings-field input,
+.settings-panel .settings-field textarea {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.settings-panel .settings-fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+
+.settings-panel .settings-fieldset legend {
+  padding: 0;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.settings-panel .settings-textarea {
+  width: 100%;
+  min-height: 120px;
+  box-sizing: border-box;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+}
+
+/* 分段控件：范围内的互斥选择（权限范围、客户端类型）。 */
+.settings-panel .settings-segmented {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--surface-base);
+  max-width: 100%;
+}
+
+.settings-panel .settings-segmented > button {
+  border: 0;
+  border-radius: calc(var(--radius-control) - 2px);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.4;
+  padding: 3px 9px;
+  cursor: pointer;
+  transition: background-color 0.14s var(--ease-out), color 0.14s var(--ease-out);
+}
+
+.settings-panel .settings-segmented > button:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.settings-panel .settings-segmented > button.is-active {
+  background: var(--accent-soft);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.settings-panel .settings-segmented > button:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.settings-panel .settings-segmented > button:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* 工具条：搜索框 + 右侧动作。 */
+.settings-panel .settings-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+  padding: 2px 0;
+}
+
+.settings-panel .settings-search-field {
+  flex: 0 1 260px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* 分页条。 */
+.settings-panel .settings-pager {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 6px;
+  font-size: 10.5px;
+  color: var(--settings-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 字段名（行内小标签）。 */
+.settings-panel .settings-field-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+/* ══ 辅助文字对比度（2026-11-20 第二阶段）══════════════════════════
+   `--text-tertiary` 在浅色面（#8b96a8 on #fff ≈ 2.9:1）低于 AA，
+   11px 说明文字读不清。设置页统一改用 muted（浅色 #64748b ≈ 4.8:1，
+   深色 #94a3b8 ≈ 7:1），层级仍低于 secondary，不靠统一加深所有文字。 */
+.settings-panel .settings-page-desc,
+.settings-panel .setting-note,
+.settings-panel .settings-kv-row,
+.settings-panel .nav-preview-empty,
+.settings-panel .nav-preview-caption {
+  color: var(--settings-text-muted);
 }
 
 /* ══ 导航实时预览（只读镜像，aria-hidden）══════════════════════════ */
@@ -466,13 +997,17 @@
    冻结全局 `.setting-row` 为同行 space-between，这里在本页作用域内做窄档覆盖：
    标签先占整行换行，控件左对齐跟随其后，不被长标签挤压成不可用宽度。 */
 @container settings-page (max-width: 520px) {
-  .settings-panel .setting-row:not(.column):not(.setting-row-block) {
+  /* 例外：导航自定义行（`.nav-visibility-row`）自带左右两栏布局，
+     转列会把显隐/排序控件推到行外——它不参与通用行的窄档降级。 */
+  .settings-panel .setting-row:not(.column):not(.setting-row-block):not(.nav-visibility-row) {
     flex-direction: column;
     align-items: stretch;
     gap: 6px;
   }
 
-  .settings-panel .setting-row:not(.column):not(.setting-row-block) > span {
+  .settings-panel
+    .setting-row:not(.column):not(.setting-row-block):not(.nav-visibility-row)
+    > span {
     width: 100%;
   }
 
@@ -485,5 +1020,33 @@
 
   .settings-panel .ui-number {
     max-width: 100%;
+  }
+
+  /* 行转列后标签块高度按内容，不再继承行方向的 flex 基准。 */
+  .settings-panel .setting-label {
+    flex: 0 0 auto;
+  }
+
+  /* 键值指标：窄容器改为「标签在上、值在下」，值获得整行宽度。 */
+  .settings-panel .settings-kv-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1px;
+  }
+
+  /* 分组头动作区整宽换行，不与标题挤在一行。 */
+  .settings-panel .settings-group-actions {
+    flex: 1 1 100%;
+    justify-content: flex-start;
+  }
+
+  /* 页面卡片内边距在窄容器收一档（styles-pages.css 的 16/18px 是宽屏取值）。 */
+  .settings-panel .settings-page-body {
+    padding: 12px;
+  }
+
+  /* 诊断行左侧标签此前 nowrap，窄容器会把右侧值压成 0 宽。 */
+  .settings-panel .diag-row > span:first-child {
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
 }

@@ -198,6 +198,12 @@ import type {
   DiagnosticsStatus,
   DiagnosticExportResult,
   DiagnosticClearResult,
+  DiagnosticsExportPreview,
+  DiagnosticsMetricsSummary,
+  SecurityAuditFilter,
+  SecurityAuditPage,
+  SecurityAuditPruneOptions,
+  SecurityAuditPruneReport,
   ModuleRuntimeStatus,
   MobileDevice,
   MobileSyncStatus,
@@ -297,7 +303,8 @@ export const listTasks = (filter: TaskFilter) => invoke<Task[]>("list_tasks", { 
 /** 按 ID 读取单个任务；用于微件点击时主窗当前筛选列表未加载该任务的场景。 */
 export const fetchTask = (id: string) => invoke<Task>("fetch_task", { id });
 export const taskStats = () => invoke<TaskStats>("task_stats");
-export const createTask = (input: TaskInput) => invoke<Task>("create_task", { input });
+export const createTask = (input: TaskInput, traceId?: string | null) =>
+  invoke<Task>("create_task", { input, traceId: traceId ?? null });
 export const updateTask = (id: string, input: TaskInput) => invoke<Task>("update_task", { id, input });
 export const toggleTask = (id: string) => invoke<Task>("toggle_task", { id });
 export const deleteTask = (id: string) => invoke<void>("delete_task", { id });
@@ -395,9 +402,18 @@ export const codexHooksStatus = () =>
   );
 export const codexHooksInstall = () => invoke<Record<string, unknown>>("codex_hooks_install");
 export const codexHooksUninstall = () => invoke<Record<string, unknown>>("codex_hooks_uninstall");
-/** 跳转 Agent 会话（v0.4 走统一导航：证据化能力 + 诚实降级；返回结构化结果）。 */
-export const openAgentSession = (sourceId: string, sessionId: string) =>
-  invoke<import("./navigation").NavigationResult>("open_agent_session", { sourceId, sessionId });
+/** 跳转 Agent 会话（v0.4 走统一导航：证据化能力 + 诚实降级；返回结构化结果）。
+ * `traceId` 可选诊断链路标识，只用于诊断关联，不参与鉴权；不传行为不变。 */
+export const openAgentSession = (
+  sourceId: string,
+  sessionId: string,
+  traceId?: string | null,
+) =>
+  invoke<import("./navigation").NavigationResult>("open_agent_session", {
+    sourceId,
+    sessionId,
+    traceId: traceId ?? null,
+  });
 
 
 export const notificationPage = (opts: {
@@ -1502,18 +1518,22 @@ export const shelfGroupDelete = (id: string) => invoke<void>("shelf_group_delete
 /**
  * 批量添加文件/文件夹（拖入与文件选择器共用）。
  * reference 不复制原文件；managed 复制到 Task Dock 托管目录（受配额约束）。
+ * `traceId` 为可选诊断链路标识（16 位小写 hex）：只用于诊断事件关联，不参与鉴权；
+ * 不传时后端行为与旧版完全一致。
  */
 export const shelfAddPaths = (
   paths: string[],
   storageMode: ShelfStorageMode,
   sourceKind: "picker" | "drag" | "manual",
   groupId?: string | null,
+  traceId?: string | null,
 ) =>
   invoke<ShelfAddReport>("shelf_add_paths", {
     paths,
     storageMode,
     sourceKind,
     groupId: groupId ?? null,
+    traceId: traceId ?? null,
   });
 
 export const shelfAddLink = (url: string, groupId?: string | null) =>
@@ -1754,32 +1774,37 @@ export const shelfOcrCancel = (requestId: string) =>
  * - 默认不覆盖同名：skip=跳过，rename=`名称 (1).ext`；
  * - managed / link / text 由后端明确拒绝；
  * - removeAfter=true 只移除成功处理的暂存记录，不删除已移动的目标文件。
+ * - `traceId` 可选诊断链路标识，只用于诊断关联，不参与鉴权；不传行为不变。
  */
 export const shelfMoveItems = (
   ids: string[],
   targetDir: string,
   conflictStrategy: ShelfConflictStrategy = "skip",
   removeAfter = false,
+  traceId?: string | null,
 ) =>
   invoke<ShelfOpReport>("shelf_move_items", {
     ids,
     targetDir,
     conflictStrategy,
     removeAfter,
+    traceId: traceId ?? null,
   });
 
-/** 复制到目录（托管条目为导出副本），源文件始终保留。 */
+/** 复制到目录（托管条目为导出副本），源文件始终保留。`traceId` 语义同 `shelfMoveItems`。 */
 export const shelfCopyTo = (
   ids: string[],
   targetDir: string,
   conflictStrategy: ShelfConflictStrategy = "skip",
   removeAfter = false,
+  traceId?: string | null,
 ) =>
   invoke<ShelfOpReport>("shelf_copy_to", {
     ids,
     targetDir,
     conflictStrategy,
     removeAfter,
+    traceId: traceId ?? null,
   });
 
 /** 失效引用条目重新指向外部文件/文件夹；托管条目拒绝。 */
@@ -1943,8 +1968,44 @@ export const diagnosticsQuery = (filter: DiagnosticQuery = {}) =>
 export const diagnosticsSummary = (filter: DiagnosticQuery = {}) =>
   invoke<DiagnosticSummary>("diagnostics_summary", { filter });
 
-export const diagnosticsExport = (filter: DiagnosticQuery = {}) =>
-  invoke<DiagnosticExportResult>("diagnostics_export", { filter });
+/**
+ * 导出脱敏诊断报告（本机文件，不上传、不发送）。
+ * `includeSecurityAudit` 默认 false：安全审计事件必须由用户显式授权后才并入导出。
+ */
+export const diagnosticsExport = (
+  filter: DiagnosticQuery = {},
+  includeSecurityAudit = false,
+) =>
+  invoke<DiagnosticExportResult>("diagnostics_export", { filter, includeSecurityAudit });
+
+/** 导出前预览：只读统计，不生成文件、不落盘。 */
+export const diagnosticsExportPreview = (
+  filter: DiagnosticQuery = {},
+  includeSecurityAudit = false,
+) =>
+  invoke<DiagnosticsExportPreview>("diagnostics_export_preview", {
+    filter,
+    includeSecurityAudit,
+  });
+
+/** 性能指标快照（进程累计窗口；有界聚合，不读历史日志）。 */
+export const diagnosticsMetricsSummary = () =>
+  invoke<DiagnosticsMetricsSummary>("diagnostics_metrics_summary");
+
+// ── 安全审计（多源统一查询 + 用户显式清理）──────────────────
+/** 分页查询安全审计事件（新 → 旧）。未接入的来源通过 `sources` 覆盖状态显式返回。 */
+export const securityAuditQuery = (filter: SecurityAuditFilter = {}) =>
+  invoke<SecurityAuditPage>("security_audit_query", { filter });
+
+/**
+ * 用户显式触发两段式保留清理。**启动路径不得调用**；
+ * 未传参数时后端使用默认（元数据 90 天 / 明细 30 天）。
+ */
+export const securityAuditPrune = (options: SecurityAuditPruneOptions = {}) =>
+  invoke<SecurityAuditPruneReport>("security_audit_prune", {
+    metadataDays: options.metadataDays,
+    detailDays: options.detailDays,
+  });
 
 
 export const diagnosticsClear = () =>
@@ -2584,13 +2645,22 @@ export const recycleEmpty = (volumes: string[] | null, operationId?: string) =>
 export const fsDeleteJobStart = (paths: string[], permanent: boolean, operationId?: string) =>
   invoke<FileJobSnapshot>("fs_delete_job_start", { paths, permanent, operationId });
 
-/** 批量复制任务：立即返回任务快照，进度经 `recycle:job-progress` 推送。 */
+/** 批量复制任务：立即返回任务快照，进度经 `recycle:job-progress` 推送。
+ * `traceId` 可选诊断链路标识：只做诊断关联（异步 worker 显式传参），不参与鉴权。 */
 export const fsCopyJobStart = (
   paths: string[],
   targetDir: string,
   conflict: "skip" | "rename" | "overwrite" = "rename",
   operationId?: string,
-) => invoke<FileJobSnapshot>("fs_copy_job_start", { paths, targetDir, conflict, operationId });
+  traceId?: string | null,
+) =>
+  invoke<FileJobSnapshot>("fs_copy_job_start", {
+    paths,
+    targetDir,
+    conflict,
+    operationId,
+    traceId: traceId ?? null,
+  });
 
 /** 批量移动任务：语义同复制，在顶层条目间取消，当前文件/目录需先完成。 */
 export const fsMoveJobStart = (
@@ -2598,7 +2668,15 @@ export const fsMoveJobStart = (
   targetDir: string,
   conflict: "skip" | "rename" | "overwrite" = "rename",
   operationId?: string,
-) => invoke<FileJobSnapshot>("fs_move_job_start", { paths, targetDir, conflict, operationId });
+  traceId?: string | null,
+) =>
+  invoke<FileJobSnapshot>("fs_move_job_start", {
+    paths,
+    targetDir,
+    conflict,
+    operationId,
+    traceId: traceId ?? null,
+  });
 
 export const fsJobStatus = (jobId: string) => invoke<FileJobSnapshot>("fs_job_status", { jobId });
 

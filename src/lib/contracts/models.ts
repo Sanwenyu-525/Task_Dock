@@ -3252,6 +3252,144 @@ export interface DiagnosticExportResult {
   flushIssue?: string;
   /** 报告内容是否完整可信（flushed && !truncated） */
   complete: boolean;
+  /** 本次导出是否包含安全审计事件（默认不含，须用户显式授权）。 */
+  includesSecurityAudit?: boolean;
+}
+
+// ── 诊断中心 · 安全审计统一视图 ─────────────────────────────
+// 多源适配：每个来源对应一套原始存储，统一视图只借用相同字段名展示，
+// **不把不同数据库的原始记录伪装成同一张物理表**（事件自带 source 标识）。
+
+/** 审计来源（与 Rust `security_audit::adapter::AuditSource` 一一对应）。 */
+export type SecurityAuditSource = "securityAuditLog" | "mcpAuditLog" | "vault" | "personalHub";
+
+/** 统一分类（跨来源展示分区；未归类的来源事件落 `other`）。 */
+export type SecurityAuditCategory =
+  | "pairing"
+  | "auth"
+  | "deviceRevoke"
+  | "mcp"
+  | "vault"
+  | "personalHub"
+  | "other";
+
+export interface SecurityAuditEvent {
+  /** 前端去重/选中用：`<source>:<raw id>`；不是任何物理表的 id。 */
+  id: string;
+  source: SecurityAuditSource;
+  /** 原始存储中的事件类型（保留原语义，不跨源改名）。 */
+  eventType: string;
+  category: SecurityAuditCategory;
+  /** 主体：设备 UUID / 代理 ID / 最小化网段；不含密钥。 */
+  subject?: string | null;
+  action: string;
+  /** `ok` | `denied` | `failed` | `unknown` */
+  result: string;
+  reasonCode?: string | null;
+  /** 关联诊断链路（仅 securityAuditLog / mcp 来源可能有值；绝不参与鉴权）。 */
+  traceId?: string | null;
+  createdAt: string;
+}
+
+/** 来源覆盖状态：未接入/不可读必须显式显示，不能伪装成「没有事件」。 */
+export interface SecurityAuditSourceStatus {
+  source: SecurityAuditSource;
+  status: "available" | "empty" | "locked" | "notWired" | "error";
+  /** 该源可读总条数；不可读时为 null。 */
+  total?: number | null;
+  /** 人类可读说明（如「保险库未解锁」）。 */
+  note?: string;
+}
+
+export interface SecurityAuditPage {
+  items: SecurityAuditEvent[];
+  /** 合并视图总条数（各源 COUNT 之和，不是物理表行数）。 */
+  total: number;
+  offset: number;
+  limit: number;
+  sources: SecurityAuditSourceStatus[];
+}
+
+export interface SecurityAuditFilter {
+  source?: SecurityAuditSource;
+  category?: SecurityAuditCategory;
+  eventType?: string;
+  /** `ok` | `denied` | `failed` */
+  result?: string;
+  /** 主体过滤（设备 UUID / 代理 ID 精确匹配，或最小化网段前缀）。 */
+  device?: string;
+  /** RFC3339 */
+  from?: string;
+  /** RFC3339 */
+  to?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface SecurityAuditPruneOptions {
+  /** 元数据保留天数（7..=3650，默认 90） */
+  metadataDays?: number;
+  /** reason_code 明细保留天数（1..=metadataDays，默认 30） */
+  detailDays?: number;
+}
+
+export interface SecurityAuditPruneReport {
+  clearedReasonCodes: number;
+  deletedRows: number;
+  remainingRows: number;
+  metadataCutoff: string;
+  detailCutoff: string;
+}
+
+// ── 诊断中心 · 性能指标（进程生命周期累计窗口）─────────────
+// MetricsRegistry 是进程内有界聚合（指纹表上限 + 最近样本 p95），
+// `window` 说明数据窗口；`startedAt` 是聚合起始时刻。重启进程即重置，
+// 不存在「最近 24 小时」之类的滚动窗口，前端不得这样表述。
+
+export interface DiagnosticsMetricsEntry {
+  module: string;
+  action: string;
+  count: number;
+  failures: number;
+  slowCount: number;
+  avgMs: number;
+  maxMs: number;
+  p95Ms: number;
+}
+
+export interface DiagnosticsMetricsSummary {
+  /** 数据窗口：`process` = 进程启动以来累计 */
+  window: "process";
+  /** 聚合起始时刻（RFC3339） */
+  startedAt: string;
+  generatedAt: string;
+  fingerprints: number;
+  entries: DiagnosticsMetricsEntry[];
+  /** 因容量淘汰丢失的指纹数 */
+  evicted: number;
+}
+
+// ── 诊断中心 · 导出预览 ───────────────────────────────────
+export interface DiagnosticsExportPreview {
+  /** 预览覆盖的时间范围（来自筛选；未设时为 null） */
+  since?: string | null;
+  until?: string | null;
+  /** 将包含的事件条数 */
+  records: number;
+  errors: number;
+  warnings: number;
+  /** 涉及模块（最多 20 个，按事件数降序） */
+  modules: string[];
+  /** 导出文件大小估算（字节） */
+  estimatedBytes: number;
+  /** 是否包含安全审计（需用户显式勾选，默认 false） */
+  includesSecurityAudit: boolean;
+  /** 是否包含设备诊断（日志/状态） */
+  includesDeviceDiagnostics: boolean;
+  /** 脱敏状态：导出前强制脱敏，恒为 `applied` */
+  redaction: "applied";
+  /** 预估是否触发截断 */
+  truncated: boolean;
 }
 
 export interface DiagnosticClearResult {

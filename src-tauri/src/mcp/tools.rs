@@ -1187,6 +1187,8 @@ pub fn run_tool_call(
     args: &Value,
 ) -> Result<Value, crate::mcp::bridge::ToolRpcError> {
     use crate::mcp::bridge::ToolRpcError;
+    // 整次工具调用计时： early return / 失败路径由 Drop 兜底记录一次耗时。
+    let _timer = crate::diagnostics::metrics::OperationTimer::new("mcp", "tool_call");
     let Some(def) = tool_defs().iter().find(|t| t.name == name) else {
         return Err(ToolRpcError {
             code: crate::mcp::protocol::INVALID_PARAMS,
@@ -1297,6 +1299,9 @@ pub fn run_tool_call(
         });
 
         if let Some(error) = tool_error {
+            if let ToolError::Failed(app_err) = &error {
+                crate::diagnostics::metrics::record_failure("mcp", "tool_call", app_err);
+            }
             audit_tool_failure(&ctx, name, &request_id, &error)?;
             return tool_error_response(&ctx, error);
         }
@@ -1340,6 +1345,9 @@ pub fn run_tool_call(
             Ok(mcp_result(&outcome.value, false))
         }
         Err(error) => {
+            if let ToolError::Failed(app_err) = &error {
+                crate::diagnostics::metrics::record_failure("mcp", "tool_call", app_err);
+            }
             audit_tool_failure(&ctx, name, "", &error)?;
             tool_error_response(&ctx, error)
         }

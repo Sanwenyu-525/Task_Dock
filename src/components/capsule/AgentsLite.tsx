@@ -19,6 +19,7 @@ import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { Activity, ArrowUpRight, ChevronRight, RefreshCw } from "lucide-react";
 import AgentIcon from "../ui/AgentIcon";
 import { openAgentSession } from "../../lib/bridge";
+import { startTracedOperation } from "../../lib/diagnostics";
 import { useAgentsStore } from "../../store/useAgentsStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { attentionRank, liveRuns, liveSummary } from "../../lib/agentTree";
@@ -117,9 +118,12 @@ export default function AgentsLite() {
   /** 打开会话：后端按 `agent_sessions.external_id` 校验并恢复，不能传本地行 ID
       （`run.session_id` 是内部外键，传它必然查不到会话）。 */
   const open = async (sourceId: string, externalSessionId: string) => {
+    const { operation: op, traceId } = startTracedOperation("agent", "open_session");
     try {
-      await openAgentSession(sourceId, externalSessionId);
-    } catch {
+      await openAgentSession(sourceId, externalSessionId, traceId);
+      op.success();
+    } catch (e) {
+      op.fail(e);
       // 会话跳转依赖具体 Agent 的能力：失败时如实提示，不伪造成功
       setNotice(t("capsule.agents.openSessionFailed"));
     }

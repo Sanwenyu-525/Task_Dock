@@ -1210,7 +1210,28 @@ describe("Agent 面板", () => {
     act(() => screen.getByRole("button", { name: "打开 重构登录 的会话" }).click());
     await screen.findByText("打开会话失败");
     // 后端按 external_id 校验会话；run.session_id（s1）是本地行 ID，传它必然失败。
-    expect(openAgentSession).toHaveBeenCalledWith("codex", "x");
+    // 第三参数是诊断链路 ID（16 位小写 hex），只做关联，不参与鉴权、不改变失败提示语义。
+    expect(openAgentSession).toHaveBeenCalledWith(
+      "codex",
+      "x",
+      expect.stringMatching(/^[0-9a-f]{16}$/),
+    );
+  });
+
+  it("打开会话成功时携带合法 16-hex traceId，trace 不影响返回结果与提示行为", async () => {
+    useAgentsStore.setState({ snapshot });
+    openAgentSession.mockResolvedValueOnce({ ok: true, navigated: true, reason: null });
+    render(<AgentsLite />);
+    await screen.findByText("重构登录");
+
+    act(() => screen.getByRole("button", { name: "打开 重构登录 的会话" }).click());
+
+    await waitFor(() => expect(openAgentSession).toHaveBeenCalledTimes(1));
+    expect(openAgentSession).toHaveBeenCalledWith(
+      "codex",
+      "x",
+      expect.stringMatching(/^[0-9a-f]{16}$/),
+    );
   });
 
   it("会话不在快照明细时不提供必然失败的「打开」，改为进完整页", async () => {

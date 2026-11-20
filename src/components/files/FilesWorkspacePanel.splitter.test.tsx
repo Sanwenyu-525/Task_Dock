@@ -135,7 +135,8 @@ function expectRatioConsistent(
   expect(els.divider.getAttribute("aria-valuenow")).toBe(pct(ratio));
   expect(els.divider.getAttribute("aria-valuemin")).toBe(pct(expected.min));
   expect(els.divider.getAttribute("aria-valuemax")).toBe(pct(expected.max));
-  const widthMatch = /calc\(([\d.]+)% - 8px\)/.exec(els.first.style.width);
+  // 分隔条命中区 8px，首侧内联宽度按半宽 4px 扣除（视觉线条 1px 居中）。
+  const widthMatch = /calc\(([\d.]+)% - 4px\)/.exec(els.first.style.width);
   expect(widthMatch).toBeTruthy();
   expect(Number(widthMatch![1])).toBeCloseTo(ratio * 100, 6);
   expect(els.second.className).toContain("fw-split-child-second");

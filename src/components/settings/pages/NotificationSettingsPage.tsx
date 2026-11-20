@@ -52,8 +52,11 @@ export default function NotificationSettingsPage() {
         />
       </div>
       <div className="setting-row">
-        <span>{t("settings.notifications.rateWindow")}</span>
-        <div className="btn-row">
+        <div className="setting-label">
+          <span>{t("settings.notifications.rateWindow")}</span>
+          <small>{t("settings.notifications.note")}</small>
+        </div>
+        <div className="settings-inline-controls">
           <NumberInput
             size="sm"
             min={10}
@@ -72,7 +75,6 @@ export default function NotificationSettingsPage() {
           />
         </div>
       </div>
-      <div className="setting-note">{t("settings.notifications.note")}</div>
       <div className="setting-row">
         <span>{t("settings.notifications.overdueGrace")}</span>
         <NumberInput

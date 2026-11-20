@@ -26,6 +26,9 @@ describe("Combobox", () => {
     );
     const input = screen.getByRole("combobox", { name: "关联任务" });
 
+    // 输入框必须挂嵌入式原语：表面由 .ui-combobox 容器负责，
+    // 否则组件层全局 input 规则会给它再画一层边框/白底。
+    expect(input.classList.contains("input-embedded")).toBe(true);
     expect(iconCount(container)).toBe(1);
     expect(input.getAttribute("aria-expanded")).toBe("false");
 

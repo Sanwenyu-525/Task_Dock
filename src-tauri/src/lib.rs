@@ -571,7 +571,14 @@ fn apply_dev_instance_isolation(base: &str) {
     );
 }
 
+/// 进程启动瞬间（`run()` 入口）：供「启动 → 首屏就绪」耗时埋点使用（module="startup"）。
+/// 只记录一次；未被写入时埋点自动跳过，不影响任何启动路径。
+pub(crate) static STARTUP_START: std::sync::OnceLock<std::time::Instant> =
+    std::sync::OnceLock::new();
+
 pub fn run() {
+    // 性能指标窗口起点：首屏就绪时由 `commands::system::notify_ui_ready` 收尾并落一次聚合。
+    let _ = STARTUP_START.set(std::time::Instant::now());
     alloc_stats::init_from_env();
     let mut context = tauri::generate_context!();
     let base_identifier = context.config().identifier.clone();
@@ -1431,6 +1438,8 @@ pub fn run() {
             commands::diagnostics::diagnostics_query,
             commands::diagnostics::diagnostics_summary,
             commands::diagnostics::diagnostics_export,
+            commands::diagnostics::diagnostics_export_preview,
+            commands::diagnostics::diagnostics_metrics_summary,
             commands::diagnostics::diagnostics_clear,
             commands::diagnostics::diagnostics_open_dir,
             // 安全审计（security_audit_log，迁移 v82）：查询与用户显式清理

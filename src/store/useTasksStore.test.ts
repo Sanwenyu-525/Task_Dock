@@ -262,6 +262,59 @@ describe("任务保存操作链", () => {
   });
 });
 
+describe("create 链路 Trace ID", () => {
+  const traceRegex = /^[0-9a-f]{16}$/;
+
+  it("成功路径：createTask 第二参为合法 16 位小写 hex，成功事件携带同一 trace", async () => {
+    listMock.mockResolvedValue([]);
+    vi.mocked(createTask).mockResolvedValueOnce(taskOf("c1"));
+    setDiagnosticTransport(async () => {});
+    while (clientDiagnosticsStats().queued > 0) await flushDiagnostics();
+
+    const events: DiagnosticInput[] = [];
+    setDiagnosticTransport(async (batch) => {
+      events.push(...batch);
+    });
+    try {
+      await useTasksStore.getState().create({ title: "成功链路任务" });
+      while (clientDiagnosticsStats().queued > 0) await flushDiagnostics();
+
+      const call = vi.mocked(createTask).mock.calls[0];
+      expect(call[1]).toMatch(traceRegex);
+      const opEvents = events.filter((event) => event.action === "create_task");
+      const success = opEvents.find((event) => event.status === "success");
+      expect(success?.trace_id).toBe(call[1]);
+    } finally {
+      setDiagnosticTransport(null);
+    }
+  });
+
+  it("失败路径：IPC 携带合法 16-hex trace，失败事件挂同一 trace_id", async () => {
+    vi.mocked(createTask).mockRejectedValueOnce({ code: "IO_ERROR", message: "写入失败" });
+    setDiagnosticTransport(async () => {});
+    while (clientDiagnosticsStats().queued > 0) await flushDiagnostics();
+
+    const events: DiagnosticInput[] = [];
+    setDiagnosticTransport(async (batch) => {
+      events.push(...batch);
+    });
+    try {
+      await expect(
+        useTasksStore.getState().create({ title: "失败链路任务" }),
+      ).rejects.toMatchObject({ code: "IO_ERROR" });
+      while (clientDiagnosticsStats().queued > 0) await flushDiagnostics();
+
+      const call = vi.mocked(createTask).mock.calls[0];
+      expect(call[1]).toMatch(traceRegex);
+      const opEvents = events.filter((event) => event.action === "create_task");
+      const failed = opEvents.find((event) => event.status === "failed");
+      expect(failed?.trace_id).toBe(call[1]);
+    } finally {
+      setDiagnosticTransport(null);
+    }
+  });
+});
+
 describe("轻量列表分段/搜索（W2）", () => {
   it("逾期分段走后端 view=overdue 的真实查询", async () => {
     listMock.mockResolvedValue([taskOf("ov1")]);

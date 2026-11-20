@@ -431,7 +431,7 @@ describe("设置中心定位与搜索", () => {
     const input = screen.getByRole("combobox", { name: "查找设置" });
     fireEvent.focus(input);
     fireEvent.change(input, { target: { value: "zzz-not-exist" } });
-    expect(await screen.findByText("没有匹配的设置分组")).toBeTruthy();
+    expect(await screen.findByText("没有匹配的设置页面")).toBeTruthy();
     expect(screen.queryAllByRole("option")).toHaveLength(0);
 
     fireEvent.click(screen.getByRole("button", { name: "清除查找" }));
@@ -505,6 +505,20 @@ describe("设置中心页面切换的状态保护", () => {
     });
     // 设置值本身来自 Store，切页不改变它
     expect(useSettingsStore.getState().settings?.clipboard_enabled).toBe(true);
+  });
+
+  it("切换页面时页面滚动区归零：搜索定位不会停在上一页的滚动位置", async () => {
+    render(<SettingsPanel />);
+    selectPage("data");
+    const host = document.querySelector(".settings-page-host") as HTMLElement;
+    // 模拟用户在长页面里向下滚动后再切页（dom 的 scrollTop 是可写的）。
+    host.scrollTop = 520;
+
+    selectPage("appearance");
+
+    await waitFor(() =>
+      expect((document.querySelector(".settings-page-host") as HTMLElement).scrollTop).toBe(0),
+    );
   });
 });
 

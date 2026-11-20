@@ -1142,6 +1142,7 @@ describe("InboxDropPane", () => {
       "reference",
       "drag",
       null,
+      expect.stringMatching(/^[0-9a-f]{16}$/),
     );
     expect(dropToDirectory).not.toHaveBeenCalled();
     await screen.findByText("已暂存 1 项");
@@ -1406,7 +1407,13 @@ describe("InboxDropPane", () => {
     emit({ type: "over", position: { x: 100 * dpr, y: 50 * dpr } });
     emit({ type: "drop", position: { x: 100 * dpr, y: 50 * dpr }, paths: ["C:\\b.txt"] });
     await waitFor(() => expect(addShelfPaths).toHaveBeenCalledTimes(1));
-    expect(addShelfPaths).toHaveBeenCalledWith(["C:\\b.txt"], "reference", "drag", null);
+    expect(addShelfPaths).toHaveBeenCalledWith(
+      ["C:\\b.txt"],
+      "reference",
+      "drag",
+      null,
+      expect.stringMatching(/^[0-9a-f]{16}$/),
+    );
   });
 
   it("最近暂存展示条目与可访问性，点击行直接打开", async () => {
@@ -1805,6 +1812,7 @@ describe("InboxDropPane", () => {
         "reference",
         "picker",
         null,
+        expect.stringMatching(/^[0-9a-f]{16}$/),
       ),
     );
     // 添加后强制刷新最近切片

@@ -31,6 +31,10 @@ const mocks = vi.hoisted(() => {
     clear: vi.fn(),
     exportReport: vi.fn(),
     openDir: vi.fn(),
+    preview: vi.fn(),
+    metrics: vi.fn(),
+    auditQuery: vi.fn(),
+    auditPrune: vi.fn(),
     showToast: ui.showToast,
     setClientVerboseMode: vi.fn(),
     fullVisible: { value: true },
@@ -45,6 +49,10 @@ vi.mock("../../lib/bridge", () => ({
   diagnosticsClear: mocks.clear,
   diagnosticsExport: mocks.exportReport,
   diagnosticsOpenDir: mocks.openDir,
+  diagnosticsExportPreview: mocks.preview,
+  diagnosticsMetricsSummary: mocks.metrics,
+  securityAuditQuery: mocks.auditQuery,
+  securityAuditPrune: mocks.auditPrune,
 }));
 
 vi.mock("../../lib/diagnostics", () => ({
@@ -189,6 +197,58 @@ const CHAIN_PAGE = {
   skipped: 0,
 };
 
+const AUDIT_PAGE = {
+  items: [
+    {
+      id: "securityAuditLog:1",
+      source: "securityAuditLog",
+      eventType: "pairing.ok",
+      category: "pairing",
+      subject: "device-uuid-1",
+      action: "pair",
+      result: "ok",
+      reasonCode: null,
+      traceId: "trace-1234",
+      createdAt: "2026-11-06T18:02:00.000+08:00",
+    },
+  ],
+  total: 60,
+  offset: 0,
+  limit: 50,
+  sources: [
+    { source: "securityAuditLog", status: "available", total: 1, note: null },
+    { source: "vault", status: "locked", total: null, note: "保险库未解锁" },
+    { source: "personalHub", status: "notWired", total: null, note: null },
+    { source: "mcpAuditLog", status: "error", total: null, note: "读取失败" },
+  ],
+};
+
+const METRICS_SUMMARY = {
+  window: "process" as const,
+  startedAt: "2026-11-06T18:00:00.000+08:00",
+  generatedAt: "2026-11-06T18:10:00.000+08:00",
+  fingerprints: 2,
+  evicted: 0,
+  entries: [
+    { module: "clipboard", action: "paste", count: 10, failures: 2, slowCount: 1, avgMs: 12, maxMs: 80, p95Ms: 60 },
+    { module: "search", action: "query", count: 5, failures: 0, slowCount: 0, avgMs: 4, maxMs: 10, p95Ms: 8 },
+  ],
+};
+
+const EXPORT_PREVIEW = {
+  since: null,
+  until: null,
+  records: 1,
+  errors: 0,
+  warnings: 1,
+  modules: ["clipboard"],
+  estimatedBytes: 4096,
+  includesSecurityAudit: false,
+  includesDeviceDiagnostics: true,
+  redaction: "applied" as const,
+  truncated: false,
+};
+
 function pageWithMessage(message: string) {
   return {
     ...PAGE,
@@ -199,6 +259,17 @@ function pageWithMessage(message: string) {
 /** 行按钮的可访问名称来自行内文本（module/action/message），不再用 aria-label。 */
 function rowButton() {
   return screen.getByRole("button", { name: /clipboard\/paste_batch/ });
+}
+
+/** 打开导出预览对话框（预览只读预估已返回）。 */
+async function openExportDialog() {
+  fireEvent.click(screen.getByRole("button", { name: "diagnosticsCenter.action.export" }));
+  await screen.findByText("diagnosticsCenter.exportPreview.title");
+}
+
+/** 在预览对话框中确认导出。 */
+async function confirmExport() {
+  fireEvent.click(screen.getByRole("button", { name: "diagnosticsCenter.exportPreview.confirm" }));
 }
 
 beforeEach(() => {
@@ -220,6 +291,16 @@ beforeEach(() => {
     flushIssue: null,
   });
   mocks.openDir.mockReset().mockResolvedValue(undefined);
+  mocks.preview.mockReset().mockResolvedValue(EXPORT_PREVIEW);
+  mocks.metrics.mockReset().mockResolvedValue(METRICS_SUMMARY);
+  mocks.auditQuery.mockReset().mockResolvedValue(AUDIT_PAGE);
+  mocks.auditPrune.mockReset().mockResolvedValue({
+    clearedReasonCodes: 3,
+    deletedRows: 12,
+    remainingRows: 40,
+    metadataCutoff: "2026-08-08T00:00:00.000+08:00",
+    detailCutoff: "2026-10-07T00:00:00.000+08:00",
+  });
   mocks.showToast.mockReset();
   mocks.setClientVerboseMode.mockReset();
   mocks.ui.diagnosticsOperationRequest = null;
@@ -592,9 +673,8 @@ describe("DiagnosticsCenterPanel", () => {
     render(<DiagnosticsCenterPanel />);
     await waitFor(() => expect(mocks.status).toHaveBeenCalled());
 
-    fireEvent.click(
-      screen.getByRole("button", { name: "diagnosticsCenter.action.export" }),
-    );
+    await openExportDialog();
+    await confirmExport();
     expect(
       await screen.findByText("diagnosticsCenter.export.incompleteFlag"),
     ).toBeTruthy();
@@ -717,6 +797,8 @@ describe("DiagnosticsCenterPanel", () => {
       fireEvent.click(
         screen.getByRole("button", { name: "diagnosticsCenter.action.export" }),
       );
+      await openExportDialog();
+      await confirmExport();
       await waitFor(() => expect(mocks.exportReport).toHaveBeenCalledTimes(1));
       // 只按 operationId 导出链路，不带列表筛选/anomaliesOnly。
       expect(mocks.exportReport.mock.calls[0][0]).toEqual({
@@ -751,7 +833,8 @@ describe("DiagnosticsCenterPanel", () => {
     const exportButton = screen.getByRole("button", {
       name: "diagnosticsCenter.action.export",
     }) as HTMLButtonElement;
-    fireEvent.click(exportButton);
+    await openExportDialog();
+    await confirmExport();
     expect(mocks.exportReport).toHaveBeenCalledTimes(1);
 
     // 加载结束只清 load 状态，不能把仍在进行的导出 spinner 一起清掉。
@@ -875,5 +958,165 @@ describe("DiagnosticsCenterPanel", () => {
         }),
       );
     });
+  });
+
+  // ── v0.17 三视图 / 安全审计 / 性能分析 / 导出预览 ──────────────
+
+  it("三视图切换：默认运行诊断，切到安全审计与性能分析分别加载对应数据", async () => {
+    render(<DiagnosticsCenterPanel />);
+    await waitFor(() => expect(mocks.query).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(
+      screen.getByRole("tab", { name: "diagnosticsCenter.tabs.security" }),
+    );
+    await waitFor(() => expect(mocks.auditQuery).toHaveBeenCalledTimes(1));
+    expect(screen.getByText("diagnosticsCenter.audit.title")).toBeTruthy();
+
+    fireEvent.click(
+      screen.getByRole("tab", { name: "diagnosticsCenter.tabs.performance" }),
+    );
+    await waitFor(() => expect(mocks.metrics).toHaveBeenCalledTimes(1));
+    expect(screen.getByText("diagnosticsCenter.perf.title")).toBeTruthy();
+  });
+
+  it("安全审计：不可读来源显式标注 locked/notWired/error，不伪装成 0 事件", async () => {
+    render(<DiagnosticsCenterPanel />);
+    await waitFor(() => expect(mocks.query).toHaveBeenCalledTimes(1));
+    fireEvent.click(
+      screen.getByRole("tab", { name: "diagnosticsCenter.tabs.security" }),
+    );
+    await waitFor(() => expect(mocks.auditQuery).toHaveBeenCalledTimes(1));
+
+    const sources = screen.getByLabelText("diagnosticsCenter.audit.sources.title");
+    // locked 来源带后端说明；notWired / error 同样有明确状态，不显示条数。
+    expect(sources.textContent).toContain("diagnosticsCenter.audit.source.locked");
+    expect(sources.textContent).toContain("保险库未解锁");
+    expect(sources.textContent).toContain("diagnosticsCenter.audit.source.notWired");
+    expect(sources.textContent).toContain("diagnosticsCenter.audit.source.error");
+    expect(sources.textContent).toContain("读取失败");
+    // 可读来源展示条数。
+    expect(sources.textContent).toContain("1");
+  });
+
+  it("安全审计：分页带 limit/offset，不一次性读全量；基础模式隐藏 Trace ID", async () => {
+    render(<DiagnosticsCenterPanel />);
+    await waitFor(() => expect(mocks.query).toHaveBeenCalledTimes(1));
+    fireEvent.click(
+      screen.getByRole("tab", { name: "diagnosticsCenter.tabs.security" }),
+    );
+    await waitFor(() => expect(mocks.auditQuery).toHaveBeenCalledTimes(1));
+
+    const firstFilter = mocks.auditQuery.mock.calls[0][0];
+    expect(firstFilter.limit).toBe(50);
+    expect(firstFilter.offset).toBe(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "diagnosticsCenter.list.next" }));
+    await waitFor(() => expect(mocks.auditQuery).toHaveBeenCalledTimes(2));
+    expect(mocks.auditQuery.mock.calls[1][0].offset).toBe(50);
+
+    // 基础（常规）模式下 Trace ID 不在行内与详情中展示。
+    expect(screen.queryByText("trace-1234")).toBeNull();
+  });
+
+  it("安全审计：展开行可复制事件摘要", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    try {
+      render(<DiagnosticsCenterPanel />);
+      await waitFor(() => expect(mocks.query).toHaveBeenCalledTimes(1));
+      fireEvent.click(
+        screen.getByRole("tab", { name: "diagnosticsCenter.tabs.security" }),
+      );
+      await waitFor(() => expect(mocks.auditQuery).toHaveBeenCalledTimes(1));
+
+      fireEvent.click(screen.getByRole("button", { name: /device-uuid-1/ }));
+      fireEvent.click(
+        await screen.findByRole("button", { name: "diagnosticsCenter.audit.copy" }),
+      );
+      await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+      expect(writeText.mock.calls[0][0]).toContain("source=securityAuditLog");
+      expect(writeText.mock.calls[0][0]).toContain("result=ok");
+    } finally {
+      delete (navigator as unknown as Record<string, unknown>).clipboard;
+    }
+  });
+
+  it("性能分析：可按 P95 排序；窗口为进程启动以来，不表述成最近 24 小时", async () => {
+    render(<DiagnosticsCenterPanel />);
+    await waitFor(() => expect(mocks.query).toHaveBeenCalledTimes(1));
+    fireEvent.click(
+      screen.getByRole("tab", { name: "diagnosticsCenter.tabs.performance" }),
+    );
+    await waitFor(() => expect(mocks.metrics).toHaveBeenCalledTimes(1));
+
+    // 窗口说明：进程启动以来 + 起始时刻。
+    expect(screen.getByText("diagnosticsCenter.perf.windowProcess")).toBeTruthy();
+    expect(
+      screen.getByText(/diagnosticsCenter\.perf\.startedAt\|/),
+    ).toBeTruthy();
+    expect(screen.queryByText("diagnosticsCenter.range.24h")).toBeNull();
+
+    const table = screen.getByRole("table", { name: "diagnosticsCenter.perf.title" });
+    const rows = within(table).getAllByRole("row");
+    // 默认按平均耗时：clipboard(12ms) 在 search(4ms) 之前。
+    expect(rows[1].textContent).toContain("clipboard/paste");
+    expect(rows[2].textContent).toContain("search/query");
+
+    fireEvent.click(
+      within(table).getByRole("columnheader", {
+        name: "diagnosticsCenter.perf.sort.p95",
+      }),
+    );
+    const sortedRows = within(table).getAllByRole("row");
+    // 按 P95：clipboard(60ms) 在 search(8ms) 之前。
+    expect(sortedRows[1].textContent).toContain("clipboard/paste");
+    expect(sortedRows[2].textContent).toContain("search/query");
+  });
+
+  it("导出预览：取消/关闭不调用导出；勾选安全审计后确认才带 includeSecurityAudit 导出", async () => {
+    render(<DiagnosticsCenterPanel />);
+    await waitFor(() => expect(mocks.status).toHaveBeenCalled());
+
+    // 第一次：取消对话框，不得产生文件。
+    await openExportDialog();
+    const auditCheckbox = screen.getByLabelText(
+      "diagnosticsCenter.exportPreview.includesAudit",
+    ) as HTMLInputElement;
+    expect(auditCheckbox.checked).toBe(false);
+    fireEvent.click(
+      screen.getByRole("button", { name: "diagnosticsCenter.exportPreview.cancel" }),
+    );
+    expect(mocks.exportReport).not.toHaveBeenCalled();
+
+    // 第二次：显式勾选安全审计，确认后导出携带 includeSecurityAudit=true。
+    await openExportDialog();
+    fireEvent.click(
+      screen.getByLabelText("diagnosticsCenter.exportPreview.includesAudit"),
+    );
+    await waitFor(() =>
+      expect(mocks.preview).toHaveBeenLastCalledWith(expect.anything(), true),
+    );
+    await confirmExport();
+    await waitFor(() => expect(mocks.exportReport).toHaveBeenCalledTimes(1));
+    expect(mocks.exportReport.mock.calls[0][1]).toBe(true);
+  });
+
+  it("导出预览：空结果时确认按钮禁用，不调用导出", async () => {
+    mocks.preview.mockResolvedValue({ ...EXPORT_PREVIEW, records: 0, modules: [] });
+    render(<DiagnosticsCenterPanel />);
+    await waitFor(() => expect(mocks.status).toHaveBeenCalled());
+
+    await openExportDialog();
+    expect(
+      await screen.findByText("diagnosticsCenter.exportPreview.empty"),
+    ).toBeTruthy();
+    const confirm = screen.getByRole("button", {
+      name: "diagnosticsCenter.exportPreview.confirm",
+    }) as HTMLButtonElement;
+    expect(confirm.disabled).toBe(true);
+    expect(mocks.exportReport).not.toHaveBeenCalled();
   });
 });

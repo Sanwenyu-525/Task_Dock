@@ -464,13 +464,15 @@ fn label_of(path: &str) -> String {
         .unwrap_or_else(|| path.to_string())
 }
 
-/// 任务终态写一条聚合诊断（只记计数/耗时，不写路径或文件名）。
-fn emit_job_diagnostic(
+/// 任务终态聚合诊断的纯构造：只记计数/耗时与链路标识，不写路径或文件名。
+/// `trace_id` 由 worker 闭包按值捕获显式传入（跨线程不依赖 thread_local）。
+fn build_job_diagnostic(
     kind: &str,
     operation_id: Option<&str>,
+    trace_id: Option<&str>,
     handle: &JobHandle,
     started: std::time::Instant,
-) {
+) -> crate::diagnostics::DiagnosticEvent {
     let snapshot = handle.snapshot();
     let level = if snapshot.status == "failed" || snapshot.status == "partial" {
         crate::diagnostics::DiagLevel::Warn
@@ -493,7 +495,27 @@ fn emit_job_diagnostic(
     if let Some(id) = operation_id {
         builder = builder.operation(id);
     }
-    builder.emit();
+    if let Some(trace) = trace_id {
+        builder = builder.trace(trace);
+    }
+    builder.build()
+}
+
+/// 任务终态写一条聚合诊断（只记计数/耗时，不写路径或文件名）。
+fn emit_job_diagnostic(
+    kind: &str,
+    operation_id: Option<&str>,
+    trace_id: Option<&str>,
+    handle: &JobHandle,
+    started: std::time::Instant,
+) {
+    crate::diagnostics::emit(build_job_diagnostic(
+        kind,
+        operation_id,
+        trace_id,
+        handle,
+        started,
+    ));
 }
 
 /// 统一提交：建任务 → 入注册表 → 入调度队列。入队失败时任务如实标失败。
@@ -593,19 +615,32 @@ pub fn start_delete(
             }
             finish(worker, cancelled);
             emit_progress(app, worker);
-            emit_job_diagnostic("delete", operation_id.as_deref(), worker, started);
+            emit_job_diagnostic("delete", operation_id.as_deref(), None, worker, started);
         },
     )
 }
 
-/// 复制任务：整批一次调用（保持「父目录优先」语义），完成后逐条报告。
-/// 复制在顶层条目之间可取消；当前文件/目录完成后才停止，避免留下半写文件。
+/// 复制任务（无链路标识的兼容入口，供工作篮等旧调用方使用）。
 pub fn start_copy(
     app: &AppHandle,
     paths: Vec<String>,
     target_dir: String,
     conflict: String,
     operation_id: Option<String>,
+) -> AppResult<JobSnapshot> {
+    start_copy_traced(app, paths, target_dir, conflict, operation_id, None)
+}
+
+/// 复制任务：整批一次调用（保持「父目录优先」语义），完成后逐条报告。
+/// 复制在顶层条目之间可取消；当前文件/目录完成后才停止，避免留下半写文件。
+/// `trace_id` 由命令层解析后按值捕获进 worker 闭包（跨线程显式传参，不读 thread_local）。
+pub fn start_copy_traced(
+    app: &AppHandle,
+    paths: Vec<String>,
+    target_dir: String,
+    conflict: String,
+    operation_id: Option<String>,
+    trace_id: Option<String>,
 ) -> AppResult<JobSnapshot> {
     if paths.is_empty() {
         return Err(AppError::Validation("没有要复制的项目".into()));
@@ -641,18 +676,36 @@ pub fn start_copy(
             record_transfer_report(worker, result, &paths, operation_id.as_deref());
             finish(worker, worker.cancel_requested());
             emit_progress(app, worker);
-            emit_job_diagnostic("copy", operation_id.as_deref(), worker, started);
+            emit_job_diagnostic(
+                "copy",
+                operation_id.as_deref(),
+                trace_id.as_deref(),
+                worker,
+                started,
+            );
         },
     )
 }
 
-/// 移动任务：同复制，整批一次调用。
+/// 移动任务（无链路标识的兼容入口，供工作篮等旧调用方使用）。
 pub fn start_move(
     app: &AppHandle,
     paths: Vec<String>,
     target_dir: String,
     conflict: String,
     operation_id: Option<String>,
+) -> AppResult<JobSnapshot> {
+    start_move_traced(app, paths, target_dir, conflict, operation_id, None)
+}
+
+/// 移动任务：同复制，整批一次调用。`trace_id` 语义同 [`start_copy_traced`]。
+pub fn start_move_traced(
+    app: &AppHandle,
+    paths: Vec<String>,
+    target_dir: String,
+    conflict: String,
+    operation_id: Option<String>,
+    trace_id: Option<String>,
 ) -> AppResult<JobSnapshot> {
     if paths.is_empty() {
         return Err(AppError::Validation("没有要移动的项目".into()));
@@ -688,7 +741,13 @@ pub fn start_move(
             record_transfer_report(worker, result, &paths, operation_id.as_deref());
             finish(worker, worker.cancel_requested());
             emit_progress(app, worker);
-            emit_job_diagnostic("move", operation_id.as_deref(), worker, started);
+            emit_job_diagnostic(
+                "move",
+                operation_id.as_deref(),
+                trace_id.as_deref(),
+                worker,
+                started,
+            );
         },
     )
 }
@@ -727,7 +786,7 @@ pub fn start_rename(
             *worker.inner.report.lock().unwrap_or_else(|e| e.into_inner()) = Some(report);
             finish(worker, worker.cancel_requested());
             emit_progress(app, worker);
-            emit_job_diagnostic("rename", operation_id.as_deref(), worker, started);
+            emit_job_diagnostic("rename", operation_id.as_deref(), None, worker, started);
         })
 }
 
@@ -828,7 +887,7 @@ pub fn start_restore(
             }
             finish(worker, cancelled);
             emit_progress(app, worker);
-            emit_job_diagnostic("restore", operation_id.as_deref(), worker, started);
+            emit_job_diagnostic("restore", operation_id.as_deref(), None, worker, started);
         },
     )
 }
@@ -917,7 +976,7 @@ pub fn start_purge(
             }
             finish(worker, cancelled);
             emit_progress(app, worker);
-            emit_job_diagnostic("purge", operation_id.as_deref(), worker, started);
+            emit_job_diagnostic("purge", operation_id.as_deref(), None, worker, started);
         },
     )
 }
@@ -999,7 +1058,7 @@ pub fn start_empty(
             }
             finish(worker, cancelled);
             emit_progress(app, worker);
-            emit_job_diagnostic("empty", operation_id.as_deref(), worker, started);
+            emit_job_diagnostic("empty", operation_id.as_deref(), None, worker, started);
         },
     )
 }
@@ -1278,7 +1337,7 @@ pub fn start_write(
             *worker.inner.report.lock().unwrap_or_else(|e| e.into_inner()) = Some(report);
             finish(worker, worker.cancel_requested());
             emit_progress(app, worker);
-            emit_job_diagnostic("write", operation_id.as_deref(), worker, started);
+            emit_job_diagnostic("write", operation_id.as_deref(), None, worker, started);
         },
     )
 }
@@ -1346,6 +1405,34 @@ mod tests {
             message: None,
             cancelable: true,
         })
+    }
+
+    #[test]
+    fn copy_move_diagnostic_carries_worker_trace_unchanged() {
+        // worker 闭包按值捕获命令层解析后的 trace_id，纯构造边界断言：
+        // 同一 trace 原样进入复制/移动的终态诊断事件，不重生成、不串号。
+        let trace = crate::diagnostics::trace::new_trace_id();
+        for kind in ["copy", "move"] {
+            let handle = make_handle(kind, 1);
+            let event = build_job_diagnostic(
+                kind,
+                Some("op-1"),
+                Some(&trace),
+                &handle,
+                std::time::Instant::now(),
+            );
+            assert_eq!(event.action, kind);
+            assert_eq!(event.operation_id.as_deref(), Some("op-1"));
+            assert_eq!(event.trace_id.as_deref(), Some(trace.as_str()));
+        }
+    }
+
+    #[test]
+    fn diagnostic_without_trace_leaves_trace_empty() {
+        // None（旧调用方不传）：事件不挂链路，行为与旧版一致。
+        let handle = make_handle("copy", 1);
+        let event = build_job_diagnostic("copy", None, None, &handle, std::time::Instant::now());
+        assert!(event.trace_id.is_none());
     }
 
     #[test]

@@ -33,6 +33,14 @@ pub const DEFAULT_METADATA_DAYS: i64 = 90;
 /// 默认保留策略：`reason_code` 明细 30 天（到期只清明细，不删行）。
 pub const DEFAULT_DETAIL_DAYS: i64 = 30;
 
+/// 多源统一查询适配层（四源投影、合并排序分页、来源覆盖状态）。
+pub mod adapter;
+pub use adapter::{
+    unified_query, AuditFilterArgs, AuditSources, HubAuditReader, HubSourcePage,
+    TauriVaultSource, UnifiedAuditEvent, UnifiedAuditPage, UnifiedSourceStatus,
+    VaultAuditReader, VaultAuditRow,
+};
+
 /// 分页查询过滤条件（时间均为 RFC3339；语义上按 UTC 瞬时比较）。
 #[derive(Debug, Clone, Default)]
 pub struct AuditFilter {

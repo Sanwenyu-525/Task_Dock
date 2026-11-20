@@ -667,6 +667,31 @@ export function startOperation(
   };
 }
 
+/** `startTracedOperation` 的返回：操作句柄 + 本次链路 ID（供 IPC 参数显式携带）。 */
+export interface TracedOperation {
+  operation: DiagnosticOperation;
+  traceId: string;
+}
+
+/**
+ * 业务入口便捷封装：创建（或沿用外部传入的）trace 上下文并开始一次可追踪操作。
+ *
+ * - 传入合法 `traceId`（16 位小写 hex）时沿用；非法/缺失时新建一个链路 ID；
+ * - 复用既有 `startOperation` 生命周期，**不新建第二套管理器**；
+ * - 调用方把返回的 `traceId` 显式带进对应 IPC 参数（跨层显式传参，不依赖全局上下文）。
+ */
+export function startTracedOperation(
+  module: string,
+  action: string,
+  options: OperationOptions = {},
+): TracedOperation {
+  const traceId = isValidTraceId(options.traceId)
+    ? (options.traceId as string)
+    : createTraceContext().traceId;
+  const operation = startOperation(module, action, { ...options, traceId });
+  return { operation, traceId };
+}
+
 // ── IPC 失败归属 ────────────────────────────────────────────
 
 /**

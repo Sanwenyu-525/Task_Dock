@@ -14,6 +14,16 @@ use crate::resource_cleanup::{
 };
 use crate::shelf::ShelfState;
 
+/// 扫描类命令统一收尾：成功记耗时聚合，失败记失败计数；阈值表按 module 命中。
+/// 入参已在调用侧展平为单层 `Result<T, AppError>`（线程异常与业务错误同源映射）。
+fn observe_scan<T>(action: &str, started: std::time::Instant, result: AppResult<T>) -> AppResult<T> {
+    match &result {
+        Ok(_) => crate::diagnostics::metrics::record_duration_async("resource", action, started),
+        Err(e) => crate::diagnostics::metrics::record_failure("resource", action, e),
+    }
+    result
+}
+
 #[tauri::command]
 pub async fn resource_snapshot(
     state: State<'_, Arc<ResourceCleanupState>>,
@@ -25,9 +35,13 @@ pub async fn resource_snapshot(
     let clipboard = Arc::clone(&clipboard);
     let shelf = Arc::clone(&shelf);
     let audio = Arc::clone(&audio);
-    tauri::async_runtime::spawn_blocking(move || state.snapshot(&clipboard, &shelf, &audio))
-        .await
-        .map_err(|error| AppError::Unavailable(format!("资源快照线程异常: {error}")))
+    let started = std::time::Instant::now();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        state.snapshot(&clipboard, &shelf, &audio)
+    })
+    .await
+    .map_err(|error| AppError::Unavailable(format!("资源快照线程异常: {error}")));
+    observe_scan("snapshot", started, result)
 }
 
 #[tauri::command]
@@ -42,11 +56,14 @@ pub async fn resource_cleanup_preview(
     let clipboard = Arc::clone(&clipboard);
     let shelf = Arc::clone(&shelf);
     let audio = Arc::clone(&audio);
-    tauri::async_runtime::spawn_blocking(move || {
+    let started = std::time::Instant::now();
+    let result = tauri::async_runtime::spawn_blocking(move || {
         state.preview(categories, &clipboard, &shelf, &audio)
     })
     .await
-    .map_err(|error| AppError::Unavailable(format!("资源扫描线程异常: {error}")))?
+    .map_err(|error| AppError::Unavailable(format!("资源扫描线程异常: {error}")))
+    .and_then(std::convert::identity);
+    observe_scan("preview", started, result)
 }
 
 #[tauri::command]
@@ -100,9 +117,14 @@ pub async fn resource_disk_usage(
 /// 只读元数据；不删除、不写入、不打开文件内容；有界并可能返回 `truncated`。
 #[tauri::command]
 pub async fn resource_disk_analyze(path: String) -> AppResult<DiskScanReport> {
-    tauri::async_runtime::spawn_blocking(move || crate::resource_cleanup::analyze_disk(&path))
-        .await
-        .map_err(|error| AppError::Unavailable(format!("空间分析线程异常: {error}")))?
+    let started = std::time::Instant::now();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        crate::resource_cleanup::analyze_disk(&path)
+    })
+    .await
+    .map_err(|error| AppError::Unavailable(format!("空间分析线程异常: {error}")))
+    .and_then(std::convert::identity);
+    observe_scan("disk_analyze", started, result)
 }
 
 /// 扫描用户级磁盘垃圾（回收站 / 临时文件 / 崩溃转储）：只读，不删除。
@@ -112,9 +134,12 @@ pub async fn resource_junk_preview(
     categories: Vec<JunkCategory>,
 ) -> AppResult<JunkPreview> {
     let state = Arc::clone(&state);
-    tauri::async_runtime::spawn_blocking(move || state.preview_user_junk(categories))
+    let started = std::time::Instant::now();
+    let result = tauri::async_runtime::spawn_blocking(move || state.preview_user_junk(categories))
         .await
-        .map_err(|error| AppError::Unavailable(format!("垃圾扫描线程异常: {error}")))?
+        .map_err(|error| AppError::Unavailable(format!("垃圾扫描线程异常: {error}")))
+        .and_then(std::convert::identity);
+    observe_scan("junk_scan", started, result)
 }
 
 /// 执行用户级磁盘垃圾清理：只接受服务端预览 ID，预览一次性消费。

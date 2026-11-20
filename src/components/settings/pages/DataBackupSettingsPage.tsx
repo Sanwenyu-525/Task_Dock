@@ -1,13 +1,17 @@
-//! 数据与备份页（自 SettingsPanel「数据与备份」分组原样迁移，2026-11-20）。
-//! 备份列表挂载时读取一次；导入/清理测试数据等危险操作保留应用内确认框，
-//! 确认框状态归本页持有（不再放在面板层）。
+//! 数据与备份页（2026-11-20 第二阶段：按业务分组重排，行为不变）。
+//!
+//! 分组：备份策略 / 备份与恢复 / 备份记录 / 测试数据审计。
+//! - 备份记录挂载时读取一次，失败显示真实错误与重试，不伪装成空数据；
+//! - 长文件名在卡片内截断并保留 `title`，时间/类型/大小不被挤掉；
+//! - 指标改用 `.settings-kv-*`（不再借用备份列表类名），值可换行。
 
 import { useEffect, useState } from "react";
 import { AlertTriangle, Database, RefreshCw } from "lucide-react";
 import { save, open as openDialog } from "@tauri-apps/plugin-dialog";
-import { NumberInput, Switch } from "../../ui";
+import { EmptyState, NumberInput, Switch } from "../../ui";
 import { ConfirmDialog } from "../../ui/Dialog";
 import SettingsPageLayout from "../SettingsPageLayout";
+import SettingsGroup from "../SettingsGroup";
 import ContextHelpButton from "../../help/ContextHelpButton";
 import {
   auditTestData,
@@ -240,30 +244,33 @@ export default function DataBackupSettingsPage() {
           </button>
         </div>
       )}
-      <div className="setting-row">
-        <span>{t("settings.data.autoBackup")}</span>
-        <div className="btn-row">
-          <Switch
-            checked={settings.auto_backup}
-            ariaLabel={t("settings.data.autoBackup")}
-            onChange={(v) => update({ auto_backup: v })}
-          />
-          <ContextHelpButton articleId="help.troubleshooting.backup" />
+
+      <SettingsGroup title={t("settings.data.group.policy")} description={t("settings.data.group.policyDesc")}>
+        <div className="setting-row">
+          <span>{t("settings.data.autoBackup")}</span>
+          <div className="btn-row">
+            <Switch
+              checked={settings.auto_backup}
+              ariaLabel={t("settings.data.autoBackup")}
+              onChange={(v) => update({ auto_backup: v })}
+            />
+            <ContextHelpButton articleId="help.troubleshooting.backup" />
+          </div>
         </div>
-      </div>
-      <div className="setting-row">
-        <span>{t("settings.data.retainDays")}</span>
-        <NumberInput
-          value={settings.backup_retain_days}
-          min={1}
-          max={90}
-          ariaLabel={t("settings.data.retainDays")}
-          onChange={(v) => update({ backup_retain_days: v })}
-        />
-      </div>
-      <div className="setting-row">
-        <span>{t("settings.data.actions")}</span>
-        <div className="btn-row">
+        <div className="setting-row">
+          <span>{t("settings.data.retainDays")}</span>
+          <NumberInput
+            value={settings.backup_retain_days}
+            min={1}
+            max={90}
+            ariaLabel={t("settings.data.retainDays")}
+            onChange={(v) => update({ backup_retain_days: v })}
+          />
+        </div>
+      </SettingsGroup>
+
+      <SettingsGroup title={t("settings.data.group.actions")} description={t("settings.data.group.actionsDesc")}>
+        <div className="settings-actions-row">
           <button
             className="btn sm"
             disabled={busyKey === "backup"}
@@ -295,73 +302,106 @@ export default function DataBackupSettingsPage() {
             {t("settings.data.import")}
           </button>
         </div>
-      </div>
-      {restoreWarnings.length > 0 && (
-        <div className="setting-note" role="status">
-          <strong>
-            <AlertTriangle size={12} aria-hidden="true" /> {t("settings.data.importWarnings")}
-          </strong>
-          <ul>
-            {restoreWarnings.map((warning, index) => (
-              <li key={`${index}-${warning}`}>{warning}</li>
-            ))}
-          </ul>
-        </div>
-      )}
-      {backups.length > 0 && (
-        <div className="backup-list backup-record-list">
-          {backups.slice(0, 8).map((b) => {
-            // 只展示真实 modified 元数据（含本地时区）；不从文件名推断时间。
-            const stamp = formatLocalStamp(b.modified);
-            const truncatedTables = b.truncated_tables ?? [];
-            return (
-              <div key={b.name} className="backup-item backup-record">
-                <div className="backup-record-head">
-                  <span className="backup-record-kind">{backupKindLabel(b.kind, t)}</span>
-                  <span className="backup-record-flags">
-                    {b.partial && <span className="chip">{t("settings.data.partial")}</span>}
-                    {truncatedTables.length > 0 && (
-                      <span
-                        className="chip"
-                        title={t("settings.data.truncatedTitle", {
-                          tables: truncatedTables.join(t("settings.data.listSeparator")),
-                        })}
-                      >
-                        {t("settings.data.truncated", { count: truncatedTables.length })}
-                      </span>
-                    )}
-                    {b.extended_modules && (
-                      <span className="chip">{t("settings.data.extended")}</span>
-                    )}
-                    {b.config_included && (
-                      <span className="chip">{t("settings.data.configIncluded")}</span>
-                    )}
-                  </span>
-                  <span className="backup-record-size">{formatBytes(b.size)}</span>
-                </div>
-                <div className="backup-record-sub">
-                  <span className="backup-record-time">
-                    {stamp
-                      ? t("settings.data.stamp", {
-                          date: stamp.date,
-                          time: stamp.time,
-                          zone: stamp.zone,
-                        })
-                      : t("settings.data.timeUnknown")}
-                  </span>
-                  <span className="backup-record-name" title={b.name}>
-                    {b.name}
-                  </span>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
+        {restoreWarnings.length > 0 && (
+          <div className="setting-note" role="status">
+            <strong>
+              <AlertTriangle size={12} aria-hidden="true" /> {t("settings.data.importWarnings")}
+            </strong>
+            <ul>
+              {restoreWarnings.map((warning, index) => (
+                <li key={`${index}-${warning}`}>{warning}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </SettingsGroup>
 
-      <div className="setting-row">
-        <span>{t("settings.data.audit")}</span>
-        <div className="btn-row">
+      <SettingsGroup
+        title={t("settings.data.group.records")}
+        description={t("settings.data.group.recordsDesc")}
+        actions={
+          <button
+            type="button"
+            className="btn sm"
+            onClick={() => void loadBackups()}
+            disabled={busyKey === "refresh"}
+          >
+            <RefreshCw size={11} /> {t("settings.data.refresh")}
+          </button>
+        }
+      >
+        {backups.length > 0 ? (
+          <div className="backup-list backup-record-list">
+            {backups.slice(0, 8).map((b) => {
+              // 只展示真实 modified 元数据（含本地时区）；不从文件名推断时间。
+              const stamp = formatLocalStamp(b.modified);
+              const truncatedTables = b.truncated_tables ?? [];
+              return (
+                <div key={b.name} className="backup-item backup-record">
+                  <div className="backup-record-head">
+                    <span className="backup-record-kind">{backupKindLabel(b.kind, t)}</span>
+                    <span className="backup-record-flags">
+                      {b.partial && <span className="chip">{t("settings.data.partial")}</span>}
+                      {truncatedTables.length > 0 && (
+                        <span
+                          className="chip"
+                          title={t("settings.data.truncatedTitle", {
+                            tables: truncatedTables.join(t("settings.data.listSeparator")),
+                          })}
+                        >
+                          {t("settings.data.truncated", { count: truncatedTables.length })}
+                        </span>
+                      )}
+                      {b.extended_modules && (
+                        <span className="chip">{t("settings.data.extended")}</span>
+                      )}
+                      {b.config_included && (
+                        <span className="chip">{t("settings.data.configIncluded")}</span>
+                      )}
+                    </span>
+                    <span className="backup-record-size">{formatBytes(b.size)}</span>
+                  </div>
+                  <div className="backup-record-sub">
+                    <span className="backup-record-time">
+                      {stamp
+                        ? t("settings.data.stamp", {
+                            date: stamp.date,
+                            time: stamp.time,
+                            zone: stamp.zone,
+                          })
+                        : t("settings.data.timeUnknown")}
+                    </span>
+                    <span className="backup-record-name" title={b.name} dir="ltr">
+                      {b.name}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : dataLoadError ? null : (
+          <EmptyState
+            title={t("settings.data.empty.title")}
+            hint={t("settings.data.empty.hint")}
+            action={
+              <button
+                className="btn sm"
+                disabled={busyKey === "backup"}
+                onClick={() => withBusy("backup", async () => {
+                  const p = await backupNow(false);
+                  setBackups(await listBackups());
+                  showToast(t("settings.data.quickBackupDone", { path: p }), { kind: "success" });
+                })}
+              >
+                {t("settings.data.quickBackup")}
+              </button>
+            }
+          />
+        )}
+      </SettingsGroup>
+
+      <SettingsGroup title={t("settings.data.group.audit")} description={t("settings.data.group.auditDesc")}>
+        <div className="settings-actions-row">
           <button className="btn sm" onClick={onAuditPreview} disabled={busyKey === "audit-preview"}>
             {busyKey === "audit-preview" ? <RefreshCw size={12} className="spin" /> : null}{" "}
             {t("settings.data.auditPreview")}
@@ -371,63 +411,67 @@ export default function DataBackupSettingsPage() {
             {t("settings.data.auditApply")}
           </button>
         </div>
-      </div>
-      {testAudit && (
-        <div className="backup-list">
-          <div className="backup-item">
-            <span>{t("settings.data.provable")}</span>
-            <span>
-              {t("settings.data.provableValue", {
-                count: sumAuditCounts(testAudit.provable_total),
-                detail:
-                  testAudit.provable
-                    .map((p) => `${p.origin} ${sumAuditCounts(p.counts)}`)
-                    .join(" / ") || t("settings.data.none"),
-              })}
-            </span>
-          </div>
-          <div className="backup-item">
-            <span>{t("settings.data.real")}</span>
-            <span>
-              {t("settings.data.realValue", {
-                events: testAudit.real.events,
-                sessions: testAudit.real.sessions,
-                runs: testAudit.real.runs,
-                notifications: testAudit.real.notifications,
-              })}
-            </span>
-          </div>
-          {testAudit.deleted && (
-            <div className="backup-item">
-              <span>{t("settings.data.deleted")}</span>
-              <span>
-                {t("settings.data.realValue", {
-                  events: testAudit.deleted.events,
-                  sessions: testAudit.deleted.sessions,
-                  runs: testAudit.deleted.runs,
-                  notifications: testAudit.deleted.notifications,
+        {testAudit && (
+          <div className="settings-kv-list">
+            <div className="settings-kv-row">
+              <span className="settings-kv-label">{t("settings.data.provable")}</span>
+              <span className="settings-kv-value">
+                {t("settings.data.provableValue", {
+                  count: sumAuditCounts(testAudit.provable_total),
+                  detail:
+                    testAudit.provable
+                      .map((p) => `${p.origin} ${sumAuditCounts(p.counts)}`)
+                      .join(" / ") || t("settings.data.none"),
                 })}
               </span>
             </div>
-          )}
-          {testAudit.backup_path && (
-            <div className="backup-item">
-              <span>{t("settings.data.snapshot")}</span>
-              <span style={{ wordBreak: "break-all" }}>{testAudit.backup_path}</span>
+            <div className="settings-kv-row">
+              <span className="settings-kv-label">{t("settings.data.real")}</span>
+              <span className="settings-kv-value">
+                {t("settings.data.realValue", {
+                  events: testAudit.real.events,
+                  sessions: testAudit.real.sessions,
+                  runs: testAudit.real.runs,
+                  notifications: testAudit.real.notifications,
+                })}
+              </span>
             </div>
-          )}
-          {testAudit.uncertain.length > 0 && (
-            <div className="backup-item">
-              <span>{t("settings.data.uncertain")}</span>
-              <span>{testAudit.uncertain.map((u) => `${u.kind} ${u.count}`).join(" · ")}</span>
-            </div>
-          )}
-          {testAudit.notes.map((n) => (
-            <div className="setting-note" key={n}>{n}</div>
-          ))}
-        </div>
-      )}
-      <div className="setting-note">{t("settings.data.auditNote")}</div>
+            {testAudit.deleted && (
+              <div className="settings-kv-row">
+                <span className="settings-kv-label">{t("settings.data.deleted")}</span>
+                <span className="settings-kv-value">
+                  {t("settings.data.realValue", {
+                    events: testAudit.deleted.events,
+                    sessions: testAudit.deleted.sessions,
+                    runs: testAudit.deleted.runs,
+                    notifications: testAudit.deleted.notifications,
+                  })}
+                </span>
+              </div>
+            )}
+            {testAudit.backup_path && (
+              <div className="settings-kv-row">
+                <span className="settings-kv-label">{t("settings.data.snapshot")}</span>
+                <span className="settings-kv-value">
+                  <code>{testAudit.backup_path}</code>
+                </span>
+              </div>
+            )}
+            {testAudit.uncertain.length > 0 && (
+              <div className="settings-kv-row">
+                <span className="settings-kv-label">{t("settings.data.uncertain")}</span>
+                <span className="settings-kv-value">
+                  {testAudit.uncertain.map((u) => `${u.kind} ${u.count}`).join(" · ")}
+                </span>
+              </div>
+            )}
+          </div>
+        )}
+        {testAudit?.notes.map((n) => (
+          <div className="setting-note" key={n}>{n}</div>
+        ))}
+        <div className="setting-note">{t("settings.data.auditNote")}</div>
+      </SettingsGroup>
 
       {/* 危险操作统一确认框：深浅主题一致、危险标识、执行中禁用重复提交 */}
       <ConfirmDialog

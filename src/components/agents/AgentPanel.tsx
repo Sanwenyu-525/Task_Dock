@@ -54,6 +54,7 @@ import {
 } from "../../hooks/useAgentHistory";
 import { copyText } from "../../lib/clipboard";
 import { reportError } from "../../lib/errorReport";
+import { startTracedOperation } from "../../lib/diagnostics";
 import AgentStatsView from "./stats/AgentStatsView";
 import { useLocale } from "../../hooks/useLocale";
 import ContextHelpButton from "../help/ContextHelpButton";
@@ -285,10 +286,13 @@ function AgentLiveOverflowItem({
           aria-label={`打开会话 ${title}`}
           data-tip="尝试打开此 Agent 会话"
           onClick={async () => {
+            const { operation: op, traceId } = startTracedOperation("agent", "open_session");
             try {
-              await openAgentSession(item.source_id, item.external_id);
+              await openAgentSession(item.source_id, item.external_id, traceId);
+              op.success();
               showToast("已按来源能力尝试打开会话", { kind: "success" });
             } catch (e) {
+              op.fail(e);
               showToast(`打开 Agent 会话失败：${errorMessage(e)}`, { kind: "error" });
             }
           }}
@@ -2438,13 +2442,16 @@ function SessionNode({
           aria-label={canResume ? `恢复会话 ${session.externalId}` : `打开 ${agentName}`}
           onClick={async (e) => {
             e.stopPropagation();
+            const { operation: op, traceId } = startTracedOperation("agent", "open_session");
             try {
-              await openAgentSession(agentId, session.externalId);
+              await openAgentSession(agentId, session.externalId, traceId);
+              op.success();
               showToast(
                 canResume ? "已发起会话恢复（在新终端进程中）" : "已按能力降级执行（详见提示）",
                 { kind: "success" },
               );
             } catch (err) {
+              op.fail(err);
               showToast(String(err), { kind: "info" });
             }
           }}

@@ -8,6 +8,8 @@ use tauri::State;
 
 use crate::agents::{now_iso, validate_session_id, AgentHub};
 use crate::db::{Db, RecurrenceRule, Task, TaskAgentLink};
+use crate::diagnostics::{self, DiagLevel, DiagStatus, Diagnostics};
+use crate::diagnostics::trace;
 use crate::error::{AppError, AppResult};
 use crate::nlp;
 use crate::recurrence::RecurrenceRuleInput;
@@ -441,9 +443,75 @@ pub(crate) fn list_tasks_inner(db: &Db, filter: TaskFilter) -> AppResult<Vec<Tas
     })
 }
 
+/// 解析前端传入的可选 `trace_id`（与 shelf/agents 命令同一契约）：
+/// - `None`（旧调用方不传）→ `None`，事件不挂链路，行为与旧版完全一致；
+/// - 合法 16 位小写 hex → 沿用；
+/// - 非法（大写/超长/非 hex/空）→ 丢弃并重新生成新链路 ID，不报错、不透传。
+///
+/// **只用于诊断事件关联，绝不参与任何业务/鉴权判断。**
+fn resolve_external_trace(raw: &Option<String>) -> Option<String> {
+    match raw.as_deref().and_then(trace::validate_external_id) {
+        Some(valid) => Some(valid),
+        None => match raw {
+            Some(_) => Some(trace::new_trace_id()),
+            None => None,
+        },
+    }
+}
+
+/// 把事件 builder 挂上解析后的链路 ID 并入队；写日志失败绝不影响业务结果。
+fn record_trace_event(
+    diag: &Diagnostics,
+    trace: &Option<String>,
+    builder: diagnostics::EventBuilder,
+) {
+    let mut builder = builder;
+    if let Some(trace_id) = trace {
+        builder = builder.trace(trace_id);
+    }
+    let _ = diag.record(builder.build());
+}
+
+/// 创建任务。`trace_id` 为可选诊断链路标识：合法沿用、非法丢弃并重新生成、
+/// None 不挂链路；只用于诊断事件关联，**不参与业务/鉴权判断**。
 #[tauri::command]
-pub fn create_task(db: State<'_, Arc<Db>>, input: TaskInput) -> AppResult<Task> {
-    create_task_inner(&db, input)
+pub fn create_task(
+    db: State<'_, Arc<Db>>,
+    diag: State<'_, Arc<Diagnostics>>,
+    trace_id: Option<String>,
+    input: TaskInput,
+) -> AppResult<Task> {
+    let diag = diag.inner().clone();
+    let trace = resolve_external_trace(&trace_id);
+    let started = std::time::Instant::now();
+
+    match create_task_inner(&db, input) {
+        Ok(task) => {
+            let elapsed = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+            record_trace_event(
+                &diag,
+                &trace,
+                diagnostics::event(DiagLevel::Info, "task", "create_task", "success")
+                    .status(DiagStatus::Success)
+                    .stage("persist")
+                    .duration_ms(elapsed),
+            );
+            Ok(task)
+        }
+        Err(err) => {
+            let level = DiagLevel::from_category(err.category().as_str());
+            record_trace_event(
+                &diag,
+                &trace,
+                diagnostics::event(level, "task", "create_task", "failed")
+                    .status(DiagStatus::Failed)
+                    .stage("persist")
+                    .from_error(&err)
+                    .message("任务创建失败"),
+            );
+            Err(err)
+        }
+    }
 }
 
 /// 全局任务统计（跨所有视图/筛选，供极简模式、徽标与概览使用）。
@@ -836,7 +904,7 @@ pub fn create_from_quick_add(
         advance_minutes: advance_minutes.or(parsed.advance_minutes),
         recurrence: recurrence.or(parsed.recurrence).map(Some),
     };
-    create_task(db, input)
+    create_task_inner(&db, input)
 }
 
 /// 延后实际改动的一条提醒：撤销时按 (id, snoozed_to) 条件恢复到 restore_to。
@@ -3167,5 +3235,59 @@ mod tests {
             })
             .unwrap();
         assert_eq!(count, 0, "删除任务必须级联清理联动");
+    }
+}
+
+#[cfg(test)]
+mod trace_wiring_tests {
+    use super::*;
+    use crate::diagnostics::trace;
+
+    #[test]
+    fn valid_trace_is_adopted() {
+        let valid = "0123456789abcdef";
+        assert_eq!(
+            resolve_external_trace(&Some(valid.to_string())).as_deref(),
+            Some(valid)
+        );
+    }
+
+    #[test]
+    fn invalid_trace_is_dropped_and_regenerated() {
+        let cases = [
+            "0123456789ABCDEF", // 大写非法
+            "not-a-trace!!",    // 非 hex
+            "0123456789abcde",  // 长度不足
+            "",                  // 空串
+        ];
+        for bad in cases {
+            let resolved = resolve_external_trace(&Some(bad.to_string()))
+                .expect("非法 trace 应被替换为新生成的链路 ID");
+            assert_ne!(resolved, bad);
+            assert!(
+                trace::validate_external_id(&resolved).is_some(),
+                "重新生成的 ID 必须合法: {resolved}"
+            );
+        }
+        // 超长同样丢弃并重新生成。
+        let overlong = "x".repeat(64);
+        let resolved =
+            resolve_external_trace(&Some(overlong)).expect("超长 trace 应被替换");
+        assert!(trace::validate_external_id(&resolved).is_some());
+    }
+
+    #[test]
+    fn none_trace_keeps_no_context() {
+        // 旧调用方不传：保持无链路上下文，行为与旧版一致。
+        assert!(resolve_external_trace(&None).is_none());
+    }
+
+    #[test]
+    fn event_builder_attaches_trace_to_event() {
+        let trace_id = trace::new_trace_id();
+        let event = diagnostics::event(DiagLevel::Info, "task", "create_task", "success")
+            .trace(&trace_id)
+            .build();
+        assert_eq!(event.trace_id.as_deref(), Some(trace_id.as_str()));
     }
 }

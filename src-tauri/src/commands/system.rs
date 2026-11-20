@@ -460,7 +460,13 @@ pub fn cancel_undock_anchor() {
 pub fn notify_ui_ready(app: AppHandle) -> bool {
     // 不论空白区域是否已撤销，都说明前端已经真正跑起来；启动告警线程据此
     // 区分「加载慢但最终就绪」与「前端始终没起来」。
-    crate::UI_READY.store(true, Ordering::SeqCst);
+    let was_ready = crate::UI_READY.swap(true, Ordering::SeqCst);
+    // 只在本进程第一次就绪时记录一次「启动 → 首屏可交互」耗时（重复调用不重复入账）。
+    if !was_ready {
+        if let Some(start) = crate::STARTUP_START.get() {
+            crate::diagnostics::metrics::record_duration_async("startup", "first_ready", *start);
+        }
+    }
     let cleared = crate::clear_startup_blank(&app);
     if cleared {
         tracing::debug!("前端首屏就绪，已撤销启动空白区域");

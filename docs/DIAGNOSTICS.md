@@ -79,6 +79,7 @@ IPC 查询参数使用 camelCase（项目参数规范）。
 | `event` | 事件短名：`started` / `success` / `failed` / `cancelled` / `recovered` / `aggregated` / `log` |
 | `session_id` | 一次应用运行的 UUID（由后端生成并写入，前端不能伪造） |
 | `operation_id` | 一次业务操作的 ID，可跨窗口、跨阶段关联（见 §5） |
+| `trace_id` | **第二阶段追加（2026-11-20）**：一次跨端/跨模块业务链路的 16 位小写 hex 标识；外部传入经 `validate_external_id` 校验，非法丢弃并重新生成；只做诊断关联，绝不参与认证/授权/设备信任。规则详见 §25.1 |
 | `window_id` | `main` / `workspace` / `context-menu` / `notification` / `capture` / `tab-hint` / `widget`；未知入口回退 `main`（兼容浏览器预览/单测，不抛异常） |
 | `component` | 可读上下文（页面名、作用域）；已脱敏 |
 | `stage` | 粗粒度阶段：`ipc` / `render` / `persist` / `sync`… |
@@ -276,6 +277,10 @@ IPC 查询参数使用 camelCase（项目参数规范）。
   （栈里可能有用户目录与业务对象）。需要完整栈时用开发构建复现。
 - **panic hook 只覆盖桌面端 Rust 侧**；Android 端目前**没有**崩溃捕获，也没有本地日志落盘
   （见 `docs/architecture/unified-observability-design.md` §5 的补齐计划）。
+  > **更正（2026-11-20，logging-phase2）**：Android 侧已新增 `CrashHandler.kt` 与
+  > `FileLogSink.kt`（本地滚动文件 + 崩溃写文件并委托原 handler），JVM/JS 单测通过；
+  > 但**真机/模拟器运行验收未执行**，Expo Module 实例化与 JS→原生端到端链路未在运行时取证，
+  > 本条旧结论中的「没有崩溃捕获、没有本地落盘」仅在真机行为意义上仍待复核。详见 §25.5。
 - 日志保留期固定 14 天，**不可由用户配置**——保留期是「过期现场」的时间窗，调大只会让
   过期现场堆积，调小会让跨天问题无法复现。
 
@@ -714,4 +719,94 @@ ErrorBoundary）在 250ms 指纹窗口内只抑制事件本身，被抑制次数
 级别推断优先复用 `AppError.severity` / `error_code` 映射（`src/lib/errors.ts` 码表、
 `diagnostics.ts:fail/logIpcFailure`）；业务汇总可通过 `OperationExtras.severity` 显式覆盖，
 覆盖理由写入事件说明。
+
+## 25. 第二阶段追加契约（2026-11-20，logging-phase2）
+
+本章是第二阶段落地后追加的长期契约；字段物理结构沿用 §3，级别/隐私规则沿用 §4/§6/§24。
+证据目录 `tmp/acceptance/logging-phase2/`；验收结论见
+`docs/acceptance/logging-phase2-acceptance-report.md` 等三份报告。
+
+### 25.1 `trace_id` 规则
+
+- **形态**：16 位小写 hex（`^[0-9a-f]{16}$`）；生成方为前端入口或 Rust 命令入口。
+- **校验**：任何外部传入（前端 IPC、移动端回传、MCP 客户端）统一过
+  `diagnostics::trace::validate_external_id`；大写、非 hex、长度不足/超长、空串一律丢弃并
+  `new_trace_id()` 重新生成——不报错、不拒绝业务、不透传非法原值。事件落盘前 `normalize()`
+  二次校验。
+- **挂载边界**：只挂操作边界事件（started/success/failed/cancelled/recovered）；`stage`
+  高频事件不带 `trace_id`（只有 `operation_id`）。
+- **鉴权隔离**：trace 只写入诊断事件字段；`authenticate_device`、MCP token 校验、设备信任、
+  SPKI、管线 origin 等安全路径**完全不读 trace_id**。测试
+  `trace_value_does_not_change_authentication_outcome` 验证：无效令牌 + 携带 traceId 仍 401，
+  有效令牌 + 畸形 trace 仍 200。
+- **会话关联**：移动端同步按设备会话共享同一 trace（分页 pull、push、后续 pull）；会话表进程内
+  有界 32 条，设备撤销后不主动清理，进程重启即清空。
+- **兼容**：`trace_id` 为 `Option<String>`，`#[serde(default)]` +
+  `skip_serializing_if = "Option::is_none"`；旧客户端不传或忽略字段均可工作。
+- **延期**：`span_id` / `parent_span_id` 本阶段未引入（理由与将来字段约定见
+  `docs/architecture/logging-current-state.md` §10.4）。
+
+### 25.2 性能指标汇总（进程内聚合）
+
+- **数据窗口：进程启动以来累计**（`window="process"`，附 `startedAt` 注册表初始化时刻与
+  `generatedAt` 生成时刻）；**不是滚动「最近 24 小时」**，重启进程即重置。诊断中心性能视图
+  必须使用「进程启动以来」表述，不得写成 24 小时窗口。
+- 条目字段：`module` / `action` / `count` / `failures` / `slowCount` / `avgMs` / `maxMs` /
+  `p95Ms`；汇总附 `fingerprints` 与 `evicted`（容量淘汰计数）。
+- 聚合有界：指纹容量 256，每指纹最近 64 个耗时样本环形窗口算 p95；超限淘汰最久未活跃指纹。
+  聚合在调用线程完成，不新增常驻线程。
+- **阈值触发**：常规操作只更新内存聚合；超过模块阈值才产生一条 WARN（`stage=slow`，
+  错误码 `SLOW_OPERATION`）。高频路径（投屏帧、剪贴板逐条原始事件、轮询）不逐帧/逐条打点；
+  剪贴板按一次入库捕获聚合，同步按一次 pull / 一批 push 聚合，Agent 管线按一次 submit 聚合。
+- 异步计时：`record_duration_async(module, action, started: Instant)`；`OperationTimer`
+  显式 `finish()` 消费，未 finish 即 Drop 由兜底记录一次，防重复入账；失败计数由调用方在
+  错误路径显式记录，计时器不推断失败。
+- 阈值表为候选值，待 Release 正式基线校准；当前取值见
+  `docs/architecture/unified-observability-design.md` §11.4。
+
+### 25.3 安全审计统一视图（独立于诊断 JSONL）
+
+- 审计事件**不写入**诊断 JSONL；统一视图是查询层适配，不搬迁既有审计表。
+- 来源标识：条目 `id = <source>:<原始 id>`，**不把不同库伪装成同一物理表**；`total` 为各源
+  COUNT 之和，合并后切片。
+- 来源覆盖状态：`available` / `empty` / `locked` / `notWired` / `error`；不可读来源在
+  `sources[]` 显式标注并附 `note`，不返回空列表冒充无事件。
+- 当前接入：`securityAuditLog`（主库 v82）、`mcpAuditLog`（主库 v37）真接入；`vault` 条件
+  接入（未解锁 → `locked`）；`personalHub` **notWired**（独立进程无只读管道，trait 预留）；
+  远控功能不存在，**不适用**。
+- 清理只能由用户显式触发（二次确认），启动路径不得调用 prune。
+- 导出诊断包时并入安全审计段**须用户显式勾选**（默认关闭）；未授权导出不触碰审计表。
+
+### 25.4 导出预览与有界性
+
+- 预览 `export_preview` 只读扫描：不生成文件、不落盘、不打开数据库连接；扫描预算
+  20 万行 / 400 ms，超限 `truncated=true`。
+- 导出命中事件受 5000 条上限；`BufWriter` + `serde_json::to_writer_pretty` 流式落盘，
+  临时文件 rename 原子替换。
+- 审计段请求上限 100 条；查询失败标记 `error` 并降级保留其它报告内容，不使整份导出失败。
+- 预览估算不含审计单条体积（保守下限）；`redaction` 恒为 `applied`。
+
+### 25.5 Android 日志边界（第二阶段新增）
+
+- 模块：`apps/mobile/modules/logger/android/.../SafeLog.kt` / `FileLogSink.kt` /
+  `LoggerModule.kt` / `CrashHandler.kt`；JS 侧 `apps/mobile/src/lib/safeLog.ts`。
+- 原生侧先脱敏：`LoggerModule.write` 独立清洗 tag/message/metadata，Logcat 与文件共用同一份
+  结果，不依赖 JS 已脱敏前提；Kotlin `RULES` 与 JS `REDACT_RULES` 同序同规则，双侧对照测试。
+- 容量：单文件软目标 2 MB、归档 3 个、总量 ≤6 MB、保留 7 天；活动文件硬上限 4 MB；队列
+  256 条、高级别预留 32 条，分级丢弃并按级别计数。
+- **未验证**：真机/模拟器运行、Expo Module 实例化与 JS→原生端到端链路；生产 HandlerThread
+  分发路径由测试接缝覆盖。Android 日志仅本地留存，不向桌面持续上报。
+
+### 25.6 本阶段延期与未执行项（如实标注）
+
+- **延期**：`span_id` 完整 Span 体系；`personalHub` 审计源接线。
+- **Dev 已验证（单次样本）**：桌面 startup（`first_ready`）埋点——`lib.rs` 起点与
+  `commands/system.rs::notify_ui_ready` 首次收尾已接线；Dev 实测 3879 ms / P95 3879 ms /
+  慢操作 1（`final/dev-ui.md` §3.1）。正式 Release 性能基线未执行。
+- **未执行（非本任务缺陷）**：整 `cargo test --lib` 被其他任务在途未跟踪文件
+  `src-tauri/src/agent_access/tests_v82_rest.rs`（旧 API 签名）阻塞，ENVIRONMENT BLOCKED；
+  收尾阶段已用定向模块测试 + `cargo check --lib` 取证（见
+  `tmp/acceptance/logging-phase2/final/`）。Release 安装包/升级/卸载/签名/生产资源加载/
+  正式性能基线未执行；Android 真机、320/400 窄窗与主题视觉走查未执行；诊断中心三视图、
+  安全审计来源状态、导出预览/取消已 Dev 实测（`final/dev-ui.md`）。
 
