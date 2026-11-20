@@ -160,6 +160,33 @@ html[data-theme="light"] .fw-root {
   outline-offset: 1px;
 }
 
+/* 布局模板快捷入口：紧邻「文件 / 回收站」切换右侧，只展示最近使用的 2 个模板。
+   其余模板在紧凑菜单里；模板多时按钮文字截断，完整名称走 data-tip。 */
+.fw-quick-templates {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.fw-quick-template {
+  max-width: 128px;
+  min-width: 0;
+}
+
+.fw-quick-template-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 窄内容区只保留一个「模板」图标菜单（快捷按钮与其余菜单一并收纳）。 */
+.fw-quick-template-compact {
+  display: none;
+}
+
 /* ── 分割树 ─────────────────────────────────────────────────────────── */
 
 .fw-workarea {
@@ -1215,6 +1242,17 @@ body.fw-resizing-row * {
   font-weight: 600;
 }
 
+/* 表头只描述列：文字一律左对齐，不再继承数据行数值列的右对齐。
+   数据行的 .fw-row-time/.fw-row-size 仍 justify-self:end + text-align:right；
+   表头与行继续共享 --fw-col-* 同一套 grid 轨道，列宽与窄栏断点不变。 */
+.fw-list-head .fw-row-name,
+.fw-list-head .fw-row-time,
+.fw-list-head .fw-row-size,
+.fw-list-head .fw-row-type {
+  justify-self: start;
+  text-align: left;
+}
+
 /* 网格 */
 .fw-grid-row {
   display: flex;
@@ -2155,6 +2193,14 @@ body.fw-resizing-row * {
   }
   .fw-btn-label {
     display: none;
+  }
+  /* 模板快捷按钮收纳为单个「模板」图标菜单；文件/回收站入口保留。 */
+  .fw-quick-template,
+  .fw-quick-template-more {
+    display: none;
+  }
+  .fw-quick-template-compact {
+    display: inline-flex;
   }
 }
 

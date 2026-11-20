@@ -45,10 +45,14 @@ import {
 } from "../lib/filesWorkspace/pathUtils";
 import {
   MAX_PINNED_DIRS,
+  MAX_RECENT,
   MAX_RECENT_DIRS,
   MAX_STASHED_TABS,
+  MAX_TEMPLATES,
   bindSettingsStore,
   persistFilesWorkspace,
+  readFilesWorkspacePersisted,
+  type FilesWorkspacePersisted,
   type PersistedPane,
   type PersistedState,
   type PersistedTab,
@@ -135,6 +139,14 @@ export type ClosePaneResult =
 export type LayoutApplyResult =
   | { ok: true; unchanged: boolean; tabCount: number; stashedCount: number }
   | { ok: false; reason: "unknownPreset" | "capacity"; tabCount: number; overflow: number };
+
+/** 应用布局模板所需的最小结构（持久化模板的子集；调用方无需提供 name）。 */
+export type FilesTemplate = { id: string; tree: SplitNode; panes: PersistedPane[] };
+
+/** 应用布局模板的结果：模板缺失与持久化失败都必须由调用方可见（不静默）。 */
+export type ApplyTemplateResult =
+  | { ok: true; templateId: string }
+  | { ok: false; reason: "missing" | "persist-failed"; error?: string };
 
 /** 撤销栈上限：足够覆盖一次连续拖拽 + 多次布局操作，又不放大内存。 */
 export const MAX_LAYOUT_HISTORY = 20;
@@ -251,6 +263,11 @@ interface FilesWorkspaceState extends FilesWorkspaceData {
   stashed: FolderTab[];
   /** 最近打开目录（最近使用在前，LRU ≤ 8）。 */
   recentDirs: string[];
+  /**
+   * 最近使用的布局模板 ID（最近使用在前，去重，≤ MAX_RECENT）。
+   * 与项目维度无关（全局一份），随持久化的 `recentTemplates` 字段共存。
+   */
+  recentTemplates: string[];
   /** 用户固定目录（不被 LRU 淘汰）。 */
   pinnedDirs: string[];
   /** 布局撤销栈（会话内）。 */
@@ -350,10 +367,7 @@ export interface FilesWorkspaceActions {
   applyLayoutPresetPreservingTabs: (presetId: string) => LayoutApplyResult;
   /** 旧语义：清空窗格后按初始路径重建（仅用于显式重置，面板不再使用）。 */
   applyPreset: (presetId: string, initialPaths?: string[]) => void;
-  applyTemplate: (
-    templateId: string,
-    templates: Array<{ id: string; tree: SplitNode; panes: PersistedPane[] }>,
-  ) => void;
+  applyTemplate: (templateId: string, templates: FilesTemplate[]) => Promise<ApplyTemplateResult>;
   saveCurrentAsTemplate: (name: string) => Promise<{ id: string; tree: SplitNode; panes: PersistedPane[] }>;
 
   undoLayout: () => boolean;
@@ -398,18 +412,36 @@ function schedulePersist(get: () => FilesWorkspaceStore): void {
   }, 600);
 }
 
+/** 取消挂起的防抖写入（随后的显式写入会包含当时的完整快照）。 */
+function cancelPersistTimer(): void {
+  if (!persistTimer) return;
+  clearTimeout(persistTimer);
+  persistTimer = null;
+}
+
+/**
+ * 显式写入一次完整快照（可行时附带全局字段覆盖）。
+ * 走 persist.ts 的串行链，失败向上抛错由调用方决定反馈方式。
+ */
+function writeSnapshot(
+  get: () => FilesWorkspaceStore,
+  extra?: Partial<Pick<FilesWorkspacePersisted, "recentTemplates">>,
+): Promise<void> {
+  const snapshot = get().snapshot();
+  return persistFilesWorkspace((current) => {
+    // 重排：把活跃键移到末尾（LRU 语义），再写回。
+    const states = { ...current.states };
+    delete states[snapshot.stateKeyRef];
+    states[snapshot.stateKeyRef] = snapshot.stateData;
+    return { ...current, ...extra, states };
+  });
+}
+
 /** 立即执行一次待写快照（返回可等待的写入动作；无待写定时器也为显式写入）。 */
 function flushPersist(get: () => FilesWorkspaceStore): () => Promise<void> {
   return async () => {
-    const snapshot = get().snapshot();
     try {
-      await persistFilesWorkspace((current) => {
-        // 重排：把活跃键移到末尾（LRU 语义），再写回。
-        const states = { ...current.states };
-        delete states[snapshot.stateKeyRef];
-        states[snapshot.stateKeyRef] = snapshot.stateData;
-        return { ...current, states };
-      });
+      await writeSnapshot(get);
       if (get().persistError !== null) applyPersistError?.(null);
     } catch (e) {
       // 持久化失败不打断交互；错误落入 store 供面板可见反馈（P0：不得静默）。
@@ -424,8 +456,7 @@ function flushPersist(get: () => FilesWorkspaceStore): () => Promise<void> {
  */
 function flushPendingPersist(get: () => FilesWorkspaceStore): Promise<void> {
   if (!persistTimer) return Promise.resolve();
-  clearTimeout(persistTimer);
-  persistTimer = null;
+  cancelPersistTimer();
   return flushPersist(get)();
 }
 
@@ -703,6 +734,7 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
     selection: {},
     stashed: [],
     recentDirs: [],
+    recentTemplates: [],
     pinnedDirs: [],
     layoutHistory: [],
     layoutFuture: [],
@@ -714,6 +746,10 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
     hydrate: (state, stateKey) => {
       // 项目切换前先落盘旧键的待写编辑（P0 竞态：否则旧定时器会把新状态写进新键）。
       void flushPendingPersist(get);
+      // 最近模板是全局元数据（不属于项目态），重启/切换后从设置中恢复；
+      // 设置尚未加载时保留内存值，避免把已应用的最近顺序清空。
+      const restoredRecentTemplates =
+        readFilesWorkspacePersisted()?.recentTemplates ?? get().recentTemplates;
       const tree = normalizeTree(state.tree);
       const ids = paneIds(tree);
       const panes: Record<string, PaneState> = {};
@@ -762,6 +798,7 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
         stashed,
         pinnedDirs: (state.pinnedDirs ?? []).slice(0, MAX_PINNED_DIRS),
         recentDirs: (state.recentDirs ?? []).slice(0, MAX_RECENT_DIRS),
+        recentTemplates: restoredRecentTemplates,
         layoutHistory: [],
         layoutFuture: [],
         layoutEditMode: false,
@@ -1326,9 +1363,10 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
       schedulePersist(get);
     },
 
-    applyTemplate: (templateId, templates) => {
+    applyTemplate: async (templateId, templates) => {
       const template = templates.find((t) => t.id === templateId);
-      if (!template) return;
+      // 模板缺失：不改任何状态、不记历史、不写设置（调用方据此提示）。
+      if (!template) return { ok: false, reason: "missing" };
       // 重映射必须同步覆盖 PersistedPane 与 activePaneId（P0：旧实现拿新 ID 查
       // 旧窗格数据，所有标签丢失）。tabId 直接复用（与 hydrate 一致）。
       const { tree, mapping } = reassignPaneIds(template.tree);
@@ -1350,6 +1388,11 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
             tabs.find((t) => t.tabId === persisted?.activeTabId)?.tabId ?? tabs[0]?.tabId ?? null,
         };
       }
+      // 最近使用：该 id 置顶、去重、截断（与 persist.normalizePersisted 的读取规则一致）。
+      const recentTemplates = [
+        templateId,
+        ...get().recentTemplates.filter((id) => id !== templateId),
+      ].slice(0, MAX_RECENT);
       recordHistory("template", templateId);
       set({
         tree,
@@ -1357,8 +1400,21 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
         maximizedPaneId: null,
         selection: {},
         activePaneId: paneIds(tree)[0],
+        recentTemplates,
       });
-      schedulePersist(get);
+      // 显式等待落盘：取消挂起的防抖写入，避免两次写入在不同时机互相覆盖；
+      // 本次写入经 persist.ts 串行链执行，包含新布局 + 最近模板顺序。
+      cancelPersistTimer();
+      try {
+        await writeSnapshot(get, { recentTemplates });
+        if (get().persistError !== null) applyPersistError?.(null);
+        return { ok: true, templateId };
+      } catch (e) {
+        // 内存状态保留（不回滚已应用的布局），失败由调用方按 result 提示。
+        const message = e instanceof Error ? e.message : String(e);
+        applyPersistError?.(message);
+        return { ok: false, reason: "persist-failed", error: message };
+      }
     },
 
     saveCurrentAsTemplate: async (name) => {
@@ -1371,7 +1427,11 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
       };
       await persistFilesWorkspace((current) => ({
         ...current,
-        templates: [...current.templates.slice(0, 19), template],
+        // 追加在末尾（既有展示顺序）；满额时移除数组头部的最旧模板，绝不丢新模板。
+        templates:
+          current.templates.length >= MAX_TEMPLATES
+            ? [...current.templates.slice(1, MAX_TEMPLATES), template]
+            : [...current.templates, template],
       }));
       return template;
     },

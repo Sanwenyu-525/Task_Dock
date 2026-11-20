@@ -1068,6 +1068,96 @@ describe("导航宽度临界点与名称 tooltip", () => {
     expect(page?.querySelector(".wb-nav-label")).toBeTruthy();
   });
 
+  it("R13: 旧存档 96px 首帧就渲染为 72px 图标轨，不再留空白侧栏", async () => {
+    useSettingsStore.setState({
+      settings: {
+        ...baseSettings(),
+        workbench_layout: { ...defaultWorkbenchLayout(), navWidth: 96 },
+      } as never,
+    });
+    await renderShell();
+    const root = document.querySelector<HTMLElement>(".wb-root");
+    // compact 与渲染宽度同源：96 放不下名称 → 图标态，宽度必须同步收成 72。
+    expect(root?.hasAttribute("data-nav-compact")).toBe(true);
+    expect(root?.style.getPropertyValue("--wb-nav-width")).toBe("72px");
+    // 启动后的吸附 effect 落库 72，下次启动不再重复修正。
+    await waitFor(() => {
+      const layout = useSettingsStore.getState().settings?.workbench_layout as
+        | { navWidth?: number }
+        | undefined;
+      expect(layout?.navWidth).toBe(72);
+    });
+  });
+
+  it("R13: 拖拽导航分栏时宽度连续跟手，松手才按名称阈值吸附", async () => {
+    await renderShell();
+    const root = document.querySelector<HTMLElement>(".wb-root");
+    expect(root?.style.getPropertyValue("--wb-nav-width")).toBe("200px");
+    const resizer = screen.getByRole("separator", { name: "调整导航栏宽度" });
+
+    fireEvent.pointerDown(resizer, { pointerId: 91, button: 0, clientX: 200, clientY: 400 });
+    fireEvent.pointerMove(window, { pointerId: 91, pointerType: "mouse", clientX: 260, clientY: 400 });
+    expect(root?.style.getPropertyValue("--wb-nav-width")).toBe("260px");
+    expect(root?.hasAttribute("data-nav-compact")).toBe(false);
+
+    fireEvent.pointerMove(window, { pointerId: 91, pointerType: "mouse", clientX: 150, clientY: 400 });
+    // 拖拽中不吸附：150 原样跟手，名称实时折叠（不出现被截断的半截名称）。
+    expect(root?.style.getPropertyValue("--wb-nav-width")).toBe("150px");
+    expect(root?.hasAttribute("data-nav-compact")).toBe(true);
+
+    fireEvent.pointerUp(window, { pointerId: 91, pointerType: "mouse", clientX: 150, clientY: 400 });
+    await waitFor(() => expect(root?.style.getPropertyValue("--wb-nav-width")).toBe("72px"));
+    expect(root?.hasAttribute("data-nav-compact")).toBe(true);
+  });
+
+  it("R13: 键盘方向键在图标轨与名称态之间一步切换", async () => {
+    await renderShell();
+    const root = document.querySelector<HTMLElement>(".wb-root");
+    const resizer = screen.getByRole("separator", { name: "调整导航栏宽度" });
+
+    // 200 → 184：仍在名称态。
+    fireEvent.keyDown(resizer, { key: "ArrowLeft" });
+    expect(root?.style.getPropertyValue("--wb-nav-width")).toBe("184px");
+    expect(root?.hasAttribute("data-nav-compact")).toBe(false);
+
+    // 184 → 168：低于名称所需宽度（jsdom 回退 180）→ 一步收成图标轨。
+    fireEvent.keyDown(resizer, { key: "ArrowLeft" });
+    expect(root?.style.getPropertyValue("--wb-nav-width")).toBe("72px");
+    expect(root?.hasAttribute("data-nav-compact")).toBe(true);
+
+    // 图标轨 → 一步展开到名称刚好放下的宽度。
+    fireEvent.keyDown(resizer, { key: "ArrowRight" });
+    expect(root?.style.getPropertyValue("--wb-nav-width")).toBe("180px");
+    expect(root?.hasAttribute("data-nav-compact")).toBe(false);
+  });
+
+  it("R13: 窄窗（≤560）固定图标轨，不覆盖用户存档宽度", async () => {
+    const originalInnerWidth = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 400 });
+    try {
+      useSettingsStore.setState({
+        settings: {
+          ...baseSettings(),
+          workbench_layout: { ...defaultWorkbenchLayout(), navWidth: 200 },
+        } as never,
+      });
+      await renderShell();
+      const root = document.querySelector<HTMLElement>(".wb-root");
+      expect(root?.hasAttribute("data-nav-compact")).toBe(true);
+      expect(root?.style.getPropertyValue("--wb-nav-width")).toBe("72px");
+      // 只改渲染宽度：存档仍是用户的 200，宽窗后自动恢复。
+      const layout = useSettingsStore.getState().settings?.workbench_layout as
+        | { navWidth?: number }
+        | undefined;
+      expect(layout?.navWidth ?? 200).toBe(200);
+    } finally {
+      Object.defineProperty(window, "innerWidth", {
+        configurable: true,
+        value: originalInnerWidth,
+      });
+    }
+  });
+
   it("72px 图标轨：整列收窄为居中图标，名称/徽标隐藏并补名称 tooltip", async () => {
     useSettingsStore.setState({
       settings: {

@@ -299,12 +299,13 @@ describe("DevHandoffSection · Markdown 预览", () => {
 });
 
 describe("DevHandoffSection · 敏感扫描", () => {
-  it("命中只显示节名 + 行号 + 类型，绝不渲染原文；输入文本按节序传入", async () => {
+  it("扫描最终 Markdown（含标题与追加资料块）：命中只显示「完整文档」+ 行号 + 类型", async () => {
     const SECRET = "sk-live-abcdef1234567890";
     fetchTask.mockResolvedValue({
       ...FIX_TASK,
       description: `密钥 ${SECRET} 别提交`,
     });
+    notesList.mockResolvedValue(FIX_NOTES);
     devHandoffSecretScan.mockResolvedValue({
       findings: [{ textIndex: 1, line: 1, kind: "api_key" }],
       truncated: false,
@@ -312,18 +313,22 @@ describe("DevHandoffSection · 敏感扫描", () => {
     render(<DevHandoffSection />);
     const goal = (await screen.findByLabelText("任务目标")) as HTMLTextAreaElement;
     await waitFor(() => expect(goal.value).toContain(SECRET));
+    // 追加资料块也在扫描范围内
+    fireEvent.click(await screen.findByLabelText("部署备忘"));
     fireEvent.click(screen.getByRole("button", { name: "扫描敏感内容" }));
-    expect(await screen.findByText(/「任务目标」第 1 行 · api_key/)).toBeTruthy();
+    expect(await screen.findByText(/「完整文档」第 1 行 · api_key/)).toBeTruthy();
     // 扫描结果绝不包含原文
     const findingsBox = screen.getByRole("alert");
     expect(findingsBox.textContent).not.toContain(SECRET);
-    // 12 节文本按固定顺序传入
+    // 只传整篇 Markdown 一个文本块，且包含标题与追加资料块
     await waitFor(() => {
       expect(devHandoffSecretScan).toHaveBeenCalledTimes(1);
     });
     const texts = vi.mocked(devHandoffSecretScan).mock.calls[0][0] as string[];
-    expect(texts).toHaveLength(12);
-    expect(texts[1]).toContain(SECRET);
+    expect(texts).toHaveLength(1);
+    expect(texts[0]).toContain("# 任务交接包：重构剪贴板模块");
+    expect(texts[0]).toContain(SECRET);
+    expect(texts[0]).toContain("- 部署备忘");
   });
 
   it("无命中显示绿色「未发现敏感模式」；truncated 显示截断提示", async () => {
@@ -402,6 +407,41 @@ describe("DevHandoffSection · 保存版本", () => {
     ).toBe(true);
   });
 
+  it("保存期间继续编辑：保留 dirty 与编辑态，不误把新修改标记为已保存", async () => {
+    let resolveSave: (value: { pack: DevHandoffPack }) => void = () => {};
+    devHandoffSave.mockImplementation(
+      () =>
+        new Promise<{ pack: DevHandoffPack }>((resolve) => {
+          resolveSave = resolve;
+        }),
+    );
+    render(<DevHandoffSection />);
+    const goal = (await screen.findByLabelText("任务目标")) as HTMLTextAreaElement;
+    await waitFor(() => expect(goal.value).not.toBe(""));
+    fireEvent.click(screen.getByRole("button", { name: /编辑|创建/ }));
+    fireEvent.change(goal, { target: { value: "第一次修改" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存版本" }));
+    await waitFor(() => expect(devHandoffSave).toHaveBeenCalledTimes(1));
+
+    // 保存尚未返回时继续编辑
+    fireEvent.change(goal, { target: { value: "第二次修改" } });
+    await act(async () => {
+      resolveSave({ pack: packOf({ title: "重构剪贴板模块" }) });
+    });
+
+    // 仍有新修改：保持编辑态与未保存徽标，内容不被回滚
+    await waitFor(() => {
+      expect(devHandoffList.mock.calls.length).toBeGreaterThanOrEqual(2);
+    });
+    expect(
+      document.querySelector(".wb-handoff-body")?.classList.contains("is-collapsed"),
+    ).toBe(false);
+    expect(screen.getByText("未保存")).toBeTruthy();
+    expect((screen.getByLabelText("任务目标") as HTMLTextAreaElement).value).toBe(
+      "第二次修改",
+    );
+  });
+
   it("保存失败：错误提示且编辑内容不丢失", async () => {
     devHandoffSave.mockRejectedValue(new Error("db locked"));
     render(<DevHandoffSection />);
@@ -452,7 +492,7 @@ describe("DevHandoffSection · 摘要/编辑两态（2026-11 治理）", () => {
     });
   });
 
-  it("有未保存修改时点关闭先弹确认；取消留在编辑态，确认放弃后收起且草稿不静默丢失", async () => {
+  it("关闭确认三选一：取消留在编辑态、收起并保留草稿、放弃修改清空草稿", async () => {
     render(<DevHandoffSection />);
     const goal = (await screen.findByLabelText("任务目标")) as HTMLTextAreaElement;
     await waitFor(() => expect(goal.value).not.toBe(""));
@@ -470,22 +510,39 @@ describe("DevHandoffSection · 摘要/编辑两态（2026-11 治理）", () => {
       ).toBe(false);
     });
 
-    // 再次关闭 → 确认放弃后收起
+    // 收起并保留草稿：退出编辑态，未保存徽标与内容都保留
     fireEvent.click(screen.getByRole("button", { name: "关闭" }));
     await screen.findByText("放弃未保存的更改？");
-    fireEvent.click(screen.getByRole("button", { name: "放弃更改" }));
+    fireEvent.click(screen.getByRole("button", { name: "收起并保留草稿" }));
     await waitFor(() => {
       expect(
         document.querySelector(".wb-handoff-body")?.classList.contains("is-collapsed"),
       ).toBe(true);
     });
-    // 草稿内容保留在内存：重新进入仍可见
+    expect(screen.getByText("未保存")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /编辑|创建/ }));
     await waitFor(() => {
       expect((screen.getByLabelText("任务目标") as HTMLTextAreaElement).value).toBe(
         "改动后的目标内容",
       );
     });
+
+    // 放弃修改：显式清空草稿并回摘要，不再有未保存徽标
+    fireEvent.click(screen.getByRole("button", { name: "关闭" }));
+    await screen.findByText("放弃未保存的更改？");
+    fireEvent.click(screen.getByRole("button", { name: "放弃修改" }));
+    await waitFor(() => {
+      expect(
+        document.querySelector(".wb-handoff-body")?.classList.contains("is-collapsed"),
+      ).toBe(true);
+    });
+    expect(screen.queryByText("未保存")).toBeNull();
+    // 重新进入：草稿已被显式清空（标题与正文回到空态）
+    fireEvent.click(screen.getByRole("button", { name: /编辑|创建/ }));
+    await waitFor(() => {
+      expect((screen.getByLabelText("任务目标") as HTMLTextAreaElement).value).toBe("");
+    });
+    expect((screen.getByLabelText("交接包标题") as HTMLInputElement).value).toBe("");
   });
 
   it("摘要态没有版本时不重复渲染「版本记录」空块", async () => {
@@ -494,7 +551,7 @@ describe("DevHandoffSection · 摘要/编辑两态（2026-11 治理）", () => {
     expect(screen.queryByText("版本记录（最近 5 版）")).toBeNull();
   });
 
-  it("切换当前任务：收起编辑面板并清除未保存标记，不把旧任务草稿状态带过去", async () => {
+  it("切换任务不静默清空草稿：新任务无未保存徽标，切回旧任务恢复草稿", async () => {
     render(<DevHandoffSection />);
     const goal = (await screen.findByLabelText("任务目标")) as HTMLTextAreaElement;
     await waitFor(() => expect(goal.value).not.toBe(""));
@@ -502,6 +559,7 @@ describe("DevHandoffSection · 摘要/编辑两态（2026-11 治理）", () => {
     fireEvent.change(goal, { target: { value: "旧任务草稿" } });
     expect(screen.getByText("未保存")).toBeTruthy();
 
+    // 切到 t2：旧任务草稿进内存缓存，新任务为干净草稿
     await act(async () => {
       seedSettings({ workbench_current_task: "t2" });
     });
@@ -511,6 +569,18 @@ describe("DevHandoffSection · 摘要/编辑两态（2026-11 治理）", () => {
       ).toBe(true);
     });
     expect(screen.queryByText("未保存")).toBeNull();
+
+    // 切回 t1：恢复草稿内容与未保存徽标
+    await act(async () => {
+      seedSettings({ workbench_current_task: "t1" });
+    });
+    expect(await screen.findByText("未保存")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /编辑|创建/ }));
+    await waitFor(() => {
+      expect((screen.getByLabelText("任务目标") as HTMLTextAreaElement).value).toBe(
+        "旧任务草稿",
+      );
+    });
   });
 });
 

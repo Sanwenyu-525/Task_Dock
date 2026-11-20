@@ -113,7 +113,11 @@ import {
 } from "../../lib/filesWorkspace/persist";
 import { dropTargetAt, registerFileDropConsumer, discardOperation } from "../../lib/fileDrop";
 import type { DragPayloadView } from "../../lib/dragPayload";
-import { useFilesWorkspaceStore, tabTitle } from "../../store/useFilesWorkspaceStore";
+import {
+  useFilesWorkspaceStore,
+  tabTitle,
+  type ApplyTemplateResult,
+} from "../../store/useFilesWorkspaceStore";
 import { useTransferStore } from "../../store/useTransferStore";
 import { resolvePathInputs } from "../../lib/crossTab/fileKinds";
 import { useSettingsStore } from "../../store/useSettingsStore";
@@ -763,6 +767,36 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
     // settingsRevision 作为依赖：设置写入后重建模板列表。
     [settingsRevision],
   );
+
+  /**
+   * 工具栏快捷模板：最近使用优先（过滤已删除模板），不足 2 个按模板顺序补齐；
+   * 只取前 2 个，其余走紧凑菜单。无模板时整个入口不渲染。
+   */
+  const quickTemplates = useMemo(() => {
+    const byId = new Map(persisted.templates.map((tpl) => [tpl.id, tpl]));
+    const picked: Array<{ id: string; name: string }> = [];
+    const seen = new Set<string>();
+    for (const id of persisted.recentTemplates) {
+      if (picked.length >= 2) break;
+      const tpl = byId.get(id);
+      if (!tpl || seen.has(id)) continue;
+      seen.add(id);
+      picked.push({ id: tpl.id, name: tpl.name });
+    }
+    for (const tpl of persisted.templates) {
+      if (picked.length >= 2) break;
+      if (seen.has(tpl.id)) continue;
+      seen.add(tpl.id);
+      picked.push({ id: tpl.id, name: tpl.name });
+    }
+    return picked;
+  }, [persisted]);
+
+  /** 未进入快捷按钮的模板：宽栏从下拉箭头进入，窄栏从「模板」图标菜单进入。 */
+  const remainingTemplates = useMemo(() => {
+    const quick = new Set(quickTemplates.map((tpl) => tpl.id));
+    return persisted.templates.filter((tpl) => !quick.has(tpl.id));
+  }, [persisted.templates, quickTemplates]);
   useEffect(() => {
     const unsub = useSettingsStore.subscribe(() => {
       setSettingsRevision((n) => n + 1);
@@ -1696,14 +1730,27 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
     setLayoutOpen(false);
   };
 
-  const applyCustomTemplate = (templateId: string) => {
-    store.getState().applyTemplate(
-      templateId,
-      persisted.templates.map((tpl) => ({ id: tpl.id, tree: tpl.tree, panes: tpl.panes })),
-    );
-    void store.getState().persistNow().catch(() => {});
+  /**
+   * 应用模板（快捷入口与模板抽屉共用同一实现）：按 store 返回结果反馈。
+   * persist-failed 明确「已应用但未保存」，绝不显示成功；missing 刷新模板列表。
+   */
+  const applyCustomTemplate = async (templateId: string) => {
+    const templates = persisted.templates.map((tpl) => ({ id: tpl.id, tree: tpl.tree, panes: tpl.panes }));
+    // R13: store 已返回结构化结果并在内部完成持久化；失败必须在结果里显式说明。
+    const result: ApplyTemplateResult = await store.getState().applyTemplate(templateId, templates);
     setTemplatePending(null);
     setLayoutOpen(false);
+    if (!result.ok) {
+      if (result.reason === "missing") {
+        showToast("模板不存在或已被删除，已刷新模板列表", { kind: "warning" });
+        setSettingsRevision((n) => n + 1);
+        return;
+      }
+      showToast(`已应用模板，但${t("fw.persist.failed", { error: result.error ?? "" })}`, { kind: "error" });
+      return;
+    }
+    // 应用会改变最近使用顺序（recentTemplates），重建列表让快捷入口跟随新顺序。
+    setSettingsRevision((n) => n + 1);
     showToast(t("fw.template.applied"), { kind: "success" });
   };
 
@@ -1735,7 +1782,7 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
       showToast(errorMessage(e), { kind: "error" });
       return;
     }
-    applyCustomTemplate(templatePending.id);
+    await applyCustomTemplate(templatePending.id);
   };
 
   // ── 打开文件夹（原生选择器 + 多种落点）────────────────────────────────
@@ -1936,6 +1983,14 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
     { key: "refreshAll", label: t("fw.layout.refreshAll"), onSelect: () => invalidateDirs(paneIds(tree).map((id) => panes[id]?.tabs.find((x) => x.tabId === panes[id]?.activeTabId)?.path ?? "").filter(Boolean)) },
   ];
 
+  /** 模板菜单项：与快捷按钮、抽屉共用同一应用前确认入口（setTemplatePending）。 */
+  const templateMenuItem = (tpl: { id: string; name: string }): DropdownMenuItem => ({
+    key: tpl.id,
+    label: tpl.name,
+    icon: <LayoutGrid size={13} />,
+    onSelect: () => setTemplatePending({ id: tpl.id, name: tpl.name }),
+  });
+
   if (!hydrated) {
     return <div className="fw-root fw-root-boot" role="status" aria-label={t("nav.loading")} />;
   }
@@ -1981,6 +2036,68 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
             {t("fw.recycle.sourceRecycle")}
           </button>
         </div>
+
+        {/* 已保存布局模板的快捷入口：紧邻「文件 / 回收站」切换右侧，不新增工具栏行。
+            最近使用优先取前 2 个；其余走紧凑菜单；无模板时整块不渲染（无空白占位）。 */}
+        {persisted.templates.length > 0 && (
+          <div className="fw-quick-templates" role="group" aria-label={t("fw.toolbar.templates")}>
+            {quickTemplates.map((tpl) => (
+              <button
+                key={tpl.id}
+                type="button"
+                className="btn sm fw-quick-template"
+                data-tip={tpl.name}
+                onClick={() => setTemplatePending({ id: tpl.id, name: tpl.name })}
+              >
+                <LayoutGrid size={13} aria-hidden="true" />
+                <span className="fw-quick-template-name">{tpl.name}</span>
+              </button>
+            ))}
+            {remainingTemplates.length > 0 && (
+              <DropdownMenu
+                menuLabel={t("fw.toolbar.templates")}
+                placement="bottom-start"
+                trigger={({ ref, expanded, onClick, onKeyDown }) => (
+                  <button
+                    ref={ref}
+                    type="button"
+                    className="fw-icon-btn fw-quick-template-more"
+                    aria-haspopup="menu"
+                    aria-expanded={expanded}
+                    aria-label={t("fw.toolbar.templates")}
+                    data-tip={t("fw.toolbar.templates")}
+                    onClick={onClick}
+                    onKeyDown={onKeyDown}
+                  >
+                    <ChevronDown size={14} aria-hidden="true" />
+                  </button>
+                )}
+                items={remainingTemplates.map(templateMenuItem)}
+              />
+            )}
+            {/* 窄内容区：快捷按钮与其余菜单收纳为单个「模板」图标菜单（CSS 控制显隐）。 */}
+            <DropdownMenu
+              menuLabel={t("fw.toolbar.templates")}
+              placement="bottom-start"
+              trigger={({ ref, expanded, onClick, onKeyDown }) => (
+                <button
+                  ref={ref}
+                  type="button"
+                  className="fw-icon-btn fw-quick-template-compact"
+                  aria-haspopup="menu"
+                  aria-expanded={expanded}
+                  aria-label={t("fw.toolbar.templates")}
+                  data-tip={t("fw.toolbar.templates")}
+                  onClick={onClick}
+                  onKeyDown={onKeyDown}
+                >
+                  <LayoutPanelTop size={14} aria-hidden="true" />
+                </button>
+              )}
+              items={persisted.templates.map(templateMenuItem)}
+            />
+          </div>
+        )}
 
         <div className="fw-toolbar-actions">
           {/* 文件操作组：打开文件夹 / 加入工作篮 / 撤销 / 重做 */}
@@ -2550,7 +2667,9 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
             <button
               type="button"
               className="btn primary"
-              onClick={() => templatePending && applyCustomTemplate(templatePending.id)}
+              onClick={() => {
+                if (templatePending) void applyCustomTemplate(templatePending.id);
+              }}
             >
               {t("fw.template.applyConfirm")}
             </button>

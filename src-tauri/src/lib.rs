@@ -1605,6 +1605,7 @@ pub fn run() {
             project_hub::commands::project_hub_list_projects,
             project_hub::commands::project_hub_get_project,
             project_hub::commands::project_hub_create_project,
+            project_hub::commands::workspace_path_check,
             // Agent MCP Server（v37）：管理命令（第二轮 UI 使用）
             mcp::commands::mcp_status,
             mcp::commands::mcp_agent_list,

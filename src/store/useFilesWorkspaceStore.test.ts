@@ -8,6 +8,8 @@ import { setFwClipboard, getFwClipboard } from "../lib/filesWorkspace/interactio
 import {
   bindSettingsStore,
   FILE_WORKSPACE_SETTING_KEY,
+  MAX_RECENT,
+  MAX_TEMPLATES,
   __flushFilesWorkspaceWrites,
   type FilesWorkspacePersisted,
 } from "../lib/filesWorkspace/persist";
@@ -37,9 +39,9 @@ function persistedNow(): FilesWorkspacePersisted {
 }
 
 function reset(): void {
+  memSettings.settings = {};
   const tree = LAYOUT_PRESETS.single.build();
   state().hydrate({ tree, panes: [], activePaneId: "" }, "global");
-  memSettings.settings = {};
   setFwClipboard(null);
 }
 
@@ -866,5 +868,150 @@ describe("会话字段持久化与迁移", () => {
     const tab = state().panes["pane-1"].tabs[0];
     expect(tab.historyIndex).toBe(1);
     expect(tab.path).toBe("D:\\z\\b");
+  });
+});
+
+// ── applyTemplate 结果契约 / 最近模板 / 模板容量 ─────────────────────────
+
+/** 左右双栏模板（pane-a / pane-b）；id 与 tabId 均按模板 id 派生，便于断言。 */
+function makeTemplate(id: string) {
+  return {
+    id,
+    tree: LAYOUT_PRESETS.leftRight.build(),
+    panes: [
+      {
+        paneId: "pane-a",
+        tabs: [{ tabId: `${id}-a`, path: `D:\\${id}\\a` }],
+        activeTabId: `${id}-a`,
+      },
+      {
+        paneId: "pane-b",
+        tabs: [{ tabId: `${id}-b`, path: `D:\\${id}\\b` }],
+        activeTabId: `${id}-b`,
+      },
+    ],
+  };
+}
+
+/** 往设置里预置模板（经 normalizePersisted 校验必须合法）。 */
+function seedTemplates(count: number): void {
+  memSettings.settings[FILE_WORKSPACE_SETTING_KEY] = {
+    version: 1,
+    states: {},
+    templates: Array.from({ length: count }, (_, i) => ({
+      id: `old-${i}`,
+      name: `Old ${i}`,
+      tree: LAYOUT_PRESETS.single.build(),
+      panes: [],
+    })),
+    recentTemplates: [],
+  };
+}
+
+describe("applyTemplate 结果契约", () => {
+  beforeEach(reset);
+
+  it("模板缺失：返回 missing，不改状态、不记历史、不写设置", async () => {
+    const beforeTree = state().tree;
+    const result = await state().applyTemplate("ghost", []);
+    expect(result).toEqual({ ok: false, reason: "missing" });
+    expect(state().tree).toBe(beforeTree);
+    expect(state().layoutHistory).toHaveLength(0);
+    expect(memSettings.settings[FILE_WORKSPACE_SETTING_KEY]).toBeUndefined();
+  });
+
+  it("内存应用成功后显式落盘，返回 ok 并写入最近模板（置顶去重）", async () => {
+    const resultA = await state().applyTemplate("tpl-a", [makeTemplate("tpl-a")]);
+    expect(resultA).toEqual({ ok: true, templateId: "tpl-a" });
+    // 应用结果已落盘（无需等待 600ms 防抖）。
+    expect(persistedNow().states.global?.panes.flatMap((p) => p.tabs.map((t) => t.path)).sort()).toEqual([
+      "D:\\tpl-a\\a",
+      "D:\\tpl-a\\b",
+    ]);
+    expect(persistedNow().recentTemplates).toEqual(["tpl-a"]);
+
+    await state().applyTemplate("tpl-b", [makeTemplate("tpl-a"), makeTemplate("tpl-b")]);
+    expect(state().recentTemplates).toEqual(["tpl-b", "tpl-a"]);
+    expect(persistedNow().recentTemplates).toEqual(["tpl-b", "tpl-a"]);
+
+    // 重复应用：置顶而非重复（去重）。
+    await state().applyTemplate("tpl-a", [makeTemplate("tpl-a"), makeTemplate("tpl-b")]);
+    expect(state().recentTemplates).toEqual(["tpl-a", "tpl-b"]);
+    expect(persistedNow().recentTemplates).toEqual(["tpl-a", "tpl-b"]);
+  });
+
+  it("最近模板截断到 MAX_RECENT（最旧被淘汰）", async () => {
+    const templates = Array.from({ length: MAX_RECENT + 1 }, (_, i) => makeTemplate(`t-${i}`));
+    for (const template of templates) {
+      const result = await state().applyTemplate(template.id, templates);
+      expect(result.ok).toBe(true);
+    }
+    expect(state().recentTemplates).toHaveLength(MAX_RECENT);
+    expect(state().recentTemplates[0]).toBe(`t-${MAX_RECENT}`);
+    expect(state().recentTemplates).not.toContain("t-0");
+    expect(persistedNow().recentTemplates).toEqual(state().recentTemplates);
+  });
+
+  it("重启后 hydrate 从设置恢复最近模板顺序", async () => {
+    await state().applyTemplate("tpl-a", [makeTemplate("tpl-a")]);
+    await state().applyTemplate("tpl-b", [makeTemplate("tpl-b")]);
+    const persisted = persistedNow();
+    expect(persisted.recentTemplates).toEqual(["tpl-b", "tpl-a"]);
+    // 模拟重启：设置尚未加载时不清空内存值之外的任何状态（此处为新会话，为空）。
+    memSettings.settings = {};
+    state().hydrate({ tree: LAYOUT_PRESETS.single.build(), panes: [], activePaneId: "" }, "global");
+    expect(state().recentTemplates).toEqual([]);
+    // 设置加载后再 hydrate：最近模板顺序从持久化恢复。
+    memSettings.settings = { [FILE_WORKSPACE_SETTING_KEY]: persisted };
+    state().hydrate(persisted.states.global!, "global");
+    expect(state().recentTemplates).toEqual(["tpl-b", "tpl-a"]);
+  });
+
+  it("持久化失败：返回 persist-failed 且保留已应用的内存布局", async () => {
+    const originalUpdate = memSettings.update;
+    memSettings.update = async () => {
+      throw new Error("disk-full");
+    };
+    try {
+      const result = await state().applyTemplate("tpl-a", [makeTemplate("tpl-a")]);
+      expect(result).toEqual({ ok: false, reason: "persist-failed", error: "disk-full" });
+      // 不回滚：内存布局已应用，最近模板顺序也保留。
+      const paths = Object.values(state().panes)
+        .flatMap((p) => p.tabs.map((t) => t.path))
+        .sort();
+      expect(paths).toEqual(["D:\\tpl-a\\a", "D:\\tpl-a\\b"]);
+      expect(state().recentTemplates).toEqual(["tpl-a"]);
+      expect(state().persistError).toBe("disk-full");
+    } finally {
+      memSettings.update = originalUpdate;
+    }
+  });
+});
+
+describe("saveCurrentAsTemplate 容量上限", () => {
+  beforeEach(reset);
+
+  it("19 → 20：新模板追加在末尾，既有模板保留", async () => {
+    state().openInPane(state().activePaneId, "D:\\saving", "newTab");
+    seedTemplates(MAX_TEMPLATES - 1);
+    const template = await state().saveCurrentAsTemplate(" 新模板 ");
+    const saved = persistedNow().templates;
+    expect(saved).toHaveLength(MAX_TEMPLATES);
+    expect(saved[0].id).toBe("old-0");
+    expect(saved[MAX_TEMPLATES - 1].id).toBe(template.id);
+    expect(saved[MAX_TEMPLATES - 1].name).toBe("新模板");
+  });
+
+  it("20 → 20：移除最旧（数组头部），新模板仍在末尾", async () => {
+    state().openInPane(state().activePaneId, "D:\\saving", "newTab");
+    seedTemplates(MAX_TEMPLATES);
+    const template = await state().saveCurrentAsTemplate("再存一个");
+    const saved = persistedNow().templates;
+    expect(saved).toHaveLength(MAX_TEMPLATES);
+    expect(saved.map((t) => t.id)).not.toContain("old-0");
+    expect(saved[0].id).toBe("old-1");
+    expect(saved[MAX_TEMPLATES - 1].id).toBe(template.id);
+    // 新模板内容是刚保存的当前布局（单窗格 + 标签）。
+    expect(saved[MAX_TEMPLATES - 1].panes[0].tabs[0].path).toBe("D:\\saving");
   });
 });

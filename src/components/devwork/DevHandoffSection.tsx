@@ -17,7 +17,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ClipboardList, Pencil, Plus, ScrollText, ShieldAlert, X } from "lucide-react";
-import { Checkbox, Combobox, ConfirmDialog } from "../ui";
+import { Checkbox, Combobox, ConfirmDialog, Dialog } from "../ui";
 import {
   agentHistorySessions,
   devHandoffDelete,
@@ -68,6 +68,9 @@ const MATERIALS_LIMIT = 20;
 /** Combobox 的「不关联」占位值：绝不会作为会话身份保存。 */
 const SESSION_NONE = "\u0000none";
 
+/** 敏感扫描按最终 Markdown 整篇执行：结果只显示这一个分区名。 */
+const SCAN_DOCUMENT_LABEL = "完整文档";
+
 /** 会话身份键：与后端 task_agent_links 一致（source_id + external_id）。 */
 function sessionKey(s: { source_id: string; external_id: string }): string {
   return `${s.source_id}\u0000${s.external_id}`;
@@ -80,6 +83,15 @@ interface SelectedMaterial {
 }
 
 type HandoffSections = Record<HandoffKey, string>;
+
+/** 任务切换时暂存的内存草稿：只保留未保存修改，避免静默丢弃。 */
+interface HandoffDraft {
+  title: string;
+  sections: HandoffSections;
+  materials: Map<string, SelectedMaterial>;
+  linkedSession: AgentHistorySession | null;
+  dirty: boolean;
+}
 
 function emptySections(): HandoffSections {
   return {
@@ -217,19 +229,57 @@ export default function DevHandoffSection() {
   const [dirty, setDirty] = useState(false);
   const [dirtyCloseOpen, setDirtyCloseOpen] = useState(false);
 
+  /** 草稿修订号：每次用户编辑自增，保存回调据此判断「保存期间是否又有新修改」。 */
+  const revisionRef = useRef(0);
+  /** 当前草稿快照（由下方 effect 维护），任务切换时写入缓存。 */
+  const draftRef = useRef<HandoffDraft>({
+    title: "",
+    sections: emptySections(),
+    materials: new Map(),
+    linkedSession: null,
+    dirty: false,
+  });
+  /** 按 taskId 缓存未保存草稿：切换任务不清空，切回来可恢复。 */
+  const draftCacheRef = useRef<Map<string, HandoffDraft>>(new Map());
+  const currentTaskRef = useRef<string | null>(taskId);
+
+  const markDirty = useCallback(() => {
+    revisionRef.current += 1;
+    setDirty(true);
+  }, []);
+
   const labels = useMemo(() => {
     const out = {} as Record<HandoffKey, string>;
     for (const s of HANDOFF_SECTIONS) out[s.key] = t(s.i18n);
     return out;
   }, [t]);
 
-  /** 换任务 = 新草稿：清空全部编辑与预填痕迹（含无任务草稿态）。 */
+  // 草稿快照：deps 不含 taskId，任务切换那次提交不会先被新任务状态覆盖。
   useEffect(() => {
+    draftRef.current = {
+      title,
+      sections,
+      materials: selectedMaterials,
+      linkedSession,
+      dirty,
+    };
+  }, [title, sections, selectedMaterials, linkedSession, dirty]);
+
+  /**
+   * 换任务：先把旧任务的未保存草稿写入内存缓存（不静默丢弃），
+   * 再恢复新任务已有的草稿；其余编辑/扫描/资料状态照常清空。
+   */
+  useEffect(() => {
+    const previousTaskId = currentTaskRef.current;
+    if (previousTaskId !== taskId) {
+      if (previousTaskId && draftRef.current.dirty) {
+        draftCacheRef.current.set(previousTaskId, draftRef.current);
+      }
+      currentTaskRef.current = taskId;
+    }
     setTask(null);
     setTaskMissing(false);
     setFeatures(null);
-    setTitle("");
-    setSections(emptySections());
     editedRef.current = new Set();
     prefilledRef.current = new Set();
     setScan(null);
@@ -241,14 +291,24 @@ export default function DevHandoffSection() {
     setNotesError(null);
     setShelfItems(null);
     setShelfError(null);
-    setSelectedMaterials(new Map());
-    // 换任务不清空会话候选（全局列表），但必须清空本任务已选关联
-    setLinkedSession(null);
-    // 草稿属于上一个任务：换任务时收起编辑面板并清掉未保存标记，
-    // 避免新任务沿用旧任务的「未保存」状态与关闭确认。
     setEditing(false);
-    setDirty(false);
     setDirtyCloseOpen(false);
+
+    const cached = taskId ? draftCacheRef.current.get(taskId) : undefined;
+    if (cached) {
+      setTitle(cached.title);
+      setSections(cached.sections);
+      setSelectedMaterials(new Map(cached.materials));
+      setLinkedSession(cached.linkedSession);
+      setDirty(cached.dirty);
+    } else {
+      setTitle("");
+      setSections(emptySections());
+      setSelectedMaterials(new Map());
+      // 换任务不清空会话候选（全局列表），但必须清空本任务已选关联
+      setLinkedSession(null);
+      setDirty(false);
+    }
   }, [taskId]);
 
   // 当前任务数据：标题/备注预填来源；任务已删除时如实提示（保存退化为草稿）
@@ -401,9 +461,9 @@ export default function DevHandoffSection() {
         else next.delete(id);
         return next;
       });
-      setDirty(true);
+      markDirty();
     },
-    [],
+    [markDirty],
   );
 
   /** 全选：把当前已加载的两数据源条目全部加入（不覆盖已有勾选）。 */
@@ -418,19 +478,22 @@ export default function DevHandoffSection() {
       }
       return next;
     });
-    setDirty(true);
-  }, [notes, shelfItems]);
+    markDirty();
+  }, [markDirty, notes, shelfItems]);
 
   const clearSelectedMaterials = useCallback(() => {
     setSelectedMaterials(new Map());
-    setDirty(true);
-  }, []);
+    markDirty();
+  }, [markDirty]);
 
-  const onSectionChange = useCallback((key: HandoffKey, value: string) => {
-    editedRef.current = new Set(editedRef.current).add(key);
-    setSections((m) => ({ ...m, [key]: value }));
-    setDirty(true);
-  }, []);
+  const onSectionChange = useCallback(
+    (key: HandoffKey, value: string) => {
+      editedRef.current = new Set(editedRef.current).add(key);
+      setSections((m) => ({ ...m, [key]: value }));
+      markDirty();
+    },
+    [markDirty],
+  );
 
   /**
    * 项目背景的组合值：用户编辑/预填的基础内容 + 已勾选资料的追加块（末尾）。
@@ -458,15 +521,16 @@ export default function DevHandoffSection() {
 
   const titleFilled = title.trim().length > 0;
 
+  /** 扫描最终 Markdown（含标题与追加资料块），不再逐节扫描避免漏掉非节内容。 */
   const runSecretScan = useCallback(() => {
     if (scanning) return;
     setScanning(true);
     setScanError(null);
-    devHandoffSecretScan(HANDOFF_SECTIONS.map((s) => sections[s.key]))
+    devHandoffSecretScan([preview])
       .then((r) => setScan({ findings: r.findings, truncated: r.truncated }))
       .catch((e) => setScanError(errorMessage(e)))
       .finally(() => setScanning(false));
-  }, [scanning, sections]);
+  }, [preview, scanning]);
 
   const copyMarkdown = useCallback(() => {
     if (copying) return;
@@ -488,6 +552,9 @@ export default function DevHandoffSection() {
     if (saving || !titleFilled) return;
     setSaving(true);
     setSaveError(null);
+    const savingTaskId = taskId;
+    /** 保存开始时的草稿修订号：回调里只有相等才代表没有新修改。 */
+    const savedRevision = revisionRef.current;
     const sourceSummary = JSON.stringify({
       taskId,
       projectId: project?.id ?? null,
@@ -510,11 +577,21 @@ export default function DevHandoffSection() {
       agentSessionExternalId: linkedSession?.external_id ?? null,
     })
       .then(({ pack }) => {
-        showToast(t("devwork.handoff.saveDone", { version: pack.version }), { kind: "success" });
-        setDirty(false);
-        // 保存成功后回到摘要态：版本列表重载完成后摘要立即反映新版本
-        setEditing(false);
-        return loadPacks(taskId);
+        // 保存期间已切换任务：只刷新当前任务版本列表，不覆盖新任务的编辑态。
+        if (currentTaskRef.current !== savingTaskId) {
+          return loadPacks(currentTaskRef.current);
+        }
+        if (revisionRef.current === savedRevision) {
+          showToast(t("devwork.handoff.saveDone", { version: pack.version }), { kind: "success" });
+          setDirty(false);
+          draftCacheRef.current.delete(savingTaskId ?? "");
+          // 保存成功后回到摘要态：版本列表重载完成后摘要立即反映新版本
+          setEditing(false);
+        } else {
+          // 保存期间又有编辑：旧版本已保存，但新修改仍是 dirty，留在编辑态。
+          showToast(`已保存交接包 v${pack.version}，仍有新修改未保存`, { kind: "success" });
+        }
+        return loadPacks(savingTaskId);
       })
       .catch((e) => {
         // 保存失败不清空任何编辑态：标题、正文与预览保持原样，可重试
@@ -552,12 +629,14 @@ export default function DevHandoffSection() {
   }, [loadPacks, pendingDeletePackId, showToast, t, taskId]);
 
   const findingText = useCallback(
-    (f: SecretFinding): string => {
-      const section = HANDOFF_SECTIONS[f.textIndex];
-      const name = section ? labels[section.key] : `#${f.textIndex}`;
-      return t("devwork.handoff.scanFindingItem", { section: name, line: f.line, kind: f.kind });
-    },
-    [labels, t],
+    (f: SecretFinding): string =>
+      // 扫描输入只有整篇 Markdown 一个文本块：分区名固定显示「完整文档」。
+      t("devwork.handoff.scanFindingItem", {
+        section: SCAN_DOCUMENT_LABEL,
+        line: f.line,
+        kind: f.kind,
+      }),
+    [t],
   );
 
   /** 摘要视图取版本列表首条（后端按最近优先返回）；小节标题只读自已保存 Markdown。 */
@@ -572,6 +651,28 @@ export default function DevHandoffSection() {
     if (dirty) setDirtyCloseOpen(true);
     else setEditing(false);
   }, [dirty]);
+
+  /** 收起并保留草稿：只退出编辑态，dirty 与内容原样保留（再次进入可继续）。 */
+  const collapseKeepDraft = useCallback(() => {
+    setDirtyCloseOpen(false);
+    setEditing(false);
+  }, []);
+
+  /** 放弃修改：显式清空草稿内容并回摘要（用户明确选择了丢弃，不做静默处理）。 */
+  const discardDraft = useCallback(() => {
+    draftCacheRef.current.delete(taskId ?? "");
+    setDirtyCloseOpen(false);
+    setEditing(false);
+    setDirty(false);
+    setTitle("");
+    setSections(emptySections());
+    setSelectedMaterials(new Map());
+    setLinkedSession(null);
+    setScan(null);
+    setScanError(null);
+    editedRef.current = new Set();
+    prefilledRef.current = new Set();
+  }, [taskId]);
 
   return (
     <section className="wb-card" id="dev-handoff" aria-label={t("devwork.handoff.title")}>
@@ -672,7 +773,7 @@ export default function DevHandoffSection() {
           value={title}
           onChange={(e) => {
             setTitle(e.target.value);
-            setDirty(true);
+            markDirty();
           }}
           aria-label={t("devwork.handoff.packTitle")}
           maxLength={200}
@@ -727,7 +828,7 @@ export default function DevHandoffSection() {
             } else {
               setLinkedSession((sessions ?? []).find((s) => sessionKey(s) === key) ?? null);
             }
-            setDirty(true);
+            markDirty();
           }}
           ariaLabel={t("devwork.handoff.agentSessionTitle")}
           searchPlaceholder={t("devwork.handoff.agentSessionSearchPlaceholder")}
@@ -1032,21 +1133,36 @@ export default function DevHandoffSection() {
         onCancel={() => setPendingDeletePackId(null)}
       />
 
-      {/* 未保存修改关闭确认：确认放弃后草稿内容仍保留在内存中，可再次进入编辑；不静默丢弃 */}
-      <ConfirmDialog
+      {/* 未保存修改关闭确认：三个明确动作——取消 / 收起并保留草稿 / 放弃修改（清空草稿）。 */}
+      <Dialog
         open={dirtyCloseOpen}
-        title={t("appMgmt.leave.title")}
-        detail={t("appMgmt.leave.detailDirty")}
-        confirmLabel={t("appMgmt.leave.confirm")}
-        cancelLabel={t("common.cancel")}
-        danger
-        onConfirm={() => {
-          setDirtyCloseOpen(false);
-          setDirty(false);
-          setEditing(false);
-        }}
-        onCancel={() => setDirtyCloseOpen(false)}
-      />
+        onClose={() => setDirtyCloseOpen(false)}
+        size="sm"
+        dismissOnScrim={false}
+        ariaLabel={t("appMgmt.leave.title")}
+        className="ui-confirm-mask"
+        title={<span className="ui-confirm-title is-danger">{t("appMgmt.leave.title")}</span>}
+        footer={
+          <>
+            <button
+              type="button"
+              className="btn"
+              data-autofocus
+              onClick={() => setDirtyCloseOpen(false)}
+            >
+              {t("common.cancel")}
+            </button>
+            <button type="button" className="btn" onClick={collapseKeepDraft}>
+              收起并保留草稿
+            </button>
+            <button type="button" className="btn danger" onClick={discardDraft}>
+              放弃修改
+            </button>
+          </>
+        }
+      >
+        <p className="endpoint-hint">{t("appMgmt.leave.detailDirty")}</p>
+      </Dialog>
     </section>
   );
 }

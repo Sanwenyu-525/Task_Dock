@@ -69,7 +69,7 @@ import TabLeaveGuard from "../components/TabLeaveGuard";
 import Toast from "../components/Toast";
 import TooltipLayer from "../components/ui/TooltipLayer";
 import WindowResizeGrips from "../components/WindowResizeGrips";
-import { Dialog, DropdownMenu, Select } from "../components/ui";
+import { ConfirmDialog, Dialog, DropdownMenu, Select } from "../components/ui";
 import ClipboardDrawer from "../components/clipboard/ClipboardDrawer";
 import { WIDGET_SOURCES } from "../components/widgets/liveSources";
 import { GlobalSearchDialog } from "../components/global-search/GlobalSearchDialog";
@@ -125,6 +125,7 @@ import {
   WORKBENCH_NAV_WIDTH_RAIL,
   isWorkbenchRoute,
   normalizeProjectId,
+  resolveWorkbenchNavPresentation,
   resolveWorkbenchNavWidth,
   selectWorkbenchLayout,
   setWorkbenchDetailOpen,
@@ -132,7 +133,6 @@ import {
   setWorkbenchNavWidth,
   setWorkbenchProject,
   setWorkbenchRoute,
-  shouldCompactWorkbenchNavLabels,
   useWorkbenchLayout,
   useWorkbenchLayoutReady,
   type WorkbenchRoute,
@@ -141,7 +141,6 @@ import {
 // 页面内部按内容容器宽度响应（见 docs/ui-responsive-layout.md）。
 import { shouldCollapseWorkbenchDetail } from "../lib/layoutMetrics";
 import {
-  clipboardPathStatus,
   devProjectList,
   fetchTask,
   onSettingsChanged,
@@ -169,6 +168,7 @@ import WorkbenchBuildStatus from "./WorkbenchBuildStatus";
 import { createActiveProjectWriter, type ActiveProjectWriter } from "../workspace/activeProjectWriter";
 import { resolveWorkspaceProfile, WORKSPACE_PROFILES } from "../workspace/workspaceProfiles";
 import { pickFolder } from "../lib/filesWorkspace/folderPicker";
+import { checkWorkspacePath } from "../lib/workspacePath";
 import { errorMessage } from "../lib/errors";
 import { logEvent } from "../lib/diagnostics";
 import { withTimeout } from "../lib/timeout";
@@ -377,11 +377,12 @@ export default function WorkbenchShell() {
   const [detailWidth, setDetailWidth] = useState(320);
   const [detailOpen, setDetailOpen] = useState(true);
   const [compact, setCompact] = useState(false);
+  /** 极窄窗口（≤560 CSS px）：导航固定为图标轨，把宽度还给内容区。 */
+  const [narrowWindow, setNarrowWindow] = useState(() => window.innerWidth <= 560);
   /** 名称完整显示所需的最小导航宽度（实测）：null = 尚未量到，用 180px 兜底阈值。 */
   const [navLabelFitWidth, setNavLabelFitWidth] = useState<number | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const navRef = useRef<HTMLElement | null>(null);
-  const [navActualWidth, setNavActualWidth] = useState<number | null>(null);
   const navWidthRef = useRef(navWidth);
   navWidthRef.current = navWidth;
   const navLabelFitRef = useRef<number | null>(navLabelFitWidth);
@@ -444,6 +445,9 @@ export default function WorkbenchShell() {
   const [createRootPicking, setCreateRootPicking] = useState(false);
   const [createNote, setCreateNote] = useState("");
   const [createBusy, setCreateBusy] = useState(false);
+  // R13: 工作目录离线确认（目录当前不存在时，允许用户明确选择「仍然保存」）。
+  const [offlineRootConfirm, setOfflineRootConfirm] = useState<string | null>(null);
+  const offlineRootResolveRef = useRef<((ok: boolean) => void) | null>(null);
   const [moduleRequest, setModuleRequest] = useState<ProjectModuleRequest | null>(null);
   const moduleRequestSeq = useRef(0);
 
@@ -559,31 +563,31 @@ export default function WorkbenchShell() {
     return () => window.removeEventListener("resize", measure);
   }, []);
 
-  // 名称折叠只跟随导航的实际渲染宽度，不再读取窗口宽度。近距离窗口变化时
-  // ResizeObserver 会重新量取；jsdom 的 ResizeObserver 是空实现，此时回退到
-  // 设置里的 navWidth，保证同一套 tooltip / 紧凑语义。
+  // 400/320 窄窗：200px 导航 + 200px 内容会让主区只剩半屏（真机截图实测）。
+  // 这里只改渲染宽度、不写回用户偏好；窗口拉宽后自动恢复原导航宽度。
   useEffect(() => {
-    const node = navRef.current;
-    if (!node || typeof ResizeObserver === "undefined") return;
-    const measure = () => {
-      const width = node.getBoundingClientRect().width;
-      if (width <= 0) return;
-      setNavActualWidth((previous) =>
-        previous !== null && Math.abs(previous - width) <= 0.5 ? previous : width,
-      );
-    };
+    const measure = () => setNarrowWindow(window.innerWidth <= 560);
     measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(node);
-    return () => observer.disconnect();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
   }, []);
 
-  // 名称折叠判据 = 实测的“名称所需宽度”，不再读窗口宽度：宽度低于名称所需宽度时
-  // 名称已被省略号遮住，此时整列收成图标轨（见 CSS 的 data-nav-compact 规则）。
-  const navLabelsCompact = shouldCompactWorkbenchNavLabels(
-    navActualWidth ?? navWidth,
-    navLabelFitWidth ?? undefined,
+  // 名称折叠判据 = 实测的“名称所需宽度”：宽度低于名称所需宽度时名称会被
+  // 省略号遮住，此时整列收成图标轨（见 CSS 的 data-nav-compact 规则）。
+  // 折叠只看**设定的导航宽度**，不读渲染后的 getBoundingClientRect：后者带
+  // DPR 小数，会与按整像素吸附的存档宽度判成两个值（如 265.5 vs 266），
+  // 出现“图标态但面板仍停在宽态”的状态。
+  // R13: 渲染宽度与折叠状态必须同源；否则 compact=true 时仍按旧存档宽度（96/180）
+  // 渲染，形成「图标导航 + 空白侧栏」。拖拽中宽度连续跟手，松手吸附仍走
+  // resolveWorkbenchNavWidth（见 beginResize / nudgePane）。
+  const navPresentation = resolveWorkbenchNavPresentation(
+    navWidth,
+    navLabelFitWidth,
+    narrowWindow,
+    navResizingRef.current,
   );
+  const effectiveNavWidth = navPresentation.width;
+  const navLabelsCompact = navPresentation.compact;
 
   // ── 项目列表读写 ────────────────────────────────────────────────────
   const refreshProjects = useCallback(async (): Promise<WorkspaceProject[]> => {
@@ -863,6 +867,23 @@ export default function WorkbenchShell() {
     }
   }, [createRoot, showToast]);
 
+  // R13: 工作目录离线（当前不存在）不是硬错误：让用户明确确认后再继续保存。
+  const confirmOfflineRoot = useCallback(
+    (path: string) =>
+      new Promise<boolean>((resolve) => {
+        offlineRootResolveRef.current = resolve;
+        setOfflineRootConfirm(path);
+      }),
+    [],
+  );
+
+  const settleOfflineRoot = useCallback((ok: boolean) => {
+    const resolve = offlineRootResolveRef.current;
+    offlineRootResolveRef.current = null;
+    setOfflineRootConfirm(null);
+    resolve?.(ok);
+  }, []);
+
   const submitCreateProject = useCallback(async () => {
     const name = createName.trim();
     if (!name) {
@@ -871,36 +892,33 @@ export default function WorkbenchShell() {
     }
     const root = createRoot.trim();
     if (root) {
-      const isAbsolute = /^[a-zA-Z]:[\\/]/.test(root) || root.startsWith("\\\\");
-      if (!isAbsolute) {
-        showToast("根目录必须是绝对路径（如 D:\\\\Projects\\\\demo）", { kind: "error" });
-        return;
-      }
-      // 去掉盘符冒号后再查非法字符：盘符冒号本身合法，其余位置不允许 Windows 保留字符与控制字符。
-      const checkTarget = /^[a-zA-Z]:[\\/]/.test(root) ? root.slice(2) : root;
-      if (/[<>:"|?*\u0000-\u001f]/.test(checkTarget)) {
-        showToast("工作目录含非法字符（< > : \" | ? *）", { kind: "error" });
-        return;
-      }
-      // 复用现有路径状态批量查询：ok / missing / inaccessible；查询失败按未知处理，不视为存在。
-      let statuses: string[];
+      // R13: 路径校验统一走 workspacePath 契约（绝对路径/非法字符/离线/非目录/不可访问），
+      // 不再复用剪贴板的批量路径状态查询。empty/ok 直接放行；offline 只做确认。
+      let result: Awaited<ReturnType<typeof checkWorkspacePath>>;
       try {
-        statuses = await clipboardPathStatus([root]);
+        result = await checkWorkspacePath(root);
       } catch (e) {
         showToast(`无法检查工作目录状态：${errorMessage(e)}`, { kind: "error" });
         return;
       }
-      const status = statuses[0];
-      if (status === "missing") {
-        showToast("工作目录不存在，请检查路径后重试", { kind: "error" });
+      if (result.status === "invalid") {
+        showToast(
+          result.reason === "not-absolute"
+            ? "根目录必须是绝对路径（如 D:\\\\Projects\\\\demo）"
+            : "工作目录含非法字符（< > : \" | ? *）",
+          { kind: "error" },
+        );
         return;
       }
-      if (status === "inaccessible") {
+      if (result.status === "not-directory") {
+        showToast("工作目录不是文件夹，请重新选择", { kind: "error" });
+        return;
+      }
+      if (result.status === "inaccessible") {
         showToast("无法访问工作目录（可能是权限不足）", { kind: "error" });
         return;
       }
-      if (status !== "ok") {
-        showToast("无法确认工作目录状态，请重试", { kind: "error" });
+      if (result.status === "offline" && !(await confirmOfflineRoot(result.path))) {
         return;
       }
     }
@@ -937,6 +955,7 @@ export default function WorkbenchShell() {
     selectProject,
     goRoute,
     showToast,
+    confirmOfflineRoot,
   ]);
 
   // ── 跨窗口导航：拉取 + 应用 + 回执 ───────────────────────────────────
@@ -1950,14 +1969,15 @@ export default function WorkbenchShell() {
   // 旧配置可能停在“名称被遮住”的宽度（如 180）：量到名称所需宽度后一次性
   // 吸附到合法状态（图标轨或名称态）并落库，避免每次启动都重算同一处修正。
   useEffect(() => {
-    if (!booted || navLabelFitWidth === null || navResizingRef.current) return;
-    const resolved = resolveWorkbenchNavWidth(navWidthRef.current, navLabelFitWidth);
+    if (!booted || navResizingRef.current || narrowWindow) return;
+    const fit = navLabelFitWidth ?? WORKBENCH_NAV_LABELS_COMPACT_BELOW_WIDTH;
+    const resolved = resolveWorkbenchNavWidth(navWidthRef.current, fit);
     if (resolved === navWidthRef.current) return;
     setNavWidth(resolved);
     void setWorkbenchNavWidth(resolved).catch((e) =>
       toastErrorRef.current("workbench.layoutSaveFailed", e),
     );
-  }, [booted, navLabelFitWidth, navWidth]);
+  }, [booted, narrowWindow, navLabelFitWidth, navWidth]);
   useEffect(() => {
     if (!booted || readySent.current) return;
     readySent.current = true;
@@ -2068,7 +2088,7 @@ export default function WorkbenchShell() {
   }
 
   const rootStyle = {
-    "--wb-nav-width": `${navWidth}px`,
+    "--wb-nav-width": `${effectiveNavWidth}px`,
     "--wb-detail-width": `${detailWidth}px`,
   } as CSSProperties;
 
@@ -2886,6 +2906,20 @@ export default function WorkbenchShell() {
           </label>
         </div>
       </Dialog>
+
+      {/* R13: 工作目录离线确认：只有用户显式选择「仍然保存」才继续创建。
+          按需挂载：Dialog 的 overlay/focus hooks 常驻会在 jsdom 下干扰其他守卫链测试。 */}
+      {offlineRootConfirm !== null ? (
+        <ConfirmDialog
+          open
+          title="工作目录不存在"
+          detail="工作目录当前不存在，仍要保存吗？"
+          confirmLabel="仍然保存"
+          cancelLabel={t("common.cancel")}
+          onConfirm={() => settleOfflineRoot(true)}
+          onCancel={() => settleOfflineRoot(false)}
+        />
+      ) : null}
     </div>
   );
 

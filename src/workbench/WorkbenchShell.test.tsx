@@ -32,6 +32,8 @@ const bridge = vi.hoisted(() => ({
   resourceSnapshot: vi.fn(),
   // taskId 不在当前列表时的权威读取（P1-02）。
   fetchTask: vi.fn(),
+  // R13: 新建项目的工作目录校验（workspacePath 契约）。
+  workspacePathCheck: vi.fn(),
 }));
 
 vi.mock("../lib/bridge", async (importOriginal) => {
@@ -98,6 +100,9 @@ beforeEach(() => {
   bridge.devProjectList.mockResolvedValue({ projects: [] });
   bridge.workspaceSetActiveProject.mockResolvedValue({ ok: true });
   bridge.workspaceProjectSave.mockResolvedValue({ project: { id: "p1", name: "新项目" } });
+  // R13: 新建项目用例会真实提交；调用记录不能跨用例累积（后置用例按「未调用」断言）。
+  bridge.workspaceProjectSave.mockClear();
+  bridge.workspaceSetActiveProject.mockClear();
   folderPicker.pickFolder.mockResolvedValue({ status: "cancelled" });
   bridge.onWorkbenchNavigate.mockImplementation(unlisten);
   bridge.workbenchTakeNav.mockResolvedValue(null);
@@ -187,6 +192,47 @@ describe("WorkbenchShell", () => {
     await waitFor(() => expect(rootInput.value).toBe("D:\\Projects\\demo"));
     // 长路径完整值通过 data-tip 回显（输入框内按可视宽度截断）。
     expect(rootInput.getAttribute("data-tip")).toBe("D:\\Projects\\demo");
+  });
+
+  it("R13: 工作目录离线时先确认；取消不保存，确认后才放行", async () => {
+    bridge.workspacePathCheck.mockResolvedValue({ status: "offline", path: "D:\\Missing" });
+    render(<WorkbenchShell />);
+    await screen.findByRole("heading", { name: "工作台首页", level: 2 });
+
+    fireEvent.click(screen.getByRole("button", { name: "打开快速创建菜单" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "新建项目" }));
+    const dialog = await screen.findByRole("dialog", { name: "新建项目" });
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "项目名称" }), {
+      target: { value: "离线项目" },
+    });
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "工作目录（可空）" }), {
+      target: { value: "D:\\Missing" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "确认" }));
+
+    // 目录不存在不是硬错误：先给出确认，取消则中止本次创建。
+    const confirm = await screen.findByRole("dialog", { name: "工作目录不存在" });
+    expect(within(confirm).getByText("工作目录当前不存在，仍要保存吗？")).toBeTruthy();
+    fireEvent.click(within(confirm).getByRole("button", { name: "取消" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "工作目录不存在" })).toBeNull(),
+    );
+    expect(bridge.workspaceProjectSave).not.toHaveBeenCalled();
+    // 新建项目弹层仍在，用户可以修改路径后重试。
+    expect(screen.getByRole("dialog", { name: "新建项目" })).toBeTruthy();
+
+    // 再次提交并确认「仍然保存」：按用户显式意图放行并带上原路径。
+    fireEvent.click(
+      within(screen.getByRole("dialog", { name: "新建项目" })).getByRole("button", {
+        name: "确认",
+      }),
+    );
+    const reconfirm = await screen.findByRole("dialog", { name: "工作目录不存在" });
+    fireEvent.click(within(reconfirm).getByRole("button", { name: "仍然保存" }));
+    await waitFor(() => expect(bridge.workspaceProjectSave).toHaveBeenCalledTimes(1));
+    expect(bridge.workspaceProjectSave.mock.calls[0][0]).toMatchObject({
+      rootPath: "D:\\Missing",
+    });
   });
 
   it("状态栏列出全部卷，并可主动刷新（复用 resource_snapshot）", async () => {

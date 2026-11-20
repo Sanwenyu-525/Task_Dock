@@ -1,9 +1,9 @@
 /**
  * @vitest-environment jsdom
  *
- * R10 Agent C：列表表头/文件行对齐契约复核。
- * 结论：表头与行已共用 --fw-col-* 同一套 grid 轨道，名称左对齐、时间/大小右对齐，
- * 容器断点同步作用于两者，横向滚动本就同一容器 —— 无需大改，仅做契约回归。
+ * R13 Agent B：列表表头与数据行的对齐契约。
+ * 结论：表头与行共用 --fw-col-* 同一套 grid 轨道；**表头文字全部左对齐**，
+ * 数据行的名称/类型左对齐、时间/大小右对齐；容器断点同步作用于两者。
  * jsdom 不计算像素，这里验证 DOM 结构与 CSS 声明契约，真实视觉待 B/C 通道。
  */
 
@@ -34,6 +34,15 @@ function ruleBlock(selectorPattern: RegExp): string | null {
   const start = css.indexOf("{", match.index);
   const end = css.indexOf("}", start);
   return css.slice(start + 1, end);
+}
+
+/** 取某个行首选择器规则块（含选择器与声明体）。 */
+function ruleText(selectorPattern: RegExp): string | null {
+  const match = selectorPattern.exec(css);
+  if (!match) return null;
+  const open = css.indexOf("{", match.index);
+  const end = css.indexOf("}", open);
+  return css.slice(match.index, end + 1);
 }
 
 /** 取完整的 @container 规则块（按花括号层级配对）。 */
@@ -96,8 +105,21 @@ describe("表头与行共用列定义（无需分别写百分比/固定 margin�
   });
 });
 
-describe("对齐方向：名称左、时间/大小右、类型按内容", () => {
-  it("时间列与大小列右对齐并右贴轨道末端", () => {
+describe("对齐方向：表头全部左对齐，数据行数值列仍右对齐", () => {
+  it("表头四列（名称/时间/大小/类型）覆盖为左对齐", () => {
+    expect(css).toMatch(/^\.fw-list-head \.fw-row-name,/m);
+    const head = ruleText(/^\.fw-list-head \.fw-row-name,/m);
+    expect(head).toBeTruthy();
+    for (const cls of ["fw-row-name", "fw-row-time", "fw-row-size", "fw-row-type"]) {
+      expect(head).toContain(`.fw-list-head .${cls}`);
+    }
+    expect(head).toContain("justify-self: start");
+    expect(head).toContain("text-align: left");
+    // 表头对齐只能是表头作用域，不得写回数据行。
+    expect(head).not.toContain(".fw-row-time {");
+  });
+
+  it("数据行的时间列与大小列仍右对齐并右贴轨道末端", () => {
     for (const cls of ["fw-row-time", "fw-row-size"]) {
       const block = ruleBlock(new RegExp(`^\\.${cls}\\s*\\{`, "m"));
       expect(block, `missing .${cls} rule`).toBeTruthy();
@@ -106,7 +128,7 @@ describe("对齐方向：名称左、时间/大小右、类型按内容", () => 
     }
   });
 
-  it("名称列与类型列保持左对齐（省略号不影响起始位置）", () => {
+  it("名称列与类型列在数据行保持左对齐（省略号不影响起始位置）", () => {
     const name = ruleBlock(/^\.fw-row-name\s*\{/m);
     expect(name).toContain("overflow: hidden");
     expect(name).toContain("text-overflow: ellipsis");
@@ -116,7 +138,7 @@ describe("对齐方向：名称左、时间/大小右、类型按内容", () => 
     expect(type).not.toContain("justify-self: end");
   });
 
-  it("表头复用行单元格 class，因此自动继承同一对齐规则", () => {
+  it("表头复用行单元格 class，且与数据行共享同一套列单元格", () => {
     const { container } = render(
       <FileList {...baseProps} entries={[entry]} dirPath="D:\\align" viewMode="list" />,
     );

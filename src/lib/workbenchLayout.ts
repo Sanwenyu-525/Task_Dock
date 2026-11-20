@@ -99,6 +99,38 @@ export function shouldCompactWorkbenchNavLabels(
   return Math.round(width) < Math.round(labelFitWidth);
 }
 
+/** 导航呈现的两项结果：渲染宽度 + 是否进入图标态（名称折叠）。 */
+export interface WorkbenchNavPresentation {
+  width: number;
+  compact: boolean;
+}
+
+/**
+ * 导航单态解析（R13）：渲染宽度与名称折叠必须来自**同一次判定**。
+ *
+ * 旧实现分别计算 `effectiveNavWidth = narrowWindow ? 72 : navWidth` 与
+ * `compact = narrowWindow || shouldCompact(navWidth)`：当 compact=true 但存档宽度
+ * 仍是 96/180 等宽值时，CSS 收起名称、面板却仍按旧宽度渲染，出现
+ * 「图标导航 + 一大段空白侧栏」。这里把两者收敛成一个稳态：
+ * - 窄窗：固定图标轨；
+ * - 拖拽中：宽度连续跟手，折叠随实时宽度变化（不吸附，松手才走
+ *   `resolveWorkbenchNavWidth`）；
+ * - 其余：compact 时渲染宽度**必须**是图标轨宽度，宽态才用设定宽度。
+ */
+export function resolveWorkbenchNavPresentation(
+  settingsWidth: number,
+  labelFitWidth: number | null | undefined,
+  narrowWindow: boolean,
+  resizing: boolean,
+): WorkbenchNavPresentation {
+  if (narrowWindow) return { width: WORKBENCH_NAV_WIDTH_RAIL, compact: true };
+  const compact = shouldCompactWorkbenchNavLabels(settingsWidth, labelFitWidth ?? undefined);
+  if (resizing) return { width: settingsWidth, compact };
+  return compact
+    ? { width: WORKBENCH_NAV_WIDTH_RAIL, compact: true }
+    : { width: settingsWidth, compact: false };
+}
+
 /**
  * 把任意宽度吸附到两个稳态之一：图标轨，或名称能完整显示的宽态（≥ 名称所需宽度）。
  * 中间宽度会让名称被省略号遮盖，因此低于名称所需宽度一律落到图标轨。

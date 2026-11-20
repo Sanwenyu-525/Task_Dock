@@ -322,6 +322,17 @@ export function bindSettingsStore(fn: () => SettingsLike): void {
 }
 
 /**
+ * 读取当前设置中的归一化数据（只读，不触发写入）。
+ * 设置尚未加载时返回 null：调用方应保留内存中的值（如最近模板顺序），不得清空。
+ */
+export function readFilesWorkspacePersisted(): FilesWorkspacePersisted | null {
+  const store = getStore?.();
+  if (!store || store.settings === null || store.settings === undefined) return null;
+  const settings = store.settings as Record<string, unknown>;
+  return normalizePersisted(settings[FILE_WORKSPACE_SETTING_KEY]);
+}
+
+/**
  * 读-改-写串行落库：后一次写入基于前一次结果（避免快速操作互相覆盖）。
  * 写入失败直接抛错，由调用方就地反馈，不静默吞掉。
  */

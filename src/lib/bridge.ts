@@ -2914,3 +2914,14 @@ export const projectHubGetProject = (projectId: string) =>
 
 export const projectHubCreateProject = (input: ProjectHubCreateInput) =>
   invoke<ProjectHubSnapshot>("project_hub_create_project", { input });
+
+/** 工作目录校验原始结果（`workspace_path_check`）：只含事实，不含 canonicalize 后的路径。 */
+export interface WorkspacePathCheckResult {
+  status: "empty" | "invalid" | "offline" | "not-directory" | "inaccessible" | "ok";
+  reason?: "not-absolute" | "illegal-char" | null;
+  path?: string | null;
+}
+
+/** 校验工作目录：语法 + 是否存在 / 是否目录 / 是否可访问。 */
+export const workspacePathCheck = (raw: string) =>
+  invoke<WorkspacePathCheckResult>("workspace_path_check", { raw });

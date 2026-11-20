@@ -3,6 +3,8 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 const globalSearchMock = vi.fn();
 
@@ -59,6 +61,11 @@ beforeEach(() => {
     recent: [],
     pendingLocate: null,
     notice: null,
+    // R13: 清空按钮用例会走真实 setQuery → refreshCommands；命令组是本地过滤
+    // 结果而不是用例间常量，必须在每个用例前归零，否则会污染键盘序与空态判定。
+    commands: [],
+    phrase: null,
+    phraseArmed: null,
   });
 });
 
@@ -97,6 +104,22 @@ describe("弹窗渲染", () => {
   it("open=false 不渲染面板", () => {
     render(<GlobalSearchDialog />);
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("清空按钮：清空关键词并把焦点留在输入框（R13）", () => {
+    useGlobalSearchStore.setState({ open: true, query: "登录" });
+    render(<GlobalSearchDialog />);
+    const input = screen.getByRole("textbox", { name: "搜索关键词" });
+    fireEvent.click(screen.getByRole("button", { name: "清空搜索" }));
+    expect(useGlobalSearchStore.getState().query).toBe("");
+    expect(document.activeElement).toBe(input);
+  });
+
+  it("关闭按钮：关闭弹窗（R13）", () => {
+    useGlobalSearchStore.setState({ open: true, query: "" });
+    render(<GlobalSearchDialog />);
+    fireEvent.click(screen.getByRole("button", { name: "关闭搜索" }));
+    expect(useGlobalSearchStore.getState().open).toBe(false);
   });
 
   it("打开后渲染输入框、分类行与结果分组", () => {
@@ -498,5 +521,48 @@ describe("下拉形态（工作台顶栏锚点）", () => {
     const before = useGlobalSearchStore.getState().activeIndex;
     fireEvent.keyDown(screen.getByRole("textbox", { name: "搜索关键词" }), { key: "ArrowDown" });
     expect(useGlobalSearchStore.getState().activeIndex).toBe(before + 1);
+  });
+});
+
+describe("焦点视觉只有一层（R13）", () => {
+  it("内部 .gs-input 不再绘制 outline/box-shadow（顶栏与弹层共用同一条规则）", () => {
+    const css = readFileSync(
+      resolve(process.cwd(), "src/components/global-search/global-search.css"),
+      "utf8",
+    );
+    // 内部输入框自身不画焦点环：否则与容器叠成双重描边。
+    expect(css).toMatch(
+      /\.gs-input:focus,[\s\S]*?\.gs-input:focus-visible \{[\s\S]*?outline: none;[\s\S]*?box-shadow: none;/,
+    );
+    // 弹层输入行的唯一焦点视觉是下边线变色，且只作用于面板首行
+    // （下拉形态的输入行在顶栏字段里，由字段外圈负责）。
+    expect(css).toMatch(
+      /\.gs-panel > \.gs-input-row:focus-within \{[^}]*border-bottom-color: var\(--accent\)/,
+    );
+  });
+
+  it("顶栏字段只保留外圈焦点：内部输入框的焦点环被清零", () => {
+    const wbCss = readFileSync(resolve(process.cwd(), "src/workbench/workbench.css"), "utf8");
+    expect(wbCss).toMatch(/\.wb-search-inline \.gs-input:focus,[\s\S]*?box-shadow: none;/);
+    expect(wbCss).toContain(".wb-search-field:has(:focus-visible)");
+  });
+
+  it("模态形态的输入行是面板首行；下拉形态不在面板里重复输入行", () => {
+    useGlobalSearchStore.setState({ open: true, query: "" });
+    render(<GlobalSearchDialog />);
+    const panel = document.querySelector(".gs-panel");
+    expect(panel?.firstElementChild?.classList.contains("gs-input-row")).toBe(true);
+    cleanup();
+
+    openWithResults();
+    const anchor = document.createElement("button");
+    anchor.textContent = "搜索";
+    document.body.appendChild(anchor);
+    const anchorRef = { current: anchor };
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    render(<GlobalSearchDialog anchorRef={anchorRef} inputHost={host} />);
+    expect(document.querySelector(".gs-dropdown-panel > .gs-input-row")).toBeNull();
+    expect(host.querySelector(".gs-input-row")).toBeTruthy();
   });
 });

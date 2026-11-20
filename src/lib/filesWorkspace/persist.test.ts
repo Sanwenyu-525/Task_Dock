@@ -11,6 +11,7 @@ import {
   defaultPersisted,
   normalizePersisted,
   persistFilesWorkspace,
+  readFilesWorkspacePersisted,
   type FilesWorkspacePersisted,
 } from "./persist";
 import { LAYOUT_PRESETS, type SplitNode } from "./model";
@@ -302,5 +303,25 @@ describe("persistFilesWorkspace 写入链", () => {
     bindSettingsStore(() => ({ settings: null, update: async () => {} }));
     await expect(persistFilesWorkspace((c) => ({ ...c }))).rejects.toThrow("设置尚未加载");
     await __flushFilesWorkspaceWrites();
+  });
+});
+
+describe("readFilesWorkspacePersisted", () => {
+  it("设置未加载时返回 null（调用方保留内存值）", () => {
+    bindSettingsStore(() => ({ settings: null, update: async () => {} }));
+    expect(readFilesWorkspacePersisted()).toBeNull();
+  });
+
+  it("返回归一化数据：最近模板去重且保持顺序", () => {
+    bindSettingsStore(() => ({
+      settings: {
+        [FILE_WORKSPACE_SETTING_KEY]: {
+          version: FILE_WORKSPACE_VERSION,
+          recentTemplates: ["b", "b", "a"],
+        },
+      },
+      update: async () => {},
+    }));
+    expect(readFilesWorkspacePersisted()?.recentTemplates).toEqual(["b", "a"]);
   });
 });

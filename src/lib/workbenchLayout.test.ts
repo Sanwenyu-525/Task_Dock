@@ -15,6 +15,7 @@ import {
   isWorkbenchRoute,
   normalizeProjectId,
   normalizeWorkbenchLayout,
+  resolveWorkbenchNavPresentation,
   resolveWorkbenchNavWidth,
   selectWorkbenchLayout,
   shouldCompactWorkbenchNavLabels,
@@ -115,6 +116,59 @@ describe("workbenchLayout", () => {
     // 未量到名称宽度（jsdom）时保持旧兜底语义：180 起显示名称。
     expect(shouldCompactWorkbenchNavLabels(180)).toBe(false);
     expect(shouldCompactWorkbenchNavLabels(179.4)).toBe(true);
+  });
+
+  it("导航单态解析：compact 时渲染宽度必为图标轨（R13）", () => {
+    // 旧存档 96：首帧就直接渲染 72px，不留「图标导航 + 空白侧栏」。
+    expect(resolveWorkbenchNavPresentation(96, 200, false, false)).toEqual({
+      width: WORKBENCH_NAV_WIDTH_RAIL,
+      compact: true,
+    });
+    // 宽态：渲染宽度就是用户设定宽度。
+    expect(resolveWorkbenchNavPresentation(200, 200, false, false)).toEqual({
+      width: 200,
+      compact: false,
+    });
+    // 名称所需宽度边界：199 进图标轨，200 显示名称。
+    expect(resolveWorkbenchNavPresentation(199, 200, false, false)).toEqual({
+      width: WORKBENCH_NAV_WIDTH_RAIL,
+      compact: true,
+    });
+    expect(resolveWorkbenchNavPresentation(199.4, 200, false, false).compact).toBe(true);
+    expect(resolveWorkbenchNavPresentation(200, 200, false, false).compact).toBe(false);
+    // 中英文名称只是实测宽度不同，判据一致（英文更长 → 更早折叠）。
+    expect(resolveWorkbenchNavPresentation(180, 240, false, false)).toEqual({
+      width: WORKBENCH_NAV_WIDTH_RAIL,
+      compact: true,
+    });
+    expect(resolveWorkbenchNavPresentation(240, 240, false, false)).toEqual({
+      width: 240,
+      compact: false,
+    });
+    // 未量到名称宽度时回退 180px 兜底阈值。
+    expect(resolveWorkbenchNavPresentation(180, null, false, false).compact).toBe(false);
+    expect(resolveWorkbenchNavPresentation(179, null, false, false).compact).toBe(true);
+  });
+
+  it("导航单态解析：窄窗固定图标轨，拖拽中宽度连续跟手（R13）", () => {
+    // 窄窗优先于用户宽度：固定 72。
+    expect(resolveWorkbenchNavPresentation(200, 200, true, false)).toEqual({
+      width: WORKBENCH_NAV_WIDTH_RAIL,
+      compact: true,
+    });
+    expect(resolveWorkbenchNavPresentation(200, 200, true, true)).toEqual({
+      width: WORKBENCH_NAV_WIDTH_RAIL,
+      compact: true,
+    });
+    // 拖拽中不吸附：宽度就是实时宽度，折叠随实时宽度变化。
+    expect(resolveWorkbenchNavPresentation(150, 200, false, true)).toEqual({
+      width: 150,
+      compact: true,
+    });
+    expect(resolveWorkbenchNavPresentation(260, 200, false, true)).toEqual({
+      width: 260,
+      compact: false,
+    });
   });
 
   it("项目 ID 规范化：去空白、拒绝空/超长/控制字符", () => {

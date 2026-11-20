@@ -71,6 +71,22 @@
     user-select: text;
   }
 
+  /* R13: 焦点视觉只保留容器一层 —— 顶栏字段由 .wb-search-field 的外圈负责，
+     弹层由输入行下边线负责；内部 input 不再叠加主题层
+     `input[type="text"]:focus` 的 1px 描边 + 5px 光晕（否则会与容器形成双重描边）。 */
+  .gs-input:focus,
+  .gs-input:focus-visible {
+    outline: none;
+    box-shadow: none;
+  }
+
+  /* R13: 弹层（模态）输入行的唯一焦点视觉：下边线换成强调色，不改变行高。
+     下拉形态的输入行被 portal 到顶栏字段（`.wb-search-inline`），由字段外圈表达
+     焦点，因此这里只匹配面板首行，避免同一焦点出现两圈描边。 */
+  .gs-panel > .gs-input-row:focus-within {
+    border-bottom-color: var(--accent);
+  }
+
   .gs-input::placeholder {
     color: var(--text-tertiary);
   }
