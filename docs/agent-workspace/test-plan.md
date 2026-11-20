@@ -320,3 +320,11 @@ CLI `task get` revision=3，`task list` 每条含 revision。
 
 合计 `agent_access::` 143 passed / 0 failed / 0 ignored（81.36s，2026-11-20 最终复跑）。
 独立脚本 52/52，exit 0，证据 `tmp/acceptance/agent-access-v82-20261120-224854/`。
+
+### 13.1 真实外部 Agent 会话（2026-11-20）
+
+- 身份通过真实 Tauri 命令 `mcp_agent_create` / `mcp_agent_set_scope` / `mcp_agent_grant_capability` 创建，不使用 DB seed。
+- 外部 MCP stdio 客户端（`task-dock.exe --mcp-server` + `TASKDOCK_MCP_TOKEN`）+ CLI + REST 完整会话。
+- 结果 **34/34 通过，exit 0**：项目隔离、知识索引过滤、重复完成不重开、REST 幂等重放/409、交接身份与报告归属、在线撤销后 CLI 6 / REST 401 / MCP -32001。
+- 证据：`tmp/acceptance/external-agent-live/`（`results.log`、`summary.json`）。
+- 边界：客户端为验收脚本实现的 JSON-RPC stdio 客户端，不含 LLM 推理；Release 安装包未覆盖。

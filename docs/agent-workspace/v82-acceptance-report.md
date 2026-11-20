@@ -180,7 +180,38 @@ CLI/MCP/REST/File 架构。范围：
 | P2 | `list_handoffs` 项目级未指定项目仍 FORBIDDEN | 保留（fail-closed，未扩权） |
 | P2 | 项目级 `tasks.read` 无法进入显式项目上下文 | 保留（既有语义，未扩权） |
 
-## 6. 未验证项与边界
+## 6. 真实外部 Agent 会话（追加验收，2026-11-20）
+
+> 目的：确认不是只用 DB 种子的 Token 跑接口，而是让 Agent 通过**真实 Tauri 命令**获得身份，
+> 再由外部进程完成完整会话。
+
+**身份来源**：GUI 内 `mcp_agent_create` / `mcp_agent_set_scope` / `mcp_agent_grant_capability` /
+`mcp_agent_revoke`（CDP 调用真实命令），Token 明文只返回一次；未直接向 `mcp_agents` 插行。
+
+**外部客户端契约**：`mcp_config_snippet(client=claude-code)` 返回可直接粘贴的配置：
+
+```json
+{"mcpServers":{"taskdock":{"type":"stdio","command":"<task-dock.exe>","args":["--mcp-server"],
+  "env":{"TASKDOCK_MCP_TOKEN":"<一次性 token>"}}}}
+```
+
+**会话结果：34/34 通过，exit 0**（隔离目录 `tmp/acceptance/external-agent-live/`）：
+
+| 场景 | 真实结果 |
+|---|---|
+| 3 个 Agent 经命令创建/授权 | `ext-runner` / `ext-peer` / `ext-reader-b`，15 项授权成功 |
+| 外部 CLI 创建任务、读决策 | 成功；决策列表只含项目 A |
+| CLI 读项目 B 决策 / 未授权 KB-B | exit 6（FORBIDDEN） |
+| 外部 MCP stdio（initialize / tools/list / tools/call / resources/read） | 95 个工具；创建任务成功；重复完成 status 不变、revision 2→2；项目 B 决策 isError；知识索引只含 KB-A；活动无项目 B |
+| 外部 REST | 同 Key 重放 `replayed=true` 且只 1 条任务；异 Body 409；项目 B 决策 403；`sync/status` 项目级授权 403 |
+| 外部 Agent 间 Handoff | X→Y 创建；X 不能替 Y 接收；Y 接收/完成；报告项目由交接推导；KB-B 读者无权读报告 |
+| 在线撤销 | 撤销后 CLI exit 6、REST 401、MCP 调用 `-32001` |
+
+**边界（如实记录）**：MCP 客户端是验收脚本实现的 JSON-RPC stdio 客户端，不是某个商业 Agent
+产品；它验证的是外部接入协议、身份、权限与事务行为，不包含 LLM 推理质量。Release 安装包链路
+仍未覆盖。
+
+## 7. 未验证项与边界
 
 - **Release 正式验收未执行**：安装包生成、安装/升级/卸载、签名与更新、生产资源加载、正式性能
   基线需要 Integration Snapshot + 安装包；本轮为 Dev 功能验收。
@@ -192,7 +223,7 @@ CLI/MCP/REST/File 架构。范围：
   `STATUS_ENTRYPOINT_NOT_FOUND` 退出）；这是本机测试执行环境处理，不涉及业务代码。验收脚本使用
   真实 `task-dock.exe`/`taskdock.exe`，不受影响。
 
-## 7. 结论
+## 8. 结论
 
 **Dev 功能验收：通过。**
 
@@ -206,6 +237,7 @@ CLI/MCP/REST/File 链路均已实际执行并记录。
 - 交付提交：`c110711e9f6052d8d75276098fb812dc727375b7`（`main`；只包含本任务 agent_access / db 迁移登记 / 文档 / 验收脚本）
 - 验收脚本：`scripts/acceptance-agent-access-v82.mjs`
 - 52/52 运行：`tmp/acceptance/agent-access-v82-20261120-224854/`（`acceptance.log`、`summary.md`、`gui.log`）
+- 外部 Agent 会话：`tmp/acceptance/external-agent-live/`（`results.log`、`summary.json`、`gui.log`）
 - 单测：`src-tauri/src/agent_access/tests*.rs`、`src-tauri/src/db/mod.rs`
 - 本报告：`docs/agent-workspace/v82-acceptance-report.md`
 
