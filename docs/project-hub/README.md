@@ -19,6 +19,13 @@
 > `07-迭代计划.md` §9）。仍未完成：S5 既有命令切服务（写路径统一）、局部修订/版本回滚落库、
 > 完整能力/资源视图、真实 v77→v78 旧库升级、备份往返、五模式逐一验收、正式安装包。
 > 以 `07-迭代计划.md` 阶段表为最准确状态源。
+>
+> **状态更新（2026-11-20，第一阶段服务收敛）**：S5 已完成。所有项目创建入口（规划中心、
+> 工作空间、项目中枢、MCP）统一经过 `ProjectService`；`workspace_projects` 是唯一项目根，
+> `planning_projects` 只作为计划容器（`workspace_project_id` + 单 active 计划）。旧命令签名
+> 保持不变：`planning_delete_project` 只删计划并保护最后一个计划，删除整个项目走工作空间 /
+> 项目中枢；项目归档与计划状态互不覆盖。集成测试 `tests/project_lifecycle.rs` 18/18 通过
+> （2026-11-20），证据 `tmp/acceptance/project-identity-convergence/`。
 
 ## 1. 一句话
 

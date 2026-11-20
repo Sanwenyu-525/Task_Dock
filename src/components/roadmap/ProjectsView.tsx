@@ -350,8 +350,8 @@ export default function ProjectsView({ onOpenFeatures, onOpenMilestones }: Proje
                 )}
                 <button
                   className="icon-btn sm"
-                  data-tip="删除项目（影响其功能、步骤与历史）"
-                  aria-label="删除项目"
+                  data-tip="删除计划（影响其功能、步骤与历史）"
+                  aria-label="删除计划"
                   disabled={!activeProject}
                   onClick={() => setDeletingProject(activeProject)}
                 >
@@ -553,20 +553,20 @@ export default function ProjectsView({ onOpenFeatures, onOpenMilestones }: Proje
 
       <ConfirmDialog
         open={deletingProject !== null}
-        title="删除项目"
+        title="删除计划"
         detail={
           deletingProject
-            ? `确定删除项目「${deletingProject.name}」？其 ${deletingProject.stats.feature_total} 个功能、全部开发步骤与进度历史将一并删除，且无法恢复。`
+            ? `确定删除计划「${deletingProject.name}」？其 ${deletingProject.stats.feature_total} 个功能、全部开发步骤与进度历史将一并删除，且无法恢复。若这是项目的最后一个计划，将被拒绝；请在项目工作空间删除整个项目。`
             : ""
         }
         danger
-        confirmLabel="删除项目"
+        confirmLabel="删除计划"
         onConfirm={() => {
           const p = deletingProject;
           setDeletingProject(null);
           if (!p) return;
           deleteProject(p.id)
-            .then(() => showToast(`项目「${p.name}」已删除`, { kind: "success" }))
+            .then(() => showToast(`计划「${p.name}」已删除`, { kind: "success" }))
             .catch((e) => showToast(`删除失败：${String(e)}`, { kind: "error" }));
         }}
         onCancel={() => setDeletingProject(null)}

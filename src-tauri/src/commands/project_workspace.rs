@@ -488,6 +488,9 @@ pub fn workspace_project_list_impl(
 
 /// 保存项目：id 为空 = 新建；`root_path` 允许为空（未设置）或必须是绝对路径。
 /// 目录不存在不阻止保存（移动硬盘/网络盘可能暂时离线），读侧返回 rootExists=false。
+///
+/// 收敛后：项目名称/类型与初始计划统一交给 `ProjectService`（项目根 + 计划同一事务）；
+/// 根目录、开发仓库引用与备注仍由工作空间专属接口写入。
 pub fn workspace_project_save_impl(
     db: &Db,
     id: Option<String>,
@@ -511,34 +514,47 @@ pub fn workspace_project_save_impl(
 
     let saved_id = match id {
         None => {
-            let id = uuid::Uuid::new_v4().to_string();
-            let now = now_iso();
-            db.with_conn(|conn| {
-                conn.execute(
-                    "INSERT INTO workspace_projects
-                     (id, name, kind, status, root_path, dev_project_id, note, created_at, updated_at)
-                     VALUES (?1, ?2, ?3, 'active', ?4, ?5, ?6, ?7, ?7)",
-                    params![id, name, kind, root_path, dev_project_id, note, now],
-                )?;
-                Ok(())
-            })?;
-            id
+            let summary = crate::project_hub::service::create_project_root(
+                db,
+                crate::project_hub::service::CreateProjectRootInput {
+                    name,
+                    kind,
+                    description: String::new(),
+                    goal: String::new(),
+                    target_date: None,
+                    root_path: Some(root_path),
+                    dev_project_id,
+                    note: Some(note),
+                    template_id: None,
+                    plan_name: None,
+                    plan_description: None,
+                    plan_status: None,
+                    plan_sort_order: None,
+                },
+            )?;
+            summary.id
         }
         Some(id) => {
-            let now = now_iso();
-            let updated = db.with_conn(|conn| {
-                let updated = conn.execute(
-                    "UPDATE workspace_projects
-                     SET name = ?1, kind = ?2, root_path = ?3, dev_project_id = ?4,
-                         note = ?5, updated_at = ?6
-                     WHERE id = ?7",
-                    params![name, kind, root_path, dev_project_id, note, now, id],
+            db.with_transaction(|conn| {
+                crate::project_hub::service::update_project_fields_tx(
+                    conn,
+                    &id,
+                    crate::project_hub::service::ProjectPatch {
+                        name: Some(name),
+                        kind: Some(kind),
+                        ..Default::default()
+                    },
                 )?;
-                Ok::<usize, AppError>(updated)
+                conn.execute(
+                    "UPDATE workspace_projects
+                     SET root_path = ?1, dev_project_id = ?2, note = ?3, updated_at = ?4
+                     WHERE id = ?5",
+                    params![root_path, dev_project_id, note, now_iso(), id],
+                )?;
+                // 旧数据修复：编辑即收敛，保证项目始终有合法 active 计划。
+                crate::project_hub::service::ensure_project_plan_tx(conn, &id)?;
+                Ok(())
             })?;
-            if updated == 0 {
-                return Err(AppError::NotFound(format!("工作空间项目不存在: {id}")));
-            }
             id
         }
     };
@@ -582,46 +598,24 @@ pub fn workspace_project_progress_impl(db: &Db, project_id: &str) -> AppResult<W
     })
 }
 
-/// 归档/恢复项目：只改 status，不删除项目、事项、任务关联或外部文件。
+/// 归档/恢复项目：只改项目生命周期状态，不删除项目、事项、任务关联或外部文件，
+/// 也不改写计划执行状态（两个轴互不覆盖）。
 pub fn workspace_project_set_status_impl(
     db: &Db,
     id: &str,
     status: String,
 ) -> AppResult<WorkspaceProject> {
     let status = validate_enum(&status, "项目状态", PROJECT_STATUSES)?;
-    let now = now_iso();
-    let updated = db.with_conn(|conn| {
-        let updated = conn.execute(
-            "UPDATE workspace_projects SET status = ?1, updated_at = ?2 WHERE id = ?3",
-            params![status, now, id],
-        )?;
-        Ok::<usize, AppError>(updated)
-    })?;
-    if updated == 0 {
-        return Err(AppError::NotFound(format!("工作空间项目不存在: {id}")));
-    }
+    crate::project_hub::service::set_project_status(db, id, &status)?;
     workspace_project_get_impl(db, id)
 }
 
-/// 删除项目：只删除本地登记、实例、事项与任务关联（级联），
-/// **不删除**外部目录、开发项目登记或任务；若它是活跃项目则同时清除活跃键。
+/// 删除项目：统一走 `ProjectService::delete_project`。
+/// 级联删除项目根下的计划容器、项目域数据与工作空间登记；任务、知识库、Skill、
+/// MCP 与共享能力只解除关联，不删除本体；外部目录与开发项目登记不受影响。
 pub fn workspace_project_delete_impl(db: &Db, id: &str) -> AppResult<()> {
-    db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
-        let deleted = tx.execute("DELETE FROM workspace_projects WHERE id = ?1", params![id])?;
-        if deleted == 0 {
-            return Err(AppError::NotFound(format!("工作空间项目不存在: {id}")));
-        }
-        // 活跃项目已被删除：清掉指向不存在项目的键，避免下次打开落空。
-        let stored = serde_json::to_string(id)?;
-        tx.execute(
-            "DELETE FROM application_settings
-             WHERE key = 'workspace_active_project' AND value = ?1",
-            params![stored],
-        )?;
-        tx.commit()?;
-        Ok(())
-    })
+    crate::project_hub::service::delete_project(db, id)?;
+    Ok(())
 }
 
 /// 显式设置活跃项目（空 = 清除）；只接受已存在项目。

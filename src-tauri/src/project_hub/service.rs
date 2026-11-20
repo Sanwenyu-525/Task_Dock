@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::agents::now_iso;
-use crate::commands::project_workspace::PROJECT_KINDS;
+use crate::commands::planning::PROJECT_STATUSES as PLAN_STATUSES;
+use crate::commands::project_workspace::{PROJECT_KINDS, PROJECT_STATUSES as WORKSPACE_PROJECT_STATUSES};
 use crate::db::Db;
 use crate::error::{AppError, AppResult};
 
@@ -256,6 +257,82 @@ const CAPABILITY_CATEGORIES: &[&str] = &["human", "tool", "ai", "agent", "extern
 const NECESSITIES: &[&str] = &["required", "recommended", "optional"];
 const LEVELS: &[&str] = &["expert", "proficient", "basic", "learning", "none", "unknown"];
 
+// ── 统一写入契约 ────────────────────────────────────────────────────
+
+/// 项目根写入输入：`planning_create_project`、`workspace_project_save` 与项目中枢共用。
+/// 计划容器在同一次调用中创建，保证「项目根 + 初始计划」不出现半套数据。
+#[derive(Clone, Debug)]
+pub struct CreateProjectRootInput {
+    pub name: String,
+    pub kind: String,
+    pub description: String,
+    pub goal: String,
+    pub target_date: Option<String>,
+    pub root_path: Option<String>,
+    /// 工作空间专属：弱引用 `dev_projects.id`（只登记，不级联删除）
+    pub dev_project_id: Option<String>,
+    /// 工作空间备注；None = 沿用描述（项目中枢/规划入口的历史行为）
+    pub note: Option<String>,
+    pub template_id: Option<String>,
+    pub plan_name: Option<String>,
+    pub plan_description: Option<String>,
+    /// 计划执行状态（planning/in_progress/paused/completed），与项目 active/archived 无关
+    pub plan_status: Option<String>,
+    pub plan_sort_order: Option<i64>,
+}
+
+/// 项目根字段补丁：全部为 None 表示不修改。`target_date` 为三态：
+/// `None` = 保持；`Some(None)` = 清空；`Some(Some(v))` = 设置。
+#[derive(Clone, Debug, Default)]
+pub struct ProjectPatch {
+    pub name: Option<String>,
+    pub kind: Option<String>,
+    pub description: Option<String>,
+    pub goal: Option<String>,
+    pub status: Option<String>,
+    pub target_date: Option<Option<String>>,
+}
+
+/// 计划容器写入输入（同一项目可有多个计划，只有一个 active）。
+#[derive(Clone, Debug)]
+pub struct CreatePlanInput {
+    pub project_id: String,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub target_date: Option<String>,
+    pub status: Option<String>,
+    pub template_id: Option<String>,
+    pub make_active: bool,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectDeleteOutcome {
+    pub deleted_plans: i64,
+    pub unlinked_tasks: i64,
+    pub released_knowledge: i64,
+    pub released_skills: i64,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectIntegrityReport {
+    pub project_id: String,
+    pub plan_count: i64,
+    pub active_plan_count: i64,
+    pub linked_task_count: i64,
+    pub linked_knowledge_count: i64,
+    pub linked_skill_count: i64,
+    pub capability_requirement_count: i64,
+    pub deliverable_count: i64,
+    /// 阻塞项：必须修复后才能保证项目/计划一致性
+    pub blocking: Vec<String>,
+    /// 警告项：不阻塞写入，但需要用户确认或后续修复
+    pub warnings: Vec<String>,
+    pub ok: bool,
+}
+
+
 // ── 读模型实现 ──────────────────────────────────────────────────────
 
 fn row_to_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectSummary> {
@@ -298,22 +375,6 @@ fn summary_sql() -> &'static str {
               WHERE r.project_id = p.id AND r.assessment_level IS NULL) AS capability_gap_count,
             (SELECT COUNT(*) FROM project_deliverables d WHERE d.project_id = p.id) AS deliverable_count
        FROM workspace_projects p"
-}
-
-pub fn list_projects(db: &Db) -> AppResult<Vec<ProjectSummary>> {
-    db.with_read(|conn| {
-        let sql = format!(
-            "{} WHERE p.status = 'active' ORDER BY p.updated_at DESC, p.name",
-            summary_sql()
-        );
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map([], row_to_summary)?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row.map_err(AppError::from)?);
-        }
-        Ok(out)
-    })
 }
 
 pub fn get_snapshot(db: &Db, project_id: &str) -> AppResult<ProjectHubSnapshot> {
@@ -701,34 +762,23 @@ pub fn create_project(db: &Db, input: CreateProjectInput) -> AppResult<ProjectHu
         }
 
         let now = now_iso();
-        let project_id = uuid::Uuid::new_v4().to_string();
-        let plan_id = uuid::Uuid::new_v4().to_string();
-        conn.execute(
-            "INSERT INTO workspace_projects
-             (id, name, kind, status, root_path, dev_project_id, note, created_at, updated_at,
-              description, goal, target_date, active_plan_id)
-             VALUES (?1, ?2, ?3, 'active', ?4, NULL, ?5, ?6, ?6, ?7, ?8, ?9, ?10)",
-            params![
-                project_id,
-                name,
-                kind,
-                root_path,
-                description,
-                now,
-                description,
+        let (project_id, plan_id) = insert_project_root_tx(
+            conn,
+            &CreateProjectRootInput {
+                name: name.clone(),
+                kind: kind.clone(),
+                description: description.clone(),
                 goal,
                 target_date,
-                plan_id
-            ],
-        )?;
-        conn.execute(
-            "INSERT INTO planning_projects
-             (id, name, description, status, archived, target_date, sort_order,
-              created_at, updated_at, revision, workspace_project_id, template_id, is_active)
-             VALUES (?1, ?2, ?3, 'planning', 0, ?4,
-                     (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM planning_projects),
-                     ?5, ?5, 1, ?6, ?7, 1)",
-            params![plan_id, name, description, target_date, now, project_id, template_id],
+                root_path: Some(root_path),
+                dev_project_id: None,
+                note: Some(description.clone()),
+                template_id: Some(template_id.clone()),
+                plan_name: Some(name.clone()),
+                plan_description: Some(description),
+                plan_status: Some("planning".into()),
+                plan_sort_order: None,
+            },
         )?;
 
         let mut goal_rows = Vec::new();
@@ -888,3 +938,763 @@ pub fn create_project(db: &Db, input: CreateProjectInput) -> AppResult<ProjectHu
         load_snapshot(conn, &project_id)
     })
 }
+
+// ── 项目根写入：唯一创建入口 ────────────────────────────────────────
+
+/// 「本项目的计划」过滤器：新数据按 workspace_project_id 归属；
+/// 兼容 v78 之前或旧代码写入、尚未补链但同 ID 的遗留计划。
+const OWNED_PLANS_WHERE: &str =
+    "workspace_project_id = ?1 OR (id = ?1 AND (workspace_project_id IS NULL OR workspace_project_id = ''))";
+
+fn workspace_exists(conn: &Connection, id: &str) -> AppResult<bool> {
+    Ok(conn
+        .query_row(
+            "SELECT 1 FROM workspace_projects WHERE id = ?1",
+            params![id],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
+}
+
+fn load_summary(conn: &Connection, project_id: &str) -> AppResult<ProjectSummary> {
+    conn.query_row(
+        &format!("{} WHERE p.id = ?1", summary_sql()),
+        params![project_id],
+        row_to_summary,
+    )
+    .optional()?
+    .ok_or_else(|| AppError::NotFound("项目不存在或已删除".into()))
+}
+
+/// 项目根 + 初始计划的唯一写入内核。
+///
+/// 调用方必须已处于事务中；任一步失败整体回滚，不允许出现「有项目无计划」。
+pub(crate) fn insert_project_root_tx(
+    conn: &Connection,
+    input: &CreateProjectRootInput,
+) -> AppResult<(String, String)> {
+    let name = clean_text(&input.name, "项目名称", MAX_NAME, false)?;
+    let kind = clean_enum(&input.kind, "项目类型", PROJECT_KINDS)?;
+    let description = clean_text(&input.description, "项目描述", MAX_DESCRIPTION, true)?;
+    let goal = clean_text(&input.goal, "项目目标", MAX_GOAL, true)?;
+    let target_date = clean_date(input.target_date.clone(), "目标日期")?;
+    let root_path = clean_root_path(input.root_path.clone())?;
+    let note = match input.note.clone() {
+        Some(value) => clean_text(&value, "项目备注", MAX_DESCRIPTION, true)?,
+        None => description.clone(),
+    };
+    let template_id = input
+        .template_id
+        .clone()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_default();
+    let plan_name = match input.plan_name.clone() {
+        Some(value) => clean_text(&value, "计划名称", MAX_NAME, false)?,
+        None => name.clone(),
+    };
+    let plan_description = match input.plan_description.clone() {
+        Some(value) => clean_text(&value, "计划描述", MAX_DESCRIPTION, true)?,
+        None => description.clone(),
+    };
+    let plan_status = clean_enum(
+        input.plan_status.as_deref().unwrap_or("planning"),
+        "计划状态",
+        PLAN_STATUSES,
+    )?;
+    let now = now_iso();
+    let plan_sort_order = match input.plan_sort_order {
+        Some(value) => value,
+        None => conn
+            .query_row(
+                "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM planning_projects",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(AppError::from)?,
+    };
+    let project_id = uuid::Uuid::new_v4().to_string();
+    let plan_id = uuid::Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO workspace_projects
+         (id, name, kind, status, root_path, dev_project_id, note, created_at, updated_at,
+          description, goal, target_date, active_plan_id)
+         VALUES (?1, ?2, ?3, 'active', ?4, ?5, ?6, ?7, ?7, ?8, ?9, ?10, ?11)",
+        params![
+            project_id,
+            name,
+            kind,
+            root_path,
+            input.dev_project_id,
+            note,
+            now,
+            description,
+            goal,
+            target_date,
+            plan_id
+        ],
+    )?;
+    conn.execute(
+        "INSERT INTO planning_projects
+         (id, name, description, status, archived, target_date, sort_order,
+          created_at, updated_at, revision, workspace_project_id, template_id, is_active)
+         VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6, ?7, ?7, 1, ?8, ?9, 1)",
+        params![
+            plan_id,
+            plan_name,
+            plan_description,
+            plan_status,
+            target_date,
+            plan_sort_order,
+            now,
+            project_id,
+            template_id
+        ],
+    )?;
+    Ok((project_id, plan_id))
+}
+
+/// 创建工作空间项目（含初始计划）：供 `workspace_project_save` 等执行环境入口复用。
+pub fn create_project_root(db: &Db, input: CreateProjectRootInput) -> AppResult<ProjectSummary> {
+    db.with_transaction(|conn| {
+        let (project_id, _) = insert_project_root_tx(conn, &input)?;
+        load_summary(conn, &project_id)
+    })
+}
+
+// ── 项目根读/改/删 ─────────────────────────────────────────────────
+
+pub fn list_projects(db: &Db) -> AppResult<Vec<ProjectSummary>> {
+    list_projects_filtered(db, false)
+}
+
+/// 项目列表；`include_archived=false` 时只返回 active。默认按更新时间倒序。
+pub fn list_projects_filtered(db: &Db, include_archived: bool) -> AppResult<Vec<ProjectSummary>> {
+    db.with_read(|conn| {
+        let sql = format!(
+            "{} WHERE (?1 = 1 OR p.status = 'active') ORDER BY p.updated_at DESC, p.name",
+            summary_sql()
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![include_archived as i64], row_to_summary)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(AppError::from)?);
+        }
+        Ok(out)
+    })
+}
+
+pub fn get_project(db: &Db, project_id: &str) -> AppResult<ProjectSummary> {
+    let project_id = project_id.trim();
+    if project_id.is_empty() {
+        return Err(AppError::Validation("项目 ID 不能为空".into()));
+    }
+    db.with_read(|conn| load_summary(conn, project_id))
+}
+
+/// 修改项目根字段（名称/类型/描述/目标/日期/生命周期），并把兼容镜像列
+/// （`planning_projects.name/description/target_date`）同步到该项目下的全部计划。
+/// 调用方必须已处于事务中。
+pub(crate) fn update_project_fields_tx(
+    conn: &Connection,
+    project_id: &str,
+    patch: ProjectPatch,
+) -> AppResult<()> {
+    let (current_name, current_kind, current_description, current_goal, current_target, current_status):
+        (String, String, String, String, Option<String>, String) = conn
+        .query_row(
+            "SELECT name, kind, description, goal, target_date, status
+             FROM workspace_projects WHERE id = ?1",
+            params![project_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+        )
+        .optional()?
+        .ok_or_else(|| AppError::NotFound(format!("工作空间项目不存在: {project_id}")))?;
+
+    let name = match patch.name {
+        Some(value) => clean_text(&value, "项目名称", MAX_NAME, false)?,
+        None => current_name,
+    };
+    let kind = match patch.kind {
+        Some(value) => clean_enum(&value, "项目类型", PROJECT_KINDS)?,
+        None => current_kind,
+    };
+    let description = match patch.description {
+        Some(value) => clean_text(&value, "项目描述", MAX_DESCRIPTION, true)?,
+        None => current_description,
+    };
+    let goal = match patch.goal {
+        Some(value) => clean_text(&value, "项目目标", MAX_GOAL, true)?,
+        None => current_goal,
+    };
+    let target_date = match patch.target_date {
+        Some(value) => clean_date(value, "目标日期")?,
+        None => current_target,
+    };
+    let status = match patch.status {
+        Some(value) => clean_enum(&value, "项目状态", WORKSPACE_PROJECT_STATUSES)?,
+        None => current_status,
+    };
+    let now = now_iso();
+    conn.execute(
+        "UPDATE workspace_projects
+         SET name = ?1, kind = ?2, description = ?3, goal = ?4, target_date = ?5,
+             status = ?6, updated_at = ?7
+         WHERE id = ?8",
+        params![name, kind, description, goal, target_date, status, now, project_id],
+    )?;
+    // 计划容器上的同名字段只是兼容镜像，唯一事实来源是项目根。
+    conn.execute(
+        "UPDATE planning_projects
+         SET name = ?1, description = ?2, target_date = ?3, updated_at = ?4
+         WHERE workspace_project_id = ?5",
+        params![name, description, target_date, now, project_id],
+    )?;
+    Ok(())
+}
+
+pub fn update_project(db: &Db, project_id: &str, patch: ProjectPatch) -> AppResult<ProjectSummary> {
+    let project_id = project_id.trim().to_string();
+    if project_id.is_empty() {
+        return Err(AppError::Validation("项目 ID 不能为空".into()));
+    }
+    db.with_transaction(|conn| {
+        update_project_fields_tx(conn, &project_id, patch)?;
+        load_summary(conn, &project_id)
+    })
+}
+
+pub fn set_project_status(db: &Db, project_id: &str, status: &str) -> AppResult<ProjectSummary> {
+    update_project(
+        db,
+        project_id,
+        ProjectPatch {
+            status: Some(status.to_string()),
+            ..Default::default()
+        },
+    )
+}
+
+/// 归档 / 恢复项目根。只改项目生命周期状态，不修改计划执行状态。
+pub fn archive_project(db: &Db, project_id: &str, archived: bool) -> AppResult<ProjectSummary> {
+    set_project_status(db, project_id, if archived { "archived" } else { "active" })
+}
+
+/// 统一删除内核：先删计划容器（级联阶段/功能/步骤/历史/协作数据），再删项目根
+/// （级联项目域与工作空间域）。任务、知识库、Skill、MCP、共享能力一律只解除关联。
+pub(crate) fn delete_project_tx(
+    conn: &Connection,
+    project_id: &str,
+) -> AppResult<ProjectDeleteOutcome> {
+    if !workspace_exists(conn, project_id)? {
+        return Err(AppError::NotFound(format!("工作空间项目不存在: {project_id}")));
+    }
+    let deleted_plans: i64 = conn.query_row(
+        &format!("SELECT COUNT(*) FROM planning_projects WHERE {OWNED_PLANS_WHERE}"),
+        params![project_id],
+        |r| r.get(0),
+    )?;
+    let unlinked_tasks: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM (
+           SELECT task_id FROM workspace_task_links WHERE project_id = ?1
+           UNION SELECT task_id FROM task_plan_links WHERE project_id = ?1
+         )",
+        params![project_id],
+        |r| r.get(0),
+    )?;
+    let released_knowledge: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM knowledge_bases WHERE project_id = ?1 OR workspace_id = ?1",
+        params![project_id],
+        |r| r.get(0),
+    )?;
+    let released_skills: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM capability_skills WHERE project_id = ?1",
+        params![project_id],
+        |r| r.get(0),
+    )?;
+
+    conn.execute(
+        &format!("DELETE FROM planning_projects WHERE {OWNED_PLANS_WHERE}"),
+        params![project_id],
+    )?;
+    conn.execute(
+        "DELETE FROM workspace_projects WHERE id = ?1",
+        params![project_id],
+    )?;
+    // 活跃项目已被删除：清掉指向不存在项目的键，避免下次打开落空。
+    conn.execute(
+        "DELETE FROM application_settings
+         WHERE key = 'workspace_active_project' AND value = ?1",
+        params![serde_json::to_string(project_id)?],
+    )?;
+
+    Ok(ProjectDeleteOutcome {
+        deleted_plans,
+        unlinked_tasks,
+        released_knowledge,
+        released_skills,
+    })
+}
+
+pub fn delete_project(db: &Db, project_id: &str) -> AppResult<ProjectDeleteOutcome> {
+    let project_id = project_id.trim().to_string();
+    if project_id.is_empty() {
+        return Err(AppError::Validation("项目 ID 不能为空".into()));
+    }
+    db.with_transaction(|conn| delete_project_tx(conn, &project_id))
+}
+
+// ── 计划容器生命周期 ────────────────────────────────────────────────
+
+struct PlanRow {
+    project_id: Option<String>,
+    name: String,
+    description: String,
+    target_date: Option<String>,
+    archived: bool,
+    is_active: bool,
+    status: String,
+}
+
+fn load_plan_row(conn: &Connection, plan_id: &str) -> AppResult<PlanRow> {
+    conn.query_row(
+        "SELECT workspace_project_id, name, description, target_date, archived, is_active, status
+         FROM planning_projects WHERE id = ?1",
+        params![plan_id],
+        |r| {
+            Ok(PlanRow {
+                project_id: r.get(0)?,
+                name: r.get(1)?,
+                description: r.get(2)?,
+                target_date: r.get(3)?,
+                archived: r.get::<_, i64>(4)? != 0,
+                is_active: r.get::<_, i64>(5)? != 0,
+                status: r.get(6)?,
+            })
+        },
+    )
+    .optional()?
+    .ok_or_else(|| AppError::Validation(format!("项目不存在: {plan_id}")))
+}
+
+fn insert_recovered_root_tx(
+    conn: &Connection,
+    project_id: &str,
+    plan: &PlanRow,
+    now: &str,
+) -> AppResult<()> {
+    conn.execute(
+        "INSERT INTO workspace_projects
+         (id, name, kind, status, root_path, dev_project_id, note, created_at, updated_at,
+          description, goal, target_date, active_plan_id)
+         VALUES (?1, ?2, 'general', ?3, '', NULL, ?4, ?5, ?5, ?4, '', ?6, NULL)",
+        params![
+            project_id,
+            plan.name,
+            if plan.archived { "archived" } else { "active" },
+            plan.description,
+            now,
+            plan.target_date
+        ],
+    )?;
+    Ok(())
+}
+
+/// 解析计划所属项目；缺失/失效时补建项目根并回填 `workspace_project_id`。
+/// 调用方必须已处于事务中。返回项目根 ID。
+pub(crate) fn ensure_project_for_plan_tx(
+    conn: &Connection,
+    plan_id: &str,
+) -> AppResult<String> {
+    let plan = load_plan_row(conn, plan_id)?;
+    let now = now_iso();
+    if let Some(project_id) = plan
+        .project_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let project_id = project_id.to_string();
+        if !workspace_exists(conn, &project_id)? {
+            insert_recovered_root_tx(conn, &project_id, &plan, &now)?;
+        }
+        if plan.is_active {
+            // active_plan_id 为空或指向失效计划时，用当前计划修正。
+            conn.execute(
+                "UPDATE workspace_projects SET active_plan_id = ?2, updated_at = ?3
+                 WHERE id = ?1
+                   AND (active_plan_id IS NULL OR active_plan_id NOT IN (
+                     SELECT id FROM planning_projects
+                     WHERE workspace_project_id = ?1 AND is_active = 1
+                   ))",
+                params![project_id, plan_id, now],
+            )?;
+        }
+        return Ok(project_id);
+    }
+
+    // 旧数据没有项目根：按 v78 迁移同一规则补建（同 ID 优先，冲突加 plan- 前缀）。
+    let candidate = if workspace_exists(conn, plan_id)? {
+        format!("plan-{plan_id}")
+    } else {
+        plan_id.to_string()
+    };
+    insert_recovered_root_tx(conn, &candidate, &plan, &now)?;
+    conn.execute(
+        "UPDATE planning_projects
+         SET workspace_project_id = ?1, is_active = 1, updated_at = ?2
+         WHERE id = ?3",
+        params![candidate, now, plan_id],
+    )?;
+    conn.execute(
+        "UPDATE workspace_projects SET active_plan_id = ?2 WHERE id = ?1",
+        params![candidate, plan_id],
+    )?;
+    Ok(candidate)
+}
+
+/// 保证项目有一个 active 计划：已有则修正指针，没有计划则创建默认计划。
+/// 用于旧数据修复与「工作空间项目被编辑」时的渐进收敛。
+pub(crate) fn ensure_project_plan_tx(conn: &Connection, project_id: &str) -> AppResult<String> {
+    let (name, description, target_date): (String, String, Option<String>) = conn
+        .query_row(
+            "SELECT name, description, target_date FROM workspace_projects WHERE id = ?1",
+            params![project_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?
+        .ok_or_else(|| AppError::NotFound(format!("工作空间项目不存在: {project_id}")))?;
+    if let Some(existing) = conn
+        .query_row(
+            "SELECT id FROM planning_projects
+             WHERE workspace_project_id = ?1 AND is_active = 1
+             ORDER BY archived, updated_at DESC LIMIT 1",
+            params![project_id],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?
+    {
+        conn.execute(
+            "UPDATE workspace_projects SET active_plan_id = ?2 WHERE id = ?1",
+            params![project_id, existing],
+        )?;
+        return Ok(existing);
+    }
+    if let Some(existing) = conn
+        .query_row(
+            "SELECT id FROM planning_projects
+             WHERE workspace_project_id = ?1
+             ORDER BY archived ASC, updated_at DESC LIMIT 1",
+            params![project_id],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?
+    {
+        activate_plan_tx(conn, &existing)?;
+        return Ok(existing);
+    }
+
+    let now = now_iso();
+    let plan_id = uuid::Uuid::new_v4().to_string();
+    let sort_order: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM planning_projects",
+        [],
+        |r| r.get(0),
+    )?;
+    conn.execute(
+        "INSERT INTO planning_projects
+         (id, name, description, status, archived, target_date, sort_order,
+          created_at, updated_at, revision, workspace_project_id, template_id, is_active)
+         VALUES (?1, ?2, ?3, 'planning', 0, ?4, ?5, ?6, ?6, 1, ?7, '', 1)",
+        params![plan_id, name, description, target_date, sort_order, now, project_id],
+    )?;
+    conn.execute(
+        "UPDATE workspace_projects SET active_plan_id = ?2, updated_at = ?3 WHERE id = ?1",
+        params![project_id, plan_id, now],
+    )?;
+    Ok(plan_id)
+}
+
+/// 在同一事务内切换 active 计划：先清零其余计划，再置一，并同步项目指针。
+pub(crate) fn activate_plan_tx(conn: &Connection, plan_id: &str) -> AppResult<String> {
+    let project_id = ensure_project_for_plan_tx(conn, plan_id)?;
+    let now = now_iso();
+    conn.execute(
+        "UPDATE planning_projects SET is_active = 0, updated_at = ?2
+         WHERE workspace_project_id = ?1 AND is_active = 1 AND id <> ?3",
+        params![project_id, now, plan_id],
+    )?;
+    conn.execute(
+        "UPDATE planning_projects SET is_active = 1, updated_at = ?2 WHERE id = ?1",
+        params![plan_id, now],
+    )?;
+    conn.execute(
+        "UPDATE workspace_projects SET active_plan_id = ?2, updated_at = ?3 WHERE id = ?1",
+        params![project_id, plan_id, now],
+    )?;
+    Ok(project_id)
+}
+
+pub fn activate_plan(db: &Db, plan_id: &str) -> AppResult<String> {
+    db.with_transaction(|conn| activate_plan_tx(conn, plan_id))
+}
+
+/// 新建计划容器；`make_active=true` 时在同一事务切换 active 计划。
+pub fn create_project_plan(db: &Db, input: CreatePlanInput) -> AppResult<String> {
+    let project_id = input.project_id.trim().to_string();
+    if project_id.is_empty() {
+        return Err(AppError::Validation("项目 ID 不能为空".into()));
+    }
+    db.with_transaction(|conn| {
+        let (project_name, project_description, project_target): (String, String, Option<String>) = conn
+            .query_row(
+                "SELECT name, description, target_date FROM workspace_projects WHERE id = ?1",
+                params![project_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?
+            .ok_or_else(|| AppError::NotFound(format!("工作空间项目不存在: {project_id}")))?;
+        let name = match input.name {
+            Some(value) => clean_text(&value, "计划名称", MAX_NAME, false)?,
+            None => project_name,
+        };
+        let description = match input.description {
+            Some(value) => clean_text(&value, "计划描述", MAX_DESCRIPTION, true)?,
+            None => project_description,
+        };
+        let target_date = match input.target_date {
+            Some(value) => clean_date(Some(value), "目标日期")?,
+            None => project_target,
+        };
+        let status = clean_enum(
+            input.status.as_deref().unwrap_or("planning"),
+            "计划状态",
+            PLAN_STATUSES,
+        )?;
+        let template_id = input
+            .template_id
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_default();
+        let now = now_iso();
+        let plan_id = uuid::Uuid::new_v4().to_string();
+        let sort_order: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM planning_projects",
+            [],
+            |r| r.get(0),
+        )?;
+        conn.execute(
+            "INSERT INTO planning_projects
+             (id, name, description, status, archived, target_date, sort_order,
+              created_at, updated_at, revision, workspace_project_id, template_id, is_active)
+             VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6, ?7, ?7, 1, ?8, ?9, 0)",
+            params![
+                plan_id,
+                name,
+                description,
+                status,
+                target_date,
+                sort_order,
+                now,
+                project_id,
+                template_id
+            ],
+        )?;
+        if input.make_active {
+            activate_plan_tx(conn, &plan_id)?;
+        }
+        Ok(plan_id)
+    })
+}
+
+/// 删除单个计划：最后一个计划受保护；删除 active 计划时在同一事务内选继任计划。
+/// 项目根永不由本函数删除。
+pub(crate) fn delete_plan_tx(conn: &Connection, plan_id: &str) -> AppResult<()> {
+    let plan = load_plan_row(conn, plan_id)?;
+    let project_id = plan
+        .project_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let now = now_iso();
+    if let Some(project_id) = project_id.as_deref() {
+        let total: i64 = conn.query_row(
+            &format!("SELECT COUNT(*) FROM planning_projects WHERE {OWNED_PLANS_WHERE}"),
+            params![project_id],
+            |r| r.get(0),
+        )?;
+        if total <= 1 {
+            return Err(AppError::Conflict(
+                "这是项目最后一个计划，已拒绝删除；如需删除整个项目，请在项目工作空间执行"
+                    .into(),
+            ));
+        }
+        if plan.is_active {
+            let successor: Option<String> = conn
+                .query_row(
+                    &format!(
+                        "SELECT id FROM planning_projects
+                         WHERE ({OWNED_PLANS_WHERE}) AND id <> ?2
+                         ORDER BY archived ASC, updated_at DESC, id ASC LIMIT 1"
+                    ),
+                    params![project_id, plan_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            // 唯一索引要求同一项目最多一个 is_active=1：先清当前计划，再置继任。
+            conn.execute(
+                "UPDATE planning_projects SET is_active = 0 WHERE id = ?1",
+                params![plan_id],
+            )?;
+            if let Some(next) = successor {
+                conn.execute(
+                    "UPDATE planning_projects SET is_active = 1, updated_at = ?2 WHERE id = ?1",
+                    params![next, now],
+                )?;
+                conn.execute(
+                    "UPDATE workspace_projects SET active_plan_id = ?2, updated_at = ?3 WHERE id = ?1",
+                    params![project_id, next, now],
+                )?;
+            }
+        }
+    }
+    conn.execute(
+        "DELETE FROM planning_projects WHERE id = ?1",
+        params![plan_id],
+    )?;
+    if let Some(project_id) = project_id {
+        conn.execute(
+            "UPDATE workspace_projects SET updated_at = ?2 WHERE id = ?1",
+            params![project_id, now],
+        )?;
+    }
+    Ok(())
+}
+
+pub fn delete_plan(db: &Db, plan_id: &str) -> AppResult<()> {
+    db.with_transaction(|conn| delete_plan_tx(conn, plan_id))
+}
+
+// ── 完整性校验 ──────────────────────────────────────────────────────
+
+pub fn validate_project_integrity(
+    db: &Db,
+    project_id: &str,
+) -> AppResult<ProjectIntegrityReport> {
+    let project_id = project_id.trim();
+    if project_id.is_empty() {
+        return Err(AppError::Validation("项目 ID 不能为空".into()));
+    }
+    db.with_read(|conn| integrity_in_conn(conn, project_id))
+}
+
+fn integrity_in_conn(conn: &Connection, project_id: &str) -> AppResult<ProjectIntegrityReport> {
+    let active_plan_id: Option<String> = conn
+        .query_row(
+            "SELECT active_plan_id FROM workspace_projects WHERE id = ?1",
+            params![project_id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| AppError::NotFound(format!("工作空间项目不存在: {project_id}")))?;
+
+    let mut stmt = conn.prepare(&format!(
+        "SELECT id, is_active, workspace_project_id FROM planning_projects WHERE {OWNED_PLANS_WHERE}"
+    ))?;
+    let rows = stmt.query_map(params![project_id], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, i64>(1)? != 0,
+            r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+        ))
+    })?;
+    let mut blocking = Vec::new();
+    let mut warnings = Vec::new();
+    let mut plan_count = 0i64;
+    let mut active_ids = Vec::new();
+    for row in rows {
+        let (id, is_active, linked) = row?;
+        plan_count += 1;
+        if is_active {
+            active_ids.push(id.clone());
+        }
+        if linked.trim().is_empty() {
+            warnings.push(format!("计划 {id} 缺少 workspace_project_id，将在下次写入时自动补链"));
+        }
+    }
+    if plan_count == 0 {
+        blocking.push("项目没有任何计划（应有一个 active 计划）".to_string());
+    } else {
+        if active_ids.is_empty() {
+            blocking.push("项目没有 active 计划".to_string());
+        }
+        if active_ids.len() > 1 {
+            blocking.push(format!("同一项目存在 {} 个 active 计划", active_ids.len()));
+        }
+        match active_plan_id.as_deref() {
+            None => blocking.push("项目 active_plan_id 为空".to_string()),
+            Some(pointer) if !active_ids.iter().any(|id| id == pointer) => {
+                blocking.push("active_plan_id 未指向本项目的 active 计划".to_string())
+            }
+            _ => {}
+        }
+    }
+
+    let linked_task_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM (
+           SELECT task_id FROM workspace_task_links WHERE project_id = ?1
+           UNION SELECT task_id FROM task_plan_links WHERE project_id = ?1
+         )",
+        params![project_id],
+        |r| r.get(0),
+    )?;
+    let dangling_tasks: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM (
+           SELECT task_id FROM workspace_task_links WHERE project_id = ?1
+           UNION SELECT task_id FROM task_plan_links WHERE project_id = ?1
+         ) l WHERE NOT EXISTS (SELECT 1 FROM tasks t WHERE t.id = l.task_id)",
+        params![project_id],
+        |r| r.get(0),
+    )?;
+    if dangling_tasks > 0 {
+        warnings.push(format!("{dangling_tasks} 条任务关联指向不存在的任务"));
+    }
+    let linked_knowledge_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM knowledge_bases WHERE project_id = ?1 OR workspace_id = ?1",
+        params![project_id],
+        |r| r.get(0),
+    )?;
+    let linked_skill_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM capability_skills WHERE project_id = ?1",
+        params![project_id],
+        |r| r.get(0),
+    )?;
+    let capability_requirement_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM project_capability_requirements WHERE project_id = ?1",
+        params![project_id],
+        |r| r.get(0),
+    )?;
+    let deliverable_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM project_deliverables WHERE project_id = ?1",
+        params![project_id],
+        |r| r.get(0),
+    )?;
+
+    Ok(ProjectIntegrityReport {
+        project_id: project_id.to_string(),
+        plan_count,
+        active_plan_count: active_ids.len() as i64,
+        linked_task_count,
+        linked_knowledge_count,
+        linked_skill_count,
+        capability_requirement_count,
+        deliverable_count,
+        ok: blocking.is_empty(),
+        blocking,
+        warnings,
+    })
+}
+

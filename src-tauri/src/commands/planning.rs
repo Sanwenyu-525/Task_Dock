@@ -631,20 +631,24 @@ fn record_step_event_tx(
 // 命令层是薄包装：核心逻辑放在 `*_impl(db: &Db, …)` 内核函数上，
 // 单测可直接以 Db::open_in_memory 驱动完整读写路径，不经 Tauri 运行时。
 
-pub(crate) fn list_projects_impl(
+pub fn list_projects_impl(
     db: &Db,
     include_archived: Option<bool>,
 ) -> AppResult<Vec<PlanningProject>> {
     let include_all = include_archived.unwrap_or(true);
+    // 只列出「项目当前计划」：每个项目一个 active 计划；v78 之前/旧代码写入、
+    // 尚未补链的孤立计划仍保留可见，直到下一次写入自动补链。
+    let canonical =
+        "(p.is_active = 1 OR p.workspace_project_id IS NULL OR p.workspace_project_id = '')";
     let sql = if include_all {
         format!(
-            "{} ORDER BY p.archived ASC, p.sort_order ASC, p.created_at ASC",
-            PROJECT_SELECT
+            "{} WHERE {} ORDER BY p.archived ASC, p.sort_order ASC, p.created_at ASC",
+            PROJECT_SELECT, canonical
         )
     } else {
         format!(
-            "{} WHERE p.archived = 0 ORDER BY p.sort_order ASC, p.created_at ASC",
-            PROJECT_SELECT
+            "{} WHERE p.archived = 0 AND {} ORDER BY p.sort_order ASC, p.created_at ASC",
+            PROJECT_SELECT, canonical
         )
     };
     db.with_read(|conn| {
@@ -666,7 +670,7 @@ pub fn planning_list_projects(
     list_projects_impl(&db, include_archived)
 }
 
-pub(crate) fn create_project_tx(
+pub fn create_project_tx(
     conn: &Connection,
     input: ProjectInput,
 ) -> AppResult<PlanningProject> {
@@ -675,19 +679,30 @@ pub(crate) fn create_project_tx(
     let status = input.status.as_deref().unwrap_or("planning");
     check_status(status, PROJECT_STATUSES, "项目")?;
     let target_date = normalize_date(&input.target_date)?;
-    let now = now_iso();
-    let id = new_id();
-    let sort_order = next_sort_order(conn, "planning_projects", None)?;
-    conn.execute(
-        "INSERT INTO planning_projects (id, name, description, status, archived, target_date, sort_order, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6, ?7, ?7)",
-        rusqlite::params![id, name, description, status, target_date, sort_order, now],
-    )
-    .map_err(AppError::from)?;
-    load_project_tx(conn, &id)
+    // 兼容适配器：项目根（workspace_projects）与计划容器（planning_projects）同一事务创建，
+    // 不再产生「只有计划、没有项目」的孤立数据。
+    let (_, plan_id) = crate::project_hub::service::insert_project_root_tx(
+        conn,
+        &crate::project_hub::service::CreateProjectRootInput {
+            name: name.clone(),
+            kind: "general".into(),
+            description: description.clone(),
+            goal: String::new(),
+            target_date,
+            root_path: None,
+            dev_project_id: None,
+            note: Some(description.clone()),
+            template_id: None,
+            plan_name: Some(name),
+            plan_description: Some(description),
+            plan_status: Some(status.to_string()),
+            plan_sort_order: None,
+        },
+    )?;
+    load_project_tx(conn, &plan_id)
 }
 
-pub(crate) fn create_project_impl(db: &Db, input: ProjectInput) -> AppResult<PlanningProject> {
+pub fn create_project_impl(db: &Db, input: ProjectInput) -> AppResult<PlanningProject> {
     db.with_transaction(|conn| create_project_tx(conn, input))
 }
 
@@ -699,7 +714,7 @@ pub fn planning_create_project(
     create_project_impl(&db, input)
 }
 
-pub(crate) fn update_project_tx(
+pub fn update_project_tx(
     conn: &Connection,
     id: String,
     patch: ProjectPatch,
@@ -715,7 +730,8 @@ pub(crate) fn update_project_tx(
     if let Some(s) = &patch.status {
         check_status(s, PROJECT_STATUSES, "项目")?;
     }
-    let now = now_iso();
+    // 兼容适配器：计划 ID → 项目根；旧数据缺失链时在同一事务内补建。
+    let project_id = crate::project_hub::service::ensure_project_for_plan_tx(conn, &id)?;
     let current: (Option<String>, i64) = conn
         .query_row(
             "SELECT target_date, revision FROM planning_projects WHERE id = ?1",
@@ -727,31 +743,41 @@ pub(crate) fn update_project_tx(
         .ok_or_else(|| AppError::Validation(format!("项目不存在: {}", id)))?;
     let target_date = resolve_date(&current.0, &parse_date_update(&patch.target_date)?);
     check_expected_revision_tx(conn, "planning_projects", &id, patch.expected_revision)?;
+
+    // 项目字段（名称/描述/目标日期）交给 ProjectService，项目根是唯一事实来源；
+    // 它同时把同名列同步为计划容器的兼容镜像。
+    if name.is_some() || description.is_some() || patch.target_date.is_some() {
+        crate::project_hub::service::update_project_fields_tx(
+            conn,
+            &project_id,
+            crate::project_hub::service::ProjectPatch {
+                name,
+                description,
+                target_date: patch
+                    .target_date
+                    .is_some()
+                    .then(|| target_date.clone()),
+                ..Default::default()
+            },
+        )?;
+    }
+
+    let now = now_iso();
+    // 计划自身字段：执行状态、排序与乐观并发版本；不触碰项目生命周期状态。
     conn.execute(
         "UPDATE planning_projects SET
-           name = COALESCE(?1, name),
-           description = COALESCE(?2, description),
-           status = COALESCE(?3, status),
-           target_date = ?4,
-           sort_order = COALESCE(?5, sort_order),
+           status = COALESCE(?1, status),
+           sort_order = COALESCE(?2, sort_order),
            revision = revision + 1,
-           updated_at = ?6
-         WHERE id = ?7",
-        rusqlite::params![
-            name,
-            description,
-            patch.status,
-            target_date,
-            patch.sort_order,
-            now,
-            id
-        ],
+           updated_at = ?3
+         WHERE id = ?4",
+        rusqlite::params![patch.status, patch.sort_order, now, id],
     )
     .map_err(AppError::from)?;
     load_project_tx(conn, &id)
 }
 
-pub(crate) fn update_project_impl(
+pub fn update_project_impl(
     db: &Db,
     id: String,
     patch: ProjectPatch,
@@ -768,24 +794,22 @@ pub fn planning_update_project(
     update_project_impl(&db, id, patch)
 }
 
-/// 归档 / 恢复：archived 与项目状态相互独立，归档不丢数据、可随时恢复。
-pub(crate) fn archive_project_impl(
+/// 归档 / 恢复：只改变计划的 `archived` 标记，**不修改项目根生命周期状态**
+/// （项目归档统一走 ProjectService / 工作空间项目状态接口）。
+pub fn archive_project_impl(
     db: &Db,
     id: String,
     archived: bool,
 ) -> AppResult<PlanningProject> {
     let now = now_iso();
-    db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
-        if !project_exists(&tx, &id)? {
-            return Err(AppError::Validation(format!("项目不存在: {}", id)));
-        }
+    db.with_transaction(|tx| {
+        // 写操作顺带把旧数据补链到项目根，保证计划始终有合法 workspace_project_id。
+        crate::project_hub::service::ensure_project_for_plan_tx(tx, &id)?;
         tx.execute(
             "UPDATE planning_projects SET archived = ?1, updated_at = ?2 WHERE id = ?3",
             rusqlite::params![archived as i64, now, id],
         )
         .map_err(AppError::from)?;
-        tx.commit().map_err(AppError::from)?;
         Ok(())
     })?;
     db.with_read(|conn| load_project_tx(conn, &id))
@@ -800,22 +824,11 @@ pub fn planning_archive_project(
     archive_project_impl(&db, id, archived)
 }
 
-/// 删除项目：级联删除其里程碑、功能、步骤与全部进度历史（FK ON DELETE CASCADE）。
-/// 前端必须在调用前弹确认框说明影响面，防止误删。
-pub(crate) fn delete_project_impl(db: &Db, id: String) -> AppResult<()> {
-    db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
-        if !project_exists(&tx, &id)? {
-            return Err(AppError::Validation(format!("项目不存在: {}", id)));
-        }
-        tx.execute(
-            "DELETE FROM planning_projects WHERE id = ?1",
-            rusqlite::params![id],
-        )
-        .map_err(AppError::from)?;
-        tx.commit().map_err(AppError::from)?;
-        Ok(())
-    })
+/// 删除计划（兼容命令）：**只删除计划容器及其功能/步骤/历史，不删除项目根**。
+/// 最后一个计划受保护：返回 Conflict，避免把项目变成没有计划的空壳。
+/// 删除整个项目请使用项目工作空间 / 项目中枢的删除入口。
+pub fn delete_project_impl(db: &Db, id: String) -> AppResult<()> {
+    db.with_transaction(|conn| crate::project_hub::service::delete_plan_tx(conn, &id))
 }
 
 #[tauri::command]
@@ -1980,12 +1993,69 @@ mod tests {
         assert_eq!(updated.status, "in_progress");
         assert_eq!(updated.target_date.as_deref(), Some("2026-12-01"));
 
-        // 删除项目级联清除功能 / 步骤 / 历史
+        // 归档计划不修改项目根生命周期状态
+        let project_id: String = db
+            .with_conn(|c| {
+                c.query_row(
+                    "SELECT workspace_project_id FROM planning_projects WHERE id = ?1",
+                    rusqlite::params![p.id],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)
+            })
+            .unwrap();
+        let root_status: String = db
+            .with_conn(|c| {
+                c.query_row(
+                    "SELECT status FROM workspace_projects WHERE id = ?1",
+                    rusqlite::params![project_id],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(root_status, "active", "计划归档不得改写项目根状态");
+
+        // 删除计划：最后一个计划受保护，项目根保留
+        let err = delete_project_impl(&db, p.id.clone()).unwrap_err();
+        assert!(
+            matches!(err, AppError::Conflict(_)),
+            "最后一个计划必须拒绝删除，实际: {err:?}"
+        );
+        assert_eq!(count(&db, "SELECT COUNT(*) FROM workspace_projects"), 1);
+        assert_eq!(count(&db, "SELECT COUNT(*) FROM planning_projects"), 1);
+
+        // 新增第二个计划后允许删除原计划；功能/步骤/历史级联清除，项目根仍在
+        let second = crate::project_hub::service::create_project_plan(
+            &db,
+            crate::project_hub::service::CreatePlanInput {
+                project_id: project_id.clone(),
+                name: Some("第二版计划".into()),
+                description: None,
+                target_date: None,
+                status: None,
+                template_id: None,
+                make_active: false,
+            },
+        )
+        .unwrap();
         delete_project_impl(&db, p.id.clone()).unwrap();
-        assert_eq!(count(&db, "SELECT COUNT(*) FROM planning_projects"), 0);
+        assert_eq!(count(&db, "SELECT COUNT(*) FROM planning_projects"), 1);
         assert_eq!(count(&db, "SELECT COUNT(*) FROM planning_features"), 0);
         assert_eq!(count(&db, "SELECT COUNT(*) FROM planning_feature_steps"), 0);
         assert_eq!(count(&db, "SELECT COUNT(*) FROM planning_activity"), 0);
+        assert_eq!(count(&db, "SELECT COUNT(*) FROM workspace_projects"), 1);
+        let active: String = db
+            .with_conn(|c| {
+                c.query_row(
+                    "SELECT active_plan_id FROM workspace_projects WHERE id = ?1",
+                    rusqlite::params![project_id],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(active, second, "删除 active 计划后应自动选继任计划");
         let _ = s;
     }
 

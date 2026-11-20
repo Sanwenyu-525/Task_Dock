@@ -465,9 +465,9 @@ export default function ProjectWorkspacePanel({
       }
       setConfirmDelete(false);
       setEditing(false);
-      onNotice("ok", "已删除工作空间登记；外部文件与关联任务未受影响");
+      onNotice("ok", "项目已删除；外部文件、全局任务与共享资源未受影响");
     } catch (e) {
-      onNotice("error", `删除登记失败：${errorMessage(e)}`);
+      onNotice("error", `删除项目失败：${errorMessage(e)}`);
     } finally {
       if (mountedRef.current) setBusy(false);
     }
@@ -1119,13 +1119,16 @@ export default function ProjectWorkspacePanel({
                     {project.status === "archived" ? "恢复" : "归档"}
                   </button>
                   <button className="ws-btn ws-btn-danger" onClick={() => setConfirmDelete(true)}>
-                    <Trash2 size={12} /> 删除登记
+                    <Trash2 size={12} /> 删除项目
                   </button>
                 </div>
                 {confirmDelete && (
-                  <div className="ws-confirm" role="alertdialog" aria-label="确认删除工作空间登记">
+                  <div className="ws-confirm" role="alertdialog" aria-label="确认删除项目">
                     <AlertCircle size={14} />
-                    <span>删除登记后不可恢复；外部文件、原始任务与开发项目不受影响。</span>
+                    <span>
+                      删除后不可恢复；项目下的计划、功能、步骤与历史将一并删除；外部文件、全局任务、
+                      知识库与共享能力不受影响。
+                    </span>
                     <button className="ws-btn ws-btn-danger" disabled={busy} onClick={() => void deleteProject()}>
                       确认删除
                     </button>
