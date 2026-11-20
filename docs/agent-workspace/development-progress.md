@@ -222,3 +222,8 @@
 `agent_access::` 143 passed / 0 failed（81.36s，最终复跑）；迁移 84 升级用例通过；独立脚本 52/52、
 exit 0（隔离数据目录 `tmp/acceptance/agent-access-v82-20261120-224854/`）。详见
 [v82-acceptance-report.md](v82-acceptance-report.md)。
+
+**交付提交**：`c110711e9f6052d8d75276098fb812dc727375b7`（`main`）。
+文档与报告路径：[v82-acceptance-report.md](v82-acceptance-report.md)、
+[test-plan.md](test-plan.md) §13、[architecture.md](architecture.md) §9–10、
+[permission-model.md](permission-model.md) §9。

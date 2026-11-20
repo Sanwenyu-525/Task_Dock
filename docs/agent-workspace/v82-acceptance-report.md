@@ -203,7 +203,12 @@ CLI/MCP/REST/File 链路均已实际执行并记录。
 
 证据路径：
 
+- 交付提交：`c110711e9f6052d8d75276098fb812dc727375b7`（`main`；只包含本任务 agent_access / db 迁移登记 / 文档 / 验收脚本）
 - 验收脚本：`scripts/acceptance-agent-access-v82.mjs`
 - 52/52 运行：`tmp/acceptance/agent-access-v82-20261120-224854/`（`acceptance.log`、`summary.md`、`gui.log`）
 - 单测：`src-tauri/src/agent_access/tests*.rs`、`src-tauri/src/db/mod.rs`
 - 本报告：`docs/agent-workspace/v82-acceptance-report.md`
+
+**提交后工作区**：其余未提交改动均属其他并行任务；本任务路径已全部提交。提交时 `db/mod.rs` 的
+未暂存差异经复核只含 v82 的迁移 83/84 登记与迁移测试（协作中心迁移 85 已由其他会话先行提交，
+未混入本次提交）。
