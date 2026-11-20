@@ -2284,6 +2284,79 @@ mod tests {
     }
 
     #[test]
+    fn clamp_geometry_tiny_area_never_exceeds_physical_area() {
+        // 320×240 物理工作区（scale 100%）：保存的超大矩形收敛后必须留在工作区内，
+        // 最小尺寸跟随可用区，不得把 960×600 DIP 塞进来越界。
+        let tiny = WorkArea {
+            x: 0,
+            y: 0,
+            width: 320,
+            height: 240,
+        };
+        let rect = WorkspaceGeometry {
+            x: 0,
+            y: 0,
+            w: 4000,
+            h: 3000,
+            maximized: false,
+        };
+        let (size, pos) = clamp_into_area(tiny, rect, 1.0);
+        assert!(size.width <= 320);
+        assert!(size.height <= 240);
+        assert!(pos.x + size.width as i32 <= 320);
+        assert!(pos.y + size.height as i32 <= 240);
+        assert_eq!((size.width, size.height), (296, 216));
+    }
+
+    #[test]
+    fn clamp_geometry_tiny_area_at_scale_does_not_double_convert() {
+        // 400×300 物理 @125% = 320×240 DIP：DIP↔物理只在边界换算一次，
+        // 物理最小尺寸 = round(min_dip × scale)，仍 ≤ 物理工作区。
+        let tiny = WorkArea {
+            x: 0,
+            y: 0,
+            width: 400,
+            height: 300,
+        };
+        let rect = WorkspaceGeometry {
+            x: 0,
+            y: 0,
+            w: 4000,
+            h: 3000,
+            maximized: false,
+        };
+        let (size, pos) = clamp_into_area(tiny, rect, 1.25);
+        assert!(size.width <= 400);
+        assert!(size.height <= 300);
+        assert!(pos.x + size.width as i32 <= 400);
+        assert!(pos.y + size.height as i32 <= 300);
+        assert_eq!((size.width, size.height), (370, 270));
+    }
+
+    #[test]
+    fn clamp_geometry_raises_below_min_but_caps_to_area() {
+        // 保存矩形小于最小尺寸：抬到最小；极小工作区下抬升仍被可用区封顶。
+        let tiny = WorkArea {
+            x: 0,
+            y: 0,
+            width: 320,
+            height: 240,
+        };
+        let rect = WorkspaceGeometry {
+            x: 0,
+            y: 0,
+            w: 10,
+            h: 10,
+            maximized: false,
+        };
+        let (size, _pos) = clamp_into_area(tiny, rect, 1.0);
+        assert!(size.width >= 296);
+        assert!(size.height >= 216);
+        assert!(size.width <= 320);
+        assert!(size.height <= 240);
+    }
+
+    #[test]
     fn geometry_round_trip_through_json() {
         let rect = WorkspaceGeometry {
             x: 10,

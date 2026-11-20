@@ -36,6 +36,13 @@ pub const WORKBENCH_MIN_HEIGHT: f64 = 600.0;
 pub const WORKBENCH_FLOOR_WIDTH: f64 = 720.0;
 #[allow(dead_code)]
 pub const WORKBENCH_FLOOR_HEIGHT: f64 = 480.0;
+/// 窗口仍能被原生系统识别、拖动与缩放的原始可操作下限（DIP）。
+///
+/// 与 `WORKBENCH_FLOOR_*`（720×480 三栏布局可读底线）不同：这里只保证「窗口开得出来、
+/// 抓得到边」。仅在可用区允许时生效——可用区本身小于它时以可用区为准，绝不抬高窗口
+/// 越过屏幕。取值待极小远程桌面真机复核。
+const OPERABLE_MIN_WIDTH: f64 = 240.0;
+const OPERABLE_MIN_HEIGHT: f64 = 120.0;
 /// 窗口与工作区边缘的安全留白（DIP）：避免最大化/贴边时被任务栏或圆角裁切。
 pub const WORK_AREA_MARGIN: f64 = 12.0;
 
@@ -92,33 +99,63 @@ impl WindowPlan {
     }
 }
 
+/// 归一化显示器工作区（DIP）。
+///
+/// `None`（取不到显示器）与非法值（NaN / ±Inf / 零 / 负数）都视为「显示器信息缺失」，
+/// 由 `plan_for_area` 走标准兜底；**合法但很小的正有限值不会被当成未知屏**，仍走小屏降级。
+fn normalize_area(area: Option<(f64, f64)>) -> Option<(f64, f64)> {
+    let (w, h) = area?;
+    if !w.is_finite() || !h.is_finite() || w <= 0.0 || h <= 0.0 {
+        return None;
+    }
+    Some((w, h))
+}
+
 /// 可用区（DIP）→ 窗口尺寸计划。
 ///
-/// `None` 表示取不到显示器信息（无头/早期启动）：按标准值，不做任何降级，
-/// 保证窗口行为与显示器已知时一致，而不是悄悄缩成最小值。
+/// `None` 或非法工作区表示取不到显示器信息（无头/早期启动/传感器异常）：按标准值，
+/// 不做任何降级，保证窗口行为与显示器已知时一致，而不是悄悄缩成最小值。
+///
+/// 对任何合法工作区恒成立：
+/// `min.w ≤ area.w`、`min.h ≤ area.h`、`default.w ≥ min.w`、`default.h ≥ min.h`、
+/// `default.w ≤ area.w`、`default.h ≤ area.h`。
 pub fn plan_for_area(area: Option<(f64, f64)>) -> WindowPlan {
-    let Some((area_w, area_h)) = area else {
+    let Some((area_w, area_h)) = normalize_area(area) else {
         return WindowPlan {
             default: SizePlan::new(WORKBENCH_DEFAULT_WIDTH, WORKBENCH_DEFAULT_HEIGHT),
             min: SizePlan::new(WORKBENCH_MIN_WIDTH, WORKBENCH_MIN_HEIGHT),
         };
     };
-    // 1) 留出安全边；下限防止极小/异常值把可用区算成负数。
-    let usable_w = (area_w - WORK_AREA_MARGIN * 2.0).max(320.0);
-    let usable_h = (area_h - WORK_AREA_MARGIN * 2.0).max(240.0);
 
-    // 2) 最小尺寸：标准值优先，可用区不足时跟随可用区（可能低于布局下限
-    //    `WORKBENCH_FLOOR_*`，此时仍以可用区为准，保证窗口开得出来）。
-    let min_w = clamp_floor(WORKBENCH_MIN_WIDTH, usable_w);
-    let min_h = clamp_floor(WORKBENCH_MIN_HEIGHT, usable_h);
+    // 1) 扣安全边后的可用区：绝不把可用区抬高到真实工作区之上
+    //    （旧实现 `.max(320/240)` 会在极小屏把可用区抬过屏幕，是越界根因之一）。
+    //    极端情况下扣边会得到 0：此时保底 1 DIP 且仍以真实工作区为上限，
+    //    既不产生零尺寸窗口，也不会越过屏幕。
+    let usable_w = (area_w - WORK_AREA_MARGIN * 2.0).max(1.0).min(area_w);
+    let usable_h = (area_h - WORK_AREA_MARGIN * 2.0).max(1.0).min(area_h);
+
+    // 2) 最小尺寸：标准值优先；可用区不足时跟随可用区。可操作下限只在可用区允许时
+    //    抬高，可用区更小时以可用区为准（不越界）。
+    let min_w = clamp_floor(WORKBENCH_MIN_WIDTH, usable_w)
+        .max(OPERABLE_MIN_WIDTH)
+        .min(usable_w);
+    let min_h = clamp_floor(WORKBENCH_MIN_HEIGHT, usable_h)
+        .max(OPERABLE_MIN_HEIGHT)
+        .min(usable_h);
 
     // 3) 默认尺寸：目标值收敛进可用区，但不小于最小尺寸。
     let default_w = WORKBENCH_DEFAULT_WIDTH.min(usable_w).max(min_w);
     let default_h = WORKBENCH_DEFAULT_HEIGHT.min(usable_h).max(min_h);
 
+    // 4) 取整后二次收敛：四舍五入不得把结果抬回可用区之上；默认尺寸不得小于最小尺寸。
+    let min_w = min_w.round().min(usable_w);
+    let min_h = min_h.round().min(usable_h);
+    let default_w = default_w.round().min(usable_w).max(min_w);
+    let default_h = default_h.round().min(usable_h).max(min_h);
+
     WindowPlan {
-        default: SizePlan::new(default_w.round(), default_h.round()),
-        min: SizePlan::new(min_w.round(), min_h.round()),
+        default: SizePlan::new(default_w, default_h),
+        min: SizePlan::new(min_w, min_h),
     }
 }
 
@@ -171,7 +208,8 @@ pub fn plan_for_window<R: Runtime>(win: &WebviewWindow<R>) -> WindowPlan {
 /// 只做两件事：原生最小尺寸 + 必要的越界修正；合法尺寸一律不动，
 /// 避免在用户拖动过程中反复改写几何。
 pub fn apply_window_metrics<R: Runtime>(win: &WebviewWindow<R>) {
-    let plan = plan_for_window(win);
+    let available = current_work_area(win);
+    let plan = plan_for_area(available);
     let _ = win.set_min_size(Some(plan.min_logical()));
 
     let Ok(size) = win.inner_size() else {
@@ -179,7 +217,6 @@ pub fn apply_window_metrics<R: Runtime>(win: &WebviewWindow<R>) {
     };
     let scale = win.scale_factor().unwrap_or(1.0);
     let current = SizePlan::from_physical(size.width, size.height, scale);
-    let available = current_work_area(win);
     let Some((area_w, area_h)) = available else {
         // 没有可用区信息时只保证不违反最小尺寸。
         if current.width + 0.5 < plan.min.width || current.height + 0.5 < plan.min.height {
@@ -190,11 +227,20 @@ pub fn apply_window_metrics<R: Runtime>(win: &WebviewWindow<R>) {
         }
         return;
     };
-    let max_w = (area_w - WORK_AREA_MARGIN * 2.0).max(plan.min.width);
-    let max_h = (area_h - WORK_AREA_MARGIN * 2.0).max(plan.min.height);
+    // 上限与 `plan_for_area` 同一口径：扣边可用区（至少 1 DIP 且不超过真实工作区），
+    // 且不小于最小尺寸。旧实现 `(area - 24).max(plan.min)` 在可用区小于最小时
+    // 把上限抬过真实工作区。
+    let usable_w = (area_w - WORK_AREA_MARGIN * 2.0)
+        .max(1.0)
+        .min(area_w)
+        .max(plan.min.width);
+    let usable_h = (area_h - WORK_AREA_MARGIN * 2.0)
+        .max(1.0)
+        .min(area_h)
+        .max(plan.min.height);
 
-    let target_w = current.width.clamp(plan.min.width, max_w);
-    let target_h = current.height.clamp(plan.min.height, max_h);
+    let target_w = current.width.clamp(plan.min.width, usable_w);
+    let target_h = current.height.clamp(plan.min.height, usable_h);
     if (target_w - current.width).abs() > 0.5 || (target_h - current.height).abs() > 0.5 {
         let _ = win.set_size(LogicalSize::new(target_w.round(), target_h.round()));
     }
@@ -327,5 +373,134 @@ mod tests {
         let physical_w = plan.min.width * 1.5;
         assert_eq!(physical_w, 1440.0);
         assert_eq!(SizePlan::from_physical(1440, 900, 1.5), plan.min);
+    }
+
+    #[test]
+    fn work_area_matrix_matches_expected_plan() {
+        // 任务书测试矩阵（DIP 工作区 → 预期 min / default）。
+        let cases = [
+            // 标准桌面/笔记本：最小保持 960×600，默认收敛进可用区。
+            ((1920.0, 1040.0), (960.0, 600.0), (1200.0, 760.0)),
+            ((1366.0, 728.0), (960.0, 600.0), (1200.0, 704.0)),
+            ((1024.0, 728.0), (960.0, 600.0), (1000.0, 704.0)),
+            // 不足标准最小：min 跟随可用区，default = min。
+            ((800.0, 600.0), (776.0, 576.0), (776.0, 576.0)),
+            ((640.0, 480.0), (616.0, 456.0), (616.0, 456.0)),
+            // 极小工作区：全部等于扣边可用区，绝不突破真实工作区。
+            ((400.0, 300.0), (376.0, 276.0), (376.0, 276.0)),
+            ((320.0, 240.0), (296.0, 216.0), (296.0, 216.0)),
+        ];
+        for ((area_w, area_h), (min_w, min_h), (def_w, def_h)) in cases {
+            let plan = plan_for_area(Some((area_w, area_h)));
+            assert_eq!(
+                plan.min,
+                SizePlan::new(min_w, min_h),
+                "min 不符：工作区 {area_w}×{area_h}"
+            );
+            assert_eq!(
+                plan.default,
+                SizePlan::new(def_w, def_h),
+                "default 不符：工作区 {area_w}×{area_h}"
+            );
+        }
+    }
+
+    #[test]
+    fn plan_never_breaks_invariants_for_valid_areas() {
+        // 六条不等式对任意合法工作区恒成立（含极小、贴边、1px 退化值）。
+        let areas = [
+            (1920.0, 1040.0),
+            (1366.0, 728.0),
+            (1024.0, 728.0),
+            (800.0, 600.0),
+            (640.0, 480.0),
+            (400.0, 300.0),
+            (320.0, 240.0),
+            (300.0, 200.0),
+            (240.0, 120.0),
+            (100.0, 80.0),
+            (1.0, 1.0),
+        ];
+        for (area_w, area_h) in areas {
+            let plan = plan_for_area(Some((area_w, area_h)));
+            assert!(plan.min.width.is_finite() && plan.min.height.is_finite());
+            assert!(plan.default.width.is_finite() && plan.default.height.is_finite());
+            assert!(plan.min.width >= 0.0 && plan.min.height >= 0.0);
+            assert!(plan.default.width >= 0.0 && plan.default.height >= 0.0);
+            assert!(plan.min.width <= area_w, "min.w 越界：{plan:?} vs {area_w}");
+            assert!(plan.min.height <= area_h, "min.h 越界：{plan:?} vs {area_h}");
+            assert!(plan.default.width >= plan.min.width, "default.w < min.w");
+            assert!(plan.default.height >= plan.min.height, "default.h < min.h");
+            assert!(plan.default.width <= area_w, "default.w 越界：{plan:?} vs {area_w}");
+            assert!(plan.default.height <= area_h, "default.h 越界：{plan:?} vs {area_h}");
+        }
+    }
+
+    #[test]
+    fn degenerate_areas_stay_non_zero_and_within_area() {
+        // 扣边后可用区 < 1 DIP 的退化输入：不允许算出 0 尺寸（窗口无法抓边），
+        // 也不能超过真实工作区。
+        for (area_w, area_h) in [(1.0, 1.0), (10.0, 8.0), (20.0, 10.0), (23.0, 24.0)] {
+            let plan = plan_for_area(Some((area_w, area_h)));
+            assert!(plan.min.width >= 1.0 && plan.min.width <= area_w, "min.w 退化：{plan:?}");
+            assert!(plan.min.height >= 1.0 && plan.min.height <= area_h, "min.h 退化：{plan:?}");
+            assert!(plan.default.width >= plan.min.width && plan.default.width <= area_w);
+            assert!(plan.default.height >= plan.min.height && plan.default.height <= area_h);
+        }
+    }
+
+    #[test]
+    fn invalid_area_inputs_fall_back_to_standard_spec() {
+        let invalid = [
+            Some((f64::NAN, 800.0)),
+            Some((800.0, f64::NAN)),
+            Some((f64::INFINITY, 600.0)),
+            Some((800.0, f64::NEG_INFINITY)),
+            Some((0.0, 600.0)),
+            Some((800.0, 0.0)),
+            Some((-10.0, 600.0)),
+            Some((800.0, -20.0)),
+            Some((f64::NAN, f64::NAN)),
+        ];
+        for area in invalid {
+            let plan = plan_for_area(area);
+            assert_eq!(plan.min, SizePlan::new(960.0, 600.0), "非法输入不应越界降级");
+            assert_eq!(plan.default, SizePlan::new(1200.0, 760.0));
+        }
+    }
+
+    #[test]
+    fn known_small_screen_is_not_treated_as_unknown() {
+        // 已知的小屏必须走降级，不能被套上未知屏的标准 960×600。
+        let plan = plan_for_area(Some((400.0, 300.0)));
+        assert_ne!(plan.min, SizePlan::new(960.0, 600.0));
+        assert!(plan.min.width < 960.0 && plan.min.height < 600.0);
+    }
+
+    #[test]
+    fn dpi_scales_keep_physical_min_within_physical_area() {
+        // 同一物理工作区在 100/125/150/200% 缩放下：plan 以 DIP 表达，
+        // 最小尺寸换算回物理像素后仍不得超出物理工作区（防 DIP↔物理重复换算）。
+        let physical_area = (1600u32, 1000u32);
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            let dip_w = physical_area.0 as f64 / scale;
+            let dip_h = physical_area.1 as f64 / scale;
+            let plan = plan_for_area(Some((dip_w, dip_h)));
+            let phys_min_w = (plan.min.width * scale).round() as u32;
+            let phys_min_h = (plan.min.height * scale).round() as u32;
+            assert!(phys_min_w <= physical_area.0, "scale {scale}：物理最小宽越界");
+            assert!(phys_min_h <= physical_area.1, "scale {scale}：物理最小高越界");
+            // plan 本身是 DIP 口径，不随 scale 变：同一 DIP 区域两次计算一致。
+            let again = plan_for_area(Some((dip_w, dip_h)));
+            assert_eq!(plan, again);
+        }
+    }
+
+    #[test]
+    fn from_physical_rejects_invalid_scale() {
+        // 非法缩放比按 1.0 兜底，不产生 NaN/Inf。
+        let converted = SizePlan::from_physical(1200, 950, f64::NAN);
+        assert!(converted.width.is_finite() && converted.height.is_finite());
+        assert_eq!(converted, SizePlan::new(1200.0, 950.0));
     }
 }
