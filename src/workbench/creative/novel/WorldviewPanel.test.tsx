@@ -113,7 +113,7 @@ describe("WorldviewPanel", () => {
     render(<WorldviewPanel {...base} archived={false} onNotice={onNotice} />);
 
     await waitFor(() => {
-      expect(screen.getByText(/暂无设定/)).toBeTruthy();
+      expect(screen.getByText(/还没有世界观设定/)).toBeTruthy();
     });
     screen.getByRole("button", { name: "新建设定" }).click();
 

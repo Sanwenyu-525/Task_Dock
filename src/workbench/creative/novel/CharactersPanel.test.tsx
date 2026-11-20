@@ -129,7 +129,7 @@ describe("CharactersPanel", () => {
     render(<CharactersPanel {...base} archived={false} onNotice={onNotice} />);
 
     await waitFor(() => {
-      expect(screen.getByText(/暂无人物/)).toBeTruthy();
+      expect(screen.getByText(/还没有人物/)).toBeTruthy();
     });
     screen.getByRole("button", { name: "新建人物" }).click();
 
