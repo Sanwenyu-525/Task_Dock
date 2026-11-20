@@ -286,7 +286,7 @@ type WorkspaceCapabilityState = "available" | "limited" | "planned" | "unavailab
 | TypeScript | `WorkspaceKind` 增加 `"novel"`；`WORKSPACE_PROFILES.novel`（标签「小说」、图标 token `book-open`，映射到 `BookOpen`） |
 | 导航 | 概览 / 写作事项 / 任务关联 / 项目设置（只使用既有模块 ID；A 阶段历史，2026-11-20 起一级导航合并为五入口，见 §14） |
 | 首页 | 小说项目（基本信息）/ 项目简介 / 写作事项 / 任务关联 / 后续创作功能（只列 planned 能力，纯文本无按钮） |
-| 能力 | available：`core.project` / `core.items` / `core.taskLinks`；limited：`core.layout`；planned：`novel.manuscript` / `novel.characters` / `novel.worldview` / `novel.aiAssist` |
+| 能力 | available：`core.project` / `core.items` / `core.taskLinks`；limited：`core.layout`；planned：`novel.manuscript` / `novel.characters` / `novel.worldview` / `novel.aiAssist`（A 阶段历史；当前状态见 §14.2：正文 available、人物/世界观 limited、AI 仍 planned） |
 | 入口 | 统一工作台新建/编辑项目类型、项目列表徽标、项目详情类型、项目切换与独立窗口，全部由 Profile 注册中心派生 |
 | 备份 | `novel` 项目随 `workspace_projects` 等表完整往返，备份不按 `kind` 过滤 |
 
