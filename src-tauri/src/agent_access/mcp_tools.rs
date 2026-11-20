@@ -399,7 +399,8 @@ pub(crate) fn call(
                 let project = arg_str(args, "project_id");
                 let status = arg_str(args, "status");
                 let limit = int_arg(args, "limit").unwrap_or(50).clamp(1, 200) as u32;
-                let (items, page) = store::list_decisions(db, project, status, limit, 0)?;
+                let (items, page) =
+                    service::list_decisions_authorized(db, &principal, project, status, limit, 0)?;
                 Ok((
                     json!({ "items": items, "page": page }),
                     "decision",
@@ -408,7 +409,7 @@ pub(crate) fn call(
             }
             "taskdock_get_decision" => {
                 let id = need(args, "decision_id")?;
-                let decision = store::get_decision(db, &id)?;
+                let decision = service::get_decision_authorized(db, &principal, &id)?;
                 Ok((serde_json::to_value(&decision)?, "decision", id))
             }
             "taskdock_create_decision" => {
@@ -546,15 +547,14 @@ pub(crate) fn call(
             }
             "taskdock_agent_activity" => {
                 let limit = int_arg(args, "limit").unwrap_or(50).clamp(1, 100) as u32;
-                let (items, page) = handoff::activity(
-                    db,
-                    &principal,
-                    arg_str(args, "agent_id"),
-                    arg_str(args, "interface"),
-                    arg_str(args, "since"),
+                let query = store::ActivityQuery {
+                    agent_id: arg_str(args, "agent_id").map(str::to_string),
+                    interface: arg_str(args, "interface").map(str::to_string),
+                    since: arg_str(args, "since").map(str::to_string),
                     limit,
-                    0,
-                )?;
+                    offset: 0,
+                };
+                let (items, page) = service::list_activity_authorized(db, &principal, &query)?;
                 Ok((
                     json!({ "items": items, "page": page }),
                     "activity",
@@ -635,11 +635,11 @@ pub fn read_resource(db: &Db, principal: &Principal, uri: &str) -> AppResult<Val
             Ok(text("application/json", json_text(serde_json::to_value(plan)?)?))
         }
         "taskdock://knowledge/index" => {
-            let value = super::projection::export_knowledge_snapshot(db)?;
+            let value = service::knowledge_index_authorized(db, principal)?;
             Ok(text("application/json", json_text(value)?))
         }
         "taskdock://decisions" => {
-            let (items, _) = store::list_decisions(db, None, None, 200, 0)?;
+            let (items, _) = service::list_decisions_authorized(db, principal, None, None, 200, 0)?;
             Ok(text("application/json", json_text(serde_json::to_value(items)?)?))
         }
         "taskdock://agents/sessions" => {
@@ -794,7 +794,7 @@ pub fn build_prompt(db: &Db, principal: &Principal, name: &str, args: &Value) ->
         }
         "review_architecture_decision" => {
             let decision_id = arg("decision_id")?;
-            let decision = store::get_decision(db, &decision_id)?;
+            let decision = service::get_decision_authorized(db, principal, &decision_id)?;
             vec![
                 json!({ "role": "user", "content": { "type": "text", "text":
                     "评审以下架构决策：它对当前实现有哪些约束？是否存在未记录的后果或更优备选？如需推翻必须新建决策而不是改写历史。" } }),

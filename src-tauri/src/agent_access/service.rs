@@ -9,6 +9,7 @@
 
 use std::path::PathBuf;
 
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -410,6 +411,23 @@ pub fn create_task(
     principal: &Principal,
     input: TaskCreateInput,
 ) -> AppResult<Task> {
+    create_task_guarded(db, principal, input, &store::NoGuard, "")
+}
+
+/// 带**事务内守卫**的创建（v82 文件导入用）。
+///
+/// `guard.check(conn)` 与业务写入、`guard.complete(conn)` 位于**同一个写事务**内：
+/// 校验不通过 → 整个事务回滚，业务数据零写入；租约与业务数据同时提交。
+///
+/// `project_id` 非空时，任务与项目关联也在同一事务内落库，
+/// 避免「任务已建、关联失败」造成重试时重复建任务。
+pub fn create_task_guarded(
+    db: &Db,
+    principal: &Principal,
+    input: TaskCreateInput,
+    guard: &dyn store::WriteGuard,
+    project_id: &str,
+) -> AppResult<Task> {
     perms::require(db, principal, Capability::TasksWrite, "")?;
     validate_task_input(&input.title, &input.tags)?;
     let task_input = TaskInput {
@@ -423,11 +441,22 @@ pub fn create_task(
         advance_minutes: input.advance_minutes,
         recurrence: None,
     };
+    let project_id = project_id.trim().to_string();
     let (mut task, revision) = db.with_transaction(|conn| {
+        guard.check(conn)?;
         let id = create_task_tx(conn, task_input)?;
+        if !project_id.is_empty() {
+            crate::commands::project_workspace::workspace_task_link_add_tx(
+                conn,
+                &project_id,
+                &id,
+            )?;
+        }
         let task = get_task_in_conn(conn, &id)?;
         let revision =
             store::bump_revision(conn, "task", &id, principal, &task.updated_at, "")?;
+        guard.record_operation(conn, "task", &id)?;
+        guard.complete(conn)?;
         Ok((task, revision))
     })?;
     task.revision = Some(revision);
@@ -438,7 +467,7 @@ pub fn create_task(
             action: "task.create",
             resource_kind: "task",
             resource_id: &task.id,
-            project_id: "",
+            project_id: &project_id,
             request_id: "",
             success: true,
             error_code: "",
@@ -458,8 +487,23 @@ pub fn update_task(
     patch: TaskPatch,
     base_revision: Option<i64>,
 ) -> AppResult<Task> {
+    update_task_guarded(db, principal, id, patch, base_revision, &store::NoGuard)
+}
+
+/// 带**事务内守卫**的局部更新（v82 文件导入用）。
+///
+/// 守卫与业务写入同事务：租约失效时更新整体回滚，不会产生「版本已推进但业务未改」。
+pub fn update_task_guarded(
+    db: &Db,
+    principal: &Principal,
+    id: &str,
+    patch: TaskPatch,
+    base_revision: Option<i64>,
+    guard: &dyn store::WriteGuard,
+) -> AppResult<Task> {
     perms::require(db, principal, Capability::TasksWrite, id)?;
     let (mut task, revision, prior) = db.with_transaction(|conn| {
+        guard.check(conn)?;
         let existing = get_task_in_conn(conn, id)?;
         let (counter, counter_at, _) = store::read_revision(conn, "task", id)?;
         let effective = store::effective_revision(counter, &counter_at, &existing.updated_at);
@@ -500,10 +544,13 @@ pub fn update_task(
         let task = update_task_in_conn(conn, id, input)?;
         let revision =
             store::bump_revision(conn, "task", id, principal, &task.updated_at, "")?;
+        guard.record_operation(conn, "task", id)?;
+        guard.complete(conn)?;
         Ok((task, revision, existing.updated_at))
     })?;
     let _ = prior;
     task.revision = Some(revision);
+    let project_id = task_project_id(db, id);
     store::log_activity(
         db,
         &store::ActivityEntry {
@@ -511,7 +558,7 @@ pub fn update_task(
             action: "task.update",
             resource_kind: "task",
             resource_id: id,
-            project_id: "",
+            project_id: &project_id,
             request_id: "",
             success: true,
             error_code: "",
@@ -523,31 +570,97 @@ pub fn update_task(
     Ok(task)
 }
 
-/// 完成任务：复用既有切换逻辑（含完成事件、提醒、重复任务期次推进）。
-/// 已完成任务再次调用是幂等的，返回当前状态。
+/// 完成任务：**完成语义**，绝不触发「重新打开」。
+///
+/// 普通入口与文件导入入口共用 [`complete_task_guarded`]：状态切换、提醒、
+/// 重复任务期次推进、版本推进与守卫全部落在**同一个写事务**里。已完成任务
+/// 再次调用是幂等终态（不写库、不推进 revision）。
 pub fn complete_task(
     db: &Db,
     principal: &Principal,
     id: &str,
     base_revision: Option<i64>,
 ) -> AppResult<Task> {
+    complete_task_guarded(db, principal, id, base_revision, &store::NoGuard)
+}
+
+/// 带**事务内守卫**的完成任务（v82 文件导入 / REST 幂等共用）。
+///
+/// 语义固定为 `pending → completed`（重复任务为「消耗当前期次并推进」）：
+/// - 已完成任务：幂等返回当前状态，不再写库；
+/// - 其它状态（cancelled 等）：`CONFLICT`，不得被静默改成 completed；
+/// - revision 校验、业务写入、版本推进、守卫收尾同事务提交，
+///   任一步失败整体回滚，不会出现「状态变了但 revision 未变」。
+pub fn complete_task_guarded(
+    db: &Db,
+    principal: &Principal,
+    id: &str,
+    base_revision: Option<i64>,
+    guard: &dyn store::WriteGuard,
+) -> AppResult<Task> {
     perms::require(db, principal, Capability::TasksWrite, id)?;
-    let current = get_task(db, id)?;
-    if current.status == "completed" {
-        return Ok(current);
-    }
-    let (revision, _) = task_version(db, id)?;
-    if let Some(base) = base_revision {
-        if base != revision {
+    let now = crate::agents::now_iso();
+    let (mut task, next) = db.with_transaction(|conn| {
+        guard.check(conn)?;
+        let task = get_task_in_conn(conn, id)?;
+        let (counter, counter_at, _) = store::read_revision(conn, "task", id)?;
+        let effective = store::effective_revision(counter, &counter_at, &task.updated_at);
+        if let Some(base) = base_revision {
+            if base != effective {
+                return Err(AppError::Conflict(format!(
+                    "任务版本已变化（当前 revision={effective}，updated_at={}，提交 base_revision={base}）",
+                    task.updated_at
+                )));
+            }
+        }
+        if task.status == "completed" {
+            // 幂等终态：业务不写、版本不推进，只回传当前状态。
+            return Ok((task, effective));
+        }
+        if task.status != "pending" {
             return Err(AppError::Conflict(format!(
-                "任务版本已变化（当前 revision={revision}，提交 base_revision={base}）"
+                "任务当前状态为 {}，无法完成",
+                task.status
             )));
         }
-    }
-    let mut task = toggle_task_inner(db, id)?;
-    let next = db.with_conn(|conn| {
-        store::bump_revision(conn, "task", id, principal, &task.updated_at, "")
+        let updated = if task.recurrence.is_some() {
+            // 重复任务：完成即消耗当前期次并推进（期次 CAS 保证不重复推进）。
+            let outcome =
+                crate::scheduler::advance_recurrence_tx(conn, id, task.due_at.as_deref(), &chrono::Utc::now())?;
+            match &outcome {
+                crate::scheduler::AdvanceOutcome::Advanced { from_due, .. } => {
+                    crate::task_analytics::record_completion(
+                        conn,
+                        id,
+                        &now,
+                        from_due.as_deref(),
+                        &task.category,
+                        task.priority as i64,
+                        "recurring",
+                    )?;
+                    get_task_in_conn(conn, id)?
+                }
+                // 并发完成同一期：期次已被推进，本次不重复记录完成事件。
+                crate::scheduler::AdvanceOutcome::Conflict => {
+                    return Err(AppError::Conflict(
+                        "重复任务期次已被其他请求推进，请刷新后重试".into(),
+                    ))
+                }
+                // 规则结束 / 无规则：按普通任务完成处理。
+                crate::scheduler::AdvanceOutcome::Exhausted
+                | crate::scheduler::AdvanceOutcome::NoRule => {
+                    mark_task_completed(conn, id, &task, &now)?
+                }
+            }
+        } else {
+            mark_task_completed(conn, id, &task, &now)?
+        };
+        let revision = store::bump_revision(conn, "task", id, principal, &updated.updated_at, "")?;
+        guard.record_operation(conn, "task", id)?;
+        guard.complete(conn)?;
+        Ok((updated, revision))
     })?;
+    let project_id = task_project_id(db, id);
     store::log_activity(
         db,
         &store::ActivityEntry {
@@ -555,7 +668,7 @@ pub fn complete_task(
             action: "task.complete",
             resource_kind: "task",
             resource_id: id,
-            project_id: "",
+            project_id: &project_id,
             request_id: "",
             success: true,
             error_code: "",
@@ -570,6 +683,45 @@ pub fn complete_task(
     );
     task.revision = Some(next);
     Ok(task)
+}
+
+/// 普通任务完成：条件更新 + 提醒关闭 + 完成统计，全部在调用方事务内。
+fn mark_task_completed(
+    conn: &rusqlite::Connection,
+    id: &str,
+    task: &Task,
+    now: &str,
+) -> AppResult<Task> {
+    let changed = conn.execute(
+        "UPDATE tasks SET status='completed', completed_at=?1, updated_at=?1
+         WHERE id=?2 AND status='pending' AND updated_at=?3",
+        rusqlite::params![now, id, task.updated_at],
+    )?;
+    if changed != 1 {
+        return Err(AppError::Conflict("任务已发生变化，请刷新后重试".into()));
+    }
+    conn.execute(
+        "UPDATE task_reminders SET fired=1, fired_at=?1 WHERE task_id=?2 AND fired=0",
+        rusqlite::params![now, id],
+    )?;
+    crate::task_analytics::record_completion(
+        conn,
+        id,
+        now,
+        task.due_at.as_deref(),
+        &task.category,
+        task.priority as i64,
+        "once",
+    )?;
+    get_task_in_conn(conn, id)
+}
+
+/// 任务真实归属项目（活动日志与权限过滤共用）；无关联返回空串。
+fn task_project_id(db: &Db, task_id: &str) -> String {
+    db.with_read(|conn| perms::task_project(conn, task_id))
+        .ok()
+        .flatten()
+        .unwrap_or_default()
 }
 
 // ── 规划 ─────────────────────────────────────────────────────────
@@ -708,6 +860,188 @@ pub struct KnowledgeHit {
     pub updated_at: String,
 }
 
+// ── 统一授权查询（v82）────────────────────────────────────────────
+//
+// 四个入口不允许再直接调用 `store::list_*` / `store::get_*`。所有读取都在这里
+// 完成「身份 → 能力 → 资源真实归属」判定，并返回已过滤结果或明确的 FORBIDDEN。
+// 1) 认证通过但未授权 = FORBIDDEN，不返回空列表让调用方猜；
+// 2) 未知项目/资源不回退全局授权；
+// 3) 过滤在服务端 SQL 完成，分页与 total 同步正确，不依赖前端。
+
+/// 决策列表（授权过滤）。
+pub fn list_decisions_authorized(
+    db: &Db,
+    principal: &Principal,
+    project: Option<&str>,
+    status: Option<&str>,
+    limit: u32,
+    offset: u32,
+) -> AppResult<(Vec<store::Decision>, Page)> {
+    let limit = limit.clamp(1, 200);
+    if let Some(pid) = project.map(str::trim).filter(|v| !v.is_empty()) {
+        let kind = db.with_read(|conn| perms::project_exists(conn, pid))?;
+        if kind.is_none() {
+            return Err(AppError::NotFound(format!("项目不存在: {pid}")));
+        }
+        // 精确项目读取：能力必须覆盖该项目；未授权直接 FORBIDDEN。
+        perms::require(db, principal, Capability::DecisionsRead, pid)?;
+        return store::list_decisions(db, Some(pid), status, limit, offset);
+    }
+    let reads = perms::authorized_reads(db, principal)?;
+    if reads.decisions.global {
+        return store::list_decisions(db, None, status, limit, offset);
+    }
+    if reads.decisions.ids.is_empty() {
+        return Err(perms::denial(Capability::DecisionsRead));
+    }
+    let projects: Vec<String> = reads.decisions.ids.iter().cloned().collect();
+    store::list_decisions_in_projects(db, &projects, false, status, limit, offset)
+}
+
+/// 决策详情（授权过滤）：真实项目归属决定可见性。
+pub fn get_decision_authorized(
+    db: &Db,
+    principal: &Principal,
+    id: &str,
+) -> AppResult<store::Decision> {
+    let decision = store::get_decision(db, id)?;
+    let project = decision.project_id.trim();
+    if project.is_empty() {
+        // 无项目决策只对全局 decisions.read 可见。
+        perms::require(db, principal, Capability::DecisionsRead, "")?;
+        return Ok(decision);
+    }
+    let exists = db.with_read(|conn| perms::project_exists(conn, project))?;
+    let scope = if exists.is_some() { project } else { "" };
+    perms::require(db, principal, Capability::DecisionsRead, scope)?;
+    Ok(decision)
+}
+
+/// 活动记录（授权过滤）。没有项目范围的活动（`rest.failed` 等）只对本机
+/// 身份或对应能力的全局授权可见。
+pub fn list_activity_authorized(
+    db: &Db,
+    principal: &Principal,
+    query: &store::ActivityQuery,
+) -> AppResult<(Vec<store::ActivityRecord>, Page)> {
+    let reads = perms::authorized_reads(db, principal)?;
+    if matches!(
+        principal.identity,
+        super::Identity::LocalHuman | super::Identity::SystemInternal
+    ) {
+        return store::list_activity_scoped(db, query, None);
+    }
+    if reads.is_empty() {
+        return Err(super::forbidden("没有任何可读取的资源，活动记录不可见"));
+    }
+    // 项目全局读：活动本质是项目内元数据，可直接放开。
+    if reads.projects.global {
+        return store::list_activity_scoped(db, query, None);
+    }
+    let mut scope = store::ActivityScope {
+        projects: reads.projects.ids.iter().cloned().collect(),
+        tasks: reads.tasks.ids.iter().cloned().collect(),
+        knowledge: reads.knowledge.ids.iter().cloned().collect(),
+        decisions: reads.decisions.ids.iter().cloned().collect(),
+        handoffs: reads.handoffs.ids.iter().cloned().collect(),
+        plans: reads.plans.ids.iter().cloned().collect(),
+        global_kinds: Vec::new(),
+    };
+    if reads.tasks.global {
+        scope.global_kinds.push("task".into());
+    }
+    if reads.knowledge.global {
+        scope.global_kinds.push("knowledge".into());
+    }
+    if reads.decisions.global {
+        scope.global_kinds.push("decision".into());
+    }
+    if reads.handoffs.global {
+        scope.global_kinds.push("handoff".into());
+        scope.global_kinds.push("report".into());
+    }
+    if reads.plans.global {
+        scope.global_kinds.push("plan".into());
+    }
+    if scope.hides_everything() {
+        return Err(super::forbidden("没有任何可读取的资源，活动记录不可见"));
+    }
+    store::list_activity_scoped(db, query, Some(&scope))
+}
+
+/// 授权后的知识库 ID 集合：`None` = 全局授权。
+pub fn authorized_knowledge_base_ids(
+    db: &Db,
+    principal: &Principal,
+) -> AppResult<Option<Vec<String>>> {
+    let reads = perms::authorized_reads(db, principal)?;
+    if reads.knowledge.global {
+        return Ok(None);
+    }
+    if reads.knowledge.ids.is_empty() {
+        return Err(perms::denial(Capability::KnowledgeRead));
+    }
+    let ids: Vec<String> = reads.knowledge.ids.iter().cloned().collect();
+    let n = ids.len();
+    let block = |start: usize| {
+        (start..start + n)
+            .map(|i| format!("?{i}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let (ph_id, ph_project, ph_workspace) = (block(1), block(n + 1), block(2 * n + 1));
+    let allowed = db.with_read(|conn| {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT id FROM knowledge_bases
+             WHERE id IN ({ph_id})
+                OR (project_id IS NOT NULL AND project_id <> '' AND project_id IN ({ph_project}))
+                OR (workspace_id IS NOT NULL AND workspace_id <> '' AND workspace_id IN ({ph_workspace}))"
+        ))?;
+        let mut params: Vec<rusqlite::types::Value> = Vec::new();
+        for _ in 0..3 {
+            params.extend(ids.iter().map(|v| rusqlite::types::Value::Text(v.clone())));
+        }
+        let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |r| {
+            r.get::<_, String>(0)
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok::<_, AppError>(out)
+    })?;
+    Ok(Some(allowed))
+}
+
+/// 知识索引（不含正文）授权过滤：权限判定先于数据导出。
+pub fn knowledge_index_authorized(db: &Db, principal: &Principal) -> AppResult<Value> {
+    let allowed = authorized_knowledge_base_ids(db, principal)?;
+    let Some(allowed) = allowed else {
+        return super::projection::export_knowledge_snapshot(db);
+    };
+    let allowed: std::collections::HashSet<String> = allowed.into_iter().collect();
+    let snapshot = super::projection::export_knowledge_snapshot(db)?;
+    let mut bases = Vec::new();
+    if let Some(items) = snapshot.get("bases").and_then(Value::as_array) {
+        for base in items {
+            let id = base.get("id").and_then(Value::as_str).unwrap_or("");
+            if allowed.contains(id) {
+                bases.push(base.clone());
+            }
+        }
+    }
+    let mut docs = Vec::new();
+    if let Some(items) = snapshot.get("documents").and_then(Value::as_array) {
+        for doc in items {
+            let kb_id = doc.get("kb_id").and_then(Value::as_str).unwrap_or("");
+            if allowed.contains(kb_id) {
+                docs.push(doc.clone());
+            }
+        }
+    }
+    Ok(json!({ "bases": bases, "documents": docs }))
+}
+
 pub fn search_knowledge(
     db: &Db,
     principal: &Principal,
@@ -716,8 +1050,51 @@ pub fn search_knowledge(
     limit: u32,
     offset: u32,
 ) -> AppResult<(Vec<KnowledgeHit>, Page)> {
-    perms::require(db, principal, Capability::KnowledgeRead, "")?;
-    let page = kb::search_impl(db, query, kb_ids, None, None, limit, offset)?;
+    let allowed = authorized_knowledge_base_ids(db, principal)?;
+    let scoped: Vec<String> = if kb_ids.is_empty() {
+        match &allowed {
+            None => Vec::new(),
+            Some(ids) => {
+                if ids.is_empty() {
+                    return Ok((
+                        Vec::new(),
+                        Page {
+                            limit,
+                            offset,
+                            total: 0,
+                            has_more: false,
+                        },
+                    ));
+                }
+                ids.clone()
+            }
+        }
+    } else {
+        for kb_id in kb_ids {
+            let id = kb_id.trim();
+            if id.is_empty() {
+                continue;
+            }
+            if let Some(allowed) = &allowed {
+                if !allowed.iter().any(|v| v == id) {
+                    return Err(perms::denial(Capability::KnowledgeRead));
+                }
+            }
+            let exists = db.with_read(|conn| {
+                let n: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM knowledge_bases WHERE id = ?1",
+                    rusqlite::params![id],
+                    |r| r.get(0),
+                )?;
+                Ok::<_, AppError>(n > 0)
+            })?;
+            if !exists {
+                return Err(AppError::NotFound(format!("知识库不存在: {id}")));
+            }
+        }
+        kb_ids.to_vec()
+    };
+    let page = kb::search_impl(db, query, &scoped, None, None, limit, offset)?;
     let hits = page
         .hits
         .into_iter()
@@ -782,8 +1159,17 @@ fn doc_out(db: &Db, detail: kb::KnowledgeDocumentDetail) -> AppResult<KnowledgeD
 }
 
 pub fn get_knowledge(db: &Db, principal: &Principal, id: &str) -> AppResult<KnowledgeDoc> {
-    perms::require(db, principal, Capability::KnowledgeRead, "")?;
+    // 先读文档取真实知识库归属，再按知识库授权判定（资源级，不是前端过滤）。
     let detail = kb::get_document_impl(db, id)?;
+    let kb_id = detail.document.kb_id.clone();
+    match authorized_knowledge_base_ids(db, principal)? {
+        None => {}
+        Some(allowed) => {
+            if !allowed.iter().any(|v| v == &kb_id) {
+                return Err(perms::denial(Capability::KnowledgeRead));
+            }
+        }
+    }
     doc_out(db, detail)
 }
 
@@ -851,11 +1237,47 @@ pub fn create_knowledge(
     principal: &Principal,
     input: KnowledgeCreateInput,
 ) -> AppResult<KnowledgeDoc> {
+    create_knowledge_guarded(db, principal, input, &store::NoGuard)
+}
+
+/// 带**事务内守卫**的知识写入（v82 文件导入用）。
+///
+/// 知识文档写入与导入租约校验落在同一个写事务内：租约失效时文档写入整体回滚，
+/// 不会留下「文档已存在但租约未完成」的重复导入窗口。
+pub fn create_knowledge_guarded(
+    db: &Db,
+    principal: &Principal,
+    input: KnowledgeCreateInput,
+    guard: &dyn store::WriteGuard,
+) -> AppResult<KnowledgeDoc> {
     perms::require(db, principal, Capability::KnowledgeWrite, "")?;
     store::check_text("title", &input.title, 200)?;
     let kb_id = resolve_kb(db, input.kb_id.as_deref(), input.kb_name.as_deref())?;
-    let (report, doc_id) =
-        kb::create_text_impl(db, &kb_id, &input.title, &input.content)?;
+    let title = input.title.clone();
+    let content = input.content.clone();
+    let (report, doc_id, created_revision) = db.with_transaction(|conn| {
+        guard.check(conn)?;
+        let (report, doc_id) = kb::create_text_impl_in_conn(conn, &kb_id, &title, &content)?;
+        // 版本推进与文档写入同事务：不存在「文档已建但版本未记」的窗口。
+        let (revision, created_id) = match doc_id.as_deref() {
+            Some(id) => {
+                let updated_at: String = conn.query_row(
+                    "SELECT updated_at FROM knowledge_documents WHERE id=?1",
+                    rusqlite::params![id],
+                    |r| r.get(0),
+                )?;
+                let revision =
+                    store::bump_revision(conn, "knowledge", id, principal, &updated_at, "")?;
+                (Some(revision), Some(id.to_string()))
+            }
+            None => (None, None),
+        };
+        if let Some(id) = created_id.as_deref() {
+            guard.record_operation(conn, "knowledge", id)?;
+        }
+        guard.complete(conn)?;
+        Ok((report, doc_id, revision))
+    })?;
     let doc_id = match doc_id {
         Some(id) => id,
         None => {
@@ -884,10 +1306,21 @@ pub fn create_knowledge(
         }
     };
     let detail = kb::get_document_impl(db, &doc_id)?;
-    let updated_at = detail.document.updated_at.clone();
-    let revision = db.with_conn(|conn| {
-        store::bump_revision(conn, "knowledge", &doc_id, principal, &updated_at, "")
-    })?;
+    let revision = match created_revision {
+        Some(revision) => revision,
+        // 重复内容：既有文档没有新写入，回读当前有效版本，不额外推进。
+        None => {
+            let (counter, counter_at, _) = db.with_read(|conn| {
+                store::read_revision(conn, "knowledge", &doc_id)
+            })?;
+            store::effective_revision(
+                counter,
+                &counter_at,
+                &detail.document.updated_at,
+            )
+        }
+    };
+    let project_id = knowledge_project_id(db, &detail.document.kb_id);
     store::log_activity(
         db,
         &store::ActivityEntry {
@@ -895,7 +1328,7 @@ pub fn create_knowledge(
             action: "knowledge.create",
             resource_kind: "knowledge",
             resource_id: &doc_id,
-            project_id: "",
+            project_id: &project_id,
             request_id: "",
             success: true,
             error_code: "",
@@ -923,35 +1356,61 @@ pub fn update_knowledge(
     patch: KnowledgePatch,
     base_revision: Option<i64>,
 ) -> AppResult<KnowledgeDoc> {
+    update_knowledge_guarded(db, principal, id, patch, base_revision, &store::NoGuard)
+}
+
+/// 带**事务内守卫**的知识更新（v82 文件导入 / REST 幂等共用）。
+///
+/// 一致性要点：
+/// - revision 校验在事务内基于业务行 `updated_at` 重新计算，不信任事务外快照；
+/// - 文档更新、`status='pending'` 与 revision 推进**同事务提交**，
+///   不会出现「正文已改但 revision 未变」或反向的不一致；
+/// - 索引重建在事务外执行（避免长事务）；失败时文档保持 `pending` 且写入
+///   `error`，由 [`repair_pending_knowledge`] 在后续检索/状态查询时重试，
+///   最终与文档正文一致。
+pub fn update_knowledge_guarded(
+    db: &Db,
+    principal: &Principal,
+    id: &str,
+    patch: KnowledgePatch,
+    base_revision: Option<i64>,
+    guard: &dyn store::WriteGuard,
+) -> AppResult<KnowledgeDoc> {
     perms::require(db, principal, Capability::KnowledgeWrite, "")?;
-    let detail = kb::get_document_impl(db, id)?;
-    let doc = detail.document;
-    let (counter, counter_at, _) = db.with_read(|conn| {
-        store::read_revision(conn, "knowledge", id)
-    })?;
-    let revision = store::effective_revision(counter, &counter_at, &doc.updated_at);
-    if let Some(base) = base_revision {
-        if base != revision {
-            return Err(AppError::Conflict(format!(
-                "知识文档版本已变化（当前 revision={revision}，提交 base_revision={base}）"
+    let title = patch.title.clone();
+    if let Some(title) = title.as_deref() {
+        store::check_text("title", title, 200)?;
+    }
+    let content = patch.content.clone();
+    let content_changed = content.is_some();
+    let now = crate::agents::now_iso();
+    let next = db.with_transaction(|conn| {
+        guard.check(conn)?;
+        let (doc_title, source_kind, source_mode, doc_updated_at): (String, String, String, String) =
+            conn.query_row(
+                "SELECT title, source_kind, source_mode, updated_at FROM knowledge_documents WHERE id=?1",
+                rusqlite::params![id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .optional()
+            .map_err(AppError::from)?
+            .ok_or_else(|| AppError::NotFound(format!("知识文档不存在: {id}")))?;
+        let (counter, counter_at, _) = store::read_revision(conn, "knowledge", id)?;
+        let revision = store::effective_revision(counter, &counter_at, &doc_updated_at);
+        if let Some(base) = base_revision {
+            if base != revision {
+                return Err(AppError::Conflict(format!(
+                    "知识文档版本已变化（当前 revision={revision}，提交 base_revision={base}）"
+                )));
+            }
+        }
+        if content_changed && !matches!(source_kind.as_str(), "text" | "note" | "capture") {
+            return Err(validation(format!(
+                "文档来源为 {source_kind}（{source_mode}），正文由来源文件决定，请更新原文件后重建索引"
             )));
         }
-    }
-    let title = patch.title.unwrap_or(doc.title.clone());
-    store::check_text("title", &title, 200)?;
-    if patch.content.is_some()
-        && !matches!(doc.source_kind.as_str(), "text" | "note" | "capture")
-    {
-        return Err(validation(format!(
-            "文档来源为 {}（{}），正文由来源文件决定，请更新原文件后重建索引",
-            doc.source_kind, doc.source_mode
-        )));
-    }
-    let now = crate::agents::now_iso();
-    let content_changed = patch.content.is_some();
-    db.with_conn(|conn| {
-        if content_changed {
-            let content = patch.content.unwrap_or_default();
+        let title = title.unwrap_or(doc_title);
+        if let Some(content) = content {
             let content = content.trim().to_string();
             if content.is_empty() {
                 return Err(validation("正文不能为空"));
@@ -972,16 +1431,27 @@ pub fn update_knowledge(
                 rusqlite::params![id, title, now],
             )?;
         }
-        Ok(())
+        let next = store::bump_revision(conn, "knowledge", id, principal, &now, "")?;
+        guard.record_operation(conn, "knowledge", id)?;
+        guard.complete(conn)?;
+        Ok(next)
     })?;
+    // 索引重建在事务外：失败不撤销正文（正文已提交），但留下可恢复的 pending 状态。
     if content_changed {
-        kb::reindex_document_impl(db, &data_dir(), id)?;
+        if let Err(err) = kb::reindex_document_impl(db, &data_dir(), id) {
+            tracing::warn!("知识文档 {id} 索引重建失败，保持 pending 待重试: {err}");
+            let _ = db.with_conn(|conn| {
+                conn.execute(
+                    "UPDATE knowledge_documents SET status='pending', error=?2 WHERE id=?1",
+                    rusqlite::params![id, truncate(&err.user_message(), 500)],
+                )
+                .map(|_| ())
+                .map_err(AppError::from)
+            });
+        }
     }
     let detail = kb::get_document_impl(db, id)?;
-    let updated_at = detail.document.updated_at.clone();
-    let next = db.with_conn(|conn| {
-        store::bump_revision(conn, "knowledge", id, principal, &updated_at, "")
-    })?;
+    let project_id = knowledge_project_id(db, &detail.document.kb_id);
     store::log_activity(
         db,
         &store::ActivityEntry {
@@ -989,7 +1459,7 @@ pub fn update_knowledge(
             action: "knowledge.update",
             resource_kind: "knowledge",
             resource_id: id,
-            project_id: "",
+            project_id: &project_id,
             request_id: "",
             success: true,
             error_code: "",
@@ -999,6 +1469,57 @@ pub fn update_knowledge(
         },
     );
     doc_out(db, detail)
+}
+
+/// 重试索引失败的 pending 文档（有界，避免把长索引塞进请求路径）。
+///
+/// 返回成功重建的数量。单次最多 20 篇，失败保持 pending，下一次继续。
+pub fn repair_pending_knowledge(db: &Db, kb_id: Option<&str>) -> AppResult<u32> {
+    let ids: Vec<String> = db.with_read(|conn| {
+        let (sql, params): (&str, Vec<rusqlite::types::Value>) = match kb_id {
+            Some(kb) => (
+                "SELECT id FROM knowledge_documents WHERE status='pending' AND kb_id=?1
+                 ORDER BY updated_at LIMIT 20",
+                vec![rusqlite::types::Value::Text(kb.to_string())],
+            ),
+            None => (
+                "SELECT id FROM knowledge_documents WHERE status='pending'
+                 ORDER BY updated_at LIMIT 20",
+                Vec::new(),
+            ),
+        };
+        let mut stmt = conn.prepare(sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(params), |r| r.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok::<_, AppError>(out)
+    })?;
+    let mut repaired = 0u32;
+    for id in ids {
+        if kb::reindex_document_impl(db, &data_dir(), &id).is_ok() {
+            repaired += 1;
+        }
+    }
+    Ok(repaired)
+}
+
+/// 知识库真实归属项目（活动日志与权限过滤共用）；无归属返回空串。
+fn knowledge_project_id(db: &Db, kb_id: &str) -> String {
+    db.with_read(|conn| {
+        Ok(conn
+            .query_row(
+                "SELECT COALESCE(NULLIF(project_id,''), NULLIF(workspace_id,''), '')
+                 FROM knowledge_bases WHERE id=?1",
+                rusqlite::params![kb_id],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(AppError::from)?
+            .unwrap_or_default())
+    })
+    .unwrap_or_default()
 }
 
 // ── 跨类型搜索 ───────────────────────────────────────────────────

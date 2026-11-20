@@ -109,3 +109,47 @@ uri`，不把推测写成事实。详见 [context-engine.md](context-engine.md)�
 - REST 服务与文件监听只在设置开启时启动，设置变更即时生效（与 MCP bridge 同一模式）。
 - 监听线程有取消标志与最大生命周期；退出时 join，不留下孤儿线程。
 - 所有后台任务有上限（并发 1、每轮文件数上限、单文件大小上限）。
+
+## 9. 授权读取层（v82，2026-11-20）
+
+四个入口的读取不再直接调用 `store::list_*` / `store::get_*`。统一入口在
+`agent_access/service.rs`：
+
+```text
+CLI / MCP / REST ──▶ service::list_decisions_authorized
+                     service::get_decision_authorized
+                     service::list_activity_authorized
+                     service::knowledge_index_authorized
+                     service::authorized_knowledge_base_ids
+                        │
+                        └─▶ permissions::{authorized_reads, can_read_project_metadata}
+                              └─ mcp_agent_capabilities（每次请求重读）
+```
+
+约定：
+
+- 能力范围**按资源类型分开**（`CapableScope`），不把 `knowledge.read` 的项目授权套给决策；
+- `ContextRead` 只表示「可装配上下文」，不进入任何资源可见性判定；
+- 显式项目先验证存在性再要求该项目授权；未指定项目时按授权集合过滤，分页 `total` 同步正确；
+- 无项目归属的决策/活动只对全局授权可见；项目已删除不回落全局；
+- 认证通过但无授权返回 `FORBIDDEN`，不返回空列表。
+
+## 10. REST 幂等与提交结果恢复（v82）
+
+`agent_request_cache` 的状态机（迁移 83 增加 state/attempt，迁移 84 增加 operation 指针）：
+
+```text
+(无行) --claim--> inflight --record_operation--> inflight(+指针)
+                     │                                  │
+                     │ 业务事务内 guard.complete          │ 崩溃：响应未写
+                     ▼                                  ▼
+                  committed ──cache_complete──▶ done   committed（租约过期也**不可抢占**）
+                                                       │
+                                     重试：按 operation 指针只读重建响应
+                                           无法重建 → 409 IDEMPOTENCY_RECOVERY_REQUIRED
+```
+
+- `inflight` 过期可被新 attempt 抢占；`done` 过期按 TTL 重新执行；`committed` 永不抢占。
+- `RequestCacheGuard` 的 `check/record_operation/complete` 与业务写入同事务：不存在「业务已写、
+  提交标记未写」的窗口。
+- 重建只调用授权读取，不产生业务写入。

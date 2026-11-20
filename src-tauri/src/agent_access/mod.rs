@@ -24,6 +24,14 @@ pub mod store;
 pub mod sync;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_v82_context;
+#[cfg(test)]
+mod tests_v82_handoff;
+#[cfg(test)]
+mod tests_v82_import;
+#[cfg(test)]
+mod tests_v82_rest;
 pub mod watch;
 pub mod workspace;
 

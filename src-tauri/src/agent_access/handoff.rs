@@ -1,9 +1,18 @@
 //! Agent 交接（handoff）与工作报告。
 //!
 //! 交接不是一段自由文本：必须有来源、目标、关联项目/任务、状态机、版本与时间。
-//! 状态迁移复用 `store::set_handoff_status` 的合法迁移表，并强制 `base_revision` 校验，
-//! 因此两个 Agent 不可能无约束地同时覆盖同一条交接。
+//! 状态迁移由「合法迁移表 + revision 条件更新」共同约束：两个 Agent 不能同时
+//! 改写同一条交接，失败的操作不推进 revision，每次状态变化都在同一事务内留审计。
+//!
+//! 工作报告是**追加式**记录：报告必须挂在一条真实存在的交接上，项目归属由
+//! `agent_handoffs.project_id` 推导（载荷声明的项目不能伪造归属），提交者必须
+//! 同时通过身份匹配、能力与项目范围三道校验。
+//!
+//! 报告的语义是「做过什么」（`result`：completed/partial/blocked/failed），
+//! 与决策记录的「已确认」（`agent_decisions.status`：proposed/accepted/…）
+//! **不是一回事**：报告永远不能被当成已确认决策使用。
 
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -12,7 +21,7 @@ use crate::error::{AppError, AppResult};
 use crate::mcp::permissions::Capability;
 
 use super::permissions as perms;
-use super::{store, validation, Page, Principal};
+use super::{store, validation, Identity, Page, Principal};
 
 #[derive(Clone, Debug, Serialize)]
 pub struct HandoffCreated {
@@ -63,10 +72,26 @@ fn project_kind_for(db: &Db, project_id: &str) -> AppResult<&'static str> {
     kind.ok_or_else(|| AppError::NotFound(format!("项目不存在: {project_id}")))
 }
 
+// ── 交接创建 ─────────────────────────────────────────────────────
+
 pub fn create_handoff(
     db: &Db,
     principal: &Principal,
     input: store::HandoffInput,
+) -> AppResult<HandoffCreated> {
+    create_handoff_guarded(db, principal, input, &store::NoGuard)
+}
+
+/// 带**事务内守卫**的交接写入（v82 文件导入用）。
+///
+/// 守卫（`store::WriteGuard`）与业务写入在**同一个写事务**内：事务开始时
+/// `check(conn)` 校验执行权，业务写入成功后 `complete(conn)` 收尾。任一步失败
+/// 都会让整个事务回滚，不会留下「交接已写入但租约未完成」的窗口。
+pub fn create_handoff_guarded(
+    db: &Db,
+    principal: &Principal,
+    input: store::HandoffInput,
+    guard: &dyn store::WriteGuard,
 ) -> AppResult<HandoffCreated> {
     let summary = input.summary.trim().to_string();
     if summary.is_empty() {
@@ -93,6 +118,7 @@ pub fn create_handoff(
     let id = uuid::Uuid::new_v4().to_string();
     let now = crate::agents::now_iso();
     let revision = db.with_transaction(|conn| {
+        guard.check(conn)?;
         conn.execute(
             "INSERT INTO agent_handoffs
                (id, project_id, project_kind, task_id, from_agent_row_id, from_agent_id,
@@ -119,7 +145,10 @@ pub fn create_handoff(
             ],
         )
         .map_err(AppError::from)?;
-        store::bump_revision(conn, "handoff", &id, principal, &now, "")
+        let revision = store::bump_revision(conn, "handoff", &id, principal, &now, "")?;
+        guard.record_operation(conn, "handoff", &id)?;
+        guard.complete(conn)?;
+        Ok(revision)
     })?;
     let handoff = store::get_handoff(db, &id)?;
     store::log_activity(
@@ -169,20 +198,47 @@ pub fn get_handoff(db: &Db, principal: &Principal, id: &str) -> AppResult<store:
 }
 
 /// 交接自身的项目范围校验。项目为空的交接只对全局授权可见。
+///
+/// 已注册 Agent 按「能力 + 项目范围」判定（`resource_id = ''` 的全局授权可覆盖
+/// 任何项目，项目授权只能覆盖同一项目）。文件导入同样要过能力与项目范围两道
+/// 校验：读能力缺失的导入授权不能借交接详情/报告读取越权。
 fn ensure_handoff_access(
     db: &Db,
     principal: &Principal,
     handoff: &store::Handoff,
     capability: Capability,
 ) -> AppResult<()> {
-    match principal.identity {
-        super::Identity::RegisteredAgent => {
-            perms::require(db, principal, capability, &handoff.project_id)
+    perms::require(db, principal, capability, &handoff.project_id)?;
+    if principal.identity == Identity::FileImport {
+        if let Some(grant) = principal.import.as_ref() {
+            perms::check_import_project_scope(grant, &handoff.project_id)?;
         }
-        _ => Ok(()),
     }
+    Ok(())
 }
 
+// ── 状态机 ───────────────────────────────────────────────────────
+
+/// 合法状态迁移表。终态（completed / rejected / cancelled）没有任何出边，
+/// 因此终态不能被重新打开；`pending` 也不能直接跳到 `completed`。
+fn legal_transition(from: &str, to: &str) -> bool {
+    matches!(
+        (from, to),
+        ("pending", "accepted")
+            | ("pending", "rejected")
+            | ("pending", "cancelled")
+            | ("accepted", "completed")
+            | ("accepted", "cancelled")
+    )
+}
+
+/// 状态迁移：条件更新 + 受影响行数判断。
+///
+/// 并发控制依赖 `WHERE id = ? AND revision = ?` 的**条件更新**：两个 Agent 用
+/// 同一个 `base_revision` 提交时，只有一个能命中行（受影响行数为 1），另一个
+/// 必然得到 0 行并被判为版本冲突。revision 校验与写入在同一写事务内完成，
+/// 失败的操作不会推进 revision；审计与状态变更同事务，状态变了就没有
+/// 「没有审计」的可能。
 fn transition(
     db: &Db,
     principal: &Principal,
@@ -194,29 +250,75 @@ fn transition(
     let current = store::get_handoff(db, id)?;
     ensure_handoff_access(db, principal, &current, Capability::HandoffsWrite)?;
     authorize_handoff_transition(principal, &current, next)?;
-    let handoff = store::set_handoff_status(db, principal, id, next, base_revision, reason)?;
-    store::log_activity(
-        db,
-        &store::ActivityEntry {
-            principal,
-            action: match next {
-                "accepted" => "handoff.accept",
-                "rejected" => "handoff.reject",
-                "completed" => "handoff.complete",
-                _ => "handoff.cancel",
+    let now = crate::agents::now_iso();
+    let action = match next {
+        "accepted" => "handoff.accept",
+        "rejected" => "handoff.reject",
+        "completed" => "handoff.complete",
+        _ => "handoff.cancel",
+    };
+    let detail = format!("交接状态 → {next}");
+    db.with_transaction(|conn| {
+        // 事务内重读状态与版本：事务外的快照只是预检，这里才是判定依据。
+        let (status, revision): (String, i64) = conn.query_row(
+            "SELECT status, revision FROM agent_handoffs WHERE id = ?1",
+            rusqlite::params![id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        if revision != base_revision {
+            return Err(AppError::Conflict(format!(
+                "交接版本已变化（当前 revision={revision}，提交 {base_revision}）"
+            )));
+        }
+        if !legal_transition(&status, next) {
+            return Err(AppError::Conflict(format!(
+                "交接状态不允许从 {status} 变为 {next}"
+            )));
+        }
+        let next_revision = revision.saturating_add(1);
+        // 条件更新：revision 必须仍然等于提交时的版本，否则本次不生效。
+        let affected = conn.execute(
+            "UPDATE agent_handoffs SET status = ?1, revision = ?2, updated_at = ?3,
+               accepted_at = CASE WHEN ?1 = 'accepted' THEN ?3 ELSE accepted_at END,
+               rejected_at = CASE WHEN ?1 = 'rejected' THEN ?3 ELSE rejected_at END,
+               rejection_reason = CASE WHEN ?1 = 'rejected' THEN ?4 ELSE rejection_reason END,
+               completed_at = CASE WHEN ?1 = 'completed' THEN ?3 ELSE completed_at END
+             WHERE id = ?5 AND revision = ?6",
+            rusqlite::params![next, next_revision, now, reason.unwrap_or(""), id, base_revision],
+        )?;
+        if affected != 1 {
+            return Err(AppError::Conflict(
+                "交接已被其他执行者更新，请重新读取后重试".into(),
+            ));
+        }
+        store::bump_revision(conn, "handoff", id, principal, &now, "")?;
+        // 审计与状态变更同事务：状态变了却没有审计，等于没有审计。
+        store::write_activity(
+            conn,
+            &store::ActivityEntry {
+                principal,
+                action,
+                resource_kind: "handoff",
+                resource_id: id,
+                project_id: &current.project_id,
+                request_id: "",
+                success: true,
+                error_code: "",
+                detail: &detail,
+                revision: Some(next_revision),
+                duration_ms: 0,
             },
-            resource_kind: "handoff",
-            resource_id: id,
-            project_id: &handoff.project_id,
-            request_id: "",
-            success: true,
-            error_code: "",
-            detail: &format!("交接状态 → {next}"),
-            revision: Some(handoff.revision),
-            duration_ms: 0,
-        },
-    );
-    Ok(handoff)
+        )?;
+        Ok(())
+    })?;
+    store::get_handoff(db, id)
+}
+
+/// 本机协调者：可信本机用户（UI / 未设 token 的本机 CLI）。
+///
+/// 内部维护身份（`SystemInternal`）不是协调者，不得代替 Agent 接收/拒绝/取消交接。
+fn is_local_coordinator(principal: &Principal) -> bool {
+    matches!(principal.identity, Identity::LocalHuman)
 }
 
 /// 交接状态迁移的操作者约束。必须与状态机同时生效：
@@ -229,7 +331,11 @@ pub fn authorize_handoff_transition(
     handoff: &store::Handoff,
     next: &str,
 ) -> AppResult<()> {
-    if principal.is_trusted_local() {
+    // 目标状态必须先合法：本机协调者也不能把交接改成未知状态。
+    if !matches!(next, "accepted" | "rejected" | "completed" | "cancelled") {
+        return Err(validation(format!("非法交接状态: {next}")));
+    }
+    if is_local_coordinator(principal) {
         return Ok(());
     }
     if !principal.is_agent() {
@@ -300,6 +406,18 @@ pub fn complete_handoff(
     transition(db, principal, id, "completed", base_revision, None)
 }
 
+/// 取消交接：只有创建方或本机协调者可以取消。
+pub fn cancel_handoff(
+    db: &Db,
+    principal: &Principal,
+    id: &str,
+    base_revision: i64,
+    reason: &str,
+) -> AppResult<store::Handoff> {
+    store::check_text("reason", reason, 500)?;
+    transition(db, principal, id, "cancelled", base_revision, Some(reason))
+}
+
 // ── 工作报告 ─────────────────────────────────────────────────────
 
 #[derive(Clone, Debug, Serialize)]
@@ -308,10 +426,132 @@ pub struct ReportOut {
     pub revision: i64,
 }
 
+/// 报告必须挂在一条**真实存在**的交接上：项目归属由交接推导，
+/// 载荷声明的项目只做一致性校验，声明为空不代表「全局」。
+fn resolve_report_handoff(db: &Db, handoff_id: Option<&str>) -> AppResult<store::Handoff> {
+    let raw = handoff_id.map(str::trim).unwrap_or("");
+    if raw.is_empty() {
+        return Err(validation("报告必须关联交接：handoff_id 不能为空"));
+    }
+    store::get_handoff(db, raw)
+}
+
+/// 报告项目 = 交接项目。载荷声明的项目不一致时直接拒绝（不静默改写归属）。
+fn derive_report_project(handoff: &store::Handoff, declared: Option<&str>) -> AppResult<String> {
+    let declared = declared.map(str::trim).unwrap_or("");
+    if !declared.is_empty() && declared != handoff.project_id {
+        if handoff.project_id.is_empty() {
+            return Err(validation(format!(
+                "交接没有项目归属，报告不得声明项目 {declared}"
+            )));
+        }
+        return Err(validation(format!(
+            "报告项目 {declared} 与交接项目 {} 不一致（报告项目由交接推导）",
+            handoff.project_id
+        )));
+    }
+    Ok(handoff.project_id.clone())
+}
+
+/// 报告提交者的身份校验：登记身份必须与库内记录一致（防冒用/防已撤销）。
+///
+/// 「是不是注册 Agent」不是结论：这里核对的是**身份匹配**——行 ID 存在、未撤销、
+/// 且声明的 `agent_id` 与登记记录一致。能力与项目范围由后面的检查负责。
+fn verify_registered_agent(db: &Db, principal: &Principal) -> AppResult<()> {
+    let row_id = principal
+        .agent_row_id
+        .as_deref()
+        .ok_or_else(|| AppError::Forbidden("缺少 Agent 身份".into()))?;
+    let registered = db.with_read(|conn| {
+        Ok(conn
+            .query_row(
+                "SELECT agent_id FROM mcp_agents WHERE id = ?1 AND revoked_at IS NULL",
+                rusqlite::params![row_id],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?)
+    })?;
+    let Some(registered) = registered else {
+        return Err(AppError::Forbidden("Agent 不存在或已被撤销".into()));
+    };
+    if principal.agent_id.trim() != registered {
+        return Err(AppError::Forbidden(
+            "Agent 身份与授权记录不一致，拒绝写入".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// 直接调用报告接口的 Agent 必须是该交接的参与方（发起方或目标方）：
+/// 报告陈述的是「这条交接上做过什么」，与交接无关的 Agent 无权写入。
+///
+/// 文件导入通道不走这条规则：它的授权来自导入授权 + 绑定 Agent 的真实授权
+/// （由 `perms::require` 内部复核），且文件自称的身份本身不可信。
+fn ensure_report_participant(principal: &Principal, handoff: &store::Handoff) -> AppResult<()> {
+    let me = principal.agent_id.trim();
+    if me.is_empty() {
+        return Err(AppError::Forbidden("缺少 Agent 身份".into()));
+    }
+    if handoff.to_agent_id != me && handoff.from_agent_id != me {
+        return Err(AppError::Forbidden(format!(
+            "该交接参与方为 {} → {}，当前 Agent 无权为其提交报告",
+            handoff.from_agent_id, handoff.to_agent_id
+        )));
+    }
+    Ok(())
+}
+
+/// 报告写入的完整授权：身份匹配 + 能力 + 项目范围，三者缺一不可。
+///
+/// - **身份匹配**：注册 Agent 必须与库内登记一致（未撤销、agent_id 相符）；
+///   直接调用接口时还必须是该交接的参与方；
+/// - **能力**：必须持有 `handoffs.write`；
+/// - **项目范围**：按交接真实归属的项目判定——全局授权可覆盖任何项目，
+///   项目授权只能覆盖同一项目；无项目（全局）交接只接受全局授权。
+fn ensure_report_access(
+    db: &Db,
+    principal: &Principal,
+    handoff: &store::Handoff,
+) -> AppResult<()> {
+    match principal.identity {
+        Identity::RegisteredAgent => {
+            verify_registered_agent(db, principal)?;
+            if principal.import.is_none() {
+                ensure_report_participant(principal, handoff)?;
+            }
+            perms::require(db, principal, Capability::HandoffsWrite, &handoff.project_id)?;
+        }
+        Identity::FileImport => {
+            // 文件导入：能力集合来自导入授权；项目范围同样按交接真实归属判定。
+            perms::require(db, principal, Capability::HandoffsWrite, &handoff.project_id)?;
+            if let Some(grant) = principal.import.as_ref() {
+                perms::check_import_project_scope(grant, &handoff.project_id)?;
+            }
+        }
+        Identity::LocalHuman | Identity::SystemInternal => {
+            perms::require(db, principal, Capability::HandoffsWrite, &handoff.project_id)?;
+        }
+    }
+    Ok(())
+}
+
 pub fn create_report(
     db: &Db,
     principal: &Principal,
     input: store::ReportInput,
+) -> AppResult<ReportOut> {
+    create_report_guarded(db, principal, input, &store::NoGuard)
+}
+
+/// 带**事务内守卫**的工作报告写入（v82 文件导入用）。
+///
+/// 与 [`create_handoff_guarded`] 的守卫语义一致：守卫校验与业务写入在同一个写
+/// 事务内完成，任一步失败都整体回滚。
+pub fn create_report_guarded(
+    db: &Db,
+    principal: &Principal,
+    input: store::ReportInput,
+    guard: &dyn store::WriteGuard,
 ) -> AppResult<ReportOut> {
     let summary = input.summary.trim().to_string();
     if summary.is_empty() {
@@ -333,44 +573,19 @@ pub fn create_report(
     if !matches!(result.as_str(), "completed" | "partial" | "blocked" | "failed") {
         return Err(validation(format!("非法 result: {result}")));
     }
-    let handoff = match input.handoff_id.as_deref() {
-        Some(handoff_id) => {
-            let handoff = store::get_handoff(db, handoff_id)?;
-            ensure_handoff_access(db, principal, &handoff, Capability::HandoffsWrite)?;
-            Some(handoff)
-        }
-        None => None,
-    };
-    let project_id = input.project_id.unwrap_or_default();
-    if !project_id.is_empty() {
-        project_kind_for(db, &project_id)?;
-    }
-    if let Some(handoff) = &handoff {
-        if !handoff.project_id.is_empty()
-            && !project_id.is_empty()
-            && handoff.project_id != project_id
-        {
-            return Err(validation(format!(
-                "报告项目 {} 与交接项目 {} 不一致",
-                project_id, handoff.project_id
-            )));
-        }
-    }
-    // 报告必须归属于交接的项目，避免用空项目绕过范围限制。
-    let effective_project = if project_id.is_empty() {
-        handoff
-            .as_ref()
-            .map(|item| item.project_id.clone())
-            .unwrap_or_default()
-    } else {
-        project_id.clone()
-    };
-    perms::require(db, principal, Capability::HandoffsWrite, &effective_project)?;
+    // 1) 报告必须关联真实存在的交接。
+    let handoff = resolve_report_handoff(db, input.handoff_id.as_deref())?;
+    // 2) 项目归属只能来自交接；载荷声明的项目只做一致性校验。
+    let project_id = derive_report_project(&handoff, input.project_id.as_deref())?;
+    // 3) 身份匹配 + 能力 + 项目范围。
+    ensure_report_access(db, principal, &handoff)?;
     let (agent_row, agent_id) = principal_agent_snapshot(principal);
     let id = uuid::Uuid::new_v4().to_string();
     let now = crate::agents::now_iso();
     let source = super::store::source_label(principal.source);
     let revision = db.with_transaction(|conn| {
+        guard.check(conn)?;
+        // 追加式写入：只 INSERT，绝不 UPDATE/REPLACE 既有报告。
         conn.execute(
             "INSERT INTO agent_work_reports
                (id, handoff_id, project_id, task_id, agent_row_id, agent_id, summary, result,
@@ -378,7 +593,7 @@ pub fn create_report(
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
             rusqlite::params![
                 id,
-                input.handoff_id,
+                handoff.id,
                 project_id,
                 input.task_id,
                 agent_row,
@@ -395,7 +610,10 @@ pub fn create_report(
             ],
         )
         .map_err(AppError::from)?;
-        store::bump_revision(conn, "report", &id, principal, &now, "")
+        let revision = store::bump_revision(conn, "report", &id, principal, &now, "")?;
+        guard.record_operation(conn, "report", &id)?;
+        guard.complete(conn)?;
+        Ok(revision)
     })?;
     let report = store::get_report(db, &id)?;
     store::log_activity(
@@ -405,7 +623,7 @@ pub fn create_report(
             action: "report.create",
             resource_kind: "report",
             resource_id: &id,
-            project_id: &project_id,
+            project_id: &report.project_id,
             request_id: "",
             success: true,
             error_code: "",
@@ -417,6 +635,15 @@ pub fn create_report(
     Ok(ReportOut { report, revision })
 }
 
+/// 列工作报告：**先按项目范围过滤再分页**。
+///
+/// 范围来自 `AuthorizedReads.handoffs`（`handoffs.read` 的项目范围）：
+/// - 全局授权 → 全量；
+/// - 项目授权且 `ids` 为空 → FORBIDDEN（没有可读范围，不能退化成全量）；
+/// - 项目授权 → 只查这些项目的报告，`Page.total` 也只计这些项目。
+///
+/// 带 `handoff_id` 时先校验该交接的项目访问，再按该交接过滤（其报告项目必然
+/// 等于交接项目，因此仍落在允许范围内）。
 pub fn list_reports(
     db: &Db,
     principal: &Principal,
@@ -425,15 +652,51 @@ pub fn list_reports(
     limit: u32,
     offset: u32,
 ) -> AppResult<(Vec<store::WorkReport>, Page)> {
+    let scope = perms::authorized_reads(db, principal)?.handoffs;
     if let Some(handoff_id) = handoff_id {
         let handoff = store::get_handoff(db, handoff_id)?;
         ensure_handoff_access(db, principal, &handoff, Capability::HandoffsRead)?;
-    } else {
-        perms::require(db, principal, Capability::HandoffsRead, "")?;
+        if !scope.allows(&handoff.project_id) {
+            return Err(perms::denial(Capability::HandoffsRead));
+        }
+    } else if scope.is_empty() {
+        return Err(perms::denial(Capability::HandoffsRead));
     }
-    store::list_reports(db, agent_id, handoff_id, limit, offset)
+    if scope.global {
+        store::list_reports(db, agent_id, handoff_id, limit, offset)
+    } else {
+        let projects: Vec<String> = scope.ids.into_iter().collect();
+        store::list_reports_in_projects(db, &projects, agent_id, handoff_id, limit, offset)
+    }
 }
 
+/// 供 Context Engine 消费的工作报告：按能力 + 项目范围过滤。
+///
+/// 先按项目过滤再取数（不是取全量后在内存里筛），项目级授权的总条数与分页
+/// 都不会被其它项目影响。
+///
+/// 报告语义固定为「做过什么」：`result` 取值只可能是
+/// completed/partial/blocked/failed，**不会**出现决策状态
+/// （proposed/accepted/superseded/rejected）。调用方必须以 `kind = "report"`
+/// 呈现，不得把它并入决策集合。
+pub fn list_reports_for_context(
+    db: &Db,
+    principal: &Principal,
+    project_id: &str,
+    limit: u32,
+) -> AppResult<Vec<store::WorkReport>> {
+    perms::require(db, principal, Capability::HandoffsRead, project_id)?;
+    let limit = limit.clamp(1, 200);
+    let projects = [project_id.to_string()];
+    let (reports, _) = store::list_reports_in_projects(db, &projects, None, None, limit, 0)?;
+    Ok(reports)
+}
+
+/// 取单条报告：访问范围由报告的**真实归属**判定。
+///
+/// 报告挂在交接上时项目归属由交接推导（载荷声明不可信）；没有交接的旧报告才
+/// 回退到自身 `project_id`——项目为空时只允许全局 `handoffs.read`，因此不会
+/// 返回其它项目的报告。
 pub fn get_report(db: &Db, principal: &Principal, id: &str) -> AppResult<store::WorkReport> {
     let report = store::get_report(db, id)?;
     if let Some(handoff_id) = report.handoff_id.as_deref() {

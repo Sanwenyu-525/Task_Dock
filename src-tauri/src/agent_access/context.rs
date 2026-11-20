@@ -9,6 +9,16 @@
 //! 2) 每种资源再按自己的读能力过滤：没有 `TasksRead` 就不返回任务，而不是整次失败；
 //! 3) 显式请求未授权资源 → 明确的权限错误（不静默返回空）；
 //! 4) 默认上下文允许“部分结果”，但绝不跨项目/跨权限回退到全局数据。
+//!
+//! v82 修正（资源粒度 / 归属 / 预算三处缺陷）：
+//! 1) **资源粒度**：每类资源用**各自的**读取能力判定（`TasksRead` / `PlansRead` /
+//!    `KnowledgeRead` / `DecisionsRead` / `SkillsRead` / `HandoffsRead`）；
+//!    任务级授权必须落在「该项目下的任务集合」内，`ContextRead` 不能代替任何资源能力；
+//! 2) **归属**：近期变更按真实业务关联（`workspace_task_links` / `knowledge_bases` /
+//!    `agent_decisions` / `agent_handoffs` / `agent_work_reports`）判定归属，
+//!    绝不再用「资源 ID == 项目 ID」的字符串相等；
+//! 3) **预算**：固定骨架（项目 / 目标 / 约束 / 下一步 / 元数据）先占额度，
+//!    条目与近期变更只能用剩余额度；Markdown 与 JSON 共用同一份裁剪结果。
 
 use std::collections::{HashMap, HashSet};
 
@@ -81,6 +91,8 @@ pub struct AgentContext {
     pub estimated_tokens: u32,
     pub truncated: bool,
     pub kept_items: u32,
+    /// 预算提示（例如固定骨架本身就超限）。为空表示没有需要提示的事。
+    pub budget_note: String,
     pub markdown: String,
 }
 
@@ -285,22 +297,23 @@ fn agent_row_id(principal: &Principal) -> Option<&str> {
     }
 }
 
-/// Agent 是否可访问某项目：任一读能力在全局或该项目上有授权。
-fn can_access_project(db: &Db, principal: &Principal, project_id: &str) -> AppResult<bool> {
-    let Some(row_id) = agent_row_id(principal) else {
-        return Ok(true);
-    };
-    db.with_read(|conn| {
-        let exists: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM mcp_agent_capabilities
-             WHERE agent_row_id = ?1 AND (resource_id = '' OR resource_id = ?2)
-               AND capability IN ('projects.read','tasks.read','plans.read','knowledge.read',
-                                  'decisions.read','handoffs.read','context.read')",
-            rusqlite::params![row_id, project_id],
-            |r| r.get(0),
-        )?;
-        Ok(exists > 0)
-    })
+/// 项目能否进入上下文：必须由**资源读能力**（projects/tasks/plans/knowledge/
+/// decisions/handoffs）的授权范围覆盖该项目。
+///
+/// `ContextRead` 只是「能否装配上下文」的入口能力，**不是**项目访问依据：
+/// 只持入口能力的 Agent 既不能通过显式项目参数进入项目，也不会在无项目参数时
+/// 被默认分配到任何项目（否则会泄露项目名称与目标）。
+fn project_read_scope_covers(reads: &perms::AuthorizedReads, project_id: &str) -> bool {
+    let project_id = project_id.trim();
+    if project_id.is_empty() {
+        return false;
+    }
+    reads.projects.allows(project_id)
+        || reads.tasks.allows(project_id)
+        || reads.plans.allows(project_id)
+        || reads.knowledge.allows(project_id)
+        || reads.decisions.allows(project_id)
+        || reads.handoffs.allows(project_id)
 }
 
 fn resolve_context_scope(
@@ -309,6 +322,8 @@ fn resolve_context_scope(
     req: &ContextRequest,
 ) -> AppResult<ContextScope> {
     let mut scope = ContextScope::default();
+    // 一次请求只读一次授权范围：项目进入资格、项目元数据、规划目标共用同一份判定。
+    let reads = perms::authorized_reads(db, principal)?;
     let explicit_project = req
         .project_id
         .as_deref()
@@ -323,7 +338,7 @@ fn resolve_context_scope(
             if kind.is_none() {
                 return Err(AppError::NotFound(format!("项目不存在: {project_id}")));
             }
-            if !can_access_project(db, principal, &project_id)? {
+            if !project_read_scope_covers(&reads, &project_id) {
                 return Err(AppError::Forbidden(format!(
                     "Agent 无权访问项目 {project_id}"
                 )));
@@ -339,55 +354,69 @@ fn resolve_context_scope(
             };
             match from_task {
                 Some(project_id) => {
-                    if !can_access_project(db, principal, &project_id)? {
+                    if !project_read_scope_covers(&reads, &project_id) {
                         return Err(AppError::Forbidden(format!(
                             "Agent 无权访问任务所属项目 {project_id}"
                         )));
                     }
                     project_id
                 }
-                None => resolve_default_project(db, principal)?,
+                None => resolve_default_project(db, &reads)?,
             }
         }
     };
-    scope.project_name = project_name(db, &scope.project_id)?;
+    // 项目元数据（名称）**只认 `projects.read`**：其它资源读能力可以进入项目上下文，
+    // 但拿不到项目名称/目标；没有元数据授权时保持空串，绝不回退到全局信息。
+    scope.project_name = if perms::can_read_project_metadata(db, principal, &scope.project_id)? {
+        project_name(db, &scope.project_id)?
+    } else {
+        String::new()
+    };
 
     // 目标：显式任务 > 自然语言 > 项目中进行中的功能 > 默认文案
     scope.objective = req.task.clone().unwrap_or_default();
+    let mut objective_is_explicit = !scope.objective.trim().is_empty();
     if !scope.task_id.is_empty() {
         // 只有具备任务读能力时才解析；否则不回显任务标题（避免越权探测）。
-        if kind_globally_or_project_authorized(
-            db,
-            principal,
-            Capability::TasksRead,
-            &scope.project_id,
-        )? {
-            let task = service::fetch_task(db, principal, &scope.task_id)?;
+        if task_readable(db, principal, &scope.task_id, &scope)? {
+            // 授权判定已在上面按「全局 / 精确任务 / 项目内任务」完成，
+            // 这里直接取任务，不再走按 task_id 的通用 require（那会误伤项目级授权）。
+            let task = crate::commands::tasks::get_task(db, &scope.task_id)?;
             scope.objective = format!("{}（{}，状态 {}）", task.title, task.id, task.status);
             scope.objective_task = Some(task);
+            objective_is_explicit = true;
         } else {
             scope.objective = format!("任务 {}（当前身份无权读取任务详情）", scope.task_id);
         }
     }
-    if scope.objective.trim().is_empty() && !scope.project_id.is_empty() {
+    // 规划目标/功能属于 `plans.read` 的元数据：没有覆盖该项目的规划读取权限时
+    // 不作为 objective 来源（任务 objective 仍由 `task_readable` 决定）。
+    if scope.objective.trim().is_empty()
+        && !scope.project_id.is_empty()
+        && reads.plans.allows(&scope.project_id)
+    {
         let features = list_features_impl(db, scope.project_id.clone()).unwrap_or_default();
         if let Some(feature) = features.iter().find(|f| f.status == "in_progress") {
             scope.objective = format!("推进功能：{}", feature.title);
+            objective_is_explicit = true;
         }
     }
     if scope.objective.trim().is_empty() {
         scope.objective = "了解当前项目状态并准备下一步工作".into();
     }
-    scope.keywords = keywords(&format!(
-        "{} {}",
-        scope.objective,
-        req.task.clone().unwrap_or_default()
-    ));
+    // 关键词只来自**真实诉求**（自然语言描述 / 当前任务标题 / 在推进的功能）。
+    // 默认套话不参与检索，否则会把「无诉求」的上下文过滤成空结果。
+    scope.keywords = if objective_is_explicit {
+        keywords(&scope.objective)
+    } else {
+        Vec::new()
+    };
     Ok(scope)
 }
 
-/// 默认项目只从 Agent 可访问的项目中选择；不允许“未授权 → 回退全局”。
-fn resolve_default_project(db: &Db, principal: &Principal) -> AppResult<String> {
+/// 默认项目只从「有资源读授权的项目」中选择；只持 `ContextRead` 时返回空项目，
+/// 不允许“入口能力全局 → 回退到第一个项目”。
+fn resolve_default_project(db: &Db, reads: &perms::AuthorizedReads) -> AppResult<String> {
     let projects = crate::commands::planning::list_projects_impl(db, Some(false))?;
     let candidates: Vec<_> = projects
         .iter()
@@ -395,33 +424,163 @@ fn resolve_default_project(db: &Db, principal: &Principal) -> AppResult<String> 
         .chain(projects.iter())
         .collect();
     for project in candidates {
-        if can_access_project(db, principal, &project.id)? {
+        if project_read_scope_covers(reads, &project.id) {
             return Ok(project.id.clone());
         }
     }
     Ok(String::new())
 }
 
-/// 能力是否可用：全局授权，或（有项目范围时）该项目上的授权。
-fn kind_globally_or_project_authorized(
+/// 该 Agent 持有的某项能力的全部 `resource_id`（空串代表全局授权）。
+///
+/// 只查**这一项能力**：入口能力（`ContextRead`）永远不会出现在结果里，
+/// 因此「能装配上下文」永远不等于「能读任务 / 决策 / 知识」。
+fn granted_resources(
     db: &Db,
     principal: &Principal,
     capability: Capability,
-    project_id: &str,
-) -> AppResult<bool> {
+) -> AppResult<Vec<String>> {
     let Some(row_id) = agent_row_id(principal) else {
-        return Ok(true);
+        // 本机用户 / 内部系统：按全局可用处理。
+        return Ok(vec![String::new()]);
     };
     db.with_read(|conn| {
-        let n: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM mcp_agent_capabilities
-             WHERE agent_row_id = ?1 AND capability = ?2
-               AND (resource_id = '' OR (resource_id = ?3 AND ?3 <> ''))",
-            rusqlite::params![row_id, capability.as_str(), project_id],
-            |r| r.get(0),
+        let mut stmt = conn.prepare(
+            "SELECT resource_id FROM mcp_agent_capabilities
+             WHERE agent_row_id = ?1 AND capability = ?2",
         )?;
-        Ok(n > 0)
+        let rows = stmt.query_map(rusqlite::params![row_id, capability.as_str()], |r| {
+            r.get::<_, String>(0)
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
     })
+}
+
+/// 某类资源在当前项目范围内是否可读。
+///
+/// 每类资源的 `resource_id` 语义不同，必须**分别**判定：
+/// - `task`：全局授权 / 项目 ID / 该项目下任一任务 ID；
+/// - `knowledge`：全局授权 / 项目 ID / 该项目下任一知识库 ID；
+/// - `plan` / `decision` / `handoff`：全局授权或项目 ID；
+/// - `skill`：只支持全局授权（`Capability::SkillsRead` 是 global_only）。
+///
+/// 三条硬约束：
+/// 1. 项目范围为空时**只认全局授权**——项目级授权不得在无项目上下文中生效；
+/// 2. `ContextRead` 不参与判定（入口能力 ≠ 资源读取能力）；
+/// 3. 任务级授权必须落在「该项目下的任务集合」内，不能拿别的项目的任务凑数。
+fn kind_authorized(
+    db: &Db,
+    principal: &Principal,
+    kind: &str,
+    scope: &ContextScope,
+) -> AppResult<bool> {
+    let capability = capability_of_kind(kind);
+    let resources = granted_resources(db, principal, capability)?;
+    if resources.iter().any(|r| r.trim().is_empty()) {
+        return Ok(true);
+    }
+    let project_id = scope.project_id.trim();
+    if project_id.is_empty() {
+        return Ok(false);
+    }
+    if resources.iter().any(|r| r == project_id) {
+        return Ok(true);
+    }
+    match kind {
+        "task" => {
+            let task_ids = task_ids_for_project(db, project_id);
+            Ok(resources.iter().any(|r| task_ids.contains(r)))
+        }
+        "knowledge" => {
+            let kb_ids = knowledge_base_ids_for_project(db, project_id)?;
+            Ok(resources.iter().any(|r| kb_ids.contains(r)))
+        }
+        _ => Ok(false),
+    }
+}
+
+/// 任务级授权范围：`None` = 全局授权（项目内任务都可见）；`Some(set)` = 只允许这些任务。
+///
+/// 授权粒度落到具体任务：只有「全局授权」或「精确任务授权」才可能拿到任务，
+/// 「项目级授权」等价于该项目下全部任务（仍然只限该项目）。
+fn authorized_task_ids(
+    db: &Db,
+    principal: &Principal,
+    scope: &ContextScope,
+) -> AppResult<Option<HashSet<String>>> {
+    let resources = granted_resources(db, principal, Capability::TasksRead)?;
+    if resources.iter().any(|r| r.trim().is_empty()) {
+        return Ok(None);
+    }
+    let project_id = scope.project_id.trim();
+    if project_id.is_empty() {
+        return Ok(Some(HashSet::new()));
+    }
+    let project_tasks = task_ids_for_project(db, project_id);
+    let mut allowed = HashSet::new();
+    for resource in resources {
+        if resource == project_id {
+            allowed.extend(project_tasks.iter().cloned());
+        } else if project_tasks.contains(&resource) {
+            allowed.insert(resource);
+        }
+    }
+    Ok(Some(allowed))
+}
+
+/// 知识库级授权范围：`None` = 全局授权；`Some(set)` = 只允许这些知识库。
+fn authorized_knowledge_base_ids(
+    db: &Db,
+    principal: &Principal,
+    scope: &ContextScope,
+) -> AppResult<Option<HashSet<String>>> {
+    let resources = granted_resources(db, principal, Capability::KnowledgeRead)?;
+    if resources.iter().any(|r| r.trim().is_empty()) {
+        return Ok(None);
+    }
+    let project_id = scope.project_id.trim();
+    if project_id.is_empty() {
+        return Ok(Some(HashSet::new()));
+    }
+    let project_kbs = knowledge_base_ids_for_project(db, project_id)?;
+    let mut allowed = HashSet::new();
+    for resource in resources {
+        if resource == project_id {
+            allowed.extend(project_kbs.iter().cloned());
+        } else if project_kbs.contains(&resource) {
+            allowed.insert(resource);
+        }
+    }
+    Ok(Some(allowed))
+}
+
+/// 当前任务是否可读：全局授权 / 精确任务授权 /（项目授权且任务确属该项目）。
+fn task_readable(
+    db: &Db,
+    principal: &Principal,
+    task_id: &str,
+    scope: &ContextScope,
+) -> AppResult<bool> {
+    let resources = granted_resources(db, principal, Capability::TasksRead)?;
+    if resources.iter().any(|r| r.trim().is_empty()) {
+        return Ok(true);
+    }
+    if resources.iter().any(|r| r == task_id) {
+        return Ok(true);
+    }
+    let project_id = scope.project_id.trim();
+    if project_id.is_empty() {
+        return Ok(false);
+    }
+    if !resources.iter().any(|r| r == project_id) {
+        return Ok(false);
+    }
+    // 项目级任务授权：任务必须确实挂在该项目下。
+    Ok(task_ids_for_project(db, project_id).contains(task_id))
 }
 
 /// 2) 授权资源类型：显式请求未授权 → 明确报错；默认请求 → 只返回已授权部分。
@@ -451,8 +610,8 @@ fn resolve_authorized_kinds(
     let mut authorized = AuthorizedContextKinds::default();
     for kind in requested {
         let capability = capability_of_kind(kind);
-        let allowed =
-            kind_globally_or_project_authorized(db, principal, capability, &scope.project_id)?;
+        // 每类资源用**各自**的读取能力判定：项目级授权不得代替其它资源的读取权限。
+        let allowed = kind_authorized(db, principal, kind, scope)?;
         if !allowed && !req.kinds.is_empty() {
             return Err(perms::denial(capability));
         }
@@ -543,54 +702,64 @@ fn collect_plan(
 
 fn collect_tasks(
     db: &Db,
-    _principal: &Principal,
+    principal: &Principal,
     scope: &ContextScope,
     items: &mut Vec<ContextItem>,
 ) -> AppResult<()> {
-    let mut filter = TaskFilter {
+    // 授权范围先算清楚：全局授权才允许看到项目内全部任务，
+    // 任务级授权只允许被点名的那些任务。
+    let allowed = authorized_task_ids(db, principal, scope)?;
+    let filter = TaskFilter {
         status: Some("all".into()),
         limit: Some(200),
         ..Default::default()
     };
-    if let Some(first) = scope.keywords.first() {
-        filter.search = Some(first.clone());
-    } else {
-        filter.status = Some("pending".into());
-    }
-    let mut tasks = list_tasks_inner(db, filter)?;
-    if let Some(existing) = &scope.objective_task {
-        if !tasks.iter().any(|t| t.id == existing.id) {
-            tasks.push(existing.clone());
-        }
-    }
-    // 项目范围：只保留与该项目弱关联的任务，避免默认检索混入无关任务。
+    let tasks = list_tasks_inner(db, filter)?;
     let linked = task_ids_for_project(db, &scope.project_id);
-    if !scope.project_id.is_empty() {
-        tasks.retain(|task| {
-            linked.contains(&task.id)
-                || scope
-                    .objective_task
-                    .as_ref()
-                    .map(|t| t.id == task.id)
-                    .unwrap_or(false)
-        });
-    }
-    for task in tasks.into_iter().take(24) {
-        let mut relevance = 10 + recency_score(&task.updated_at);
-        for k in &scope.keywords {
-            relevance += score_title(&task.title, k) + score_text(&task.description, k);
+    let objective_id = scope.objective_task.as_ref().map(|t| t.id.clone());
+    let mut candidates: Vec<(Task, i64)> = Vec::new();
+    for task in tasks {
+        let is_objective = objective_id.as_deref() == Some(task.id.as_str());
+        // 项目隔离：只保留与该项目弱关联的任务（当前任务除外）。
+        if !scope.project_id.is_empty() && !linked.contains(&task.id) && !is_objective {
+            continue;
         }
+        // 授权收窄：任务级授权只放行被点名的任务。
+        if let Some(set) = &allowed {
+            if !set.contains(&task.id) {
+                continue;
+            }
+        }
+        // 关键词命中：中文按双字切片打分（`keywords()` 已切好），避免单个
+        // SQL LIKE 关键词漏召回；没有诉求时退回「未完成任务」这一稳定视图。
+        let mut keyword_hit = 0i64;
+        for k in &scope.keywords {
+            keyword_hit += score_title(&task.title, k) + score_text(&task.description, k);
+        }
+        if !is_objective {
+            if scope.keywords.is_empty() {
+                if task.status != "pending" {
+                    continue;
+                }
+            } else if keyword_hit == 0 {
+                continue;
+            }
+        }
+        let mut relevance = 10 + recency_score(&task.updated_at) + keyword_hit;
         if task.status == "pending" {
             relevance += 10;
         }
-        if scope
-            .objective_task
-            .as_ref()
-            .map(|t| t.id == task.id)
-            .unwrap_or(false)
-        {
+        if is_objective {
             relevance += 40;
         }
+        candidates.push((task, relevance));
+    }
+    candidates.sort_by(|a, b| {
+        b.1.cmp(&a.1)
+            .then(b.0.updated_at.cmp(&a.0.updated_at))
+            .then(a.0.id.cmp(&b.0.id))
+    });
+    for (task, relevance) in candidates.into_iter().take(24) {
         items.push(ContextItem {
             kind: "task".into(),
             source_id: task.id.clone(),
@@ -612,33 +781,51 @@ fn collect_knowledge(
     scope: &ContextScope,
     items: &mut Vec<ContextItem>,
 ) -> AppResult<()> {
-    let query = scope.keywords.join(" ");
+    let allowed_kbs = authorized_knowledge_base_ids(db, principal, scope)?;
     // 关键词检索接口要求全局 KnowledgeRead；项目级授权只走项目知识库列表。
-    let can_search = kind_globally_or_project_authorized(
-        db,
-        principal,
-        Capability::KnowledgeRead,
-        "",
-    )?;
-    if can_search && !query.is_empty() {
-        let (hits, _) = service::search_knowledge(db, principal, &query, &[], 8, 0)?;
-        for hit in hits {
-            items.push(ContextItem {
-                kind: "knowledge".into(),
-                source_id: hit.doc_id.clone(),
-                title: hit.title.clone(),
-                summary: hit.snippet.clone(),
-                updated_at: hit.updated_at.clone(),
-                relevance: 30 - hit.rank as i64 * 5 + recency_score(&hit.updated_at),
-                access: link_for("knowledge", &hit.doc_id),
-                project_id: scope.project_id.clone(),
-                status: "indexed".into(),
-            });
+    let can_search = granted_resources(db, principal, Capability::KnowledgeRead)?
+        .iter()
+        .any(|r| r.trim().is_empty());
+    if can_search && !scope.keywords.is_empty() {
+        let kb_projects = knowledge_base_projects(db)?;
+        // 逐个关键词检索：中文按双字切片切开后拼成一句话是匹配不到正文的，
+        // 必须一个一个试（重复命中由后面的去重统一处理）。
+        for keyword in scope.keywords.iter().take(4) {
+            let (hits, _) = service::search_knowledge(db, principal, keyword, &[], 8, 0)?;
+            for hit in hits {
+                // 项目隔离：检索可能命中其它项目的知识库，必须按知识库真实归属过滤。
+                if !scope.project_id.is_empty()
+                    && kb_projects.get(&hit.kb_id).map(|p| p.as_str())
+                        != Some(scope.project_id.as_str())
+                {
+                    continue;
+                }
+                if let Some(set) = &allowed_kbs {
+                    if !set.contains(&hit.kb_id) {
+                        continue;
+                    }
+                }
+                items.push(ContextItem {
+                    kind: "knowledge".into(),
+                    source_id: hit.doc_id.clone(),
+                    title: hit.title.clone(),
+                    summary: hit.snippet.clone(),
+                    updated_at: hit.updated_at.clone(),
+                    relevance: 30 - hit.rank as i64 * 5 + recency_score(&hit.updated_at),
+                    access: link_for("knowledge", &hit.doc_id),
+                    project_id: scope.project_id.clone(),
+                    status: "indexed".into(),
+                });
+            }
         }
     }
     if !scope.project_id.is_empty() {
-        let docs = knowledge_docs_for_project(db, &scope.project_id)?;
-        for (id, title, updated_at) in docs {
+        for (id, kb_id, title, updated_at) in knowledge_docs_for_project(db, &scope.project_id)? {
+            if let Some(set) = &allowed_kbs {
+                if !set.contains(&kb_id) {
+                    continue;
+                }
+            }
             items.push(ContextItem {
                 kind: "knowledge".into(),
                 source_id: id.clone(),
@@ -655,18 +842,59 @@ fn collect_knowledge(
     Ok(())
 }
 
+/// 知识库 ID → 归属项目（`knowledge_bases.project_id`）。
+fn knowledge_base_projects(db: &Db) -> AppResult<HashMap<String, String>> {
+    db.with_read(|conn| {
+        let mut stmt = conn.prepare("SELECT id, COALESCE(project_id, '') FROM knowledge_bases")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        let mut out = HashMap::new();
+        for row in rows {
+            let (id, project_id) = row?;
+            out.insert(id, project_id);
+        }
+        Ok(out)
+    })
+}
+
+/// 项目下的知识库 ID 集合。
+fn knowledge_base_ids_for_project(db: &Db, project_id: &str) -> AppResult<HashSet<String>> {
+    if project_id.is_empty() {
+        return Ok(HashSet::new());
+    }
+    db.with_read(|conn| {
+        let mut stmt = conn.prepare("SELECT id FROM knowledge_bases WHERE project_id = ?1")?;
+        let rows = stmt.query_map(rusqlite::params![project_id], |r| r.get::<_, String>(0))?;
+        let mut out = HashSet::new();
+        for row in rows {
+            out.insert(row?);
+        }
+        Ok(out)
+    })
+}
+
+/// 项目知识库下的文档（含知识库 ID，便于按授权范围二次过滤）。
 fn knowledge_docs_for_project(
     db: &Db,
     project_id: &str,
-) -> AppResult<Vec<(String, String, String)>> {
+) -> AppResult<Vec<(String, String, String, String)>> {
+    if project_id.is_empty() {
+        return Ok(Vec::new());
+    }
     db.with_read(|conn| {
         let mut stmt = conn.prepare(
-            "SELECT d.id, d.title, d.updated_at FROM knowledge_documents d
+            "SELECT d.id, d.kb_id, d.title, d.updated_at FROM knowledge_documents d
              JOIN knowledge_bases b ON b.id = d.kb_id
              WHERE b.project_id = ?1 ORDER BY d.updated_at DESC LIMIT 8",
         )?;
         let rows = stmt.query_map(rusqlite::params![project_id], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
         })?;
         let mut out = Vec::new();
         for row in rows {
@@ -681,24 +909,10 @@ fn collect_decisions(
     scope: &ContextScope,
     items: &mut Vec<ContextItem>,
 ) -> AppResult<()> {
-    let (decisions, _) = store::list_decisions(
-        db,
-        if scope.project_id.is_empty() {
-            None
-        } else {
-            Some(&scope.project_id)
-        },
-        None,
-        20,
-        0,
-    )?;
-    let mut list = decisions;
-    // 只有“全局上下文”才补充无项目决策；有项目时不跨项目拼装。
-    if list.is_empty() && scope.project_id.is_empty() {
-        let (global, _) = store::list_decisions(db, Some(""), None, 5, 0)?;
-        list.extend(global);
-    }
-    for decision in list {
+    // 项目隔离：只取本项目的决策；无项目时只取「无项目归属」的全局决策，
+    // 绝不从其它项目回退到全局数据。
+    let (decisions, _) = store::list_decisions(db, Some(scope.project_id.as_str()), None, 20, 0)?;
+    for decision in decisions {
         let mut relevance = 8 + recency_score(&decision.updated_at);
         for k in &scope.keywords {
             relevance += score_title(&decision.title, k) + score_text(&decision.decision, k);
@@ -753,17 +967,8 @@ fn collect_handoffs(
     scope: &ContextScope,
     items: &mut Vec<ContextItem>,
 ) -> AppResult<()> {
-    let (handoffs, _) = store::list_handoffs(
-        db,
-        None,
-        if scope.project_id.is_empty() {
-            None
-        } else {
-            Some(&scope.project_id)
-        },
-        20,
-        0,
-    )?;
+    // 项目隔离：只取本项目的交接（无项目时只取无项目归属的交接）。
+    let (handoffs, _) = store::list_handoffs(db, None, Some(scope.project_id.as_str()), 20, 0)?;
     for handoff in handoffs {
         if !matches!(handoff.status.as_str(), "pending" | "accepted") {
             continue;
@@ -835,33 +1040,100 @@ fn rank_context_candidates(items: &mut [ContextItem]) {
     });
 }
 
+/// 去重：同一资源（`source_id`）在结果里**最多出现一次**，跨 kind 也不重复。
+///
+/// 同一份资源可能同时来自检索与项目列表（例如知识文档），也可能被不同收集器
+/// 以不同 kind 收集；只要 `source_id` 相同就只保留一条（调用前先按相关性排序，
+/// 因此留下的是相关性最高的那条）。
 fn deduplicate_context_candidates(items: &mut Vec<ContextItem>) {
-    let mut seen = HashSet::new();
-    items.retain(|item| seen.insert((item.kind.clone(), item.source_id.clone())));
+    let mut seen: HashSet<String> = HashSet::new();
+    items.retain(|item| seen.insert(item.source_id.clone()));
 }
 
-/// 4) 预算：显式覆盖任务/规划/决策/知识/交接/近期变更/约束/下一步/Markdown 骨架。
-fn apply_context_budget(items: &mut Vec<ContextItem>, total: u32) -> ContextBudget {
-    let mut used: u32 = 400; // Markdown 固定骨架
-    let mut kept = Vec::new();
-    let mut truncated = false;
-    for item in items.drain(..) {
-        let cost = estimate_tokens(&item.title) + estimate_tokens(&item.summary) + 20;
-        if used + cost > total {
-            truncated = true;
-            continue;
+/// 条目成本：标题 + 摘要 + 元数据 + 固定开销。
+///
+/// Markdown 行与 JSON 对象都会带上这些字段，所以成本必须按「实际输出」估算，
+/// 否则预算只能约束标题，输出照样会超。
+fn item_cost(item: &ContextItem) -> u32 {
+    estimate_tokens(&item.title)
+        + estimate_tokens(&item.summary)
+        + estimate_tokens(&item.source_id)
+        + estimate_tokens(&item.updated_at)
+        + estimate_tokens(&item.access)
+        + estimate_tokens(&item.project_id)
+        + 20
+}
+
+/// 固定骨架的 token 消耗：项目 / 当前目标 / 约束 / 下一步 / Markdown 骨架 / JSON 元数据。
+///
+/// 骨架**先**占预算：条目与近期变更只能用剩下的额度。否则「约束、下一步、
+/// Markdown 输出、JSON 元数据」这些固定内容会在预算之外偷偷把结果撑大。
+fn skeleton_cost(ctx: &AgentContext) -> u32 {
+    let mut probe = ctx.clone();
+    probe.items.clear();
+    probe.recent_changes.clear();
+    probe.estimated_tokens = ctx.budget_tokens;
+    probe.kept_items = 0;
+    // 按最长尾部（已截断提示）估算，宁可高估也不允许无声超限。
+    probe.truncated = true;
+    let markdown = render_markdown(&probe);
+    let meta = serde_json::to_string(&probe.scope).unwrap_or_default();
+    estimate_tokens(&markdown) + estimate_tokens(&meta) + 20
+}
+
+/// 按重要程度分组（组内按相关性降序；**组序即保留优先级**）。
+///
+/// 保留优先级：项目目标（骨架） → 约束（骨架） → 已确认决策 → 当前任务 / 项目概览
+/// → 近期变更 → 其余条目。预算不足时从最低档开始丢。
+fn partition_by_priority(
+    items: Vec<ContextItem>,
+    scope: &ContextScope,
+    recent: Vec<ContextItem>,
+) -> Vec<Vec<ContextItem>> {
+    let mut decisions: Vec<ContextItem> = Vec::new();
+    let mut focus: Vec<ContextItem> = Vec::new();
+    let mut rest: Vec<ContextItem> = Vec::new();
+    for item in items {
+        let is_current_task = !scope.task_id.is_empty() && item.source_id == scope.task_id;
+        let is_plan_summary = !scope.project_id.is_empty()
+            && item.kind == "plan"
+            && item.source_id == scope.project_id;
+        if item.kind == "decision" && item.status == "accepted" {
+            decisions.push(item);
+        } else if is_current_task || is_plan_summary {
+            focus.push(item);
+        } else {
+            rest.push(item);
         }
-        used += cost;
-        kept.push(item);
     }
-    let kept_items = kept.len() as u32;
-    *items = kept;
-    ContextBudget {
-        total,
-        used,
-        truncated,
-        kept_items,
+    vec![decisions, focus, recent, rest]
+}
+
+/// 在剩余预算内按组填充条目；返回（每组保留的条目、实际消耗、是否发生裁剪）。
+///
+/// 某档装不下时**整体停止**：低优先级条目不得挤掉更高优先级的条目。
+fn allocate_by_priority(
+    groups: &[Vec<ContextItem>],
+    remaining: u32,
+) -> (Vec<Vec<ContextItem>>, u32, bool) {
+    let mut kept: Vec<Vec<ContextItem>> = groups.iter().map(|_| Vec::new()).collect();
+    let mut used = 0u32;
+    let mut truncated = false;
+    for (index, group) in groups.iter().enumerate() {
+        for item in group {
+            let cost = item_cost(item);
+            if used.saturating_add(cost) > remaining {
+                truncated = true;
+                break;
+            }
+            used += cost;
+            kept[index].push(item.clone());
+        }
+        if truncated {
+            break;
+        }
     }
+    (kept, used, truncated)
 }
 
 fn describe_task(task: &Task) -> String {
@@ -879,12 +1151,150 @@ fn describe_task(task: &Task) -> String {
     parts.join(" · ")
 }
 
-/// 近期变更：通过既有业务关联查找资源，而不是 `resource_id = project_id`。
-fn retrieve_recent_changes(
+/// 资源归属索引：把 revision 里的资源 ID 映射到**真实业务归属项目**。
+///
+/// 绝不拿「资源 ID == 项目 ID」这种字符串相等当归属：任务 ID 永远不会等于项目 ID。
+#[derive(Default)]
+struct ResourceOwners {
+    /// 任务 → 项目集合（一个任务可挂多个项目）。
+    tasks: HashMap<String, HashSet<String>>,
+    /// 知识文档 → 项目（经 `knowledge_documents.kb_id` → `knowledge_bases.project_id`）。
+    knowledge: HashMap<String, String>,
+    /// 决策 → 项目（`agent_decisions.project_id`）。
+    decisions: HashMap<String, String>,
+    /// 交接 → 项目（`agent_handoffs.project_id`）。
+    handoffs: HashMap<String, String>,
+    /// 报告 → 项目（`agent_work_reports.project_id`，缺失时回退到所属交接的项目）。
+    reports: HashMap<String, String>,
+    /// 规划功能 → 项目（`planning_features.project_id`）。
+    features: HashMap<String, String>,
+}
+
+impl ResourceOwners {
+    /// 资源归属的项目集合（空串已剔除；空集合表示「无项目归属」）。
+    fn projects_of(&self, kind: &str, id: &str) -> Vec<String> {
+        let raw: Vec<String> = match kind {
+            "task" => self
+                .tasks
+                .get(id)
+                .map(|set| set.iter().cloned().collect())
+                .unwrap_or_default(),
+            "knowledge" => self.knowledge.get(id).cloned().into_iter().collect(),
+            "decision" => self.decisions.get(id).cloned().into_iter().collect(),
+            "handoff" => self.handoffs.get(id).cloned().into_iter().collect(),
+            "report" => self.reports.get(id).cloned().into_iter().collect(),
+            "feature" => self.features.get(id).cloned().into_iter().collect(),
+            // 规划项目自身：资源 ID 就是项目 ID（这是唯一合法的「相等」场景）。
+            "plan" | "project" => vec![id.to_string()],
+            _ => Vec::new(),
+        };
+        raw.into_iter()
+            .filter(|p| !p.trim().is_empty())
+            .collect::<Vec<String>>()
+    }
+}
+
+/// 读取真实业务关联索引。
+fn load_resource_owners(db: &Db) -> AppResult<ResourceOwners> {
+    db.with_read(|conn| {
+        let mut owners = ResourceOwners::default();
+
+        let mut stmt = conn.prepare("SELECT task_id, project_id FROM workspace_task_links")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (task_id, project_id) = row?;
+            owners.tasks.entry(task_id).or_default().insert(project_id);
+        }
+
+        let mut stmt = conn.prepare(
+            "SELECT d.id, COALESCE(b.project_id, '') FROM knowledge_documents d
+             JOIN knowledge_bases b ON b.id = d.kb_id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (doc_id, project_id) = row?;
+            owners.knowledge.insert(doc_id, project_id);
+        }
+
+        let mut stmt = conn.prepare("SELECT id, project_id FROM agent_decisions")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (id, project_id) = row?;
+            owners.decisions.insert(id, project_id);
+        }
+
+        let mut stmt = conn.prepare("SELECT id, project_id FROM agent_handoffs")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (id, project_id) = row?;
+            owners.handoffs.insert(id, project_id);
+        }
+
+        // 报告：优先用自身项目；没有就回退到所属交接的项目（报告与交接是两种 ID）。
+        let mut stmt = conn.prepare(
+            "SELECT r.id, COALESCE(NULLIF(r.project_id, ''), COALESCE(h.project_id, ''))
+             FROM agent_work_reports r
+             LEFT JOIN agent_handoffs h ON h.id = r.handoff_id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (id, project_id) = row?;
+            owners.reports.insert(id, project_id);
+        }
+
+        let mut stmt = conn.prepare("SELECT id, project_id FROM planning_features")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (id, project_id) = row?;
+            owners.features.insert(id, project_id);
+        }
+
+        Ok(owners)
+    })
+}
+
+/// revision 资源类型 → 需要的读取能力（与 `AuthorizedContextKinds` 对齐）。
+fn recent_kind_authorized(kind: &str, authorized: &AuthorizedContextKinds) -> bool {
+    match kind {
+        "task" => authorized.task,
+        "knowledge" => authorized.knowledge,
+        "decision" => authorized.decision,
+        "handoff" | "report" => authorized.handoff,
+        "plan" | "feature" | "project" => authorized.plan,
+        "skill" => authorized.skill,
+        // 未知资源类型一律拒绝（fail-closed），不做「猜一种归属」的事。
+        _ => false,
+    }
+}
+
+/// 近期变更候选：按真实业务关联判定归属，并受资源权限约束。
+///
+/// 归属规则：
+/// - 任务 → `workspace_task_links`；
+/// - 知识 → `knowledge_documents.kb_id` → `knowledge_bases.project_id`；
+/// - 决策 → `agent_decisions.project_id`；
+/// - 交接 → `agent_handoffs.project_id`；
+/// - 报告 → `agent_work_reports.project_id`，缺失时取所属交接的项目。
+///
+/// 项目隔离：有项目时只返回本项目的变更；无项目时只返回「无项目归属」的变更，
+/// 绝不跨项目拼装。
+fn collect_recent_changes(
     db: &Db,
+    principal: &Principal,
     scope: &ContextScope,
     authorized: &AuthorizedContextKinds,
-    budget: &mut ContextBudget,
     take: usize,
 ) -> AppResult<Vec<ContextItem>> {
     let rows: Vec<(String, String, i64, String, String, String)> = db.with_read(|conn| {
@@ -910,106 +1320,44 @@ fn retrieve_recent_changes(
         Ok(out)
     })?;
 
-    let linked_tasks = task_ids_for_project(db, &scope.project_id);
-    let knowledge_ids: HashSet<String> = if scope.project_id.is_empty() {
-        HashSet::new()
-    } else {
-        knowledge_docs_for_project(db, &scope.project_id)?
-            .into_iter()
-            .map(|(id, _, _)| id)
-            .collect()
-    };
-    let decision_ids: HashSet<String> = if scope.project_id.is_empty() {
-        HashSet::new()
-    } else {
-        db.with_read(|conn| {
-            let mut stmt =
-                conn.prepare("SELECT id FROM agent_decisions WHERE project_id = ?1")?;
-            let rows = stmt.query_map(rusqlite::params![scope.project_id], |r| {
-                r.get::<_, String>(0)
-            })?;
-            let mut out = HashSet::new();
-            for row in rows {
-                out.insert(row?);
-            }
-            Ok(out)
-        })?
-    };
-    let handoff_ids: HashSet<String> = if scope.project_id.is_empty() {
-        HashSet::new()
-    } else {
-        db.with_read(|conn| {
-            let mut stmt =
-                conn.prepare("SELECT id FROM agent_handoffs WHERE project_id = ?1")?;
-            let rows = stmt.query_map(rusqlite::params![scope.project_id], |r| {
-                r.get::<_, String>(0)
-            })?;
-            let mut out = HashSet::new();
-            for row in rows {
-                out.insert(row?);
-            }
-            Ok(out)
-        })?
-    };
-    let plan_ids: HashSet<String> = if scope.project_id.is_empty() {
-        HashSet::new()
-    } else {
-        let mut set = HashSet::new();
-        set.insert(scope.project_id.clone());
-        for feature in list_features_impl(db, scope.project_id.clone()).unwrap_or_default() {
-            set.insert(feature.id);
-        }
-        set
-    };
-
-    let related = |kind: &str, id: &str| -> bool {
-        if scope.project_id.is_empty() {
-            return true;
-        }
-        match kind {
-            "task" => linked_tasks.contains(id),
-            "knowledge" => knowledge_ids.contains(id),
-            "decision" => decision_ids.contains(id),
-            "handoff" | "report" => handoff_ids.contains(id),
-            "plan" | "feature" | "project" => plan_ids.contains(id),
-            _ => false,
-        }
-    };
-    let kind_authorized = |kind: &str| -> bool {
-        match kind {
-            "task" => authorized.task,
-            "knowledge" => authorized.knowledge,
-            "decision" => authorized.decision,
-            "handoff" | "report" => authorized.handoff,
-            "plan" | "feature" | "project" => authorized.plan,
-            _ => false,
-        }
-    };
-
-    let mut out = Vec::new();
+    let owners = load_resource_owners(db)?;
+    let allowed_tasks = authorized_task_ids(db, principal, scope)?;
+    let mut out: Vec<ContextItem> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
     for (kind, id, revision, updated_at, updated_by, source) in rows {
-        if !kind_authorized(&kind) || !related(&kind, &id) {
+        if !recent_kind_authorized(&kind, authorized) {
             continue;
         }
-        let mut item = ContextItem {
+        let owner_projects = owners.projects_of(&kind, &id);
+        if scope.project_id.is_empty() {
+            // 无项目上下文：只返回无项目归属的变更。
+            if !owner_projects.is_empty() {
+                continue;
+            }
+        } else if !owner_projects.iter().any(|p| p == &scope.project_id) {
+            continue;
+        }
+        if kind == "task" {
+            if let Some(set) = &allowed_tasks {
+                if !set.contains(&id) {
+                    continue;
+                }
+            }
+        }
+        if !seen.insert(format!("{kind}:{id}")) {
+            continue;
+        }
+        out.push(ContextItem {
             kind: kind.clone(),
             source_id: id.clone(),
             title: format!("{kind} {id} → r{revision}"),
-            summary: format!("由 {updated_by} 经 {source} 更新"),
+            summary: format!("由 {updated_by} 经 {source} 更新 · 近期变更"),
             updated_at,
             relevance: 0,
             access: link_for(&kind, &id),
             project_id: scope.project_id.clone(),
             status: "changed".into(),
-        };
-        let cost = estimate_tokens(&item.title) + estimate_tokens(&item.summary) + 20;
-        if budget.used + cost > budget.total {
-            budget.truncated = true;
-            break;
-        }
-        budget.used += cost;
-        item.summary.push_str(" · 近期变更");
-        out.push(item);
+        });
         if out.len() >= take {
             break;
         }
@@ -1018,6 +1366,30 @@ fn retrieve_recent_changes(
 }
 
 // ── 5) 装配 ──────────────────────────────────────────────────────
+
+/// 装配结果里的 `scope` 元数据（JSON 与 Markdown 共用同一份）。
+fn scope_value(
+    scope: &ContextScope,
+    req: &ContextRequest,
+    authorized: &AuthorizedContextKinds,
+) -> Value {
+    json!({
+        "project_id": if scope.project_id.is_empty() { Value::Null } else { json!(scope.project_id) },
+        "task_id": if scope.task_id.is_empty() { Value::Null } else { json!(scope.task_id) },
+        "keywords": scope.keywords,
+        "kinds": req.kinds,
+        "authorized_kinds": {
+            "plan": authorized.plan,
+            "task": authorized.task,
+            "knowledge": authorized.knowledge,
+            "decision": authorized.decision,
+            "skill": authorized.skill,
+            "handoff": authorized.handoff,
+        },
+        "agent_id": req.agent_id,
+        "session_id": req.session_id,
+    })
+}
 
 pub fn build(db: &Db, principal: &Principal, req: ContextRequest) -> AppResult<AgentContext> {
     let budget_total = req
@@ -1029,11 +1401,11 @@ pub fn build(db: &Db, principal: &Principal, req: ContextRequest) -> AppResult<A
 
     let mut items = collect_context_candidates(db, principal, &scope, &authorized)?;
     items = filter_context_by_permission(items, &authorized);
-    deduplicate_context_candidates(&mut items);
+    // 先排序再去重：同一资源重复出现时保留相关性最高的那条。
     rank_context_candidates(&mut items);
-    let mut budget = apply_context_budget(&mut items, budget_total);
-    let recent_changes = retrieve_recent_changes(db, &scope, &authorized, &mut budget, 10)?;
+    deduplicate_context_candidates(&mut items);
 
+    // 约束与下一步属于「固定骨架」：它们必须先占预算，不能在预算之外追加。
     let mut constraints = vec![
         "外部写入必须携带 base_revision，版本不一致返回冲突而不是覆盖。".to_string(),
         "不得直接修改 SQLite 数据库文件；所有写入经统一服务层。".to_string(),
@@ -1055,42 +1427,70 @@ pub fn build(db: &Db, principal: &Principal, req: ContextRequest) -> AppResult<A
     if next_steps.is_empty() {
         next_steps.push("读取当前计划中未完成功能，选择最小可交付步骤。".into());
     }
-    for text in constraints.iter().chain(next_steps.iter()) {
-        budget.used = budget.used.saturating_add(estimate_tokens(text) + 4);
-    }
-    if budget.used > budget.total {
+
+    // 近期变更：受权限与项目归属约束的**候选**，最终是否保留由预算决定。
+    let recent_candidates = collect_recent_changes(db, principal, &scope, &authorized, 10)?;
+
+    // ── 预算：骨架先占额度，条目与近期变更只能用剩下的 ──
+    let skeleton = AgentContext {
+        project_id: scope.project_id.clone(),
+        project_name: scope.project_name.clone(),
+        objective: scope.objective.clone(),
+        scope: scope_value(&scope, &req, &authorized),
+        items: Vec::new(),
+        constraints: constraints.clone(),
+        next_steps: next_steps.clone(),
+        recent_changes: Vec::new(),
+        budget_tokens: budget_total,
+        estimated_tokens: 0,
+        truncated: false,
+        kept_items: 0,
+        budget_note: String::new(),
+        markdown: String::new(),
+    };
+    let skeleton_tokens = skeleton_cost(&skeleton);
+    let mut budget = ContextBudget {
+        total: budget_total,
+        used: skeleton_tokens,
+        truncated: false,
+        kept_items: 0,
+    };
+    let mut budget_note = String::new();
+    if skeleton_tokens > budget_total {
+        // 骨架本身超限：明确提示，而不是无声地把结果撑大。
         budget.truncated = true;
-        budget.used = budget.total;
+        budget.used = budget_total;
+        budget_note = format!(
+            "固定骨架（项目、目标、约束、下一步与元数据）约需 {skeleton_tokens} tokens，\
+             已超过预算 {budget_total} tokens：条目已被全部裁剪。请提高 budget_tokens 或精简请求。"
+        );
     }
+    let remaining = budget_total.saturating_sub(skeleton_tokens);
+    let groups = partition_by_priority(items, &scope, recent_candidates);
+    let (kept, kept_cost, dropped) = allocate_by_priority(&groups, remaining);
+    budget.truncated = budget.truncated || dropped;
+    budget.used = budget.used.saturating_add(kept_cost).min(budget_total);
+
+    let mut kept_items: Vec<ContextItem> = kept[0].clone();
+    kept_items.extend(kept[1].clone());
+    kept_items.extend(kept[3].clone());
+    let kept_recent = kept[2].clone();
+    budget.kept_items = kept_items.len() as u32;
 
     let mut ctx = AgentContext {
         project_id: scope.project_id.clone(),
         project_name: scope.project_name.clone(),
         objective: scope.objective.clone(),
-        scope: json!({
-            "project_id": if scope.project_id.is_empty() { Value::Null } else { json!(scope.project_id) },
-            "task_id": if scope.task_id.is_empty() { Value::Null } else { json!(scope.task_id) },
-            "keywords": scope.keywords,
-            "kinds": req.kinds,
-            "authorized_kinds": {
-                "plan": authorized.plan,
-                "task": authorized.task,
-                "knowledge": authorized.knowledge,
-                "decision": authorized.decision,
-                "skill": authorized.skill,
-                "handoff": authorized.handoff,
-            },
-            "agent_id": req.agent_id,
-            "session_id": req.session_id,
-        }),
-        items,
+        scope: skeleton.scope.clone(),
+        items: kept_items,
         constraints,
         next_steps,
-        recent_changes,
+        recent_changes: kept_recent,
         budget_tokens: budget.total,
         estimated_tokens: budget.used,
         truncated: budget.truncated,
         kept_items: budget.kept_items,
+        budget_note,
         markdown: String::new(),
     };
     ctx.markdown = render_markdown(&ctx);
@@ -1116,6 +1516,9 @@ pub fn render_markdown(ctx: &AgentContext) -> String {
     out.push_str("## Project\n\n");
     if ctx.project_id.is_empty() {
         out.push_str("未指定项目（全局上下文）。\n\n");
+    } else if ctx.project_name.trim().is_empty() {
+        // 无项目元数据读取权限：只给 ID，不显示名称。
+        out.push_str(&format!("- `{}`\n\n", ctx.project_id));
     } else {
         out.push_str(&format!(
             "- {} (`{}`)\n\n",
@@ -1169,6 +1572,9 @@ pub fn render_markdown(ctx: &AgentContext) -> String {
         }
         out.push('\n');
     }
+    if !ctx.budget_note.is_empty() {
+        out.push_str(&format!("> 预算提示：{}\n\n", ctx.budget_note));
+    }
     out.push_str(&format!(
         "_预算 {} tokens，估算使用 {} tokens，条目 {} 条{}。_\n",
         ctx.budget_tokens,
@@ -1185,6 +1591,9 @@ pub fn to_json(ctx: &AgentContext) -> AppResult<Value> {
 }
 
 /// 近期活动上下文（`get_recent_context`）。
+///
+/// 活动记录是跨项目的元数据：必须经 `service::list_activity_authorized` 在服务端
+/// 按授权范围过滤；没有可读资源时返回 FORBIDDEN，而不是静默返回空列表。
 pub fn recent(db: &Db, principal: &Principal, limit: u32) -> AppResult<Vec<ContextItem>> {
     perms::require_any_read(db, principal)?;
     let (events, _) = handoff_activity(db, principal, limit)?;
@@ -1193,11 +1602,12 @@ pub fn recent(db: &Db, principal: &Principal, limit: u32) -> AppResult<Vec<Conte
 
 fn handoff_activity(
     db: &Db,
-    _principal: &Principal,
+    principal: &Principal,
     limit: u32,
 ) -> AppResult<(Vec<ContextItem>, super::Page)> {
-    let (records, page) = store::list_activity(
+    let (records, page) = service::list_activity_authorized(
         db,
+        principal,
         &store::ActivityQuery {
             agent_id: None,
             interface: None,
@@ -1255,7 +1665,7 @@ mod tests {
 
     #[test]
     fn budget_marks_truncated_when_items_exceed_limit() {
-        let mut items: Vec<ContextItem> = (0..50)
+        let items: Vec<ContextItem> = (0..50)
             .map(|i| ContextItem {
                 kind: "task".into(),
                 source_id: format!("t{i}"),
@@ -1268,10 +1678,38 @@ mod tests {
                 status: "pending".into(),
             })
             .collect();
-        let budget = apply_context_budget(&mut items, 1000);
-        assert!(budget.truncated);
-        assert!(budget.used <= 1000);
-        assert!(items.len() < 50);
+        let groups = vec![items];
+        let (kept, used, truncated) = allocate_by_priority(&groups, 1000);
+        assert!(truncated, "装不下必须标记截断");
+        assert!(used <= 1000, "消耗不得超过预算：{used}");
+        assert!(kept[0].len() < 50, "低优先级条目必须被裁掉");
+    }
+
+    #[test]
+    fn skeleton_cost_covers_constraints_and_next_steps() {
+        let ctx = AgentContext {
+            project_id: "p1".into(),
+            project_name: "项目一".into(),
+            objective: "修复导入边界".into(),
+            scope: json!({"keywords": ["导入"]}),
+            items: Vec::new(),
+            constraints: vec!["约束一：不得直接改库。".into(), "约束二：必须带版本。".into()],
+            next_steps: vec!["下一步：补测试。".into()],
+            recent_changes: Vec::new(),
+            budget_tokens: 6000,
+            estimated_tokens: 0,
+            truncated: false,
+            kept_items: 0,
+            budget_note: String::new(),
+            markdown: String::new(),
+        };
+        let bare = skeleton_cost(&ctx);
+        let mut longer = ctx.clone();
+        longer.constraints.push("约束三：必须可回放。".into());
+        assert!(
+            skeleton_cost(&longer) > bare,
+            "约束变多时骨架成本必须变大（否则约束会绕过预算）"
+        );
     }
 
     #[test]

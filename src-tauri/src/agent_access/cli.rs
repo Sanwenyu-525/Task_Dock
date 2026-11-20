@@ -699,8 +699,9 @@ fn execute_inner(
             "list" => {
                 let project = take_flag(args, "--project");
                 let status = take_flag(args, "--status");
-                let (items, page) = store::list_decisions(
+                let (items, page) = service::list_decisions_authorized(
                     db,
+                    principal,
                     project.as_deref(),
                     status.as_deref(),
                     cli.limit,
@@ -719,7 +720,7 @@ fn execute_inner(
             }
             "get" => {
                 let id = require_positional(args, "decision_id")?;
-                let decision = store::get_decision(db, &id)?;
+                let decision = service::get_decision_authorized(db, principal, &id)?;
                 Ok(Outcome {
                     human: serde_json::to_string_pretty(&decision)?,
                     data: serde_json::to_value(&decision)?,

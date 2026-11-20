@@ -302,3 +302,21 @@ CLI `task get` revision=3，`task list` 每条含 revision。
 - CU 桌面控制初始化失败（PIP SDK `SdkNotInitialized`），系统级视觉/DPI/托盘/通知走查未执行。
 - 浅色/深色主题、两套视觉预设、320/400 窄窗、DPI、真实通知与剪贴板仍未走查；安装包与
   `buildId` 验收未开始。
+
+## 13. v82 授权与事务回归（2026-11-20）
+
+**执行口径**：本机共享 target 的 lib test 二进制需嵌入 comctl32 v6 manifest 才能启动（否则
+`STATUS_ENTRYPOINT_NOT_FOUND`）；下表结果为嵌入 manifest 后的真实运行。独立验收脚本使用真实
+`task-dock.exe` / `taskdock.exe`，不依赖该处理。
+
+| 套件 | 覆盖 | 结果 |
+|---|---|---|
+| `agent_access::tests` | 无 `decisions.read` 读决策、KnowledgeRead 只读授权库、ContextRead 不授予资源、项目 A/B 活动隔离、Token 撤销、本机 CLI | 全部通过 |
+| `tests_v82_import` | 租约三态、真并发单赢家、人工批准与扫描共用租约、无策略待审核、失败不写业务表、同内容重投 skipped | 全部通过 |
+| `tests_v82_rest` | 401/403、决策/活动项目隔离、同 Key 重放、异 Body 409、并发同 Key、fencing、committed 恢复/无指针 409、超时回滚、生命周期与端口释放 | 全部通过 |
+| `tests_v82_context` | ContextRead-only FORBIDDEN、项目名/规划元数据按能力隐藏、活动按项目过滤、report 不等于 decision、中文双字与预算 | 全部通过 |
+| `tests_v82_handoff` | 目标 Agent 才能迁移、revision CAS、撤销/文件导入拒绝、报告项目隔离与先过滤再分页、追加式与 result 语义 | 全部通过 |
+| `db::tests::v82_migration_84...` | v83 旧行升级到 84、operation 列默认值、重复迁移幂等 | 通过（见验收报告） |
+
+合计 `agent_access::` 143 passed / 0 failed / 0 ignored（81.36s，2026-11-20 最终复跑）。
+独立脚本 52/52，exit 0，证据 `tmp/acceptance/agent-access-v82-20261120-224854/`。

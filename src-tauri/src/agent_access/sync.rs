@@ -12,6 +12,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -21,8 +22,8 @@ use crate::mcp::permissions::Capability;
 
 use super::permissions::{self as perms, FileImportDecision, ImportIdentity};
 use super::{
-    handoff, service, store, validation, workspace, Identity, Principal, MAX_IMPORT_BYTES,
-    MAX_SCAN_FILES,
+    forbidden, handoff, service, store, validation, workspace, Identity, ImportGrant, Principal,
+    MAX_IMPORT_BYTES, MAX_SCAN_FILES,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -87,7 +88,7 @@ pub struct ImportRequest {
     pub decided_by: String,
 }
 
-fn sha256(text: &str) -> String {
+pub(crate) fn sha256(text: &str) -> String {
     use sha2::Digest;
     let digest = sha2::Sha256::digest(text.as_bytes());
     digest.iter().map(|b| format!("{:02x}", b)).collect()
@@ -124,7 +125,9 @@ pub fn parse_external_document(raw: &str, path: &Path) -> AppResult<ParsedDocume
         .find("\n---")
         .ok_or_else(|| validation("front matter 未闭合（缺少 --- 结束行）"))?;
     let front = &body_start[..end];
-    let body = body_start[end + 4..].trim_start_matches(['\r', '\n']);
+    let body = body_start[end + 4..]
+        .trim_start_matches(['\r', '\n'])
+        .trim_end_matches(['\r', '\n']);
     let mut kind = String::new();
     let mut base_revision: Option<i64> = None;
     let mut project_id: Option<String> = None;
@@ -302,9 +305,11 @@ fn payload_strings(doc: &ParsedDocument, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// 导入目标项目：显式 project_id > payload.project_id > 任务所属项目。
-/// 用于项目范围校验，不用于“猜”一个项目。
-fn import_target_project(db: &Db, doc: &ParsedDocument) -> AppResult<String> {
+/// 文件声明的项目（`envelope.project_id` / `payload.project_id`）。
+///
+/// **只用于一致性校验与审计，不得用于权限判定**——命名即约束。v81 的
+/// `import_target_project()` 先信任这里的值，导致「伪造 project_id」即可越过项目边界。
+fn declared_project(doc: &ParsedDocument) -> String {
     if let Some(pid) = doc
         .envelope
         .project_id
@@ -312,17 +317,242 @@ fn import_target_project(db: &Db, doc: &ParsedDocument) -> AppResult<String> {
         .map(str::trim)
         .filter(|v| !v.is_empty())
     {
-        return Ok(pid.to_string());
+        return pid.to_string();
     }
-    if let Some(pid) = payload(doc, "project_id").map(str::trim).filter(|v| !v.is_empty()) {
-        return Ok(pid.to_string());
+    payload(doc, "project_id")
+        .map(str::trim)
+        .unwrap_or("")
+        .to_string()
+}
+
+fn non_empty(value: Option<String>) -> Option<String> {
+    value.filter(|item| !item.trim().is_empty())
+}
+
+/// 按**真实数据库**推导资源的项目归属。查不到就是 `None`，不猜。
+///
+/// - task → `workspace_task_links`（`perms::task_project`）；
+/// - decision → `agent_decisions.project_id`；
+/// - handoff → `agent_handoffs.project_id`；
+/// - report → 报告自身归属，回退到其 handoff 的项目；
+/// - knowledge → 文档 → 知识库 → 项目（创建阶段用载荷 `kb_id`）。
+fn resource_project(
+    db: &Db,
+    kind: &str,
+    doc: &ParsedDocument,
+    resource_id: &str,
+) -> AppResult<Option<String>> {
+    let family = kind.split('.').next().unwrap_or(kind);
+    let explicit = resource_id.trim();
+    // 显式资源 ID 优先，其次才是载荷里的同义字段。
+    let pick = |keys: &[&str]| -> String {
+        if !explicit.is_empty() {
+            return explicit.to_string();
+        }
+        keys.iter()
+            .find_map(|key| payload(doc, key))
+            .map(str::trim)
+            .unwrap_or("")
+            .to_string()
+    };
+    match family {
+        "task" => {
+            let id = pick(&["task_id"]);
+            if id.is_empty() {
+                return Ok(None);
+            }
+            db.with_read(|conn| perms::task_project(conn, &id))
+        }
+        "decision" => {
+            let id = pick(&["decision_id", "id"]);
+            if id.is_empty() {
+                return Ok(None);
+            }
+            db.with_read(|conn| {
+                Ok(non_empty(
+                    conn.query_row(
+                        "SELECT project_id FROM agent_decisions WHERE id = ?1",
+                        rusqlite::params![id],
+                        |r| r.get::<_, String>(0),
+                    )
+                    .optional()?,
+                ))
+            })
+        }
+        "handoff" => {
+            let id = pick(&["handoff_id", "id"]);
+            if id.is_empty() {
+                return Ok(None);
+            }
+            db.with_read(|conn| {
+                Ok(non_empty(
+                    conn.query_row(
+                        "SELECT project_id FROM agent_handoffs WHERE id = ?1",
+                        rusqlite::params![id],
+                        |r| r.get::<_, String>(0),
+                    )
+                    .optional()?,
+                ))
+            })
+        }
+        "report" => {
+            let id = pick(&["report_id", "id"]);
+            if id.is_empty() {
+                return Ok(None);
+            }
+            db.with_read(|conn| {
+                Ok(non_empty(
+                    conn.query_row(
+                        "SELECT COALESCE(NULLIF(r.project_id, ''), h.project_id)
+                         FROM agent_work_reports r
+                         LEFT JOIN agent_handoffs h ON h.id = r.handoff_id
+                         WHERE r.id = ?1",
+                        rusqlite::params![id],
+                        |r| r.get::<_, Option<String>>(0),
+                    )
+                    .optional()?
+                    .flatten(),
+                ))
+            })
+        }
+        "knowledge" => {
+            let doc_id = pick(&["document_id", "id"]);
+            db.with_read(|conn| {
+                if !doc_id.is_empty() {
+                    let from_doc: Option<String> = conn
+                        .query_row(
+                            "SELECT kb.project_id FROM knowledge_documents d
+                             JOIN knowledge_bases kb ON kb.id = d.kb_id
+                             WHERE d.id = ?1",
+                            rusqlite::params![doc_id],
+                            |r| r.get::<_, Option<String>>(0),
+                        )
+                        .optional()?
+                        .flatten();
+                    if let Some(pid) = non_empty(from_doc) {
+                        return Ok(Some(pid));
+                    }
+                }
+                let kb_id = payload(doc, "kb_id").map(str::trim).unwrap_or("");
+                if kb_id.is_empty() {
+                    return Ok(None);
+                }
+                let from_kb: Option<String> = conn
+                    .query_row(
+                        "SELECT project_id FROM knowledge_bases WHERE id = ?1",
+                        rusqlite::params![kb_id],
+                        |r| r.get::<_, Option<String>>(0),
+                    )
+                    .optional()?
+                    .flatten();
+                Ok(non_empty(from_kb))
+            })
+        }
+        _ => Ok(None),
     }
-    if let Some(task_id) = payload(doc, "task_id").filter(|v| !v.trim().is_empty()) {
-        if let Some(pid) = db.with_read(|conn| perms::task_project(conn, task_id))? {
-            return Ok(pid);
+}
+
+/// 一次导入的**有效归属项目**：权限判定与业务落库都只能用它。
+///
+/// - 更新类（`task.update` / `task.complete`）：必须有数据库推导出的真实归属；
+///   查不到 → `forbidden`；文件声明与真实不一致 → `forbidden`；返回真实归属。
+/// - 创建类：授权限定项目 → 返回 `grant.project_id`（声明不一致 → `forbidden`）；
+///   全局授权 → 用文件声明（`report.create` 由 handoff 推导）。
+pub(crate) fn effective_import_project(
+    db: &Db,
+    grant: Option<&ImportGrant>,
+    kind: &str,
+    doc: &ParsedDocument,
+) -> AppResult<String> {
+    let declared = declared_project(doc);
+    let scope = grant
+        .map(|item| item.project_id.trim().to_string())
+        .unwrap_or_default();
+    let is_update = matches!(kind, "task.update" | "task.complete");
+
+    if is_update {
+        let real = non_empty(resource_project(db, kind, doc, "")?);
+        let Some(grant) = grant else {
+            // 本机/内部主体：归属以业务层的 NotFound 为准，这里只给能算到的值。
+            return Ok(real.unwrap_or(declared));
+        };
+        let real = real.ok_or_else(|| {
+            forbidden(format!(
+                "无法确定 {kind} 目标的真实项目归属；项目授权下不允许写入无归属资源"
+            ))
+        })?;
+        if !declared.is_empty() && declared != real {
+            return Err(forbidden(format!(
+                "文件声明的 project_id={declared} 与资源真实归属 {real} 不一致"
+            )));
+        }
+        perms::check_import_project_scope(grant, &real)?;
+        return Ok(real);
+    }
+
+    // 授权限定项目（`grant = None` 时 scope 为空，等价于全局授权）。
+    if !scope.is_empty() {
+        if !declared.is_empty() && declared != scope {
+            return Err(forbidden(format!(
+                "导入授权仅允许项目 {scope}（文件声明 {declared}）"
+            )));
+        }
+        // 创建类也要校验「借壳」：载荷指向的资源（如 kb_id / handoff_id）若已属其他项目，一律拒绝。
+        if let Some(real) = non_empty(resource_project(db, kind, doc, "")?) {
+            if real != scope {
+                return Err(forbidden(format!(
+                    "导入授权仅允许项目 {scope}（目标资源属于 {real}）"
+                )));
+            }
+        }
+        // 报告的真实归属来自 handoff：必须与授权项目一致，
+        // 否则「声明项目 = 授权项目、handoff 属于别的项目」就能跨项目写报告。
+        if kind == "report.create" {
+            if let Some(real) = handoff_project(db, doc)? {
+                if real != scope {
+                    return Err(forbidden(format!(
+                        "导入授权仅允许项目 {scope}（交接属于 {real}）"
+                    )));
+                }
+            }
+        }
+        return Ok(scope);
+    }
+
+    // 全局授权：创建类用文件声明；报告优先由 handoff 推导（P2-2 由 Agent D 收紧）。
+    if kind == "report.create" {
+        if let Some(real) = handoff_project(db, doc)? {
+            if !declared.is_empty() && declared != real {
+                return Err(forbidden(format!(
+                    "文件声明的 project_id={declared} 与交接所属项目 {real} 不一致"
+                )));
+            }
+            return Ok(real);
         }
     }
-    Ok(String::new())
+    Ok(declared)
+}
+
+/// 报告所关联交接的真实项目归属（`agent_handoffs.project_id`）。
+///
+/// 报告的归属**只能**来自 handoff：文件声明的 `project_id` 不构成授权依据。
+fn handoff_project(db: &Db, doc: &ParsedDocument) -> AppResult<Option<String>> {
+    let handoff_id = payload(doc, "handoff_id")
+        .map(str::trim)
+        .filter(|v| !v.is_empty());
+    let Some(handoff_id) = handoff_id else {
+        return Ok(None);
+    };
+    db.with_read(|conn| {
+        Ok(non_empty(
+            conn.query_row(
+                "SELECT project_id FROM agent_handoffs WHERE id = ?1",
+                rusqlite::params![handoff_id],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?,
+        ))
+    })
 }
 
 fn claimed_identity(doc: &ParsedDocument) -> ImportIdentity {
@@ -338,6 +568,21 @@ fn claimed_identity(doc: &ParsedDocument) -> ImportIdentity {
     }
 }
 
+/// 创建类落库时的项目字段：以已校验的**有效归属**为准，文件声明只在校验阶段使用。
+fn project_field(project_id: &str) -> Option<String> {
+    non_empty(Some(project_id.to_string()))
+}
+
+/// 项目的真实类型（`planning` / `workspace`），用于补齐 `project_kind`。
+fn project_kind_of(db: &Db, project_id: &str) -> AppResult<Option<String>> {
+    if project_id.trim().is_empty() {
+        return Ok(None);
+    }
+    Ok(db
+        .with_read(|conn| perms::project_exists(conn, project_id))?
+        .map(str::to_string))
+}
+
 /// 导入一份已通过校验的文档。返回一条可读摘要，供扫描报告展示。
 ///
 /// 写入前再做一次能力预检（入口层可能已判过，但服务层不能依赖调用方）。
@@ -346,10 +591,27 @@ pub fn import_document(
     principal: &Principal,
     doc: &ParsedDocument,
 ) -> AppResult<String> {
+    import_document_guarded(db, principal, doc, &store::NoGuard)
+}
+
+/// 带**事务内守卫**的导入（v82：租约 fencing）。
+///
+/// `guard` 的 `check` / `complete` 与业务写入处于**同一个写事务**：
+/// - 租约已被他人抢占（`attempt` 不匹配）或已过期 → `check` 失败 → 事务回滚，
+///   业务数据**零写入**（旧执行者无法在新执行者取得租约后继续提交数据）；
+/// - 业务写入成功 → `complete` 在同一事务内把租约置 `ok`，
+///   因此「业务已写、租约未完成」的窗口不存在（崩溃后两者都不生效，可安全重试）。
+pub fn import_document_guarded(
+    db: &Db,
+    principal: &Principal,
+    doc: &ParsedDocument,
+    guard: &dyn store::WriteGuard,
+) -> AppResult<String> {
     let kind = doc.envelope.kind.as_str();
     let capability = perms::resolve_import_capability(kind)
         .ok_or_else(|| validation(format!("未支持的导入类型: {kind}")))?;
-    let project_id = import_target_project(db, doc)?;
+    // 归属只认 `effective_import_project`（数据库推导 + 授权范围），文件声明仅作一致性校验。
+    let project_id = perms::check_import_resource_scope(db, principal.import.as_ref(), kind, doc)?;
     if let Some(grant) = principal.import.as_ref() {
         perms::check_import_project_scope(grant, &project_id)?;
     }
@@ -378,7 +640,18 @@ pub fn import_document(
                     .get("advance_minutes")
                     .and_then(|v| v.as_i64()),
             };
-            let task = service::create_task(db, principal, input)?;
+            // 关联是项目工作空间语义：先确认项目真实存在，再做业务写入，
+            // 避免「任务已建、关联失败」留下半条数据（失败会释放租约并允许重试）。
+            if !project_id.trim().is_empty() {
+                let project_kind = db.with_read(|conn| perms::project_exists(conn, &project_id))?;
+                if project_kind != Some("workspace") {
+                    return Err(validation(format!(
+                        "授权项目 {project_id} 不是项目工作空间中的项目，无法关联导入任务"
+                    )));
+                }
+            }
+            // 建任务 + 关联项目 + 租约收尾在同一个事务内（守卫贯穿其中）。
+            let task = service::create_task_guarded(db, principal, input, guard, &project_id)?;
             Ok(format!("创建任务 {}（{}）", task.id, task.title))
         }
         "task.update" => {
@@ -410,12 +683,12 @@ pub fn import_document(
                 clear_remind_at: false,
                 advance_minutes: None,
             };
-            let task = service::update_task(db, principal, id, patch, base)?;
+            let task = service::update_task_guarded(db, principal, id, patch, base, guard)?;
             Ok(format!("更新任务 {}（revision 校验通过）", task.id))
         }
         "task.complete" => {
             let id = payload(doc, "task_id").unwrap_or_default();
-            let task = service::complete_task(db, principal, id, base)?;
+            let task = service::complete_task_guarded(db, principal, id, base, guard)?;
             Ok(format!("完成任务 {}（当前 {}）", task.id, task.status))
         }
         "knowledge.create" => {
@@ -425,18 +698,17 @@ pub fn import_document(
                 kb_id: payload(doc, "kb_id").map(str::to_string),
                 kb_name: payload(doc, "kb_name").map(str::to_string),
             };
-            let document = service::create_knowledge(db, principal, input)?;
+            let document = service::create_knowledge_guarded(db, principal, input, guard)?;
             Ok(format!("写入知识 {}（{}）", document.id, document.title))
         }
         "decision.create" => {
             let input = store::DecisionInput {
                 title: payload(doc, "title").unwrap_or_default().to_string(),
-                project_id: doc
-                    .envelope
-                    .project_id
-                    .clone()
-                    .or_else(|| payload(doc, "project_id").map(str::to_string)),
-                project_kind: payload(doc, "project_kind").map(str::to_string),
+                project_id: project_field(&project_id),
+                project_kind: match payload(doc, "project_kind") {
+                    Some(kind) => Some(kind.to_string()),
+                    None => project_kind_of(db, &project_id)?,
+                },
                 context: payload(doc, "context").unwrap_or_default().to_string(),
                 decision: payload(doc, "decision").unwrap_or_default().to_string(),
                 consequences: payload(doc, "consequences").unwrap_or_default().to_string(),
@@ -444,7 +716,7 @@ pub fn import_document(
                 tags: payload_strings(doc, "tags"),
                 status: payload(doc, "status").map(str::to_string),
             };
-            let decision = store::create_decision(db, principal, input)?;
+            let decision = store::create_decision_guarded(db, principal, input, guard)?;
             Ok(format!("记录决策 {}（{}）", decision.id, decision.title))
         }
         "handoff.create" => {
@@ -452,11 +724,7 @@ pub fn import_document(
                 to_agent_id: payload(doc, "to_agent_id").unwrap_or_default().to_string(),
                 summary: payload(doc, "summary").unwrap_or_default().to_string(),
                 task_id: payload(doc, "task_id").map(str::to_string),
-                project_id: doc
-                    .envelope
-                    .project_id
-                    .clone()
-                    .or_else(|| payload(doc, "project_id").map(str::to_string)),
+                project_id: project_field(&project_id),
                 project_kind: payload(doc, "project_kind").map(str::to_string),
                 completed_items: payload_strings(doc, "completed_items"),
                 pending_items: payload_strings(doc, "pending_items"),
@@ -465,7 +733,7 @@ pub fn import_document(
                 risks: payload_strings(doc, "risks"),
                 next_steps: payload_strings(doc, "next_steps"),
             };
-            let created = handoff::create_handoff(db, principal, input)?;
+            let created = handoff::create_handoff_guarded(db, principal, input, guard)?;
             Ok(format!(
                 "创建交接 {}（{} → {}）",
                 created.handoff.id, created.handoff.from_agent_id, created.handoff.to_agent_id
@@ -476,11 +744,7 @@ pub fn import_document(
                 summary: payload(doc, "summary").unwrap_or_default().to_string(),
                 result: payload(doc, "result").map(str::to_string),
                 handoff_id: payload(doc, "handoff_id").map(str::to_string),
-                project_id: doc
-                    .envelope
-                    .project_id
-                    .clone()
-                    .or_else(|| payload(doc, "project_id").map(str::to_string)),
+                project_id: project_field(&project_id),
                 task_id: payload(doc, "task_id").map(str::to_string),
                 completed_items: payload_strings(doc, "completed_items"),
                 pending_items: payload_strings(doc, "pending_items"),
@@ -494,16 +758,16 @@ pub fn import_document(
                     .unwrap_or_default(),
                 risks: payload_strings(doc, "risks"),
             };
-            let out = handoff::create_report(db, principal, input)?;
+            let out = handoff::create_report_guarded(db, principal, input, guard)?;
             Ok(format!("提交报告 {}（{}）", out.report.id, out.report.result))
         }
         other => Err(validation(format!("未支持的导入类型: {other}"))),
     }
 }
 
-/// 幂等键：请求身份 + 操作类型 + 请求标识（相对路径 + 内容 Hash）。
+/// 幂等键：操作类型 + 请求标识（相对路径 + 内容 Hash）+ 稳定 actor。
 /// 单看内容 Hash 会把「不同文件、相同内容」误判为同一操作。
-fn claim_key(rel_path: &str, kind: &str, hash: &str, actor: &str) -> String {
+pub(crate) fn claim_key(rel_path: &str, kind: &str, hash: &str, actor: &str) -> String {
     let mut raw = String::new();
     for part in [rel_path, kind, hash, actor] {
         raw.push_str(part);
@@ -512,77 +776,26 @@ fn claim_key(rel_path: &str, kind: &str, hash: &str, actor: &str) -> String {
     sha256(&raw)
 }
 
-/// 返回 true = 本次扫描取得执行权；false = 已有成功/进行中的同请求。
-fn claim_import(
-    db: &Db,
-    workspace_row_id: &str,
-    rel_path: &str,
-    kind: &str,
-    hash: &str,
-    actor: &str,
-) -> AppResult<bool> {
-    let key = claim_key(rel_path, kind, hash, actor);
-    let now = crate::agents::now_iso();
-    db.with_conn(|conn| {
-        let existing: Option<String> = conn
-            .query_row(
-                "SELECT status FROM agent_import_claims
-                 WHERE workspace_row_id = ?1 AND claim_key = ?2",
-                rusqlite::params![workspace_row_id, key],
-                |r| r.get(0),
-            )
-            .ok();
-        match existing.as_deref() {
-            Some("ok") => Ok(false),
-            Some("inflight") => Ok(false),
-            _ => {
-                conn.execute(
-                    "INSERT INTO agent_import_claims
-                       (id, workspace_row_id, claim_key, rel_path, kind, content_hash, actor,
-                        status, created_at, updated_at)
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,'inflight',?8,?8)
-                     ON CONFLICT(workspace_row_id, claim_key) DO UPDATE SET
-                       status='inflight', updated_at=excluded.updated_at",
-                    rusqlite::params![
-                        uuid::Uuid::new_v4().to_string(),
-                        workspace_row_id,
-                        key,
-                        rel_path,
-                        kind,
-                        hash,
-                        actor,
-                        now,
-                    ],
-                )?;
-                Ok(true)
-            }
-        }
-    })
+/// 幂等认领的稳定 `actor`：**不能**用 `principal.label()`。
+///
+/// scan 与 approve 的 label 天然不同（`file:...` vs `local`），一旦把它算进 claim_key，
+/// 同一文件会被当成两次不同操作写入两遍。这里固定为常量。
+const IMPORT_LEASE_ACTOR: &str = "file-import";
+
+/// 租约时长（秒）。进程崩溃后最多 5 分钟内不可被抢占。
+const IMPORT_LEASE_SECS: i64 = 300;
+
+/// 每次执行独立的租约持有者标识（同一 actor 的两次执行必须可区分）。
+fn lease_owner(scene: &str) -> String {
+    format!("{scene}:{}", uuid::Uuid::new_v4())
 }
 
-fn finish_claim(db: &Db, workspace_row_id: &str, rel_path: &str, kind: &str, hash: &str, actor: &str) {
-    let key = claim_key(rel_path, kind, hash, actor);
-    let _ = db.with_conn(|conn| {
-        conn.execute(
-            "UPDATE agent_import_claims SET status='ok', updated_at=?3
-             WHERE workspace_row_id=?1 AND claim_key=?2",
-            rusqlite::params![workspace_row_id, key, crate::agents::now_iso()],
-        )?;
-        Ok(())
-    });
-}
-
-fn release_claim(db: &Db, workspace_row_id: &str, rel_path: &str, kind: &str, hash: &str, actor: &str) {
-    let key = claim_key(rel_path, kind, hash, actor);
-    let _ = db.with_conn(|conn| {
-        conn.execute(
-            "DELETE FROM agent_import_claims WHERE workspace_row_id=?1 AND claim_key=?2",
-            rusqlite::params![workspace_row_id, key],
-        )?;
-        Ok(())
-    });
-}
-
+/// 登记/更新待审核请求（P2-1）。
+///
+/// - 首次出现：`pending`；
+/// - 同一路径、**同一内容**再次出现：保持原状态（幂等，已 `imported` 的不回到 pending）；
+/// - 同一路径、**内容变化**：重置为 `pending`、清空决策信息、`attempt + 1`，
+///   并把旧结论追加进 `detail_json.history[]`（只追加，不覆盖，保留审计）。
 fn upsert_import_request(
     db: &Db,
     workspace_row_id: &str,
@@ -593,39 +806,111 @@ fn upsert_import_request(
     reason: &str,
 ) -> AppResult<()> {
     let now = crate::agents::now_iso();
+    let summary = doc
+        .envelope
+        .payload
+        .get("title")
+        .or_else(|| doc.envelope.payload.get("summary"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let detail = json!({
         "kind": doc.envelope.kind,
         "format": doc.format,
         "base_revision": doc.envelope.base_revision,
-        "summary": doc.envelope.payload.get("title")
-            .or_else(|| doc.envelope.payload.get("summary"))
-            .and_then(|v| v.as_str())
-            .unwrap_or(""),
+        "summary": summary,
     });
+    let claimed_agent = doc.envelope.agent_id.as_deref().unwrap_or("");
+    let kind = doc.envelope.kind.as_str();
     db.with_conn(|conn| {
+        let existing = conn
+            .query_row(
+                "SELECT content_hash, status, reason, detail_json, decided_at, decided_by
+                 FROM agent_import_requests
+                 WHERE workspace_row_id = ?1 AND rel_path = ?2",
+                rusqlite::params![workspace_row_id, rel_path],
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, String>(3)?,
+                        r.get::<_, Option<String>>(4)?,
+                        r.get::<_, String>(5)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((old_hash, old_status, old_reason, old_detail, decided_at, decided_by)) = existing
+        else {
+            conn.execute(
+                "INSERT INTO agent_import_requests
+                   (id, workspace_row_id, rel_path, content_hash, kind, project_id, claimed_agent_id,
+                    status, reason, detail_json, created_at, updated_at, decided_at, decided_by)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,'pending',?8,?9,?10,?10,NULL,'')",
+                rusqlite::params![
+                    uuid::Uuid::new_v4().to_string(),
+                    workspace_row_id,
+                    rel_path,
+                    hash,
+                    kind,
+                    project_id,
+                    claimed_agent,
+                    reason,
+                    serde_json::to_string(&detail)?,
+                    now,
+                ],
+            )?;
+            return Ok(());
+        };
+        if old_hash == hash {
+            // 内容未变：只更新时间戳，不碰状态与决策（幂等）。
+            conn.execute(
+                "UPDATE agent_import_requests SET updated_at = ?3
+                 WHERE workspace_row_id = ?1 AND rel_path = ?2",
+                rusqlite::params![workspace_row_id, rel_path, now],
+            )?;
+            return Ok(());
+        }
+        // 内容变化：把旧结论写进 history，再重置为待审核。
+        let mut merged: Value = serde_json::from_str(&old_detail)
+            .ok()
+            .filter(Value::is_object)
+            .unwrap_or_else(|| json!({}));
+        let history_entry = json!({
+            "status": old_status,
+            "reason": old_reason,
+            "decided_at": decided_at,
+            "decided_by": decided_by,
+            "content_hash": old_hash,
+            "at": now,
+        });
+        if let Some(object) = merged.as_object_mut() {
+            for (key, value) in detail.as_object().cloned().unwrap_or_default() {
+                object.insert(key, value);
+            }
+            let history = object
+                .entry("history".to_string())
+                .or_insert_with(|| json!([]));
+            if let Some(items) = history.as_array_mut() {
+                items.push(history_entry);
+            }
+        }
         conn.execute(
-            "INSERT INTO agent_import_requests
-               (id, workspace_row_id, rel_path, content_hash, kind, project_id, claimed_agent_id,
-                status, reason, detail_json, created_at, updated_at, decided_at, decided_by)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,'pending',?8,?9,?10,?10,NULL,'')
-             ON CONFLICT(workspace_row_id, rel_path) DO UPDATE SET
-               content_hash=excluded.content_hash,
-               kind=excluded.kind,
-               project_id=excluded.project_id,
-               claimed_agent_id=excluded.claimed_agent_id,
-               reason=excluded.reason,
-               detail_json=excluded.detail_json,
-               updated_at=excluded.updated_at",
+            "UPDATE agent_import_requests
+             SET content_hash=?3, kind=?4, project_id=?5, claimed_agent_id=?6, reason=?7,
+                 detail_json=?8, status='pending', decided_at=NULL, decided_by='',
+                 decided_hash='', lease_owner='', lease_expires_at=NULL,
+                 attempt=attempt+1, updated_at=?9
+             WHERE workspace_row_id=?1 AND rel_path=?2",
             rusqlite::params![
-                uuid::Uuid::new_v4().to_string(),
                 workspace_row_id,
                 rel_path,
                 hash,
-                doc.envelope.kind,
+                kind,
                 project_id,
-                doc.envelope.agent_id.as_deref().unwrap_or(""),
+                claimed_agent,
                 reason,
-                serde_json::to_string(&detail)?,
+                serde_json::to_string(&merged)?,
                 now,
             ],
         )?;
@@ -722,6 +1007,17 @@ fn set_import_request_status(
     })
 }
 
+/// 记录本次结论所依据的内容 Hash（只由已成功的导入写入）。
+fn set_decided_hash(db: &Db, id: &str, hash: &str) -> AppResult<()> {
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE agent_import_requests SET decided_hash=?2, updated_at=?3 WHERE id=?1",
+            rusqlite::params![id, hash, crate::agents::now_iso()],
+        )?;
+        Ok(())
+    })
+}
+
 /// 扫描上下文：谁触发的扫描。文件本身不会触发扫描。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScanActor {
@@ -747,6 +1043,10 @@ fn scan_actor(principal: &Principal) -> AppResult<ScanActor> {
 /// 扫描并导入。策略判定与人工批准共用 `authorize_file_import` / `import_document`。
 pub fn scan(db: &Db, actor: &Principal, row: &workspace::WorkspaceRow) -> AppResult<ScanReport> {
     let _actor_kind = scan_actor(actor)?;
+    // 崩溃恢复：清掉过期租约，否则进程异常退出后会卡住 5 分钟。
+    if let Err(err) = store::reclaim_expired_import_leases(db) {
+        tracing::warn!(error = %err, "回收过期导入租约失败");
+    }
     let root = PathBuf::from(&row.root_path);
     if !root.join(super::WORKSPACE_MARKER).exists() {
         return Err(AppError::NotFound("工作空间缺少标记文件，拒绝扫描".into()));
@@ -820,23 +1120,12 @@ pub fn scan(db: &Db, actor: &Principal, row: &workspace::WorkspaceRow) -> AppRes
             let _ = archive_if_unchanged(&path, &rejected_dir, &now, &hash);
             continue;
         };
-        let project_id = match import_target_project(db, &doc) {
-            Ok(pid) => pid,
-            Err(err) => {
-                report.failed += 1;
-                report.messages.push(format!("{rel}: {}", err.user_message()));
-                continue;
-            }
-        };
+        // 策略判定阶段只有「文件声明」可用；真实归属在 import_document 里由
+        // `effective_import_project` 推导，声明值**不**参与授权结论。
+        let declared = declared_project(&doc);
         let identity = claimed_identity(&doc);
-        let decision = perms::authorize_file_import(
-            db,
-            &row.id,
-            &rel,
-            &identity,
-            capability,
-            &project_id,
-        )?;
+        let decision =
+            perms::authorize_file_import(db, &row.id, &rel, &identity, capability, &declared)?;
         let import_principal = match decision {
             FileImportDecision::Allowed(principal) => principal,
             FileImportDecision::NeedsReview { reason, .. } => {
@@ -845,7 +1134,7 @@ pub fn scan(db: &Db, actor: &Principal, row: &workspace::WorkspaceRow) -> AppRes
                     .messages
                     .push(format!("{rel}: 待人工批准（{reason}）"));
                 if let Err(err) =
-                    upsert_import_request(db, &row.id, &rel, &hash, &doc, &project_id, &reason)
+                    upsert_import_request(db, &row.id, &rel, &hash, &doc, &declared, &reason)
                 {
                     report.failed += 1;
                     report
@@ -870,16 +1159,71 @@ pub fn scan(db: &Db, actor: &Principal, row: &workspace::WorkspaceRow) -> AppRes
                 continue;
             }
         };
-        let actor_label = import_principal.label();
-        if !claim_import(db, &row.id, &rel, &kind, &hash, &actor_label)? {
+        // 幂等租约：`actor` 必须是稳定值，scan 与 approve 才能算出同一个 claim_key。
+        let key = claim_key(&rel, &kind, &hash, IMPORT_LEASE_ACTOR);
+        let owner = lease_owner("scan");
+        let claim = store::claim_import_lease(
+            db,
+            &row.id,
+            &key,
+            &rel,
+            &kind,
+            &hash,
+            IMPORT_LEASE_ACTOR,
+            &owner,
+            IMPORT_LEASE_SECS,
+        )?;
+        let lease = match claim {
+            store::LeaseClaim::Acquired(lease) => lease,
+            store::LeaseClaim::AlreadyImported { finished_at } => {
+                // 已成功过：只归档，绝不重写业务表。
+                report.skipped += 1;
+                report
+                    .messages
+                    .push(format!("{rel}: 相同内容已于 {finished_at} 导入，跳过"));
+                workspace::log_event(
+                    db, &row.id, "import", "already_imported", &rel, &kind, "", "skipped",
+                    &format!("此前已导入（{finished_at}）"), doc.envelope.base_revision, "",
+                );
+                let _ = archive_if_unchanged(&path, &imported_dir, &now, &hash);
+                continue;
+            }
+            store::LeaseClaim::InProgress { owner, until } => {
+                // 别人正在写：文件必须留在 inbox，归档会让执行者读不到内容。
+                report.skipped += 1;
+                report.messages.push(format!(
+                    "{rel}: 执行者 {owner} 正在导入（租约至 {until}），保留到下一轮"
+                ));
+                workspace::log_event(
+                    db, &row.id, "import", "in_progress", &rel, &kind, "", "skipped",
+                    &format!("执行者 {owner} 持有租约至 {until}"),
+                    doc.envelope.base_revision, "",
+                );
+                continue;
+            }
+        };
+        // 写入前复查租约仍归自己（快速失败；真正的原子保证在事务内的守卫）。
+        if !store::holds_import_lease(db, &row.id, &lease.claim_key, &lease.owner)? {
             report.skipped += 1;
-            report.messages.push(format!("{rel}: 相同请求已导入，跳过"));
-            let _ = archive_if_unchanged(&path, &imported_dir, &now, &hash);
+            report
+                .messages
+                .push(format!("{rel}: 导入租约已失效，保留到下一轮"));
+            workspace::log_event(
+                db, &row.id, "import", "lease_lost", &rel, &kind, "", "skipped",
+                "写入前复查发现租约不再归本执行者", doc.envelope.base_revision, "",
+            );
             continue;
         }
-        match import_document(db, &import_principal, &doc) {
+        // 事务内守卫：校验（owner + attempt + 未过期）与业务写入、租约置 ok 同事务。
+        let lease_guard = store::ImportLeaseGuard::new(
+            &row.id,
+            &lease.claim_key,
+            &lease.owner,
+            lease.attempt,
+        );
+        match import_document_guarded(db, &import_principal, &doc, &lease_guard) {
             Ok(message) => {
-                finish_claim(db, &row.id, &rel, &kind, &hash, &actor_label);
+                // 租约已在业务事务内置 ok（与业务数据同事务提交），此处无需再收尾。
                 report.imported += 1;
                 report.files.push(rel.clone());
                 report.messages.push(format!("{rel}: {message}"));
@@ -907,7 +1251,7 @@ pub fn scan(db: &Db, actor: &Principal, row: &workspace::WorkspaceRow) -> AppRes
                     )
                 });
                 if let Err(err) = archive_if_unchanged(&path, &imported_dir, &now, &hash) {
-                    // 业务已成功：不能回滚，也不能让下一轮重复写入（claim 已 ok）。
+                    // 业务已成功：不能回滚，也不能让下一轮重复写入（租约已置 ok）。
                     report.messages.push(format!(
                         "{rel}: 已导入但归档失败（{err}）；后续扫描不会重复写入"
                     ));
@@ -918,7 +1262,8 @@ pub fn scan(db: &Db, actor: &Principal, row: &workspace::WorkspaceRow) -> AppRes
                 }
             }
             Err(err) => {
-                release_claim(db, &row.id, &rel, &kind, &hash, &actor_label);
+                // 失败：释放租约，文件留在 inbox 允许重试；不得归档、不得写 imported。
+                store::release_import_lease(db, &row.id, &lease.claim_key, &lease.owner);
                 if let AppError::Conflict(_) = &err {
                     report.conflicts += 1;
                     report
@@ -952,7 +1297,7 @@ pub fn scan(db: &Db, actor: &Principal, row: &workspace::WorkspaceRow) -> AppRes
                         detail_json: serde_json::to_string(&json!({
                             "kind": kind,
                             "message": err.user_message(),
-                            "project_id": project_id,
+                            "declared_project_id": declared,
                         }))
                         .unwrap_or_else(|_| "{}".into()),
                         detected_at: now.clone(),
@@ -1053,37 +1398,69 @@ pub fn approve_import(
     }
     let capability = perms::resolve_import_capability(&doc.envelope.kind)
         .ok_or_else(|| validation("未支持的导入类型"))?;
-    let project_id = import_target_project(db, &doc)?;
-    let grant = perms::manual_import_grant(capability, &project_id, &approver.label());
-    let principal = Principal::file_import_granted(grant, doc.envelope.agent_id.as_deref().unwrap_or(""));
-    let actor_label = principal.label();
-    if !claim_import(
-        db,
-        &row.id,
+    // 人工批准同样走 `effective_import_project`：手工 grant 只带「文件声明」，
+    // 真实归属与一致性校验由 import_document 内部统一完成，不得另写一套。
+    let grant = perms::manual_import_grant(capability, &declared_project(&doc), &approver.label());
+    let principal =
+        Principal::file_import_granted(grant, doc.envelope.agent_id.as_deref().unwrap_or(""));
+    // 与 scan 共用同一租约（actor 固定），避免同内容被扫描与批准各写一遍。
+    let key = claim_key(
         &request.rel_path,
         &request.kind,
         &request.content_hash,
-        &actor_label,
-    )? {
-        set_import_request_status(db, &request.id, "imported", "相同请求此前已导入", &approver.label())?;
-        return Ok("相同内容此前已导入，未重复写入".into());
-    }
-    match import_document(db, &principal, &doc) {
-        Ok(message) => {
-            finish_claim(
+        IMPORT_LEASE_ACTOR,
+    );
+    let owner = lease_owner("approve");
+    let claim = store::claim_import_lease(
+        db,
+        &row.id,
+        &key,
+        &request.rel_path,
+        &request.kind,
+        &request.content_hash,
+        IMPORT_LEASE_ACTOR,
+        &owner,
+        IMPORT_LEASE_SECS,
+    )?;
+    let lease = match claim {
+        store::LeaseClaim::Acquired(lease) => lease,
+        store::LeaseClaim::InProgress { owner, until } => {
+            // 请求状态保持不变：另一执行者可能成功，也可能失败后允许重试。
+            return Err(AppError::Conflict(format!(
+                "另一执行者 {owner} 正在导入（租约至 {until}），请稍后重试"
+            )));
+        }
+        store::LeaseClaim::AlreadyImported { finished_at } => {
+            // 真实结论：此前已经成功写入，不重复写业务表。
+            set_import_request_status(
                 db,
-                &row.id,
-                &request.rel_path,
-                &request.kind,
-                &request.content_hash,
-                &actor_label,
-            );
+                &request.id,
+                "imported",
+                "相同内容此前已导入",
+                &approver.label(),
+            )?;
+            set_decided_hash(db, &request.id, &request.content_hash)?;
+            return Ok(format!("相同内容此前已于 {finished_at} 导入，未重复写入"));
+        }
+    };
+    // 与 scan 使用**完全相同**的租约守卫与业务写入路径：
+    // 人工批准不是绕过自动导入安全验证的后门。
+    let lease_guard = store::ImportLeaseGuard::new(
+        &row.id,
+        &lease.claim_key,
+        &lease.owner,
+        lease.attempt,
+    );
+    match import_document_guarded(db, &principal, &doc, &lease_guard) {
+        Ok(message) => {
+            // 租约已在业务事务内置 ok（与业务数据同事务提交）。
             let note = if note.trim().is_empty() {
                 message.clone()
             } else {
                 format!("{message}；批准备注：{note}")
             };
             set_import_request_status(db, &request.id, "imported", &note, &approver.label())?;
+            set_decided_hash(db, &request.id, &request.content_hash)?;
             let _ = db.with_conn(|conn| {
                 store::record_sync_event(
                     conn,
@@ -1124,14 +1501,8 @@ pub fn approve_import(
             Ok(message)
         }
         Err(err) => {
-            release_claim(
-                db,
-                &row.id,
-                &request.rel_path,
-                &request.kind,
-                &request.content_hash,
-                &actor_label,
-            );
+            // 失败：释放租约让后续可重试，请求置 failed（不得置 imported）。
+            store::release_import_lease(db, &row.id, &lease.claim_key, &lease.owner);
             set_import_request_status(
                 db,
                 &request.id,

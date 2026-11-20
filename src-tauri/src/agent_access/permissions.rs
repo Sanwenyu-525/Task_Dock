@@ -9,7 +9,7 @@
 //! 关键约束（v81）：`Source::File` **不是**身份。文件导入默认没有任何写权限，
 //! 只有显式授权（目录策略或本机人工单次批准）才允许落库；未授权的文件只进入待审核队列。
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
 
 use crate::db::Db;
@@ -45,6 +45,20 @@ fn is_revoked(conn: &Connection, agent_row_id: &str) -> AppResult<bool> {
     Ok(active.is_none())
 }
 
+/// 读取 Agent 登记的 `agent_id`（撤销后仍可读，用于比对「文件自称」的身份）。
+///
+/// 查不到（Agent 被删除）时返回空串：调用方据此判定「自称无法与登记值对应」。
+fn bound_agent_id(conn: &Connection, agent_row_id: &str) -> AppResult<String> {
+    Ok(conn
+        .query_row(
+            "SELECT agent_id FROM mcp_agents WHERE id = ?1",
+            rusqlite::params![agent_row_id],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?
+        .unwrap_or_default())
+}
+
 /// 要求能力（`resource_id` 为空表示全局；否则为该资源/项目 ID）。
 pub fn require(
     db: &Db,
@@ -63,7 +77,17 @@ pub fn require(
                 .agent_row_id
                 .as_deref()
                 .ok_or_else(|| forbidden("缺少 Agent 身份"))?;
-            require_agent(db, row_id, capability, resource_id)
+            // 文件导入主体（`import` 授权上下文非空）的能力范围**只能**来自授权上下文：
+            // 调用方传入的 `resource_id` 在导入链路上可能是文件自称的项目 ID 或任务 ID，
+            // 那是「文件自称」，不能作为授权依据。
+            // 项目型能力（决策 / 交接）用授权上下文里的项目 ID 比对；
+            // 资源型能力（任务 / 知识库）留空，交给业务层用真实资源 ID 再校验。
+            let scope_resource = match principal.import.as_ref() {
+                Some(grant) if capability_scoped_by_project(capability) => grant.project_id.trim(),
+                Some(_) => "",
+                None => resource_id,
+            };
+            require_agent(db, row_id, capability, scope_resource)
         }
         Identity::FileImport => require_file_import(db, principal, capability, resource_id),
     }
@@ -108,6 +132,67 @@ fn require_agent(
     })
 }
 
+/// 该能力是否以**项目**为资源范围。
+///
+/// 与 `mcp::permissions::resource_exists` 的资源语义保持一致：
+/// `tasks.*` → 任务 ID；`knowledge.*` → 知识库 ID；
+/// `decisions.*` / `handoffs.*` / `projects.*` / `plans.*` → 项目 ID。
+///
+/// 文件导入的授权判定必须知道这一点：项目型能力要拿**项目 ID** 去比对，
+/// 资源型能力要拿**资源 ID** 去比对，绝不能拿文件自称的项目 ID 去比对。
+fn capability_scoped_by_project(capability: Capability) -> bool {
+    matches!(
+        capability,
+        Capability::ProjectsRead
+            | Capability::PlansRead
+            | Capability::DecisionsRead
+            | Capability::DecisionsWrite
+            | Capability::HandoffsRead
+            | Capability::HandoffsWrite
+    )
+}
+
+/// 文件导入场景下的 Agent 授权复核：**不绑定某个资源 ID**。
+///
+/// 与 [`require_agent`] 的差别在于资源范围：
+/// - 文件导入的授权阶段还拿不到「这次要写哪个任务 / 哪个知识库」，
+///   资源级校验由业务层用**真实资源 ID** 再做一次（`service::*_guarded`）；
+/// - 授权阶段只回答三件事：Agent 还在吗、scope 能不能写、有没有这类写能力。
+///
+/// 因此这里**不能**把文件自称的 `project_id` / 任务 ID 当作能力范围：
+/// 那是「文件自称」，不是授权依据（v81 的绕过点）。
+fn require_agent_for_import(db: &Db, row_id: &str, capability: Capability) -> AppResult<()> {
+    db.with_read(|conn| {
+        let scope = scope_of(conn, row_id)?;
+        if scope == McpScope::Disabled {
+            return Err(forbidden("Agent 已被禁用或撤销"));
+        }
+        if capability.is_write() {
+            if !scope.can_write() {
+                return Err(forbidden(format!(
+                    "scope={} 不允许写操作（需要 project_rw）",
+                    scope.as_str()
+                )));
+            }
+        } else if !scope.can_read() {
+            return Err(forbidden(format!(
+                "scope={} 不允许读取（需要 readonly 或 project_rw）",
+                scope.as_str()
+            )));
+        }
+        let holds: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM mcp_agent_capabilities
+             WHERE agent_row_id = ?1 AND capability = ?2",
+            rusqlite::params![row_id, capability.as_str()],
+            |r| r.get(0),
+        )?;
+        if holds == 0 {
+            return Err(forbidden(format!("缺少能力 {}", capability.as_str())));
+        }
+        Ok(())
+    })
+}
+
 /// 文件导入：必须同时满足「显式授权上下文」与「授权内声明的范围」。
 /// 未授权（`import=None`）一律拒绝，不因来源是文件而放行。
 fn require_file_import(
@@ -130,7 +215,14 @@ fn require_file_import(
     }
     if let Some(agent_row_id) = grant.agent_row_id.as_deref() {
         // 授权绑定到某个已注册 Agent 时，该 Agent 的真实授权仍是最终依据。
-        require_agent(db, agent_row_id, capability, resource_id)?;
+        // 能力范围与 `require` 的导入分支保持一致：项目型能力用授权上下文里的项目 ID，
+        // 资源型能力用调用方给的真实资源 ID；**绝不用文件自称的项目 ID**。
+        let scope_resource = if capability_scoped_by_project(capability) {
+            grant.project_id.trim()
+        } else {
+            resource_id
+        };
+        require_agent(db, agent_row_id, capability, scope_resource)?;
         db.with_read(|conn| {
             if is_revoked(conn, agent_row_id)? {
                 return Err(forbidden("导入授权绑定的 Agent 已被撤销"));
@@ -138,7 +230,10 @@ fn require_file_import(
             Ok(())
         })?;
     }
-    db.with_read(|conn| check_import_resource_scope(conn, grant, capability, resource_id))
+    // 资源归属**不能**用 `resource_id` 猜：它可能是任务 ID、项目 ID 或空串（创建类）。
+    // 归属判定统一由 `check_import_resource_scope` 在持有文档时完成（`sync::import_document`），
+    // 这里只做「身份 + 能力集合 + 绑定 Agent」校验，不再保存任何按 ID 猜测的放行分支。
+    Ok(())
 }
 
 /// 至少持有一个读能力（用于 status/manifest/活动等聚合端点）。
@@ -226,6 +321,187 @@ pub fn denial(capability: Capability) -> AppError {
         "权限不足：需要 {}。请在 Task Dock「能力中心 → Agent 接入」中授权。",
         capability.as_str()
     ))
+}
+
+/// 授予「资源可见性」的读取能力。
+///
+/// **不包含 `ContextRead`**：能进入上下文装配不等于能读取任何具体资源，
+/// 更不等于能读项目元数据。`SkillsRead` 只支持全局授权，单独处理。
+pub const RESOURCE_READ_CAPABILITIES: &[Capability] = &[
+    Capability::ProjectsRead,
+    Capability::TasksRead,
+    Capability::PlansRead,
+    Capability::KnowledgeRead,
+    Capability::DecisionsRead,
+    Capability::HandoffsRead,
+];
+
+/// 单项读取能力的资源范围。
+#[derive(Clone, Debug, Default)]
+pub struct CapScope {
+    /// 全局授权（`resource_id=''`）。
+    pub global: bool,
+    /// 非空资源 ID（项目 / 任务 / 知识库）。
+    pub ids: std::collections::HashSet<String>,
+}
+
+impl CapScope {
+    pub fn unrestricted() -> Self {
+        Self {
+            global: true,
+            ids: Default::default(),
+        }
+    }
+
+    pub fn allows(&self, id: &str) -> bool {
+        self.global || (!id.is_empty() && self.ids.contains(id))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        !self.global && self.ids.is_empty()
+    }
+}
+
+/// 读取授权范围（按能力分开）。所有「列表/活动/索引」类查询都必须先取它，
+/// 再做服务端过滤；**禁止**把一种资源的能力范围套到另一种资源上。
+#[derive(Clone, Debug, Default)]
+pub struct AuthorizedReads {
+    pub projects: CapScope,
+    pub tasks: CapScope,
+    pub plans: CapScope,
+    pub knowledge: CapScope,
+    pub decisions: CapScope,
+    pub handoffs: CapScope,
+}
+
+impl AuthorizedReads {
+    pub fn allows_project(&self, project_id: &str) -> bool {
+        self.projects.allows(project_id)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.projects.is_empty()
+            && self.tasks.is_empty()
+            && self.plans.is_empty()
+            && self.knowledge.is_empty()
+            && self.decisions.is_empty()
+            && self.handoffs.is_empty()
+    }
+
+    /// 全部读能力都是全局授权（本机身份或全量 Agent）。
+    pub fn all_global(&self) -> bool {
+        self.projects.global
+            && self.tasks.global
+            && self.plans.global
+            && self.knowledge.global
+            && self.decisions.global
+            && self.handoffs.global
+    }
+}
+
+/// 当前主体的读取授权范围（每次请求重读，撤销即时生效）。
+pub fn authorized_reads(db: &Db, principal: &Principal) -> AppResult<AuthorizedReads> {
+    match principal.identity {
+        Identity::LocalHuman | Identity::SystemInternal => Ok(AuthorizedReads {
+            projects: CapScope::unrestricted(),
+            tasks: CapScope::unrestricted(),
+            plans: CapScope::unrestricted(),
+            knowledge: CapScope::unrestricted(),
+            decisions: CapScope::unrestricted(),
+            handoffs: CapScope::unrestricted(),
+        }),
+        Identity::FileImport => {
+            // 文件导入不是读取通道：只有授权里显式带读能力时才给出最小范围。
+            let Some(grant) = principal.import.as_ref() else {
+                return Ok(AuthorizedReads::default());
+            };
+            if !grant.capabilities.iter().any(|cap| !cap.is_write()) {
+                return Ok(AuthorizedReads::default());
+            }
+            let scope = if grant.project_id.trim().is_empty() {
+                CapScope::unrestricted()
+            } else {
+                CapScope {
+                    global: false,
+                    ids: std::iter::once(grant.project_id.trim().to_string()).collect(),
+                }
+            };
+            Ok(AuthorizedReads {
+                projects: scope.clone(),
+                tasks: scope.clone(),
+                plans: scope.clone(),
+                knowledge: scope.clone(),
+                decisions: scope.clone(),
+                handoffs: scope,
+            })
+        }
+        Identity::RegisteredAgent => {
+            let row_id = principal
+                .agent_row_id
+                .as_deref()
+                .ok_or_else(|| forbidden("缺少 Agent 身份"))?;
+            db.with_read(|conn| {
+                let scope = scope_of(conn, row_id)?;
+                if scope == McpScope::Disabled {
+                    return Err(forbidden("Agent 已被禁用或撤销"));
+                }
+                if !scope.can_read() {
+                    return Err(forbidden(format!(
+                        "scope={} 不允许读取",
+                        scope.as_str()
+                    )));
+                }
+                let mut out = AuthorizedReads::default();
+                let mut stmt = conn.prepare(
+                    "SELECT capability, resource_id FROM mcp_agent_capabilities
+                     WHERE agent_row_id = ?1",
+                )?;
+                let rows = stmt.query_map(rusqlite::params![row_id], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                })?;
+                for row in rows {
+                    let (raw_cap, resource_id) = row?;
+                    let Some(cap) = Capability::parse(&raw_cap) else {
+                        continue;
+                    };
+                    if cap.is_write() || !RESOURCE_READ_CAPABILITIES.contains(&cap) {
+                        continue;
+                    }
+                    let resource_id = resource_id.trim().to_string();
+                    let slot = match cap {
+                        Capability::ProjectsRead => &mut out.projects,
+                        Capability::TasksRead => &mut out.tasks,
+                        Capability::PlansRead => &mut out.plans,
+                        Capability::KnowledgeRead => &mut out.knowledge,
+                        Capability::DecisionsRead => &mut out.decisions,
+                        Capability::HandoffsRead => &mut out.handoffs,
+                        _ => continue,
+                    };
+                    if resource_id.is_empty() {
+                        slot.global = true;
+                    } else {
+                        slot.ids.insert(resource_id);
+                    }
+                }
+                Ok(out)
+            })
+        }
+    }
+}
+
+/// 是否可读取项目元数据（名称/目标/规划）。**只认 `projects.read`**。
+pub fn can_read_project_metadata(db: &Db, principal: &Principal, project_id: &str) -> AppResult<bool> {
+    if project_id.trim().is_empty() {
+        return Ok(false);
+    }
+    match principal.identity {
+        Identity::LocalHuman | Identity::SystemInternal => Ok(true),
+        _ => match require(db, principal, Capability::ProjectsRead, project_id) {
+            Ok(()) => Ok(true),
+            Err(AppError::Agent(_)) | Err(AppError::Forbidden(_)) => Ok(false),
+            Err(err) => Err(err),
+        },
+    }
 }
 
 // ── 文件导入授权（v81）────────────────────────────────────────────
@@ -521,29 +797,104 @@ pub fn check_import_project_scope(grant: &ImportGrant, project_id: &str) -> AppR
     Ok(())
 }
 
-/// 资源范围校验：拿不到目标项目时不做“越权放行”，由后续业务层给出 NotFound。
-pub fn check_import_resource_scope(
-    conn: &Connection,
-    grant: &ImportGrant,
-    capability: Capability,
-    resource_id: &str,
-) -> AppResult<()> {
-    if grant.project_id.trim().is_empty() || resource_id.trim().is_empty() {
-        return Ok(());
+/// 文件声明的项目（`envelope.project_id` / `payload.project_id`）。
+///
+/// **只用于一致性校验与审计，不得用于授权判定**——命名即约束。
+/// 与 `sync::declared_project` 同义；这里保留一份是因为权限层要在
+/// 「声明 vs 真实归属」的一致性检查里独立使用它（不能依赖调用方透传）。
+fn declared_project_of(doc: &super::sync::ParsedDocument) -> String {
+    if let Some(pid) = doc
+        .envelope
+        .project_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        return pid.to_string();
     }
-    let target_project = match capability {
-        Capability::TasksRead | Capability::TasksWrite => task_project(conn, resource_id)?,
-        _ => Some(resource_id.to_string()),
+    doc.envelope
+        .payload
+        .get("project_id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .unwrap_or("")
+        .to_string()
+}
+
+/// 载荷点名的知识库的真实项目归属（`knowledge_bases.project_id`）。
+///
+/// 「载荷指向的资源已属其它项目」是项目授权的经典绕过口：
+/// 授权项目 A、文件声明 A、但 `kb_id` 指向 B 的知识库 → 正文会落进 B。
+fn kb_owner_project(db: &Db, doc: &super::sync::ParsedDocument) -> AppResult<Option<String>> {
+    let kb_id = doc
+        .envelope
+        .payload
+        .get("kb_id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .unwrap_or("");
+    if kb_id.is_empty() {
+        return Ok(None);
+    }
+    db.with_read(|conn| {
+        Ok(conn
+            .query_row(
+                "SELECT project_id FROM knowledge_bases WHERE id = ?1",
+                rusqlite::params![kb_id],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten())
+    })
+}
+
+/// 资源范围校验（v82）：**唯一**的导入归属判定入口，返回校验后的真实归属项目。
+///
+/// 规则（不存在 fail-open 分支）：
+/// - 全局授权（`grant = None` 或 `project_id` 为空）只表示「不限项目」，不再做项目相等比较；
+///   但归属仍必须能算出来——更新类必须来自数据库真实归属，创建类才允许用文件声明；
+/// - 项目授权要求数据库推导出的真实归属等于授权项目，**推导不出即 `forbidden`**；
+/// - 文件自带的 `project_id` 只做一致性校验，绝不作为归属来源；
+/// - 资源 ID 不再被当作项目 ID（v81 的 `Some(resource_id.to_string())` 已删除）。
+///
+/// v82 复核补强（Agent A）：
+/// 1. **归属项目必须真实存在**：项目被删除后，「文件声明的项目」若还指向它，
+///    写入会留下一条指向幽灵项目的记录。这里一律 `forbidden`（fail-closed）。
+/// 2. **声明 vs 真实归属必须一致**：载荷点名的资源（`kb_id`）已属其它项目时，
+///    即使授权是全局的也必须拒绝——否则「全局授权 + 借壳 kb_id」能跨项目写正文。
+pub fn check_import_resource_scope(
+    db: &Db,
+    grant: Option<&ImportGrant>,
+    kind: &str,
+    doc: &super::sync::ParsedDocument,
+) -> AppResult<String> {
+    let effective = super::sync::effective_import_project(db, grant, kind, doc)?;
+    // 无导入授权上下文（本机 / 内部主体）：不受文件导入的项目授权约束。
+    let Some(_grant) = grant else {
+        return Ok(effective);
     };
-    if let Some(project) = target_project {
-        if project != grant.project_id {
+    // 1) 归属项目必须真实存在（fail-closed：推导不出 / 项目已删除 → 拒绝）。
+    let target = effective.trim();
+    if !target.is_empty() {
+        let kind_of = db.with_read(|conn| project_exists(conn, target))?;
+        if kind_of.is_none() {
             return Err(forbidden(format!(
-                "导入授权仅允许项目 {}（目标资源属于 {}）",
-                grant.project_id, project
+                "导入目标项目 {target} 不存在（项目已删除或从未存在）"
             )));
         }
     }
-    Ok(())
+    // 2) 声明只是一致性校验：声明的项目与载荷目标的真实归属不一致 → 拒绝。
+    let declared = declared_project_of(doc);
+    if !declared.trim().is_empty() && kind.starts_with("knowledge") {
+        if let Some(real) = kb_owner_project(db, doc)? {
+            if !real.trim().is_empty() && real.trim() != declared.trim() {
+                return Err(forbidden(format!(
+                    "文件声明的 project_id={declared} 与知识库真实归属 {real} 不一致"
+                )));
+            }
+        }
+    }
+    Ok(effective)
 }
 
 /// 统一入口：判定一次文件导入能否执行。
@@ -593,17 +944,31 @@ pub fn authorize_file_import(
                     authorization_id: auth.id,
                 });
             }
-            // 绑定 Agent：文件自称的身份必须一致，否则视为冒充。
+            // 绑定 Agent：文件自称的身份必须与**绑定 Agent 的真实 agent_id** 一致，
+            // 否则视为冒充。文件自称永远不是认证凭据：这里比的是「自称」与
+            // 「库内登记值」，最终授权仍以该 Agent 的真实授权为准。
             let bound = match (&auth.agent_row_id, identity) {
                 (Some(row_id), ImportIdentity::BoundAgent { row_id: claimed, .. })
                     if row_id == claimed => Some(row_id.clone()),
-                (Some(_), ImportIdentity::ClaimedAgent(claimed)) => {
+                (Some(_), ImportIdentity::BoundAgent { agent_id, .. }) => {
                     return Ok(FileImportDecision::Rejected {
                         reason: format!(
-                            "该目录绑定的是另一个 Agent，文件不得声明 agent_id={claimed}"
+                            "该目录绑定的是另一个 Agent，文件不得声明 agent_id={agent_id}"
                         ),
                         authorization_id: auth.id,
                     });
+                }
+                (Some(row_id), ImportIdentity::ClaimedAgent(claimed)) => {
+                    let real = db.with_read(|conn| bound_agent_id(conn, row_id))?;
+                    if !claimed.trim().is_empty() && claimed.trim() != real.trim() {
+                        return Ok(FileImportDecision::Rejected {
+                            reason: format!(
+                                "该目录绑定的是另一个 Agent，文件不得声明 agent_id={claimed}"
+                            ),
+                            authorization_id: auth.id,
+                        });
+                    }
+                    Some(row_id.clone())
                 }
                 (Some(row_id), _) => Some(row_id.clone()),
                 (None, _) => None,
@@ -615,7 +980,43 @@ pub fn authorize_file_import(
                 agent_row_id: bound.clone(),
                 approved_by: "policy".into(),
             };
-            check_import_project_scope(&grant, project_id)?;
+            // 授权限定的项目必须真实存在（fail-closed）：项目被删除后，
+            // 目录授权不得继续放行「写进幽灵项目」的导入。
+            let scope_project = auth.project_id.trim();
+            if !scope_project.is_empty() {
+                let kind_of = db.with_read(|conn| project_exists(conn, scope_project))?;
+                if kind_of.is_none() {
+                    return Ok(FileImportDecision::Rejected {
+                        reason: format!("导入授权限定的项目 {scope_project} 不存在"),
+                        authorization_id: auth.id,
+                    });
+                }
+            }
+            // 文件声明的项目同样必须真实存在：声明只是「一致性校验」的输入，
+            // 指向不存在的项目意味着这次导入会留下一条悬空归属。
+            let declared = project_id.trim();
+            if !declared.is_empty() {
+                let kind_of = db.with_read(|conn| project_exists(conn, declared))?;
+                if kind_of.is_none() {
+                    return Ok(FileImportDecision::Rejected {
+                        reason: format!("文件声明的项目 {declared} 不存在"),
+                        authorization_id: auth.id,
+                    });
+                }
+            }
+            // 此处只有「文件声明」可用：声明非空且与授权项目不一致 → 直接拒绝；
+            // 空声明不算越权，真实归属由 `sync::effective_import_project` 在写入前判定
+            // （用声明当归属正是 v81 的绕过点）。
+            // 拒绝必须表达为 `Rejected`（fail-closed 但只影响这一个文件），
+            // 不能把错误抛给整个扫描。
+            if !declared.is_empty() {
+                if let Err(err) = check_import_project_scope(&grant, declared) {
+                    return Ok(FileImportDecision::Rejected {
+                        reason: err.user_message(),
+                        authorization_id: grant.authorization_id.clone(),
+                    });
+                }
+            }
             let principal = if let Some(row_id) = bound {
                 let agent_id = db.with_read(|conn| {
                     conn.query_row(
@@ -623,8 +1024,17 @@ pub fn authorize_file_import(
                         rusqlite::params![row_id],
                         |r| r.get::<_, String>(0),
                     )
+                    .optional()
                     .map_err(AppError::from)
                 })?;
+                // 绑定的 Agent 被撤销/删除 → 明确拒绝本次导入（fail-closed），
+                // 而不是让整个扫描因一行查询失败而中断。
+                let Some(agent_id) = agent_id else {
+                    return Ok(FileImportDecision::Rejected {
+                        reason: "导入授权绑定的 Agent 已不存在或已被撤销".into(),
+                        authorization_id: auth.id,
+                    });
+                };
                 let mut principal = Principal::agent(row_id, agent_id, super::Source::File);
                 principal.import = Some(grant);
                 principal
@@ -632,8 +1042,29 @@ pub fn authorize_file_import(
                 Principal::file_import_granted(grant, identity.claimed_agent_id())
             };
             // 绑定 Agent 或受限目录都必须在返回前做一次真实能力校验，避免“授权存在但能力没落库”。
-            require(db, &principal, capability, project_id)?;
-            Ok(FileImportDecision::Allowed(principal))
+            // 权限不足 → 只拒绝这一条文件；数据库/IO 等异常仍然向上抛。
+            //
+            // 能力范围**不能**用文件声明的项目 ID：那是「文件自称」，
+            // 不是授权依据。绑定 Agent 走「任意资源范围持有该能力 + scope 可写」的复核，
+            // 资源级（哪个任务 / 哪个知识库）由业务层用真实资源 ID 再校验一次；
+            // 未绑定 Agent 时目录策略的能力集合就是授权上限。
+            let capability_check = match principal.identity {
+                Identity::RegisteredAgent => {
+                    let row_id = principal.agent_row_id.clone().unwrap_or_default();
+                    require_agent_for_import(db, &row_id, capability)
+                }
+                _ => require(db, &principal, capability, ""),
+            };
+            match capability_check {
+                Ok(()) => Ok(FileImportDecision::Allowed(principal)),
+                Err(err @ (AppError::Agent(_) | AppError::Forbidden(_))) => {
+                    Ok(FileImportDecision::Rejected {
+                        reason: err.user_message(),
+                        authorization_id: auth.id,
+                    })
+                }
+                Err(other) => Err(other),
+            }
         }
     }
 }

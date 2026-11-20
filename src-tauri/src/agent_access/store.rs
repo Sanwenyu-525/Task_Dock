@@ -167,7 +167,13 @@ pub fn write_activity(conn: &Connection, entry: &ActivityEntry<'_>) -> AppResult
             uuid::Uuid::new_v4().to_string(),
             entry.principal.agent_row_id,
             entry.principal.agent_id,
-            entry.principal.actor_kind.as_str(),
+            // 表内 actor_kind 的取值域是 agent|local|system（v76 已发布 CHECK）：
+            // 本机人类必须落为 `local`，否则整条审计会被 CHECK 拒绝并静默丢失。
+            match entry.principal.actor_kind {
+                ActorKind::Human => "local",
+                ActorKind::Agent => "agent",
+                ActorKind::System => "system",
+            },
             entry.principal.source.as_str(),
             entry.principal.session_key,
             entry.action,
@@ -284,6 +290,196 @@ pub fn list_activity(db: &Db, query: &ActivityQuery) -> AppResult<(Vec<ActivityR
     })
 }
 
+// ── 活动可见范围（v82 授权过滤）──────────────────────────────────
+
+/// 活动可见范围（服务端 SQL 过滤，绝不依赖前端）。
+///
+/// 每个集合里的 ID 既可能是资源 ID 也可是项目 ID：`tasks.read` / `knowledge.read`
+/// 都允许按项目授权，因此两个集合在过滤时都同时比对 `project_id` 与 `resource_id`。
+#[derive(Clone, Debug, Default)]
+pub struct ActivityScope {
+    /// 项目级授权（任何读能力）：该项目下全部活动可见。
+    pub projects: Vec<String>,
+    /// 任务级授权（任务 ID 或项目 ID）。
+    pub tasks: Vec<String>,
+    /// 知识库级授权（知识库 ID 或项目 ID）。
+    pub knowledge: Vec<String>,
+    /// 决策读授权的项目集合。
+    pub decisions: Vec<String>,
+    /// 交接读授权的项目集合。
+    pub handoffs: Vec<String>,
+    /// 规划读授权的项目集合。
+    pub plans: Vec<String>,
+    /// 全局读能力对应的资源类型（`task`/`knowledge`/`decision`/`handoff`/`report`/`plan`）。
+    pub global_kinds: Vec<String>,
+}
+
+impl ActivityScope {
+    pub fn hides_everything(&self) -> bool {
+        self.projects.is_empty()
+            && self.tasks.is_empty()
+            && self.knowledge.is_empty()
+            && self.decisions.is_empty()
+            && self.handoffs.is_empty()
+            && self.plans.is_empty()
+            && self.global_kinds.is_empty()
+    }
+}
+
+/// 活动列表（可选授权范围）。`scope=None` 表示不限制（本机 / 系统身份）。
+pub fn list_activity_scoped(
+    db: &Db,
+    query: &ActivityQuery,
+    scope: Option<&ActivityScope>,
+) -> AppResult<(Vec<ActivityRecord>, Page)> {
+    let Some(scope) = scope else {
+        return list_activity(db, query);
+    };
+    db.with_read(|conn| {
+        let mut clauses: Vec<String> = Vec::new();
+        let mut params: Vec<rusqlite::types::Value> = Vec::new();
+        let mut push_ids = |clauses: &mut Vec<String>,
+                            params: &mut Vec<rusqlite::types::Value>,
+                            ids: &[String]|
+         -> String {
+            let start = params.len() + 1;
+            let placeholders = (0..ids.len())
+                .map(|i| format!("?{}", start + i))
+                .collect::<Vec<_>>()
+                .join(",");
+            params.extend(ids.iter().map(|v| rusqlite::types::Value::Text(v.clone())));
+            placeholders
+        };
+        if !scope.projects.is_empty() {
+            let ph = push_ids(&mut clauses, &mut params, &scope.projects);
+            clauses.push(format!("project_id IN ({ph})"));
+        }
+        if !scope.tasks.is_empty() {
+            let ph = push_ids(&mut clauses, &mut params, &scope.tasks);
+            clauses.push(format!(
+                "(resource_kind = 'task' AND (resource_id IN ({ph}) OR project_id IN ({ph})))"
+            ));
+        }
+        if !scope.knowledge.is_empty() {
+            let ph = push_ids(&mut clauses, &mut params, &scope.knowledge);
+            clauses.push(format!(
+                "(resource_kind = 'knowledge' AND (resource_id IN ({ph}) OR project_id IN ({ph})))"
+            ));
+        }
+        for (kinds, ids) in [
+            (&["decision".to_string()][..], &scope.decisions),
+            (&["handoff".to_string(), "report".to_string()][..], &scope.handoffs),
+            (&["plan".to_string()][..], &scope.plans),
+        ] {
+            if ids.is_empty() {
+                continue;
+            }
+            let ph = push_ids(&mut clauses, &mut params, ids);
+            let kind_list = kinds
+                .iter()
+                .map(|k| format!("'{k}'"))
+                .collect::<Vec<_>>()
+                .join(",");
+            clauses.push(format!(
+                "(resource_kind IN ({kind_list}) AND project_id IN ({ph}))"
+            ));
+        }
+        if !scope.global_kinds.is_empty() {
+            let kind_list = scope
+                .global_kinds
+                .iter()
+                .map(|k| format!("'{}'", k.replace('\'', "")))
+                .collect::<Vec<_>>()
+                .join(",");
+            clauses.push(format!("resource_kind IN ({kind_list})"));
+        }
+        let visibility = if clauses.is_empty() {
+            "0".to_string()
+        } else {
+            format!("({})", clauses.join(" OR "))
+        };
+        let base = params.len();
+        let q_agent = base + 1;
+        let q_interface = base + 2;
+        let q_since = base + 3;
+        let q_limit = base + 4;
+        let q_offset = base + 5;
+        let apply_common = |params: &mut Vec<rusqlite::types::Value>| {
+            params.push(match &query.agent_id {
+                Some(v) => rusqlite::types::Value::Text(v.clone()),
+                None => rusqlite::types::Value::Null,
+            });
+            params.push(match &query.interface {
+                Some(v) => rusqlite::types::Value::Text(v.clone()),
+                None => rusqlite::types::Value::Null,
+            });
+            params.push(match &query.since {
+                Some(v) => rusqlite::types::Value::Text(v.clone()),
+                None => rusqlite::types::Value::Null,
+            });
+        };
+        let mut count_params = params.clone();
+        apply_common(&mut count_params);
+        let total: i64 = conn
+            .query_row(
+                &format!(
+                    "SELECT COUNT(*) FROM agent_activity_logs
+                     WHERE {visibility}
+                       AND (?{q_agent} IS NULL OR agent_id = ?{q_agent})
+                       AND (?{q_interface} IS NULL OR interface = ?{q_interface})
+                       AND (?{q_since} IS NULL OR created_at >= ?{q_since})"
+                ),
+                rusqlite::params_from_iter(count_params.iter()),
+                |r| r.get(0),
+            )
+            .map_err(AppError::from)?;
+        let mut list_params = params;
+        apply_common(&mut list_params);
+        list_params.push(rusqlite::types::Value::Integer(query.limit as i64));
+        list_params.push(rusqlite::types::Value::Integer(query.offset as i64));
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT id, agent_id, actor_kind, interface, action, resource_kind, resource_id,
+                        project_id, request_id, success, error_code, detail, revision, duration_ms, created_at
+                 FROM agent_activity_logs
+                 WHERE {visibility}
+                   AND (?{q_agent} IS NULL OR agent_id = ?{q_agent})
+                   AND (?{q_interface} IS NULL OR interface = ?{q_interface})
+                   AND (?{q_since} IS NULL OR created_at >= ?{q_since})
+                 ORDER BY created_at DESC, id DESC
+                 LIMIT ?{q_limit} OFFSET ?{q_offset}"
+            ))
+            .map_err(AppError::from)?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(list_params.iter()), |r| {
+                Ok(ActivityRecord {
+                    id: r.get(0)?,
+                    agent_id: r.get(1)?,
+                    actor_kind: r.get(2)?,
+                    interface: r.get(3)?,
+                    action: r.get(4)?,
+                    resource_kind: r.get(5)?,
+                    resource_id: r.get(6)?,
+                    project_id: r.get(7)?,
+                    request_id: r.get(8)?,
+                    success: r.get::<_, i64>(9)? == 1,
+                    error_code: r.get(10)?,
+                    detail: r.get(11)?,
+                    revision: r.get(12)?,
+                    duration_ms: r.get(13)?,
+                    created_at: r.get(14)?,
+                })
+            })
+            .map_err(AppError::from)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(AppError::from)?);
+        }
+        let page = Page::new(query.limit, query.offset, total.max(0) as u32);
+        Ok((out, page))
+    })
+}
+
 // ── 决策 ─────────────────────────────────────────────────────────
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -355,6 +551,19 @@ fn decision_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Decision> {
 }
 
 pub fn create_decision(db: &Db, principal: &Principal, input: DecisionInput) -> AppResult<Decision> {
+    create_decision_guarded(db, principal, input, &NoGuard)
+}
+
+/// 带**事务内守卫**的决策写入（v82 文件导入用）。
+///
+/// 决策落库与导入租约校验同处一个写事务：租约失效时整体回滚，
+/// 不会留下「决策已写入但租约未完成」的重复导入窗口。
+pub fn create_decision_guarded(
+    db: &Db,
+    principal: &Principal,
+    input: DecisionInput,
+    guard: &dyn WriteGuard,
+) -> AppResult<Decision> {
     let title = input.title.trim().to_string();
     if title.is_empty() {
         return Err(AppError::Validation("决策标题不能为空".into()));
@@ -396,6 +605,7 @@ pub fn create_decision(db: &Db, principal: &Principal, input: DecisionInput) -> 
     }
     let now = crate::agents::now_iso();
     let decision = db.with_transaction(|conn| {
+        guard.check(conn)?;
         let id = uuid::Uuid::new_v4().to_string();
         conn.execute(
             "INSERT INTO agent_decisions
@@ -422,6 +632,8 @@ pub fn create_decision(db: &Db, principal: &Principal, input: DecisionInput) -> 
         )
         .map_err(AppError::from)?;
         bump_revision(conn, "decision", &id, principal, &now, &String::new())?;
+        guard.record_operation(conn, "decision", &id)?;
+        guard.complete(conn)?;
         conn.query_row(
             &format!("SELECT {DECISION_COLS} FROM agent_decisions WHERE id = ?1"),
             rusqlite::params![id],
@@ -479,6 +691,77 @@ pub fn get_decision(db: &Db, id: &str) -> AppResult<Decision> {
         .optional()
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::NotFound(format!("决策不存在: {id}")))
+    })
+}
+
+/// 按项目集合列决策（授权过滤后的服务端查询）。
+///
+/// `include_unscoped=false` 时排除无项目决策（`project_kind=none`）：
+/// 那类决策只对**全局** `decisions.read` 可见，项目级授权不得看到。
+pub fn list_decisions_in_projects(
+    db: &Db,
+    projects: &[String],
+    include_unscoped: bool,
+    status: Option<&str>,
+    limit: u32,
+    offset: u32,
+) -> AppResult<(Vec<Decision>, Page)> {
+    db.with_read(|conn| {
+        let mut where_sql = String::from("(?1 IS NULL OR status = ?1)");
+        let mut params: Vec<rusqlite::types::Value> = vec![match status {
+            Some(s) => rusqlite::types::Value::Text(s.to_string()),
+            None => rusqlite::types::Value::Null,
+        }];
+        if !projects.is_empty() {
+            let start = params.len() + 1;
+            let placeholders = (0..projects.len())
+                .map(|i| format!("?{}", start + i))
+                .collect::<Vec<_>>()
+                .join(",");
+            params.extend(
+                projects
+                    .iter()
+                    .map(|p| rusqlite::types::Value::Text(p.clone())),
+            );
+            if include_unscoped {
+                where_sql.push_str(&format!(
+                    " AND (project_id IN ({placeholders}) OR project_id = '')"
+                ));
+            } else {
+                where_sql.push_str(&format!(" AND project_id IN ({placeholders})"));
+            }
+        } else if include_unscoped {
+            // 只有无项目决策可见。
+            where_sql.push_str(" AND project_id = ''");
+        } else {
+            where_sql.push_str(" AND 0");
+        }
+        let total: i64 = conn
+            .query_row(
+                &format!("SELECT COUNT(*) FROM agent_decisions WHERE {where_sql}"),
+                rusqlite::params_from_iter(params.iter()),
+                |r| r.get(0),
+            )
+            .map_err(AppError::from)?;
+        let limit_at = params.len() + 1;
+        let offset_at = params.len() + 2;
+        params.push(rusqlite::types::Value::Integer(limit as i64));
+        params.push(rusqlite::types::Value::Integer(offset as i64));
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {DECISION_COLS} FROM agent_decisions
+                 WHERE {where_sql}
+                 ORDER BY created_at DESC, id DESC LIMIT ?{limit_at} OFFSET ?{offset_at}"
+            ))
+            .map_err(AppError::from)?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(params.iter()), decision_from_row)
+            .map_err(AppError::from)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(AppError::from)?);
+        }
+        Ok((out, Page::new(limit, offset, total.max(0) as u32)))
     })
 }
 
@@ -783,6 +1066,67 @@ pub fn get_report(db: &Db, id: &str) -> AppResult<WorkReport> {
     })
 }
 
+/// 按项目集合列报告（**先过滤再分页**，项目级授权不返回其它项目）。
+pub fn list_reports_in_projects(
+    db: &Db,
+    projects: &[String],
+    agent_id: Option<&str>,
+    handoff_id: Option<&str>,
+    limit: u32,
+    offset: u32,
+) -> AppResult<(Vec<WorkReport>, Page)> {
+    let agent = agent_id.unwrap_or("");
+    let handoff = handoff_id.unwrap_or("");
+    db.with_read(|conn| {
+        let mut where_sql = String::from("(?1 = '' OR agent_id = ?1) AND (?2 = '' OR handoff_id = ?2)");
+        let mut params: Vec<rusqlite::types::Value> = vec![
+            rusqlite::types::Value::Text(agent.to_string()),
+            rusqlite::types::Value::Text(handoff.to_string()),
+        ];
+        if projects.is_empty() {
+            where_sql.push_str(" AND 0");
+        } else {
+            let start = params.len() + 1;
+            let placeholders = (0..projects.len())
+                .map(|i| format!("?{}", start + i))
+                .collect::<Vec<_>>()
+                .join(",");
+            params.extend(
+                projects
+                    .iter()
+                    .map(|p| rusqlite::types::Value::Text(p.clone())),
+            );
+            where_sql.push_str(&format!(" AND project_id IN ({placeholders})"));
+        }
+        let total: i64 = conn
+            .query_row(
+                &format!("SELECT COUNT(*) FROM agent_work_reports WHERE {where_sql}"),
+                rusqlite::params_from_iter(params.iter()),
+                |r| r.get(0),
+            )
+            .map_err(AppError::from)?;
+        let limit_at = params.len() + 1;
+        let offset_at = params.len() + 2;
+        params.push(rusqlite::types::Value::Integer(limit as i64));
+        params.push(rusqlite::types::Value::Integer(offset as i64));
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {REPORT_COLS} FROM agent_work_reports
+                 WHERE {where_sql}
+                 ORDER BY created_at DESC, id DESC LIMIT ?{limit_at} OFFSET ?{offset_at}"
+            ))
+            .map_err(AppError::from)?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(params.iter()), report_from_row)
+            .map_err(AppError::from)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(AppError::from)?);
+        }
+        Ok((out, Page::new(limit, offset, total.max(0) as u32)))
+    })
+}
+
 // ── 同步事件 / 冲突 ──────────────────────────────────────────────
 
 pub struct SyncEvent<'a> {
@@ -1081,6 +1425,649 @@ pub fn cache_store(
         .map_err(AppError::from)?;
         Ok(())
     })
+}
+
+// ── 导入租约（v82）──────────────────────────────────────────────
+//
+// v81 的 `claim_import` 用 bool 表达「是否取得执行权」，把 `ok` 与 `inflight`
+// 混成同一个 false，调用方无法区分「已导入」与「别人正在导入」，导致 scan 在
+// 他人执行中途就把文件归档。这里改为租约：单一原子 UPSERT 抢租约，语义由
+// `LeaseClaim` 三态表达；失败即释放，过期可抢占。
+
+/// 一次导入租约的归属信息。
+#[derive(Clone, Debug)]
+pub struct ImportLease {
+    /// 认领键（rel_path + kind + hash + actor 的 SHA-256）。
+    pub claim_key: String,
+    /// 本次执行者标识，用于「写入前复查仍是自己」。
+    pub owner: String,
+    /// 第几次尝试（1 起）。
+    pub attempt: u32,
+}
+
+/// 认领结果。**禁止**再退化成 bool。
+#[derive(Clone, Debug)]
+pub enum LeaseClaim {
+    /// 取得执行权。
+    Acquired(ImportLease),
+    /// 该请求此前已成功完成（同一 claim_key）。
+    AlreadyImported { finished_at: String },
+    /// 其他执行者持有未过期的租约。
+    InProgress { owner: String, until: String },
+}
+
+/// 认领一次导入。`lease_secs` 为租约时长（默认 300 秒）。
+///
+/// 原子性由单条 `INSERT … ON CONFLICT DO UPDATE … WHERE … RETURNING` 保证：
+/// 只有「未成功」且「无未过期租约」时才会被更新，否则不返回行。
+pub fn claim_import_lease(
+    db: &Db,
+    workspace_row_id: &str,
+    claim_key: &str,
+    rel_path: &str,
+    kind: &str,
+    content_hash: &str,
+    actor: &str,
+    owner: &str,
+    lease_secs: i64,
+) -> AppResult<LeaseClaim> {
+    let now = crate::agents::now_iso();
+    let lease = format!("+{lease_secs} seconds");
+    db.with_conn(|conn| {
+        let attempt: Option<i64> = conn
+            .query_row(
+                "INSERT INTO agent_import_claims
+                   (id, workspace_row_id, claim_key, rel_path, kind, content_hash, actor,
+                    status, owner, claimed_at, expires_at, attempt, created_at, updated_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,'inflight',?8,?9,
+                         strftime('%Y-%m-%dT%H:%M:%S','now',?10),1,?9,?9)
+                 ON CONFLICT(workspace_row_id, claim_key) DO UPDATE SET
+                   status='inflight',
+                   owner=excluded.owner,
+                   claimed_at=excluded.claimed_at,
+                   expires_at=excluded.expires_at,
+                   attempt=agent_import_claims.attempt+1,
+                   rel_path=excluded.rel_path,
+                   kind=excluded.kind,
+                   content_hash=excluded.content_hash,
+                   actor=excluded.actor,
+                   updated_at=excluded.updated_at
+                 WHERE agent_import_claims.status <> 'ok'
+                   AND (agent_import_claims.expires_at IS NULL
+                        OR agent_import_claims.expires_at
+                           <= strftime('%Y-%m-%dT%H:%M:%S','now'))
+                 RETURNING attempt",
+                rusqlite::params![
+                    uuid::Uuid::new_v4().to_string(),
+                    workspace_row_id,
+                    claim_key,
+                    rel_path,
+                    kind,
+                    content_hash,
+                    actor,
+                    owner,
+                    now,
+                    lease,
+                ],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(AppError::from)?;
+        if let Some(attempt) = attempt {
+            return Ok(LeaseClaim::Acquired(ImportLease {
+                claim_key: claim_key.to_string(),
+                owner: owner.to_string(),
+                attempt: attempt.max(1) as u32,
+            }));
+        }
+        // 没抢到：读现状给出可区分的原因（不参与竞态判定）。
+        let existing: Option<(String, String, String, Option<String>)> = conn
+            .query_row(
+                "SELECT status, owner, updated_at, expires_at FROM agent_import_claims
+                 WHERE workspace_row_id = ?1 AND claim_key = ?2",
+                rusqlite::params![workspace_row_id, claim_key],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .optional()
+            .map_err(AppError::from)?;
+        Ok(match existing {
+            Some((status, _, updated_at, _)) if status == "ok" => {
+                LeaseClaim::AlreadyImported {
+                    finished_at: updated_at,
+                }
+            }
+            Some((_, owner, _, until)) => LeaseClaim::InProgress {
+                owner,
+                until: until.unwrap_or_default(),
+            },
+            None => LeaseClaim::InProgress {
+                owner: String::new(),
+                until: String::new(),
+            },
+        })
+    })
+}
+
+/// 写入业务数据前复查租约仍归自己所有（防止过期执行者继续写）。
+pub fn holds_import_lease(
+    db: &Db,
+    workspace_row_id: &str,
+    claim_key: &str,
+    owner: &str,
+) -> AppResult<bool> {
+    db.with_read(|conn| {
+        let n: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM agent_import_claims
+             WHERE workspace_row_id=?1 AND claim_key=?2 AND owner=?3 AND status='inflight'
+               AND (expires_at IS NULL OR expires_at > strftime('%Y-%m-%dT%H:%M:%S','now'))",
+            rusqlite::params![workspace_row_id, claim_key, owner],
+            |r| r.get(0),
+        )?;
+        Ok(n > 0)
+    })
+}
+
+/// 成功：标记 `ok`，清空租约（保留 attempt 与时间用于审计）。
+pub fn finish_import_lease(db: &Db, workspace_row_id: &str, claim_key: &str, owner: &str) -> bool {
+    db.with_conn(|conn| {
+        let n = conn.execute(
+            "UPDATE agent_import_claims
+             SET status='ok', expires_at=NULL, owner='', updated_at=?4
+             WHERE workspace_row_id=?1 AND claim_key=?2 AND owner=?3 AND status='inflight'",
+            rusqlite::params![workspace_row_id, claim_key, owner, crate::agents::now_iso()],
+        )?;
+        Ok(n > 0)
+    })
+    .unwrap_or(false)
+}
+
+/// 失败：删除租约，允许后续重试（不得写成 imported/ok）。
+pub fn release_import_lease(db: &Db, workspace_row_id: &str, claim_key: &str, owner: &str) -> bool {
+    db.with_conn(|conn| {
+        let n = conn.execute(
+            "DELETE FROM agent_import_claims
+             WHERE workspace_row_id=?1 AND claim_key=?2 AND owner=?3 AND status='inflight'",
+            rusqlite::params![workspace_row_id, claim_key, owner],
+        )?;
+        Ok(n > 0)
+    })
+    .unwrap_or(false)
+}
+
+/// 清理过期租约（启动恢复用）。返回删除行数。
+pub fn reclaim_expired_import_leases(db: &Db) -> AppResult<u32> {
+    db.with_conn(|conn| {
+        let n = conn.execute(
+            "DELETE FROM agent_import_claims
+             WHERE status='inflight' AND expires_at IS NOT NULL
+               AND expires_at <= strftime('%Y-%m-%dT%H:%M:%S','now')",
+            [],
+        )?;
+        Ok(n as u32)
+    })
+}
+
+// ── 写入守卫（fencing）────────────────────────────────────────────
+//
+// 背景：v82 初版把「租约仍归我」当作**写业务数据之前**的一次独立检查
+// （`holds_import_lease`）。检查与写入之间存在时间窗：租约过期 → 别人抢占 →
+// 旧执行者恢复后继续写入，造成重复业务数据。
+//
+// v82 定稿方案：把「所有权校验」与「业务写入」放进**同一个写事务**
+// （`BEGIN IMMEDIATE`）。校验条件包含单调递增的 `attempt`（fencing token），
+// 因此：
+// - 旧执行者的 `attempt` 已被抢占者递增 → 校验失败 → 整个事务回滚，业务数据零写入；
+// - 校验与写入之间不可能被别人插入：`BEGIN IMMEDIATE` 持有 SQLite 写锁，
+//   抢占租约所需的 UPDATE 会被挡在事务之外；
+// - 业务数据与「租约置 ok」在**同一事务**提交：进程中途退出时两者都不生效，
+//   下一轮可安全重试；不会出现「业务已写、租约未完成」导致的重复导入。
+
+/// 写事务守卫：在事务内校验执行权，并在业务写入完成后收尾。
+///
+/// 实现方在事务开始时调用 [`WriteGuard::check`]，业务写入成功后调用
+/// [`WriteGuard::complete`]。任一步失败都会让外层事务回滚。
+pub trait WriteGuard {
+    /// 事务开始时校验：执行权是否仍属于本次执行者。
+    fn check(&self, conn: &Connection) -> AppResult<()>;
+
+    /// 业务写入成功后收尾：把执行权标记为已用尽（与业务数据同事务提交）。
+    fn complete(&self, conn: &Connection) -> AppResult<()>;
+
+    /// 记录本次业务提交产生的资源指针（与业务数据同事务）。
+    ///
+    /// 只有需要「提交结果可恢复」的守卫（REST 幂等）实现它；其余守卫默认忽略。
+    /// 实现方必须在事务内校验 fencing token，令牌失效即报错回滚。
+    fn record_operation(&self, _conn: &Connection, _kind: &str, _id: &str) -> AppResult<()> {
+        Ok(())
+    }
+}
+
+/// 不做任何校验的守卫（普通业务写入用）。
+pub struct NoGuard;
+
+impl WriteGuard for NoGuard {
+    fn check(&self, _conn: &Connection) -> AppResult<()> {
+        Ok(())
+    }
+
+    fn complete(&self, _conn: &Connection) -> AppResult<()> {
+        Ok(())
+    }
+}
+
+/// 导入租约守卫：校验 `owner + attempt` 且租约未过期。
+#[derive(Clone, Debug)]
+pub struct ImportLeaseGuard {
+    pub workspace_row_id: String,
+    pub claim_key: String,
+    pub owner: String,
+    pub attempt: u32,
+}
+
+impl ImportLeaseGuard {
+    pub fn new(
+        workspace_row_id: &str,
+        claim_key: &str,
+        owner: &str,
+        attempt: u32,
+    ) -> Self {
+        Self {
+            workspace_row_id: workspace_row_id.to_string(),
+            claim_key: claim_key.to_string(),
+            owner: owner.to_string(),
+            attempt,
+        }
+    }
+}
+
+impl WriteGuard for ImportLeaseGuard {
+    fn check(&self, conn: &Connection) -> AppResult<()> {
+        let matched: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM agent_import_claims
+             WHERE workspace_row_id=?1 AND claim_key=?2 AND owner=?3 AND attempt=?4
+               AND status='inflight'
+               AND (expires_at IS NULL OR expires_at > strftime('%Y-%m-%dT%H:%M:%S','now'))",
+            rusqlite::params![
+                self.workspace_row_id,
+                self.claim_key,
+                self.owner,
+                self.attempt as i64
+            ],
+            |r| r.get(0),
+        )?;
+        if matched == 0 {
+            return Err(AppError::Conflict(format!(
+                "导入租约已失效（claim_key={} attempt={}）：本次执行被 fencing 拒绝，未写入任何业务数据",
+                &self.claim_key[..self.claim_key.len().min(12)],
+                self.attempt
+            )));
+        }
+        Ok(())
+    }
+
+    fn complete(&self, conn: &Connection) -> AppResult<()> {
+        let n = conn.execute(
+            "UPDATE agent_import_claims
+             SET status='ok', expires_at=NULL, owner='', updated_at=?5
+             WHERE workspace_row_id=?1 AND claim_key=?2 AND owner=?3 AND attempt=?4
+               AND status='inflight'",
+            rusqlite::params![
+                self.workspace_row_id,
+                self.claim_key,
+                self.owner,
+                self.attempt as i64,
+                crate::agents::now_iso()
+            ],
+        )?;
+        if n == 0 {
+            // 理论上不可达：`check` 刚通过。若发生说明租约在事务内被外部改动，
+            // 必须让事务回滚，否则会留下「业务已写、租约未完成」的重复导入窗口。
+            return Err(AppError::Conflict(
+                "导入租约在提交前失效，本次写入已回滚".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// 在**同一个写事务**内完成「fencing 校验 → 业务写入 → 租约置 ok」。
+///
+/// 原子性依据：
+/// - `db.with_transaction` 使用 `BEGIN IMMEDIATE`，事务全程持有 SQLite 写锁，
+///   抢占租约所需的 `UPDATE` 无法插进「校验 → 写入」之间；
+/// - 校验条件包含 `attempt`（单调递增 fencing token），旧执行者必然校验失败；
+/// - 业务数据与「租约置 ok」同事务提交：中途崩溃则两者都不生效，可安全重试。
+///
+/// 闭包内**不得**再调用 `db.with_conn` / `db.with_transaction`（写连接互斥，会死锁）。
+pub fn with_import_lease_transaction<T>(
+    db: &Db,
+    guard: &ImportLeaseGuard,
+    body: impl FnOnce(&Connection) -> AppResult<T>,
+) -> AppResult<T> {
+    db.with_transaction(|conn| {
+        guard.check(conn)?;
+        let value = body(conn)?;
+        guard.complete(conn)?;
+        Ok(value)
+    })
+}
+
+// ── REST 幂等占位（v82）──────────────────────────────────────────
+
+/// 幂等占位结果。指纹不一致必须由调用方转成 409，不能重放。
+#[derive(Clone, Debug)]
+pub enum CacheClaim {
+    /// 抢到占位，可以真正执行。`attempt` 是本次占位的 fencing token。
+    Acquired { attempt: u32 },
+    /// 已完成：返回缓存响应（调用方需自行比对指纹）。
+    Done {
+        fingerprint: String,
+        response_json: String,
+        status_code: u16,
+    },
+    /// 业务已提交，但响应尚未写入（进程在提交与缓存之间退出）。
+    ///
+    /// **禁止重新执行业务**：调用方必须按 `operation_kind/operation_id` 重建响应，
+    /// 无法重建时返回明确的「需要恢复」错误。
+    Committed {
+        fingerprint: String,
+        attempt: u32,
+        operation_kind: String,
+        operation_id: String,
+        committed_at: String,
+    },
+    /// 其他请求正在执行同一 Key。
+    InProgress { fingerprint: String },
+}
+
+/// 原子占位：`state` 从 `inflight` → `committed` → `done`；过期行可被抢占。
+///
+/// `lease_secs` 是 inflight 租约（默认 300 秒），`ttl_hours` 是完成后缓存寿命（默认 24 小时）。
+///
+/// 抢占过期行时 `attempt` 自增：**新占位者拿到更大的 fencing token**，
+/// 旧占位者随后调用 `cache_complete` / `cache_fail` 会因 `attempt` 不匹配而
+/// 落空（影响行数为 0），因此**旧请求无法完成或删除新请求的占位**。
+///
+/// `state='committed'` 的行**永不因租约过期被抢占**：它代表业务事务已经提交，
+/// 重新执行会造成重复写入；调用方必须走 [`CacheClaim::Committed`] 恢复路径。
+pub fn cache_claim(
+    db: &Db,
+    agent_row_id: &str,
+    interface: &str,
+    key: &str,
+    fingerprint: &str,
+    method: &str,
+    path: &str,
+    lease_secs: i64,
+    ttl_hours: i64,
+) -> AppResult<CacheClaim> {
+    let now = crate::agents::now_iso();
+    let lease = format!("+{lease_secs} seconds");
+    let _ = ttl_hours; // 完成后由 cache_complete 写入真实 TTL
+    db.with_conn(|conn| {
+        let got: Option<i64> = conn
+            .query_row(
+                "INSERT INTO agent_request_cache
+                   (id, agent_row_id, interface, idempotency_key, request_hash, request_method,
+                    request_path, response_json, status_code, state, attempt, created_at, expires_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,'',0,'inflight',1,?8,
+                         strftime('%Y-%m-%dT%H:%M:%S','now',?9))
+                 ON CONFLICT(agent_row_id, interface, idempotency_key) DO UPDATE SET
+                   request_hash=excluded.request_hash,
+                   request_method=excluded.request_method,
+                   request_path=excluded.request_path,
+                   response_json='',
+                   status_code=0,
+                   state='inflight',
+                   operation_kind='',
+                   operation_id='',
+                   committed_at=NULL,
+                   attempt=agent_request_cache.attempt+1,
+                   created_at=excluded.created_at,
+                   expires_at=excluded.expires_at
+                 WHERE agent_request_cache.state IN ('inflight','done')
+                   AND agent_request_cache.expires_at
+                       <= strftime('%Y-%m-%dT%H:%M:%S','now')
+                 RETURNING attempt",
+                rusqlite::params![
+                    uuid::Uuid::new_v4().to_string(),
+                    agent_row_id,
+                    interface,
+                    key,
+                    fingerprint,
+                    method,
+                    path,
+                    now,
+                    lease,
+                ],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(AppError::from)?;
+        if let Some(attempt) = got {
+            return Ok(CacheClaim::Acquired {
+                attempt: attempt.max(1) as u32,
+            });
+        }
+        let row: Option<(String, String, String, i64, i64, String, String, Option<String>)> = conn
+            .query_row(
+                "SELECT request_hash, response_json, state, status_code, attempt,
+                        operation_kind, operation_id, committed_at
+                 FROM agent_request_cache
+                 WHERE agent_row_id=?1 AND interface=?2 AND idempotency_key=?3",
+                rusqlite::params![agent_row_id, interface, key],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                        r.get(7)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(AppError::from)?;
+        Ok(match row {
+            Some((fp, text, state, code, _, kind, id, _)) if state == "done" => CacheClaim::Done {
+                fingerprint: fp,
+                response_json: text,
+                status_code: code as u16,
+            },
+            Some((fp, _, state, _, attempt, kind, id, committed_at)) if state == "committed" => {
+                CacheClaim::Committed {
+                    fingerprint: fp,
+                    attempt: attempt.max(1) as u32,
+                    operation_kind: kind,
+                    operation_id: id,
+                    committed_at: committed_at.unwrap_or_default(),
+                }
+            }
+            Some((fp, _, _, _, _, _, _, _)) => CacheClaim::InProgress { fingerprint: fp },
+            // 行刚被并发删除（失败释放）：按「未完成」处理，调用方可重试。
+            None => CacheClaim::InProgress {
+                fingerprint: String::new(),
+            },
+        })
+    })
+}
+
+/// 完成占位：写入响应并延长到 24 小时。
+///
+/// **fencing**：只有 `attempt` 仍等于本次占位令牌时才允许写入。
+/// 返回 `false` 表示占位已被他人抢占（本次结果作废，不得覆盖对方的响应）。
+///
+/// 允许从 `inflight`（正常提交）或 `committed`（崩溃恢复后重建响应）进入 `done`。
+pub fn cache_complete(
+    db: &Db,
+    agent_row_id: &str,
+    interface: &str,
+    key: &str,
+    fingerprint: &str,
+    attempt: u32,
+    response_json: &str,
+    status_code: u16,
+) -> AppResult<bool> {
+    let now = crate::agents::now_iso();
+    db.with_conn(|conn| {
+        let n = conn.execute(
+            "UPDATE agent_request_cache
+             SET state='done', response_json=?6, status_code=?7, created_at=?8,
+                 expires_at=strftime('%Y-%m-%dT%H:%M:%S','now','+24 hours')
+             WHERE agent_row_id=?1 AND interface=?2 AND idempotency_key=?3
+               AND request_hash=?4 AND attempt=?5 AND state IN ('inflight','committed')",
+            rusqlite::params![
+                agent_row_id,
+                interface,
+                key,
+                fingerprint,
+                attempt as i64,
+                response_json,
+                status_code as i64,
+                now,
+            ],
+        )?;
+        Ok(n > 0)
+    })
+}
+
+/// 失败：删除占位，绝不把失败缓存成成功结果。
+///
+/// **fencing**：只允许删除**自己持有的**占位（`attempt` 必须匹配），
+/// 否则旧请求失败时会误删新请求正在使用的占位，导致业务写入被执行两次。
+pub fn cache_fail(
+    db: &Db,
+    agent_row_id: &str,
+    interface: &str,
+    key: &str,
+    fingerprint: &str,
+    attempt: u32,
+) -> AppResult<bool> {
+    db.with_conn(|conn| {
+        let n = conn.execute(
+            "DELETE FROM agent_request_cache
+             WHERE agent_row_id=?1 AND interface=?2 AND idempotency_key=?3
+               AND request_hash=?4 AND attempt=?5 AND state='inflight'",
+            rusqlite::params![agent_row_id, interface, key, fingerprint, attempt as i64],
+        )?;
+        Ok(n > 0)
+    })
+}
+
+/// REST 幂等守卫：把「业务事务」与「已提交标记 + operation 指针」绑定在同一事务。
+///
+/// 事务内顺序固定为：`check` → 业务写入 → `record_operation` → `complete`。
+/// 任何一步失败都整体回滚，因此不存在「业务已创建但没有提交标记」的窗口。
+#[derive(Debug)]
+pub struct RequestCacheGuard {
+    pub agent_row_id: String,
+    pub interface: String,
+    pub key: String,
+    pub fingerprint: String,
+    pub attempt: u32,
+    operation: std::sync::Mutex<Option<(String, String)>>,
+}
+
+impl RequestCacheGuard {
+    pub fn new(
+        agent_row_id: &str,
+        interface: &str,
+        key: &str,
+        fingerprint: &str,
+        attempt: u32,
+    ) -> Self {
+        Self {
+            agent_row_id: agent_row_id.to_string(),
+            interface: interface.to_string(),
+            key: key.to_string(),
+            fingerprint: fingerprint.to_string(),
+            attempt,
+            operation: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// 本次业务提交产生的资源指针（若业务函数已记录）。
+    pub fn operation(&self) -> Option<(String, String)> {
+        self.operation.lock().ok().and_then(|v| v.clone())
+    }
+}
+
+impl WriteGuard for RequestCacheGuard {
+    fn check(&self, conn: &Connection) -> AppResult<()> {
+        let matched: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM agent_request_cache
+             WHERE agent_row_id=?1 AND interface=?2 AND idempotency_key=?3
+               AND request_hash=?4 AND attempt=?5 AND state='inflight'
+               AND expires_at > strftime('%Y-%m-%dT%H:%M:%S','now')",
+            rusqlite::params![
+                self.agent_row_id,
+                self.interface,
+                self.key,
+                self.fingerprint,
+                self.attempt as i64
+            ],
+            |r| r.get(0),
+        )?;
+        if matched == 0 {
+            return Err(AppError::Conflict(
+                "IDEMPOTENCY_FENCED: 幂等占位已失效（被抢占或已提交），本次执行被拒绝".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn record_operation(&self, conn: &Connection, kind: &str, id: &str) -> AppResult<()> {
+        let n = conn.execute(
+            "UPDATE agent_request_cache
+             SET operation_kind=?6, operation_id=?7
+             WHERE agent_row_id=?1 AND interface=?2 AND idempotency_key=?3
+               AND request_hash=?4 AND attempt=?5 AND state='inflight'",
+            rusqlite::params![
+                self.agent_row_id,
+                self.interface,
+                self.key,
+                self.fingerprint,
+                self.attempt as i64,
+                kind,
+                id
+            ],
+        )?;
+        if n == 0 {
+            return Err(AppError::Conflict(
+                "IDEMPOTENCY_FENCED: 提交前幂等占位已失效，本次写入已回滚".into(),
+            ));
+        }
+        if let Ok(mut slot) = self.operation.lock() {
+            *slot = Some((kind.to_string(), id.to_string()));
+        }
+        Ok(())
+    }
+
+    fn complete(&self, conn: &Connection) -> AppResult<()> {
+        let n = conn.execute(
+            "UPDATE agent_request_cache
+             SET state='committed', committed_at=?6
+             WHERE agent_row_id=?1 AND interface=?2 AND idempotency_key=?3
+               AND request_hash=?4 AND attempt=?5 AND state='inflight'",
+            rusqlite::params![
+                self.agent_row_id,
+                self.interface,
+                self.key,
+                self.fingerprint,
+                self.attempt as i64,
+                crate::agents::now_iso(),
+            ],
+        )?;
+        if n == 0 {
+            return Err(AppError::Conflict(
+                "IDEMPOTENCY_FENCED: 提交前幂等占位已失效，本次写入已回滚".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// 按时间裁剪运维日志（活动/同步事件/幂等缓存）。单次最多 5000 行，失败不影响启动。

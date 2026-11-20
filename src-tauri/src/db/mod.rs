@@ -2151,6 +2151,12 @@ CREATE INDEX idx_sec_audit_time ON security_audit_log(created_at);
 CREATE INDEX idx_sec_audit_cat ON security_audit_log(category, created_at);
 "#,
     ),
+    // Agent 共享工作空间 v82（稳定性）：导入租约、REST 请求指纹、报告项目归属回填。
+    // 只加列 + 一次空值回填，不重建 v81 表；迁移号 83 因 82 已被安全审计表占用。
+    crate::agent_access::schema::MIGRATION_83,
+    // v82 补齐（迁移 84）：REST 幂等的业务提交指针（operation_kind/operation_id）。
+    // 业务事务与「已提交」标记原子写入，重试不会重复创建业务数据。纯新增列。
+    crate::agent_access::schema::MIGRATION_84,
     // 协作中心创作工作台（v85）：可视化 authoring_mode + 图片资产表。
     // 纯新增列/新表，不改 v77 既有列语义。
     (85, crate::collab::schema::MIGRATION_85),
@@ -4151,6 +4157,60 @@ mod tests {
             ))
             .unwrap(),
             0
+        );
+    }
+
+    #[test]
+    fn v82_migration_84_adds_operation_pointer_to_existing_cache_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        let idx = MIGRATIONS
+            .iter()
+            .position(|(v, _)| *v == 84)
+            .expect("迁移 84 必须已登记");
+        apply_migrations(&conn, 0, &MIGRATIONS[..idx]).unwrap();
+        // v83 形态的历史行（无 operation 指针）。
+        conn.execute(
+            "INSERT INTO agent_request_cache
+               (id, agent_row_id, interface, idempotency_key, request_hash, response_json,
+                status_code, created_at, expires_at)
+             VALUES ('legacy', NULL, 'rest', 'legacy-key', 'fp', '{}', 200,
+                     '2026-01-01T00:00:00', '2030-01-01T00:00:00')",
+            [],
+        )
+        .unwrap();
+        apply_migrations(&conn, 83, &MIGRATIONS[idx..]).unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert!(
+            version >= 84,
+            "必须至少推进到 84（后续迁移可能继续追加）：{version}"
+        );
+        let (kind, id, state): (String, String, String) = conn
+            .query_row(
+                "SELECT operation_kind, operation_id, state FROM agent_request_cache WHERE id='legacy'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(kind, "", "旧行默认没有 operation 指针");
+        assert_eq!(id, "");
+        assert_eq!(state, "done", "v83 默认把历史行视为已完成");
+        let committed: Option<String> = conn
+            .query_row(
+                "SELECT committed_at FROM agent_request_cache WHERE id='legacy'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(committed.is_none());
+        // 重复执行同一段迁移必须是空操作（按真实 user_version 续跑）。
+        apply_migrations(&conn, version, MIGRATIONS).unwrap();
+        assert_eq!(
+            conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            MIGRATIONS[MIGRATIONS.len() - 1].0
         );
     }
 

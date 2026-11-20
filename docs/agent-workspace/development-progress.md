@@ -198,3 +198,27 @@
 `npm run cargo -- check --lib` exit 0。`cargo test --lib agent_access` 在共享工作区被**其他会话**的
 `src-tauri/src/diagnostics/panic_hook.rs`（test cfg）编译错误阻塞（E0597，非本任务模块），
 改在集成隔离工作区执行，结论见 [acceptance-report.md](acceptance-report.md) v81 章节。
+
+## v82 架构审查整改（2026-11-20）
+
+本轮目标不是新增能力，而是让四入口的**授权、事务、重试、并发**闭环。结论：Dev 功能验收通过
+（`scripts/acceptance-agent-access-v82.mjs` 52/52，exit 0；Rust `agent_access::` 143/143）。
+
+| 交付 | 状态 | 位置 |
+|---|---|---|
+| 统一授权查询：决策/活动/知识索引/项目元数据按能力与真实归属判定 | 已完成 | `agent_access/service.rs`、`permissions.rs` |
+| CLI/MCP 读取接口移除 store 直读（决策、活动、知识索引、Prompt） | 已完成 | `agent_access/cli.rs`、`mcp_tools.rs` |
+| REST 决策/活动/同步状态授权 + `dispatch` 事务内守卫 | 已完成 | `agent_access/rest.rs` |
+| 完成任务统一为 `pending → completed`，revision/提醒/统计/守卫同事务；已完成幂等不重开 | 已完成 | `agent_access/service.rs` |
+| 知识更新 revision 与正文同事务；索引失败保持 pending 并可重试 | 已完成 | `agent_access/service.rs` |
+| REST 幂等 operation 指针（迁移 84）：`committed` 永不被抢占，崩溃后重建或 409 RECOVERY_REQUIRED | 已完成 | `agent_access/store.rs`、`schema.rs`、`db/mod.rs`、`rest.rs` |
+| Context：`context.read` 不再授予项目/资源可见；活动按授权 SQL 过滤 | 已完成 | `agent_access/context.rs` |
+| Handoff：报告先按项目过滤再分页；文件导入读交接也校验能力 | 已完成 | `agent_access/handoff.rs`、`store.rs` |
+| 本机活动审计 `actor_kind` 与 v76 CHECK 不一致导致静默丢失 | 已修复 | `agent_access/store.rs` |
+| Markdown 正文尾部换行导致 description 不一致 | 已修复 | `agent_access/sync.rs` |
+| v82 独立验收脚本 | 已完成 | `scripts/acceptance-agent-access-v82.mjs` |
+
+**验证**：`npm run cargo -- check --lib` exit 0；`npm run typecheck` exit 0；测试二进制
+`agent_access::` 143 passed / 0 failed（81.36s，最终复跑）；迁移 84 升级用例通过；独立脚本 52/52、
+exit 0（隔离数据目录 `tmp/acceptance/agent-access-v82-20261120-224854/`）。详见
+[v82-acceptance-report.md](v82-acceptance-report.md)。

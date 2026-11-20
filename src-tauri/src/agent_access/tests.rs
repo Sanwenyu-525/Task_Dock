@@ -518,3 +518,287 @@ fn service_rejects_write_for_readonly_agent() {
     .unwrap_err();
     assert_eq!(super::error_code(&err), "FORBIDDEN");
 }
+
+// ── P0：读取入口统一授权（v82）────────────────────────────────────
+
+/// 只持有 `tasks.read` 的 Agent 不得读取决策：返回 FORBIDDEN，不是空列表。
+#[test]
+fn agent_without_decisions_read_cannot_list_or_get_decision() {
+    let db = Db::open_in_memory().expect("内存库");
+    let decision = super::store::create_decision(
+        &db,
+        &Principal::local(Source::Ui),
+        super::store::DecisionInput {
+            title: "仅本机可见的决策".into(),
+            project_id: None,
+            project_kind: None,
+            context: String::new(),
+            decision: "记录一条决策".into(),
+            consequences: String::new(),
+            alternatives: String::new(),
+            tags: Vec::new(),
+            status: None,
+        },
+    )
+    .expect("创建决策");
+
+    let (row_id, agent_id) = make_agent(&db, "agent-tasks-only");
+    grant(&db, &row_id, "tasks.read", "");
+    let principal = agent_principal(&row_id, &agent_id);
+
+    let list_err = service::list_decisions_authorized(&db, &principal, None, None, 50, 0)
+        .expect_err("无 decisions.read 不得列出决策");
+    assert!(matches!(list_err, AppError::Agent(_)), "{list_err:?}");
+    assert_eq!(super::error_code(&list_err), "FORBIDDEN");
+
+    let get_err = service::get_decision_authorized(&db, &principal, &decision.id)
+        .expect_err("无 decisions.read 不得读取决策详情");
+    assert!(matches!(get_err, AppError::Agent(_)), "{get_err:?}");
+    assert_eq!(super::error_code(&get_err), "FORBIDDEN");
+}
+
+/// 只授权知识库 KB-A 的 Agent：索引中不得出现 KB-B 的库与文档，读 KB-B 文档被拒绝。
+#[test]
+fn knowledge_index_and_document_follow_authorized_base_only() {
+    let db = Db::open_in_memory().expect("内存库");
+    let base_a = crate::capability::knowledge::create_base_impl(
+        &db,
+        crate::capability::knowledge::KnowledgeBaseInput {
+            name: "KB-A".into(),
+            description: String::new(),
+            kind: "personal".into(),
+            project_id: None,
+            workspace_id: None,
+        },
+    )
+    .expect("创建 KB-A");
+    let base_b = crate::capability::knowledge::create_base_impl(
+        &db,
+        crate::capability::knowledge::KnowledgeBaseInput {
+            name: "KB-B".into(),
+            description: String::new(),
+            kind: "personal".into(),
+            project_id: None,
+            workspace_id: None,
+        },
+    )
+    .expect("创建 KB-B");
+    let (_, doc_a) = crate::capability::knowledge::create_text_impl(
+        &db,
+        &base_a.id,
+        "A 文档",
+        "KB-A 的正文",
+    )
+    .expect("写入 A 文档");
+    let (_, doc_b) = crate::capability::knowledge::create_text_impl(
+        &db,
+        &base_b.id,
+        "B 文档",
+        "KB-B 的正文",
+    )
+    .expect("写入 B 文档");
+    let doc_a = doc_a.expect("A 文档 id");
+    let doc_b = doc_b.expect("B 文档 id");
+
+    let (row_id, agent_id) = make_agent(&db, "agent-kb-a");
+    grant(&db, &row_id, "knowledge.read", &base_a.id);
+    let principal = agent_principal(&row_id, &agent_id);
+
+    let index = service::knowledge_index_authorized(&db, &principal).expect("知识索引");
+    let base_ids: Vec<String> = index["bases"]
+        .as_array()
+        .expect("bases 数组")
+        .iter()
+        .filter_map(|b| b["id"].as_str().map(str::to_string))
+        .collect();
+    let doc_ids: Vec<String> = index["documents"]
+        .as_array()
+        .expect("documents 数组")
+        .iter()
+        .filter_map(|d| d["id"].as_str().map(str::to_string))
+        .collect();
+    assert!(base_ids.contains(&base_a.id), "授权库必须出现：{base_ids:?}");
+    assert!(!base_ids.contains(&base_b.id), "未授权库不得出现：{base_ids:?}");
+    assert!(doc_ids.contains(&doc_a), "授权库文档必须出现：{doc_ids:?}");
+    assert!(!doc_ids.contains(&doc_b), "未授权库文档不得出现：{doc_ids:?}");
+
+    assert!(
+        service::get_knowledge(&db, &principal, &doc_a).is_ok(),
+        "授权库文档应可读取"
+    );
+    let err = service::get_knowledge(&db, &principal, &doc_b)
+        .expect_err("未授权库文档必须被拒绝");
+    assert!(matches!(err, AppError::Agent(_)), "{err:?}");
+    assert_eq!(super::error_code(&err), "FORBIDDEN");
+}
+
+/// 只有 `context.read` 不是资源读能力：决策列表与活动列表都必须 FORBIDDEN。
+#[test]
+fn context_read_alone_cannot_list_decisions_or_activity() {
+    let db = Db::open_in_memory().expect("内存库");
+    let (row_id, agent_id) = make_agent(&db, "agent-context-only");
+    grant(&db, &row_id, "context.read", "");
+    let principal = agent_principal(&row_id, &agent_id);
+
+    let decisions_err = service::list_decisions_authorized(&db, &principal, None, None, 50, 0)
+        .expect_err("context.read 不能列出决策");
+    assert!(matches!(decisions_err, AppError::Agent(_)), "{decisions_err:?}");
+    assert_eq!(super::error_code(&decisions_err), "FORBIDDEN");
+
+    let activity_err = service::list_activity_authorized(
+        &db,
+        &principal,
+        &super::store::ActivityQuery {
+            agent_id: None,
+            interface: None,
+            since: None,
+            limit: 50,
+            offset: 0,
+        },
+    )
+    .expect_err("context.read 不能列出活动");
+    assert!(matches!(activity_err, AppError::Agent(_)), "{activity_err:?}");
+    assert_eq!(super::error_code(&activity_err), "FORBIDDEN");
+}
+
+/// 项目 A 授权看不到项目 B 的活动（服务端 SQL 过滤，不是前端过滤）。
+#[test]
+fn project_scope_hides_other_project_activity() {
+    let db = Db::open_in_memory().expect("内存库");
+    let project_a = crate::commands::planning::create_project_impl(
+        &db,
+        crate::commands::planning::ProjectInput {
+            name: "项目 A".into(),
+            description: String::new(),
+            status: None,
+            target_date: None,
+        },
+    )
+    .expect("创建项目 A");
+    let project_b = crate::commands::planning::create_project_impl(
+        &db,
+        crate::commands::planning::ProjectInput {
+            name: "项目 B".into(),
+            description: String::new(),
+            status: None,
+            target_date: None,
+        },
+    )
+    .expect("创建项目 B");
+
+    let local = Principal::local(Source::Ui);
+    for (project_id, detail) in [
+        (project_a.id.as_str(), "项目 A 的活动"),
+        (project_b.id.as_str(), "项目 B 的活动"),
+    ] {
+        super::store::log_activity(
+            &db,
+            &super::store::ActivityEntry {
+                principal: &local,
+                action: "task.create",
+                resource_kind: "task",
+                resource_id: "",
+                project_id,
+                request_id: "",
+                success: true,
+                error_code: "",
+                detail,
+                revision: None,
+                duration_ms: 0,
+            },
+        );
+    }
+
+    let (row_id, agent_id) = make_agent(&db, "agent-project-a");
+    grant(&db, &row_id, "projects.read", &project_a.id);
+    let principal = agent_principal(&row_id, &agent_id);
+
+    let (items, _) = service::list_activity_authorized(
+        &db,
+        &principal,
+        &super::store::ActivityQuery {
+            agent_id: None,
+            interface: None,
+            since: None,
+            limit: 50,
+            offset: 0,
+        },
+    )
+    .expect("项目 A 授权可读活动");
+    assert!(!items.is_empty(), "应能看到项目 A 自己的活动");
+    assert!(
+        items.iter().all(|item| item.project_id == project_a.id),
+        "只应包含项目 A 的活动：{:?}",
+        items.iter().map(|i| &i.project_id).collect::<Vec<_>>()
+    );
+    assert!(
+        items.iter().all(|item| item.project_id != project_b.id),
+        "不得出现项目 B 的活动"
+    );
+}
+
+/// Token 撤销后，下一次授权查询立即 FORBIDDEN（每次请求重读身份，不缓存）。
+#[test]
+fn revoked_agent_token_is_denied_immediately() {
+    let db = Db::open_in_memory().expect("内存库");
+    super::store::create_decision(
+        &db,
+        &Principal::local(Source::Ui),
+        super::store::DecisionInput {
+            title: "撤销前可读".into(),
+            project_id: None,
+            project_kind: None,
+            context: String::new(),
+            decision: "x".into(),
+            consequences: String::new(),
+            alternatives: String::new(),
+            tags: Vec::new(),
+            status: None,
+        },
+    )
+    .expect("创建决策");
+    let (row_id, agent_id) = make_agent(&db, "agent-revoke-read");
+    grant(&db, &row_id, "decisions.read", "");
+    let principal = agent_principal(&row_id, &agent_id);
+    assert!(
+        service::list_decisions_authorized(&db, &principal, None, None, 50, 0).is_ok(),
+        "撤销前应可读决策"
+    );
+
+    mcp_auth::revoke_agent(&db, &row_id).expect("撤销 Agent");
+    let err = service::list_decisions_authorized(&db, &principal, None, None, 50, 0)
+        .expect_err("撤销后必须立即拒绝");
+    assert!(matches!(err, AppError::Agent(_)), "{err:?}");
+    assert_eq!(super::error_code(&err), "FORBIDDEN");
+}
+
+/// 本机 CLI 主体仍可读取（现有策略：本机人类身份不受 Agent 授权限制）。
+#[test]
+fn local_cli_principal_can_still_read_decisions() {
+    let db = Db::open_in_memory().expect("内存库");
+    let created = super::store::create_decision(
+        &db,
+        &Principal::local(Source::Ui),
+        super::store::DecisionInput {
+            title: "本机可见".into(),
+            project_id: None,
+            project_kind: None,
+            context: String::new(),
+            decision: "本机 CLI 应可读取".into(),
+            consequences: String::new(),
+            alternatives: String::new(),
+            tags: Vec::new(),
+            status: None,
+        },
+    )
+    .expect("创建决策");
+    let principal = Principal::local(Source::Cli);
+    let (items, page) = service::list_decisions_authorized(&db, &principal, None, None, 50, 0)
+        .expect("本机 CLI 可读决策");
+    assert!(
+        items.iter().any(|d| d.id == created.id),
+        "本机 CLI 应看到刚创建的决策"
+    );
+    assert!(page.total >= 1, "分页 total 必须反映真实行数");
+}
+

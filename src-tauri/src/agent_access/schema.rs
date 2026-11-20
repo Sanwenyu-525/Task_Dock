@@ -343,6 +343,80 @@ CREATE INDEX IF NOT EXISTS idx_aic_hash ON agent_import_claims(workspace_row_id,
 "#,
 );
 
+/// v82（稳定性加固）：导入租约、请求指纹、报告项目归属回填。
+///
+/// 设计约束：
+/// - **只加列，不重建 v81 已发布的表**。`agent_import_claims.status` 仍只有
+///   `inflight|ok`；「失败」由「租约释放/过期」表达，状态机在 Rust 侧用
+///   `ImportOutcome` 枚举收敛，不依赖 bool。
+/// - 迁移号取 83，因为 82 已被安全审计表（`security_audit_log`）占用。
+/// - 第 4 段是数据修复：只填空值，不改已有归属，不删行。
+pub const MIGRATION_83: (i64, &str) = (
+    83,
+    r#"
+-- 1) 导入认领：租约（执行者 / 认领时间 / 过期时间 / 尝试次数）。
+--    过期租约可被抢占，进程崩溃后不必人工清表。
+ALTER TABLE agent_import_claims ADD COLUMN owner TEXT NOT NULL DEFAULT '';
+ALTER TABLE agent_import_claims ADD COLUMN claimed_at TEXT NOT NULL DEFAULT '';
+ALTER TABLE agent_import_claims ADD COLUMN expires_at TEXT;
+ALTER TABLE agent_import_claims ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS idx_aic_lease
+  ON agent_import_claims(workspace_row_id, status, expires_at);
+
+-- 2) 导入请求：租约列 + 决策时所依据的内容 Hash（区分「同内容幂等」与「新内容重审」）。
+ALTER TABLE agent_import_requests ADD COLUMN lease_owner TEXT NOT NULL DEFAULT '';
+ALTER TABLE agent_import_requests ADD COLUMN lease_expires_at TEXT;
+ALTER TABLE agent_import_requests ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE agent_import_requests ADD COLUMN decided_hash TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_air_lease
+  ON agent_import_requests(workspace_row_id, lease_expires_at);
+
+-- 3) REST 幂等：进行中占位状态 + 指纹要素（method/path 参与指纹，防止同 Key 跨端点重放）
+--    + attempt（单调递增的 fencing token：旧请求不得完成/删除新请求的占位）。
+ALTER TABLE agent_request_cache ADD COLUMN state TEXT NOT NULL DEFAULT 'done';
+ALTER TABLE agent_request_cache ADD COLUMN request_method TEXT NOT NULL DEFAULT '';
+ALTER TABLE agent_request_cache ADD COLUMN request_path TEXT NOT NULL DEFAULT '';
+ALTER TABLE agent_request_cache ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS idx_arc_state ON agent_request_cache(state, expires_at);
+
+-- 4) 数据修复：历史工作报告补齐项目归属（只填空值，不动已有值）。
+UPDATE agent_work_reports
+SET project_id = (
+  SELECT h.project_id FROM agent_handoffs h WHERE h.id = agent_work_reports.handoff_id
+)
+WHERE (project_id IS NULL OR project_id = '')
+  AND handoff_id IS NOT NULL
+  AND EXISTS (
+    SELECT 1 FROM agent_handoffs h
+    WHERE h.id = agent_work_reports.handoff_id AND h.project_id <> ''
+  );
+"#,
+);
+
+/// v82 补齐（迁移 84）：REST 幂等的「业务提交结果」持久化。
+///
+/// 问题：v82 的 `agent_request_cache` 只有 `inflight|done` 两态，业务事务与
+/// 「写缓存响应」是两个独立提交。进程若在两者之间退出，缓存仍是 `inflight`，
+/// 租约过期后重试会**再次执行业务创建**。
+///
+/// 修复：在**业务写事务内**把创建成功的资源指针写入同一行缓存（`state=committed`），
+/// 业务提交与「已提交」标记原子生效。租约过期后重试看到 `committed` 时不再执行，
+/// 而是按 operation 指针重建响应或返回明确的「需要恢复」错误。
+///
+/// 只加列，不重建 v82 已发布的 `agent_request_cache`。
+pub const MIGRATION_84: (i64, &str) = (
+    84,
+    r#"
+-- 业务提交指针：与业务数据同事务写入（state='committed'），响应丢失后据此重建。
+ALTER TABLE agent_request_cache ADD COLUMN operation_kind TEXT NOT NULL DEFAULT '';
+ALTER TABLE agent_request_cache ADD COLUMN operation_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE agent_request_cache ADD COLUMN committed_at TEXT;
+-- committed 行不因租约过期被抢占：重试必须走恢复，而不是重新执行。
+CREATE INDEX IF NOT EXISTS idx_arc_committed
+  ON agent_request_cache(state, committed_at);
+"#,
+);
+
 #[cfg(test)]
 mod tests {
     use crate::db::Db;
