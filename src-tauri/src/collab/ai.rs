@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use crate::error::{AppError, AppResult};
 
 use super::actor::{assert_project_scope, Actor, Capability};
-use super::model::{AiJob, Page, PAGE_MAX};
+use super::model::{AiJob, AiProposal, Page, PAGE_MAX};
 use super::util::{new_id, now_iso, page_bounds, validate_text};
 use super::visual::{create_document, normalize_content, renderer_for};
 use super::model::VisualInput;
@@ -23,6 +23,8 @@ pub const LOCAL_MODEL: &str = "rules-v1";
 pub struct TextRequest {
     pub kind: String,
     pub title: String,
+    /// 用户原始指令：Provider 必须能拿到它，否则生成与需求脱节。
+    pub prompt: String,
     pub context: Value,
 }
 
@@ -75,10 +77,10 @@ impl ModelProvider for LocalStructuredProvider {
 
     fn generate_text(&self, req: &TextRequest) -> Result<TextResult, AiError> {
         let content = match req.kind.as_str() {
-            "flowchart" => local_flowchart(&req.title, &req.context),
-            "architecture" => local_architecture(&req.title, &req.context),
-            "dataflow" => local_dataflow(&req.title),
-            "prototype" => local_prototype(&req.title, &req.context),
+            "flowchart" => local_flowchart(&req.title, &req.prompt, &req.context),
+            "architecture" => local_architecture(&req.title, &req.prompt, &req.context),
+            "dataflow" => local_dataflow(&req.title, &req.prompt),
+            "prototype" => local_prototype(&req.title, &req.prompt, &req.context),
             other => {
                 return Err(AiError::Unavailable(format!(
                     "本地结构化 Provider 不支持生成 {other}；请配置文本模型"
@@ -102,51 +104,103 @@ pub fn image_provider() -> Option<&'static dyn ModelProvider> {
     None
 }
 
-fn local_flowchart(title: &str, context: &Value) -> Value {
-    let tasks: Vec<String> = context
-        .get("tasks")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|t| t.as_str().map(|s| s.to_string()))
-                .take(20)
-                .collect()
+/// 把用户指令拆成可执行的步骤：支持 `->`/`→`/`=>`/逗号/分号/换行。
+/// 这是规则解析，不是模型理解；结果上限 8 步、每步 60 字。
+fn prompt_steps(prompt: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let normalized = prompt
+        .replace("->", "\n")
+        .replace("=>", "\n")
+        .replace('→', "\n");
+    for part in normalized.split(|c: char| {
+        matches!(c, '\n' | '，' | ',' | '；' | ';' | '、')
+    }) {
+        let step = part.trim();
+        if step.is_empty() {
+            continue;
+        }
+        let step: String = step.chars().take(60).collect();
+        out.push(step);
+        if out.len() >= 8 {
+            break;
+        }
+    }
+    out
+}
+
+fn step_nodes(steps: &[String], kind: &str) -> Vec<Value> {
+    steps
+        .iter()
+        .enumerate()
+        .map(|(i, step)| {
+            json!({
+                "id": format!("n{}", i + 1),
+                "label": step,
+                "kind": kind,
+                "config": {}
+            })
         })
-        .unwrap_or_default();
+        .collect()
+}
+
+fn local_flowchart(title: &str, prompt: &str, context: &Value) -> Value {
+    let mut steps = prompt_steps(prompt);
+    if steps.len() < 2 {
+        steps = context
+            .get("tasks")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|t| t.as_str().map(|s| s.to_string()))
+                    .take(20)
+                    .collect()
+            })
+            .unwrap_or_default();
+    }
     let mut nodes = vec![json!({"id":"start","label":"开始","kind":"start","config":{}})];
     let mut edges = Vec::new();
-    if tasks.is_empty() {
+    if steps.is_empty() {
         nodes.push(json!({"id":"n1","label":title,"kind":"process","config":{}}));
         nodes.push(json!({"id":"end","label":"完成","kind":"end","config":{}}));
         edges.push(json!({"id":"e1","from":"start","to":"n1","label":""}));
         edges.push(json!({"id":"e2","from":"n1","to":"end","label":""}));
     } else {
+        nodes.extend(step_nodes(&steps, "process"));
         let mut prev = "start".to_string();
-        for (i, task) in tasks.iter().enumerate() {
+        for (i, _) in steps.iter().enumerate() {
             let id = format!("n{}", i + 1);
-            nodes.push(json!({"id": id, "label": task, "kind": "process", "config": {}}));
             edges.push(json!({"id": format!("e{}", i + 1), "from": prev, "to": id, "label": ""}));
             prev = id;
         }
         nodes.push(json!({"id":"end","label":"完成","kind":"end","config":{}}));
-        edges.push(json!({"id": format!("e{}", tasks.len() + 1), "from": prev, "to": "end", "label": ""}));
+        edges.push(json!({"id": format!("e{}", steps.len() + 1), "from": prev, "to": "end", "label": ""}));
     }
-    json!({"nodes": nodes, "edges": edges, "layout": {"direction": "TB"}})
+    let direction = if prompt.contains("横向") || prompt.contains("左右") {
+        "LR"
+    } else {
+        "TB"
+    };
+    json!({"nodes": nodes, "edges": edges, "layout": {"direction": direction}})
 }
 
-fn local_architecture(title: &str, context: &Value) -> Value {
-    let modules: Vec<String> = context
-        .get("modules")
-        .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).take(12).collect())
-        .unwrap_or_else(|| {
-            vec![
-                "外部 Agent / CLI / MCP".to_string(),
-                "协作服务层 collab".to_string(),
-                "SQLite".to_string(),
-                "规划中心 UI".to_string(),
-            ]
-        });
+fn local_architecture(title: &str, prompt: &str, context: &Value) -> Value {
+    let from_prompt = prompt_steps(prompt);
+    let modules: Vec<String> = if from_prompt.len() >= 2 {
+        from_prompt
+    } else {
+        context
+            .get("modules")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).take(12).collect())
+            .unwrap_or_else(|| {
+                vec![
+                    "外部 Agent / CLI / MCP".to_string(),
+                    "协作服务层 collab".to_string(),
+                    "SQLite".to_string(),
+                    "规划中心 UI".to_string(),
+                ]
+            })
+    };
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
     for (i, m) in modules.iter().enumerate() {
@@ -171,7 +225,33 @@ fn local_architecture(title: &str, context: &Value) -> Value {
     json!({"nodes": nodes, "edges": edges, "layout": {"direction": "LR"}})
 }
 
-fn local_dataflow(title: &str) -> Value {
+fn local_dataflow(title: &str, prompt: &str) -> Value {
+    let steps = prompt_steps(prompt);
+    if steps.len() >= 2 {
+        let mut nodes = Vec::new();
+        let mut edges = Vec::new();
+        for (i, step) in steps.iter().enumerate() {
+            let kind = if i == 0 {
+                "source"
+            } else if i == steps.len() - 1 {
+                "sink"
+            } else if i % 3 == 2 {
+                "store"
+            } else {
+                "process"
+            };
+            nodes.push(json!({"id": format!("d{}", i + 1), "label": step, "kind": kind, "config": {}}));
+            if i > 0 {
+                edges.push(json!({
+                    "id": format!("e{}", i),
+                    "from": format!("d{}", i),
+                    "to": format!("d{}", i + 1),
+                    "label": ""
+                }));
+            }
+        }
+        return json!({"nodes": nodes, "edges": edges, "layout": {"direction": "LR"}});
+    }
     json!({
         "nodes": [
             {"id":"src","label":"外部 Agent 提交","kind":"source","config":{}},
@@ -188,11 +268,15 @@ fn local_dataflow(title: &str) -> Value {
     })
 }
 
-fn local_prototype(title: &str, context: &Value) -> Value {
-    let acceptance = context
-        .get("acceptance")
-        .and_then(|v| v.as_str())
-        .unwrap_or("确认需求与验收标准");
+fn local_prototype(title: &str, prompt: &str, context: &Value) -> Value {
+    let acceptance = if prompt.trim().is_empty() {
+        context
+            .get("acceptance")
+            .and_then(|v| v.as_str())
+            .unwrap_or("确认需求与验收标准")
+    } else {
+        prompt
+    };
     json!({
         "schemaVersion": 1,
         "viewport": {"width": 400, "height": 640},
@@ -368,10 +452,12 @@ pub fn generate_visual(
         "生成类型",
     )?;
 
+    let prompt = validate_text(prompt, "生成说明", 4000, false)?;
     let (title, context) = build_context(conn, project_id, plan_id, issue_id)?;
     let request = TextRequest {
         kind: kind.clone(),
         title: title.clone(),
+        prompt: prompt.clone(),
         context,
     };
 
@@ -383,7 +469,7 @@ pub fn generate_visual(
         kind: "text".to_string(),
         provider: LOCAL_PROVIDER.to_string(),
         model: LOCAL_MODEL.to_string(),
-        prompt: validate_text(prompt, "生成说明", 4000, false)?,
+        prompt,
         params_json: json!({"kind": kind}).to_string(),
         status: "running".to_string(),
         result_json: None,
@@ -434,6 +520,7 @@ pub fn generate_visual(
             source_content: normalized,
             plan_id: plan_id.map(|s| s.to_string()),
             preview_asset: None,
+            authoring_mode: Some("ai_generated".to_string()),
         },
     )?;
 
@@ -573,6 +660,246 @@ pub fn create_image_job(
     };
     insert_job(conn, &job)?;
     Ok(job)
+}
+
+// ── AI 辅助修改（返回候选，不落库）──────────────────────────────────────
+
+/// 对已有文档生成修改候选。**只返回候选内容**，用户确认后由前端调用
+/// `visual::update_document`（带 expectedRevision）才会生成新版本。
+///
+/// 当前由本地规则 Provider 生成并明确标注；真实模型接入后替换本函数内部实现即可，
+/// 入口/权限/确认流程不变。
+pub fn propose_modification(
+    conn: &Connection,
+    actor: &Actor,
+    document_id: &str,
+    instruction: &str,
+    selection: &[String],
+) -> AppResult<AiProposal> {
+    actor.require(Capability::AiGenerate)?;
+    let doc = super::visual::get_document(conn, actor, document_id)?;
+    if !matches!(
+        doc.kind.as_str(),
+        "flowchart" | "architecture" | "dataflow" | "prototype"
+    ) {
+        return Err(AppError::Unavailable(format!(
+            "{} 类型暂不支持 AI 结构化修改",
+            doc.kind
+        )));
+    }
+    let instruction = validate_text(instruction, "修改说明", 2000, true)?;
+    let mut content: Value = serde_json::from_str(&doc.source_content)
+        .map_err(|_| AppError::Validation("文档内容损坏".to_string()))?;
+    let steps = prompt_steps(&instruction);
+    if steps.is_empty() {
+        return Err(AppError::Validation("请描述要修改的内容".to_string()));
+    }
+
+    let summary = if doc.kind == "prototype" {
+        apply_ai_prototype(&mut content, &instruction, selection)?
+    } else {
+        apply_ai_graph(&mut content, &doc.kind, &instruction, &steps, selection)?
+    };
+    let normalized = normalize_content(&doc.kind, "json", &content.to_string())?;
+
+    let now = now_iso();
+    let job = AiJob {
+        id: new_id("aj"),
+        project_id: doc.project_id.clone(),
+        plan_id: doc.plan_id.clone(),
+        document_id: Some(doc.id.clone()),
+        kind: "text".to_string(),
+        provider: LOCAL_PROVIDER.to_string(),
+        model: LOCAL_MODEL.to_string(),
+        prompt: instruction.clone(),
+        params_json: json!({
+            "mode": "propose",
+            "documentId": doc.id,
+            "baseRevision": doc.revision,
+            "selection": selection
+        })
+        .to_string(),
+        status: "succeeded".to_string(),
+        result_json: Some(
+            json!({"documentId": doc.id, "baseRevision": doc.revision, "summary": summary})
+                .to_string(),
+        ),
+        error_code: None,
+        error_message: None,
+        cost_units: 0.0,
+        created_by: actor.id.clone(),
+        created_at: now.clone(),
+        updated_at: now,
+    };
+    insert_job(conn, &job)?;
+
+    Ok(AiProposal {
+        job,
+        document_id: doc.id,
+        base_revision: doc.revision,
+        kind: doc.kind,
+        proposed_content: normalized,
+        summary,
+    })
+}
+
+fn next_ai_id(prefix: &str, used: &mut std::collections::BTreeSet<String>) -> String {
+    let mut n = 1;
+    loop {
+        let candidate = format!("{prefix}{n}");
+        if used.insert(candidate.clone()) {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
+fn apply_ai_graph(
+    content: &mut Value,
+    kind: &str,
+    instruction: &str,
+    steps: &[String],
+    selection: &[String],
+) -> AppResult<String> {
+    if content.as_object().is_none() {
+        return Err(AppError::Validation("图内容必须是对象".to_string()));
+    }
+    let node_values = content
+        .get("nodes")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .ok_or_else(|| AppError::Validation("图缺少 nodes".to_string()))?;
+    if node_values.len() + steps.len() > 200 {
+        return Err(AppError::Validation("节点数将超过 200 上限".to_string()));
+    }
+    let mut used: std::collections::BTreeSet<String> = node_values
+        .iter()
+        .filter_map(|n| n.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
+        .collect();
+    let anchor = selection
+        .iter()
+        .find(|id| used.contains(*id))
+        .cloned()
+        .or_else(|| {
+            node_values
+                .last()
+                .and_then(|n| n.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
+        })
+        .ok_or_else(|| AppError::Validation("图中没有可连接的节点".to_string()))?;
+    let (ax, ay) = node_values
+        .iter()
+        .find(|n| n.get("id").and_then(|v| v.as_str()) == Some(anchor.as_str()))
+        .map(|n| {
+            (
+                n.get("x").and_then(|v| v.as_f64()).unwrap_or(60.0),
+                n.get("y").and_then(|v| v.as_f64()).unwrap_or(80.0),
+            )
+        })
+        .unwrap_or((60.0, 80.0));
+    let horizontal = instruction.contains("横向") || instruction.contains("左右");
+    if horizontal {
+        if let Some(layout) = content
+            .get_mut("layout")
+            .and_then(|v| v.as_object_mut())
+        {
+            layout.insert("direction".to_string(), json!("LR"));
+        }
+    }
+    let node_kind = match kind {
+        "architecture" => "service",
+        _ => "process",
+    };
+    let mut previous = anchor.clone();
+    let mut new_edges = Vec::new();
+    for (i, step) in steps.iter().enumerate() {
+        let id = next_ai_id("n_ai_", &mut used);
+        let (x, y) = if horizontal {
+            (ax + 220.0 * (i as f64 + 1.0), ay)
+        } else {
+            (ax, ay + 130.0 * (i as f64 + 1.0))
+        };
+        new_edges.push(json!({
+            "id": next_ai_id("e_ai_", &mut used),
+            "from": previous,
+            "to": id,
+            "label": ""
+        }));
+        content
+            .get_mut("nodes")
+            .and_then(|v| v.as_array_mut())
+            .expect("nodes 已在上面校验")
+            .push(json!({
+                "id": id, "label": step, "kind": node_kind, "config": {},
+                "x": x, "y": y
+            }));
+        previous = id;
+    }
+    content
+        .get_mut("edges")
+        .and_then(|v| v.as_array_mut())
+        .ok_or_else(|| AppError::Validation("图缺少 edges".to_string()))?
+        .extend(new_edges);
+    Ok(format!(
+        "规则生成：在「{anchor}」后新增 {} 个节点并连接（非模型）",
+        steps.len()
+    ))
+}
+
+fn apply_ai_prototype(
+    content: &mut Value,
+    instruction: &str,
+    selection: &[String],
+) -> AppResult<String> {
+    let pages = content
+        .get_mut("pages")
+        .and_then(|v| v.as_array_mut())
+        .ok_or_else(|| AppError::Validation("原型缺少 pages".to_string()))?;
+    let page = pages
+        .first_mut()
+        .ok_or_else(|| AppError::Validation("原型至少需要一个页面".to_string()))?;
+    let comps = page
+        .get_mut("components")
+        .and_then(|v| v.as_array_mut())
+        .ok_or_else(|| AppError::Validation("页面缺少 components".to_string()))?;
+    if comps.len() >= 200 {
+        return Err(AppError::Validation("单页组件数超过 200 上限".to_string()));
+    }
+    let mut used: std::collections::BTreeSet<String> = comps
+        .iter()
+        .filter_map(|c| c.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
+        .collect();
+    let anchor = selection
+        .iter()
+        .find(|id| used.contains(*id))
+        .cloned()
+        .or_else(|| {
+            comps
+                .last()
+                .and_then(|c| c.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
+        });
+    let (x, y, w) = anchor
+        .as_deref()
+        .and_then(|id| comps.iter().find(|c| c.get("id").and_then(|v| v.as_str()) == Some(id)))
+        .map(|c| {
+            (
+                c.get("x").and_then(|v| v.as_f64()).unwrap_or(10.0),
+                c.get("y").and_then(|v| v.as_f64()).unwrap_or(10.0)
+                    + c.get("h").and_then(|v| v.as_f64()).unwrap_or(40.0)
+                    + 8.0,
+                c.get("w").and_then(|v| v.as_f64()).unwrap_or(280.0),
+            )
+        })
+        .unwrap_or((10.0, 10.0, 280.0));
+    let id = next_ai_id("c_ai_", &mut used);
+    comps.push(json!({
+        "id": id,
+        "type": "text",
+        "x": x, "y": y, "w": w, "h": 40,
+        "props": {"text": instruction},
+        "style": {"fontSize": "13px"},
+        "events": {}
+    }));
+    Ok("规则生成：在选中组件下方新增说明文本（非模型）".to_string())
 }
 
 /// 生成说明中显式暴露 Provider，避免 UI 把规则生成误认为模型生成。

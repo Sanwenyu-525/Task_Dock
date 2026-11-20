@@ -10,15 +10,16 @@ use serde_json::{json, Map, Value};
 
 use crate::error::{AppError, AppResult};
 
-use super::actor::{assert_project_scope, write_audit, Actor, Capability};
+use super::actor::{assert_project_scope, write_audit, Actor, ActorKind, Capability};
 use super::model::{
     page_args, DiffItem, ExportResult, Page, RendererCapability, VisualDiff, VisualDocument,
-    VisualInput, VisualPatch, VisualVersion, MAX_DESCRIPTION, MAX_TITLE, VISUAL_KINDS,
+    VisualInput, VisualPatch, VisualVersion, AUTHORING_MODES, MAX_DESCRIPTION, MAX_TITLE,
+    VISUAL_KINDS,
 };
 use super::util::{new_id, now_iso, validate_enum, validate_text};
 
-const COLS: &str = "id, project_id, plan_id, title, description, kind, schema_version, \
-source_format, source_content, renderer, preview_asset, status, version, revision, \
+const COLS: &str = "id, project_id, plan_id, title, description, kind, authoring_mode, \
+schema_version, source_format, source_content, renderer, preview_asset, status, version, revision, \
 created_by, updated_by, created_at, updated_at";
 
 const MAX_NODES: usize = 200;
@@ -58,19 +59,32 @@ pub(crate) fn map_doc_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<VisualDocum
         title: r.get(3)?,
         description: r.get(4)?,
         kind: r.get(5)?,
-        schema_version: r.get(6)?,
-        source_format: r.get(7)?,
-        source_content: r.get(8)?,
-        renderer: r.get(9)?,
-        preview_asset: r.get(10)?,
-        status: r.get(11)?,
-        version: r.get(12)?,
-        revision: r.get(13)?,
-        created_by: r.get(14)?,
-        updated_by: r.get(15)?,
-        created_at: r.get(16)?,
-        updated_at: r.get(17)?,
+        authoring_mode: r.get(6)?,
+        schema_version: r.get(7)?,
+        source_format: r.get(8)?,
+        source_content: r.get(9)?,
+        renderer: r.get(10)?,
+        preview_asset: r.get(11)?,
+        status: r.get(12)?,
+        version: r.get(13)?,
+        revision: r.get(14)?,
+        created_by: r.get(15)?,
+        updated_by: r.get(16)?,
+        created_at: r.get(17)?,
+        updated_at: r.get(18)?,
     })
+}
+
+/// 创作来源推断：显式值优先；否则 UI=manual、Agent=agent_authored、System=manual。
+fn resolve_authoring_mode(actor: &Actor, explicit: Option<&str>) -> AppResult<String> {
+    if let Some(mode) = explicit {
+        return validate_enum(mode, AUTHORING_MODES, "创作来源");
+    }
+    Ok(match actor.kind {
+        ActorKind::Agent => "agent_authored",
+        _ => "manual",
+    }
+    .to_string())
 }
 
 pub fn renderer_for(kind: &str) -> AppResult<&'static str> {
@@ -252,6 +266,12 @@ fn normalize_graph(kind: &str, value: Value) -> AppResult<String> {
             "节点数超过 {MAX_NODES} 上限"
         )));
     }
+    let direction = obj
+        .get("layout")
+        .and_then(|v| v.get("direction"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("TB");
+    let direction = validate_enum(direction, &["TB", "LR"], "布局方向")?;
     let node_kinds: &[&str] = match kind {
         "architecture" => &["module", "service", "store", "ui", "external"],
         "dataflow" => &["source", "process", "store", "sink"],
@@ -259,7 +279,7 @@ fn normalize_graph(kind: &str, value: Value) -> AppResult<String> {
     };
     let mut out_nodes = Vec::new();
     let mut ids = BTreeSet::new();
-    for node in nodes {
+    for (index, node) in nodes.iter().enumerate() {
         let node_obj = required_object(node, "节点")?;
         let id = node_obj
             .get("id")
@@ -287,7 +307,27 @@ fn normalize_graph(kind: &str, value: Value) -> AppResult<String> {
             return Err(AppError::Validation("节点 config 必须是对象".to_string()));
         }
         scan_value(&config)?;
-        out_nodes.push(json!({"id": id, "label": label, "kind": nkind, "config": config}));
+        // 人工编辑的位置必须原样保留；缺失时才生成确定性默认坐标。
+        let default_x = 60.0 + (index % 3) as f64 * 220.0;
+        let default_y = 80.0 + (index / 3) as f64 * 140.0;
+        let x = number_in_range(node_obj.get("x"), "节点 x", 0.0, 5000.0, default_x)?;
+        let y = number_in_range(node_obj.get("y"), "节点 y", 0.0, 5000.0, default_y)?;
+        let color = match node_obj.get("color").and_then(|v| v.as_str()) {
+            Some(raw) if !raw.trim().is_empty() => {
+                let raw = raw.trim();
+                validate_node_color(raw)?;
+                Some(raw.to_string())
+            }
+            _ => None,
+        };
+        let mut node_value = json!({
+            "id": id, "label": label, "kind": nkind, "config": config,
+            "x": x.round(), "y": y.round()
+        });
+        if let Some(color) = color {
+            node_value["color"] = Value::String(color);
+        }
+        out_nodes.push(node_value);
     }
 
     let edges = obj
@@ -324,16 +364,39 @@ fn normalize_graph(kind: &str, value: Value) -> AppResult<String> {
         out_edges.push(json!({"id": eid, "from": from, "to": to, "label": label}));
     }
 
-    let direction = obj
-        .get("layout")
-        .and_then(|v| v.get("direction"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("TB");
-    let direction = validate_enum(direction, &["TB", "LR"], "布局方向")?;
+    // 画布尺寸：显式值优先（320–6000），否则按节点包围盒推导并留出余量。
+    let max_x = out_nodes
+        .iter()
+        .filter_map(|n| n.get("x").and_then(|v| v.as_f64()))
+        .fold(0.0_f64, f64::max);
+    let max_y = out_nodes
+        .iter()
+        .filter_map(|n| n.get("y").and_then(|v| v.as_f64()))
+        .fold(0.0_f64, f64::max);
+    let layout_obj = obj.get("layout").cloned().unwrap_or_else(|| json!({}));
+    let layout_map = layout_obj.as_object();
+    let width = number_in_range(
+        layout_map.and_then(|m| m.get("width")),
+        "画布宽度",
+        320.0,
+        6000.0,
+        (max_x + 260.0).max(720.0),
+    )?;
+    let height = number_in_range(
+        layout_map.and_then(|m| m.get("height")),
+        "画布高度",
+        320.0,
+        6000.0,
+        (max_y + 180.0).max(360.0),
+    )?;
     Ok(json!({
         "nodes": out_nodes,
         "edges": out_edges,
-        "layout": {"direction": direction}
+        "layout": {
+            "direction": direction,
+            "width": width.round(),
+            "height": height.round()
+        }
     })
     .to_string())
 }
@@ -404,6 +467,52 @@ fn normalize_prototype(value: Value) -> AppResult<String> {
         })
         .transpose()?
         .unwrap_or_else(|| json!({}));
+
+    // 事件目标必须真实存在：避免保存后出现死链（页面删除/改名后的常见问题）。
+    let page_ids: BTreeSet<String> = all_pages
+        .iter()
+        .filter_map(|p| p.get("id").and_then(|v| v.as_str()).map(str::to_string))
+        .collect();
+    let component_ids: BTreeSet<String> = all_pages
+        .iter()
+        .flat_map(|p| {
+            p.get("components")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+        })
+        .filter_map(|c| c.get("id").and_then(|v| v.as_str()).map(str::to_string))
+        .collect();
+    for page in &all_pages {
+        let page_id = page.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        for comp in page
+            .get("components")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+        {
+            let comp_id = comp.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            for (key, event) in comp
+                .get("events")
+                .and_then(|v| v.as_object())
+                .into_iter()
+                .flatten()
+            {
+                let action = event.get("action").and_then(|v| v.as_str()).unwrap_or("");
+                let target = event.get("target").and_then(|v| v.as_str()).unwrap_or("");
+                let ok = match action {
+                    "navigate" => page_ids.contains(target),
+                    "openModal" => component_ids.contains(target),
+                    _ => true,
+                };
+                if !ok {
+                    return Err(AppError::Validation(format!(
+                        "页面 {page_id} 组件 {comp_id} 的 {key} 指向不存在的目标：{target}"
+                    )));
+                }
+            }
+        }
+    }
 
     Ok(json!({
         "schemaVersion": 1,
@@ -520,6 +629,22 @@ fn number_in_range(
     Ok(n)
 }
 
+/// 节点颜色只允许语义 Token 或 hex；避免把任意 CSS 枚举写成颜色。
+fn validate_node_color(value: &str) -> AppResult<()> {
+    let v = value.trim();
+    let token = v.starts_with("var(--") && v.ends_with(')');
+    let hex = v.starts_with('#')
+        && matches!(v.len(), 4 | 7)
+        && v[1..].chars().all(|c| c.is_ascii_hexdigit());
+    if token || hex {
+        Ok(())
+    } else {
+        Err(AppError::Validation(format!(
+            "节点颜色不合法：{value}（只允许 var(--token) 或 #hex）"
+        )))
+    }
+}
+
 fn validate_style_value(value: &str) -> AppResult<()> {
     let v = value.trim();
     if v.is_empty() {
@@ -542,28 +667,58 @@ fn validate_style_value(value: &str) -> AppResult<()> {
     Ok(())
 }
 
+/// 资产引用：既支持平台资产 ID（`va_…`），也兼容旧版受控路径。
+fn validate_asset_ref(raw: &str) -> AppResult<String> {
+    let value = raw.trim();
+    if value.starts_with("va_")
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Ok(value.to_string());
+    }
+    validate_asset_path(value)
+}
+
 fn normalize_annotation(value: Value) -> AppResult<String> {
     let obj = required_object(&value, "标注内容")?;
+    let asset_id = obj
+        .get("assetId")
+        .and_then(|v| v.as_str())
+        .map(validate_asset_ref)
+        .transpose()?;
     let image = obj
         .get("image")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| AppError::Validation("缺少 image 资源".to_string()))?;
-    let image = validate_asset_path(image)?;
+        .map(validate_asset_ref)
+        .transpose()?;
+    if asset_id.is_none() && image.is_none() {
+        return Err(AppError::Validation(
+            "缺少图片来源（assetId 或 image）".to_string(),
+        ));
+    }
+    let width = number_in_range(obj.get("width"), "图片宽度", 1.0, 7680.0, 1280.0)?;
+    let height = number_in_range(obj.get("height"), "图片高度", 1.0, 4320.0, 720.0)?;
     let annotations = obj
         .get("annotations")
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
-    if annotations.len() > 100 {
-        return Err(AppError::Validation("标注最多 100 条".to_string()));
+    if annotations.len() > 200 {
+        return Err(AppError::Validation("标注最多 200 条".to_string()));
     }
     let mut out = Vec::new();
     for a in &annotations {
         let o = required_object(a, "标注")?;
+        let shape = validate_enum(
+            o.get("shape").and_then(|v| v.as_str()).unwrap_or("rect"),
+            &["rect", "circle", "arrow", "text", "highlight"],
+            "标注形状",
+        )?;
         let x = number_in_range(o.get("x"), "x", 0.0, 10_000.0, 0.0)?;
         let y = number_in_range(o.get("y"), "y", 0.0, 10_000.0, 0.0)?;
-        let w = number_in_range(o.get("w"), "w", 1.0, 10_000.0, 50.0)?;
-        let h = number_in_range(o.get("h"), "h", 1.0, 10_000.0, 50.0)?;
+        let w = number_in_range(o.get("w"), "w", 0.0, 10_000.0, 50.0)?;
+        let h = number_in_range(o.get("h"), "h", 0.0, 10_000.0, 50.0)?;
         let note = validate_text(
             o.get("note").and_then(|v| v.as_str()).unwrap_or(""),
             "标注说明",
@@ -575,25 +730,67 @@ fn normalize_annotation(value: Value) -> AppResult<String> {
             &["low", "medium", "high", "critical"],
             "严重程度",
         )?;
-        out.push(json!({"x": x.round(), "y": y.round(), "w": w.round(), "h": h.round(),
-            "note": note, "severity": severity}));
+        let color = match o.get("color").and_then(|v| v.as_str()) {
+            Some(raw) if !raw.trim().is_empty() => {
+                let raw = raw.trim();
+                validate_style_value(raw)?;
+                Some(raw.to_string())
+            }
+            _ => None,
+        };
+        let mut item = json!({
+            "shape": shape,
+            "x": x.round(), "y": y.round(), "w": w.round(), "h": h.round(),
+            "note": note, "severity": severity
+        });
+        if let Some(color) = color {
+            item["color"] = Value::String(color);
+        }
+        out.push(item);
     }
-    Ok(json!({"image": image, "annotations": out}).to_string())
+    let mut doc = json!({
+        "width": width.round(),
+        "height": height.round(),
+        "annotations": out
+    });
+    if let Some(asset_id) = asset_id {
+        doc["assetId"] = Value::String(asset_id);
+    }
+    if let Some(image) = image {
+        doc["image"] = Value::String(image);
+    }
+    Ok(doc.to_string())
 }
 
 fn normalize_static(value: Value) -> AppResult<String> {
     let obj = required_object(&value, "图片内容")?;
+    let asset_id = obj
+        .get("assetId")
+        .and_then(|v| v.as_str())
+        .map(validate_asset_ref)
+        .transpose()?;
     let asset = obj
         .get("asset")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| AppError::Validation("缺少 asset 资源".to_string()))?;
-    let asset = validate_asset_path(asset)?;
+        .map(validate_asset_ref)
+        .transpose()?;
+    if asset_id.is_none() && asset.is_none() {
+        return Err(AppError::Validation(
+            "缺少图片资产（assetId 或 asset）".to_string(),
+        ));
+    }
     let width = number_in_range(obj.get("width"), "width", 1.0, 7680.0, 400.0)?;
     let height = number_in_range(obj.get("height"), "height", 1.0, 4320.0, 600.0)?;
     let params = obj.get("params").cloned().unwrap_or_else(|| json!({}));
     scan_value(&params)?;
-    Ok(json!({"asset": asset, "width": width.round(), "height": height.round(),
-        "params": params}).to_string())
+    let mut doc = json!({"width": width.round(), "height": height.round(), "params": params});
+    if let Some(asset_id) = asset_id {
+        doc["assetId"] = Value::String(asset_id);
+    }
+    if let Some(asset) = asset {
+        doc["asset"] = Value::String(asset);
+    }
+    Ok(doc.to_string())
 }
 
 /// 受限 Mermaid 解析：只支持 `graph TD/LR` + `A[Label] --> B[Label]`。
@@ -695,6 +892,7 @@ pub fn create_document(
     }
 
     let now = now_iso();
+    let authoring_mode = resolve_authoring_mode(actor, input.authoring_mode.as_deref())?;
     let doc = VisualDocument {
         id: new_id("vd"),
         project_id: project_id.to_string(),
@@ -702,6 +900,7 @@ pub fn create_document(
         title,
         description,
         kind,
+        authoring_mode: authoring_mode.clone(),
         schema_version: 1,
         source_format: format,
         source_content: normalized,
@@ -716,12 +915,12 @@ pub fn create_document(
         updated_at: now.clone(),
     };
     conn.execute(
-        &format!("INSERT INTO collab_visual_docs ({COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)"),
+        &format!("INSERT INTO collab_visual_docs ({COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)"),
         rusqlite::params![
             doc.id, doc.project_id, doc.plan_id, doc.title, doc.description, doc.kind,
-            doc.schema_version, doc.source_format, doc.source_content, doc.renderer,
-            doc.preview_asset, doc.status, doc.version, doc.revision, doc.created_by,
-            doc.updated_by, doc.created_at, doc.updated_at
+            doc.authoring_mode, doc.schema_version, doc.source_format, doc.source_content,
+            doc.renderer, doc.preview_asset, doc.status, doc.version, doc.revision,
+            doc.created_by, doc.updated_by, doc.created_at, doc.updated_at
         ],
     )?;
     if let Some(plan_id) = &doc.plan_id {
@@ -731,7 +930,7 @@ pub fn create_document(
             rusqlite::params![new_id("pl"), plan_id, doc.id, now],
         )?;
     }
-    write_version(conn, &doc, actor, "创建")?;
+    write_version(conn, &doc, actor, &authoring_mode, "创建")?;
     write_audit(
         conn,
         project_id,
@@ -789,13 +988,34 @@ pub fn update_document(
         next.renderer = renderer_for(&current.kind)?.to_string();
     }
 
+    // 创作来源：显式值优先；否则按身份与当前来源推断。
+    let version_mode = match patch.authoring_mode.as_deref() {
+        Some(mode) => validate_enum(mode, AUTHORING_MODES, "创作来源")?,
+        None => match actor.kind {
+            ActorKind::Agent => "agent_authored".to_string(),
+            _ => "manual".to_string(),
+        },
+    };
+    next.authoring_mode = match patch.authoring_mode.as_deref() {
+        Some(mode) => validate_enum(mode, AUTHORING_MODES, "创作来源")?,
+        None => match actor.kind {
+            ActorKind::Agent => "agent_authored".to_string(),
+            // 人工修改 AI/Agent 内容 → 混合创作；其余保持原来源。
+            _ if matches!(current.authoring_mode.as_str(), "ai_generated" | "agent_authored") => {
+                "ai_assisted".to_string()
+            }
+            _ => current.authoring_mode.clone(),
+        },
+    };
+
     let revision = current.revision + 1;
     let version = current.version + 1;
     let now = now_iso();
     let changed = conn.execute(
         "UPDATE collab_visual_docs SET title=?2, description=?3, source_format=?4,
          source_content=?5, renderer=?6, preview_asset=?7, status=?8, version=?9,
-         revision=?10, updated_by=?11, updated_at=?12 WHERE id=?1 AND revision=?13",
+         revision=?10, updated_by=?11, updated_at=?12, authoring_mode=?13
+         WHERE id=?1 AND revision=?14",
         rusqlite::params![
             id,
             next.title,
@@ -809,6 +1029,7 @@ pub fn update_document(
             revision,
             actor.id,
             now,
+            next.authoring_mode,
             expected_revision,
         ],
     )?;
@@ -828,7 +1049,7 @@ pub fn update_document(
     } else {
         change_summary.trim()
     };
-    write_version(conn, &next, actor, summary)?;
+    write_version(conn, &next, actor, &version_mode, summary)?;
     write_audit(
         conn,
         &current.project_id,
@@ -915,6 +1136,7 @@ fn snapshot(doc: &VisualDocument) -> String {
         "title": doc.title,
         "description": doc.description,
         "kind": doc.kind,
+        "authoringMode": doc.authoring_mode,
         "schemaVersion": doc.schema_version,
         "sourceFormat": doc.source_format,
         "sourceContent": doc.source_content,
@@ -932,18 +1154,21 @@ fn write_version(
     conn: &Connection,
     doc: &VisualDocument,
     actor: &Actor,
+    authoring_mode: &str,
     summary: &str,
 ) -> AppResult<()> {
     conn.execute(
         "INSERT INTO collab_visual_versions
-         (id, document_id, version, snapshot_json, change_summary, created_by, source, created_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+         (id, document_id, version, snapshot_json, change_summary, authoring_mode, created_by,
+          source, created_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
         rusqlite::params![
             new_id("vv"),
             doc.id,
             doc.version,
             snapshot(doc),
             summary,
+            authoring_mode,
             actor.id,
             actor.source,
             now_iso()
@@ -969,7 +1194,8 @@ pub fn list_versions(
         |r| r.get(0),
     )?;
     let mut stmt = conn.prepare(
-        "SELECT id, document_id, version, snapshot_json, change_summary, created_by, source, created_at
+        "SELECT id, document_id, version, snapshot_json, change_summary, authoring_mode,
+                created_by, source, created_at
          FROM collab_visual_versions WHERE document_id=?1 ORDER BY version DESC LIMIT ?2 OFFSET ?3",
     )?;
     let items = stmt
@@ -980,9 +1206,10 @@ pub fn list_versions(
                 version: r.get(2)?,
                 snapshot: r.get(3)?,
                 change_summary: r.get(4)?,
-                created_by: r.get(5)?,
-                source: r.get(6)?,
-                created_at: r.get(7)?,
+                authoring_mode: r.get(5)?,
+                created_by: r.get(6)?,
+                source: r.get(7)?,
+                created_at: r.get(8)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -991,7 +1218,8 @@ pub fn list_versions(
 
 pub fn get_version(conn: &Connection, document_id: &str, version: i64) -> AppResult<VisualVersion> {
     conn.query_row(
-        "SELECT id, document_id, version, snapshot_json, change_summary, created_by, source, created_at
+        "SELECT id, document_id, version, snapshot_json, change_summary, authoring_mode,
+                created_by, source, created_at
          FROM collab_visual_versions WHERE document_id=?1 AND version=?2",
         rusqlite::params![document_id, version],
         |r| {
@@ -1001,9 +1229,10 @@ pub fn get_version(conn: &Connection, document_id: &str, version: i64) -> AppRes
                 version: r.get(2)?,
                 snapshot: r.get(3)?,
                 change_summary: r.get(4)?,
-                created_by: r.get(5)?,
-                source: r.get(6)?,
-                created_at: r.get(7)?,
+                authoring_mode: r.get(5)?,
+                created_by: r.get(6)?,
+                source: r.get(7)?,
+                created_at: r.get(8)?,
             })
         },
     )
@@ -1065,10 +1294,20 @@ pub fn restore_version(
     let now = now_iso();
     let revision = current.revision + 1;
     let next_version = current.version + 1;
+    let restore_mode = match actor.kind {
+        ActorKind::Agent => "agent_authored".to_string(),
+        _ => "manual".to_string(),
+    };
+    let doc_mode = match current.authoring_mode.as_str() {
+        "ai_generated" | "agent_authored" if actor.kind != ActorKind::Agent => {
+            "ai_assisted".to_string()
+        }
+        _ => current.authoring_mode.clone(),
+    };
     let changed = conn.execute(
         "UPDATE collab_visual_docs SET title=?2, description=?3, source_format=?4, source_content=?5,
-         preview_asset=?6, version=?7, revision=?8, updated_by=?9, updated_at=?10
-         WHERE id=?1 AND revision=?11",
+         preview_asset=?6, version=?7, revision=?8, updated_by=?9, updated_at=?10, authoring_mode=?11
+         WHERE id=?1 AND revision=?12",
         rusqlite::params![
             document_id,
             title,
@@ -1080,6 +1319,7 @@ pub fn restore_version(
             revision,
             actor.id,
             now,
+            doc_mode,
             expected_revision
         ],
     )?;
@@ -1094,12 +1334,14 @@ pub fn restore_version(
     restored.preview_asset = preview_asset;
     restored.version = next_version;
     restored.revision = revision;
+    restored.authoring_mode = doc_mode;
     restored.updated_by = actor.id.clone();
     restored.updated_at = now;
     write_version(
         conn,
         &restored,
         actor,
+        &restore_mode,
         &format!("恢复到版本 {version}"),
     )?;
     write_audit(

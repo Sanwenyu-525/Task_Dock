@@ -1,0 +1,110 @@
+/* 图片标注：语义 Token；原图只读，标注层独立。 */
+
+.image-annotator {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.image-annotator-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  padding: 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+}
+
+.image-annotator-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 32px 16px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-card);
+  background: var(--surface-sunken);
+  text-align: center;
+  color: var(--text-secondary);
+}
+
+.image-annotator-empty p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.image-annotator-stage {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: center;
+  padding: 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--surface-sunken);
+  max-height: 64vh;
+  overflow: auto;
+}
+
+.image-annotator-canvas {
+  position: relative;
+  width: min(100%, 880px);
+  background: var(--card-face);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.image-annotator-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.image-annotator-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
+
+.annotation-shape {
+  cursor: pointer;
+}
+
+.image-annotator-overlay.tool-select {
+  cursor: default;
+}
+
+.image-annotator-overlay:not(.tool-select) {
+  cursor: crosshair;
+}
+
+.image-annotation-props {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--card-face);
+}
+
+.image-annotation-props label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.image-annotation-props .input {
+  min-width: 200px;
+}

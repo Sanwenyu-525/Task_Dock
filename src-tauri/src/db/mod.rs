@@ -2151,6 +2151,9 @@ CREATE INDEX idx_sec_audit_time ON security_audit_log(created_at);
 CREATE INDEX idx_sec_audit_cat ON security_audit_log(category, created_at);
 "#,
     ),
+    // 协作中心创作工作台（v85）：可视化 authoring_mode + 图片资产表。
+    // 纯新增列/新表，不改 v77 既有列语义。
+    (85, crate::collab::schema::MIGRATION_85),
 ];
 
 /// 历史测试数据的保守回填（幂等）。

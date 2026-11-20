@@ -56,6 +56,19 @@ pub const EVIDENCE_KINDS: &[&str] = &[
     "other",
 ];
 pub const ISSUE_LINK_RELATIONS: &[&str] = &["related", "duplicate", "blocks", "caused_by"];
+/// 创作来源（与 `source` 入口维度正交）。
+pub const AUTHORING_MODES: &[&str] = &[
+    "manual",
+    "ai_generated",
+    "ai_assisted",
+    "agent_authored",
+    "imported",
+];
+/// 可视化资产（图片）类型白名单。
+pub const VISUAL_ASSET_EXTS: &[&str] = &["png", "jpg", "jpeg", "webp", "gif"];
+pub const MAX_VISUAL_ASSET_BYTES: u64 = 32 * 1024 * 1024;
+/// 单次受控读取上限：避免把 32 MiB 图片整体编码成 base64 塞进 WebView。
+pub const MAX_VISUAL_ASSET_READ_BYTES: u64 = 8 * 1024 * 1024;
 
 pub const MAX_TITLE: usize = 200;
 pub const MAX_DESCRIPTION: usize = 20_000;
@@ -373,6 +386,8 @@ pub struct VisualDocument {
     pub title: String,
     pub description: String,
     pub kind: String,
+    /// 创作来源：manual / ai_generated / ai_assisted / agent_authored / imported。
+    pub authoring_mode: String,
     pub schema_version: i64,
     pub source_format: String,
     /// JSON 字符串（可重新编辑）；读取端按 kind 解析。
@@ -403,6 +418,9 @@ pub struct VisualInput {
     pub plan_id: Option<String>,
     #[serde(default)]
     pub preview_asset: Option<String>,
+    /// 可选显式创作来源；缺省时按 actor 推断（UI=manual / Agent=agent_authored）。
+    #[serde(default)]
+    pub authoring_mode: Option<String>,
 }
 
 fn default_json_format() -> String {
@@ -424,6 +442,9 @@ pub struct VisualPatch {
     pub preview_asset: Option<String>,
     #[serde(default)]
     pub status: Option<String>,
+    /// 仅内部/AI 路径使用：显式写入创作来源（如应用 AI 建议后置为 ai_assisted）。
+    #[serde(default)]
+    pub authoring_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -434,9 +455,61 @@ pub struct VisualVersion {
     pub version: i64,
     pub snapshot: String,
     pub change_summary: String,
+    pub authoring_mode: String,
     pub created_by: String,
     pub source: String,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VisualAsset {
+    pub id: String,
+    pub project_id: String,
+    pub document_id: Option<String>,
+    pub title: String,
+    pub path: String,
+    pub sha256: String,
+    pub size_bytes: i64,
+    pub mime: String,
+    pub ext: String,
+    pub status: String,
+    pub meta_json: String,
+    pub created_by: String,
+    pub source: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VisualAssetInput {
+    pub path: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub document_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssetContent {
+    pub id: String,
+    pub mime: String,
+    pub size_bytes: i64,
+    /// base64（不含 data: 前缀）；前端自行拼 `data:<mime>;base64,`。
+    pub base64: String,
+}
+
+/// AI 修改提案：只返回候选内容，不写文档；用户确认后由前端调用 update。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiProposal {
+    pub job: AiJob,
+    pub document_id: String,
+    pub base_revision: i64,
+    pub kind: String,
+    pub proposed_content: String,
+    pub summary: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -511,6 +584,12 @@ pub struct PatchOp {
     pub x: Option<f64>,
     #[serde(default)]
     pub y: Option<f64>,
+    /// 页面级操作：page_add 的页面名 / page_rename 的新名称。
+    #[serde(default)]
+    pub name: Option<String>,
+    /// 页面级操作：page_add 可提交完整页面对象（缺省则创建空页面）。
+    #[serde(default)]
+    pub page: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

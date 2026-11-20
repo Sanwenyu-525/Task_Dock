@@ -178,6 +178,24 @@ export type VisualKind =
   | "static_image"
   | "diff";
 
+/** 创作来源：与 source（入口）正交。 */
+export type AuthoringMode =
+  | "manual"
+  | "ai_generated"
+  | "ai_assisted"
+  | "agent_authored"
+  | "imported";
+
+/** 可人工创建的 kind（diff 只能由版本对比生成）。 */
+export const CREATABLE_VISUAL_KINDS: Exclude<VisualKind, "diff">[] = [
+  "flowchart",
+  "architecture",
+  "dataflow",
+  "prototype",
+  "bug_annotation",
+  "static_image",
+];
+
 export interface VisualDocument {
   id: string;
   projectId: string;
@@ -185,6 +203,7 @@ export interface VisualDocument {
   title: string;
   description: string;
   kind: VisualKind;
+  authoringMode: AuthoringMode;
   schemaVersion: number;
   sourceFormat: string;
   sourceContent: string;
@@ -205,9 +224,65 @@ export interface VisualVersion {
   version: number;
   snapshot: string;
   changeSummary: string;
+  authoringMode: AuthoringMode;
   createdBy: string;
   source: string;
   createdAt: string;
+}
+
+export interface VisualAsset {
+  id: string;
+  projectId: string;
+  documentId: string | null;
+  title: string;
+  path: string;
+  sha256: string;
+  sizeBytes: number;
+  mime: string;
+  ext: string;
+  status: string;
+  metaJson: string;
+  createdBy: string;
+  source: string;
+  createdAt: string;
+}
+
+export interface AssetContent {
+  id: string;
+  mime: string;
+  sizeBytes: number;
+  /** 不含 data: 前缀的 base64。 */
+  base64: string;
+}
+
+export interface AiProposal {
+  job: AiJob;
+  documentId: string;
+  baseRevision: number;
+  kind: VisualKind;
+  proposedContent: string;
+  summary: string;
+}
+
+export interface PatchOp {
+  op:
+    | "add"
+    | "update"
+    | "remove"
+    | "move"
+    | "style"
+    | "events"
+    | "page_add"
+    | "page_remove"
+    | "page_rename";
+  pageId?: string;
+  componentId?: string;
+  component?: Record<string, unknown>;
+  patch?: Record<string, unknown>;
+  x?: number;
+  y?: number;
+  name?: string;
+  page?: Record<string, unknown>;
 }
 
 export interface DiffItem {
@@ -392,6 +467,7 @@ export const collabVisualCreate = (
     sourceFormat?: string;
     sourceContent?: string;
     planId?: string | null;
+    authoringMode?: AuthoringMode;
   },
 ) => invoke<VisualDocument>("collab_visual_create", { projectId, input });
 
@@ -423,8 +499,45 @@ export const collabPrototypeState = (id: string) =>
 export const collabPrototypeDispatch = (id: string, state: PrototypeState, event: PrototypeEvent) =>
   invoke<PrototypeState>("collab_prototype_dispatch", { id, state, event });
 
+export const collabPrototypePatch = (
+  id: string,
+  expectedRevision: number,
+  ops: PatchOp[],
+  changeSummary?: string,
+) =>
+  invoke<VisualDocument>("collab_prototype_patch", {
+    id,
+    expectedRevision,
+    ops,
+    changeSummary,
+  });
+
 export const collabPrototypeValidate = (id: string) =>
   invoke<InteractionFlowReport>("collab_prototype_validate", { id });
+
+export const collabVisualAssetImport = (
+  projectId: string,
+  input: { path: string; title?: string; documentId?: string | null },
+) => invoke<VisualAsset>("collab_visual_asset_import", { projectId, input });
+
+export const collabVisualAssetList = (projectId: string, documentId?: string) =>
+  invoke<VisualAsset[]>("collab_visual_asset_list", { projectId, documentId });
+
+export const collabVisualAssetArchive = (id: string) =>
+  invoke<VisualAsset>("collab_visual_asset_archive", { id });
+
+export const collabAssetRead = (id: string) =>
+  invoke<AssetContent>("collab_asset_read", { id });
+
+export const collabAiModify = (
+  id: string,
+  instruction: string,
+  selection: string[] = [],
+) => invoke<AiProposal>("collab_ai_modify", { id, instruction, selection });
+
+/** 资产内容 → 可直接用于 <img src> 的 data URL。 */
+export const assetDataUrl = (content: AssetContent) =>
+  `data:${content.mime};base64,${content.base64}`;
 
 export const collabAiGenerate = (
   projectId: string,

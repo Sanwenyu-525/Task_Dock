@@ -287,6 +287,7 @@ fn visual_versions_diff_and_restore() {
                     source_content: "graph TD\n A[开始] --> B[结束]".to_string(),
                     plan_id: None,
                     preview_asset: None,
+                    authoring_mode: None,
                 },
             )
         })
@@ -341,6 +342,7 @@ fn malicious_visual_content_is_rejected() {
                         .to_string(),
                     plan_id: None,
                     preview_asset: None,
+                    authoring_mode: None,
                 },
             )
         })
@@ -380,6 +382,7 @@ fn prototype_patch_events_and_flow_validation() {
                     source_content: content.to_string(),
                     plan_id: None,
                     preview_asset: None,
+                    authoring_mode: None,
                 },
             )
         })
@@ -402,6 +405,8 @@ fn prototype_patch_events_and_flow_validation() {
                     patch: None,
                     x: None,
                     y: None,
+                    name: None,
+                    page: None,
                 }],
                 "加徽标",
             )
@@ -605,6 +610,372 @@ fn audit_log_is_written_for_writes() {
 }
 
 #[test]
+fn graph_editor_positions_and_canvas_are_preserved() {
+    let db = setup();
+    let ui = Actor::ui();
+    let content = serde_json::json!({
+        "nodes": [
+            {"id":"a","label":"开始","kind":"start","x":120,"y":80,"color":"#ff0000","config":{}},
+            {"id":"b","label":"处理","kind":"process","x":420,"y":260,"config":{}}
+        ],
+        "edges": [{"id":"e1","from":"a","to":"b","label":"下一步"}],
+        "layout": {"direction":"LR","width":900,"height":600}
+    });
+    let doc = db
+        .with_transaction(|conn| {
+            Core::new(conn).create_visual(
+                &ui,
+                PROJECT,
+                &VisualInput {
+                    title: "可编辑图".to_string(),
+                    description: String::new(),
+                    kind: "flowchart".to_string(),
+                    source_format: "json".to_string(),
+                    source_content: content.to_string(),
+                    plan_id: None,
+                    preview_asset: None,
+                    authoring_mode: None,
+                },
+            )
+        })
+        .expect("创建图");
+    let stored: serde_json::Value = serde_json::from_str(&doc.source_content).expect("JSON");
+    assert_eq!(stored["nodes"][0]["x"], 120.0);
+    assert_eq!(stored["nodes"][1]["y"], 260.0);
+    assert_eq!(stored["nodes"][0]["color"], "#ff0000");
+    assert_eq!(stored["layout"]["width"], 900.0);
+    assert_eq!(stored["layout"]["direction"], "LR");
+    assert_eq!(doc.authoring_mode, "manual");
+
+    // 人工拖动后再保存：坐标必须原样保留，生成新版本。
+    let moved = serde_json::json!({
+        "nodes": [
+            {"id":"a","label":"开始","kind":"start","x":150,"y":100,"config":{}},
+            {"id":"b","label":"处理","kind":"process","x":460,"y":300,"config":{}}
+        ],
+        "edges": [{"id":"e1","from":"a","to":"b","label":"下一步"}],
+        "layout": {"direction":"LR","width":900,"height":600}
+    });
+    let updated = db
+        .with_transaction(|conn| {
+            Core::new(conn).update_visual(
+                &ui,
+                &doc.id,
+                doc.revision,
+                &VisualPatch {
+                    source_content: Some(moved.to_string()),
+                    ..Default::default()
+                },
+                "拖动节点",
+            )
+        })
+        .expect("保存位置");
+    assert_eq!(updated.version, 2);
+    let stored: serde_json::Value = serde_json::from_str(&updated.source_content).expect("JSON");
+    assert_eq!(stored["nodes"][0]["x"], 150.0);
+    assert_eq!(stored["nodes"][1]["y"], 300.0);
+
+    let err = db
+        .with_transaction(|conn| {
+            Core::new(conn).update_visual(
+                &ui,
+                &doc.id,
+                updated.revision,
+                &VisualPatch {
+                    source_content: Some(
+                        serde_json::json!({
+                            "nodes":[{"id":"a","label":"开始","kind":"start","x":99999,"y":0}],
+                            "edges":[],
+                            "layout":{"direction":"TB"}
+                        })
+                        .to_string(),
+                    ),
+                    ..Default::default()
+                },
+                "非法坐标",
+            )
+        })
+        .expect_err("坐标超限必须拒绝");
+    assert!(matches!(err, AppError::Validation(_)));
+}
+
+#[test]
+fn prototype_page_ops_are_atomic() {
+    let db = setup();
+    let ui = Actor::ui();
+    let content = serde_json::json!({
+        "schemaVersion": 1,
+        "viewport": {"width": 400, "height": 640},
+        "pages": [{"id":"page-1","name":"首页","components":[]}],
+        "state": {}
+    });
+    let doc = db
+        .with_transaction(|conn| {
+            Core::new(conn).create_visual(
+                &ui,
+                PROJECT,
+                &VisualInput {
+                    title: "分页原型".to_string(),
+                    description: String::new(),
+                    kind: "prototype".to_string(),
+                    source_format: "json".to_string(),
+                    source_content: content.to_string(),
+                    plan_id: None,
+                    preview_asset: None,
+                    authoring_mode: None,
+                },
+            )
+        })
+        .expect("原型");
+
+    let page_op = |op: &str, page_id: Option<&str>, name: Option<&str>| PatchOp {
+        op: op.to_string(),
+        page_id: page_id.map(str::to_string),
+        component_id: None,
+        component: None,
+        patch: None,
+        x: None,
+        y: None,
+        name: name.map(str::to_string),
+        page: None,
+    };
+    let added = db
+        .with_transaction(|conn| {
+            Core::new(conn).apply_prototype_patch(
+                &ui,
+                &doc.id,
+                doc.revision,
+                &[
+                    page_op("page_add", None, Some("详情页")),
+                    page_op("page_rename", Some("page-1"), Some("首页改名")),
+                ],
+                "新增并改名页面",
+            )
+        })
+        .expect("页面 Patch");
+    assert_eq!(added.version, 2);
+    let parsed: serde_json::Value = serde_json::from_str(&added.source_content).expect("JSON");
+    let pages = parsed["pages"].as_array().expect("pages");
+    assert_eq!(pages.len(), 2);
+    assert_eq!(pages[0]["name"], "首页改名");
+    assert_eq!(pages[1]["name"], "详情页");
+
+    // 同一批 Patch 中后续操作非法：整体失败，页面与版本都不变。
+    let err = db
+        .with_transaction(|conn| {
+            Core::new(conn).apply_prototype_patch(
+                &ui,
+                &doc.id,
+                added.revision,
+                &[
+                    page_op("page_add", None, Some("不应落库")),
+                    PatchOp {
+                        op: "remove".to_string(),
+                        page_id: Some("page-1".to_string()),
+                        component_id: Some("missing".to_string()),
+                        component: None,
+                        patch: None,
+                        x: None,
+                        y: None,
+                        name: None,
+                        page: None,
+                    },
+                ],
+                "部分失败",
+            )
+        })
+        .expect_err("非法操作必须整体失败");
+    assert!(matches!(err, AppError::NotFound(_)));
+    let unchanged = db
+        .with_conn(|conn| Core::new(conn).get_visual(&ui, &doc.id))
+        .expect("读取");
+    assert_eq!(unchanged.version, 2, "失败的批量 Patch 不得生成版本");
+    let parsed: serde_json::Value = serde_json::from_str(&unchanged.source_content).expect("JSON");
+    assert_eq!(parsed["pages"].as_array().expect("pages").len(), 2);
+
+    let renamed = db
+        .with_transaction(|conn| {
+            Core::new(conn).apply_prototype_patch(
+                &ui,
+                &doc.id,
+                unchanged.revision,
+                &[page_op("page_remove", Some("page-1"), None)],
+                "删除页面",
+            )
+        })
+        .expect("删除页面");
+    assert_eq!(renamed.version, 3);
+    let remaining: serde_json::Value =
+        serde_json::from_str(&renamed.source_content).expect("JSON");
+    assert_eq!(remaining["pages"].as_array().expect("pages").len(), 1);
+}
+
+#[test]
+fn authoring_mode_tracks_ai_and_manual_edits() {
+    let db = setup();
+    let ui = Actor::ui();
+    let job = db
+        .with_transaction(|conn| {
+            Core::new(conn).generate_visual(
+                &ui,
+                PROJECT,
+                None,
+                None,
+                "flowchart",
+                "提交需求 -> 审阅方案 -> 批准 -> 生成任务",
+            )
+        })
+        .expect("AI 生成");
+    let doc_id = job.document_id.clone().expect("document id");
+    let doc = db
+        .with_conn(|conn| Core::new(conn).get_visual(&ui, &doc_id))
+        .expect("文档");
+    assert_eq!(doc.authoring_mode, "ai_generated");
+    let content: serde_json::Value = serde_json::from_str(&doc.source_content).expect("JSON");
+    let labels: Vec<&str> = content["nodes"]
+        .as_array()
+        .expect("nodes")
+        .iter()
+        .filter_map(|n| n.get("label").and_then(|v| v.as_str()))
+        .collect();
+    assert!(labels.contains(&"审阅方案"), "用户指令必须进入生成结果：{labels:?}");
+
+    let versions = db
+        .with_conn(|conn| Core::new(conn).visual_versions(&ui, &doc_id, Some(1), Some(10)))
+        .expect("版本");
+    assert_eq!(versions.items[0].authoring_mode, "ai_generated");
+
+    // 人工修改 AI 内容：文档升级为混合创作，本次版本记录 manual。
+    let edited = db
+        .with_transaction(|conn| {
+            Core::new(conn).update_visual(
+                &ui,
+                &doc_id,
+                doc.revision,
+                &VisualPatch {
+                    title: Some("人工改标题".to_string()),
+                    ..Default::default()
+                },
+                "人工修改",
+            )
+        })
+        .expect("人工修改");
+    assert_eq!(edited.authoring_mode, "ai_assisted");
+    let versions = db
+        .with_conn(|conn| Core::new(conn).visual_versions(&ui, &doc_id, Some(1), Some(10)))
+        .expect("版本");
+    assert_eq!(versions.items[0].authoring_mode, "manual");
+
+    // AI 修改提案：只返回候选，不生成版本；确认后应用才生成新版本。
+    let proposal = db
+        .with_transaction(|conn| {
+            Core::new(conn).propose_visual_modification(
+                &ui,
+                &doc_id,
+                "复核 -> 归档",
+                &[],
+            )
+        })
+        .expect("AI 提案");
+    let after_proposal = db
+        .with_conn(|conn| Core::new(conn).get_visual(&ui, &doc_id))
+        .expect("文档");
+    assert_eq!(after_proposal.version, edited.version, "提案不得直接落库");
+    assert_eq!(proposal.base_revision, edited.revision);
+    let applied = db
+        .with_transaction(|conn| {
+            Core::new(conn).update_visual(
+                &ui,
+                &doc_id,
+                proposal.base_revision,
+                &VisualPatch {
+                    source_content: Some(proposal.proposed_content.clone()),
+                    authoring_mode: Some("ai_assisted".to_string()),
+                    ..Default::default()
+                },
+                &proposal.summary,
+            )
+        })
+        .expect("应用提案");
+    assert_eq!(applied.version, edited.version + 1);
+    assert_eq!(applied.authoring_mode, "ai_assisted");
+}
+
+#[test]
+fn visual_assets_are_scoped_deduped_and_readable() {
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = std::env::temp_dir().join(format!("taskdock-collab-assets-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    std::env::set_var("TASK_DOCK_DATA_DIR", &dir);
+
+    let db = setup();
+    let ui = Actor::ui();
+    let src = dir.join("shot.png");
+    std::fs::write(&src, b"fake-png-bytes").expect("写入图片");
+
+    let first = db
+        .with_transaction(|conn| {
+            Core::new(conn).import_visual_asset(
+                &ui,
+                PROJECT,
+                &VisualAssetInput {
+                    path: src.to_string_lossy().to_string(),
+                    title: "截图".to_string(),
+                    document_id: None,
+                },
+            )
+        })
+        .expect("导入");
+    assert_eq!(first.mime, "image/png");
+    assert_eq!(first.status, "active");
+    let again = db
+        .with_transaction(|conn| {
+            Core::new(conn).import_visual_asset(
+                &ui,
+                PROJECT,
+                &VisualAssetInput {
+                    path: src.to_string_lossy().to_string(),
+                    title: "重复".to_string(),
+                    document_id: None,
+                },
+            )
+        })
+        .expect("去重");
+    assert_eq!(first.id, again.id, "同项目同 sha256 必须去重");
+
+    let content = db
+        .with_conn(|conn| Core::new(conn).read_visual_asset(&ui, &first.id))
+        .expect("受控读取");
+    assert_eq!(content.mime, "image/png");
+    assert!(!content.base64.is_empty());
+
+    let bad = dir.join("evil.exe");
+    std::fs::write(&bad, b"x").expect("写入非法文件");
+    let err = db
+        .with_transaction(|conn| {
+            Core::new(conn).import_visual_asset(
+                &ui,
+                PROJECT,
+                &VisualAssetInput {
+                    path: bad.to_string_lossy().to_string(),
+                    title: String::new(),
+                    document_id: None,
+                },
+            )
+        })
+        .expect_err("扩展名白名单必须拒绝");
+    assert!(matches!(err, AppError::Validation(_)));
+
+    let archived = db
+        .with_transaction(|conn| Core::new(conn).archive_visual_asset(&ui, &first.id))
+        .expect("归档");
+    assert_eq!(archived.status, "archived");
+    std::env::remove_var("TASK_DOCK_DATA_DIR");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn mcp_tools_are_stable_and_share_core() {
     let db = Arc::new(setup());
     let row = mcp_row("mcp-row", McpScope::ProjectRw);
@@ -617,9 +988,10 @@ fn mcp_tools_are_stable_and_share_core() {
 
     let defs = super::mcp_tools::definitions_for_registry();
     let names: Vec<&str> = defs.iter().map(|d| d.name).collect();
-    assert_eq!(names.len(), 26, "MCP 工具数量必须稳定");
+    assert_eq!(names.len(), 27, "MCP 工具数量必须稳定");
     assert!(names.contains(&"taskdock_collab_create_issue"));
     assert!(names.contains(&"taskdock_collab_create_bug"));
+    assert!(names.contains(&"taskdock_collab_create_visualization"));
     assert!(names.contains(&"taskdock_collab_generate_visualization"));
     assert!(!names.contains(&"taskdock_collab_approve_plan"), "Agent 不得直接审批");
 
@@ -664,4 +1036,37 @@ fn mcp_tools_are_stable_and_share_core() {
     .expect("读取成功");
     assert_eq!(read.value["issue"]["source"], "mcp");
     assert_eq!(read.value["issue"]["sourceSession"], "");
+
+    // Agent 通用结构化创建：与 UI/AI 共用 Core，来源记为 agent_authored。
+    let graph = serde_json::json!({
+        "nodes": [
+            {"id":"a","label":"入口","kind":"start","x":40,"y":40,"config":{}},
+            {"id":"b","label":"出口","kind":"end","x":280,"y":40,"config":{}}
+        ],
+        "edges": [{"id":"e1","from":"a","to":"b","label":""}],
+        "layout": {"direction":"LR","width":600,"height":320}
+    });
+    let created_visual = db
+        .with_transaction(|conn| {
+            super::mcp_tools::call(
+                &ctx,
+                "taskdock_collab_create_visualization",
+                &serde_json::json!({
+                    "project_id": PROJECT,
+                    "kind": "flowchart",
+                    "title": "Agent 提交的流程图",
+                    "source_format": "json",
+                    "source_content": graph.to_string()
+                }),
+                Some(conn),
+            )
+            .expect("工具必须由 collab 接管")
+                .map_err(|e| match e {
+                    crate::mcp::tools::ToolError::Authz(msg) => AppError::Forbidden(msg),
+                    crate::mcp::tools::ToolError::Failed(err) => err,
+                })
+        })
+        .expect("Agent 创建可视化");
+    assert_eq!(created_visual.value["authoringMode"], "agent_authored");
+    assert_eq!(created_visual.value["version"], 1);
 }

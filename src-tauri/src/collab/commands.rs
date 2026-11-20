@@ -497,6 +497,59 @@ pub fn collab_prototype_validate(
 }
 
 #[tauri::command]
+pub fn collab_visual_asset_import(
+    db: State<'_, Arc<Db>>,
+    project_id: String,
+    input: VisualAssetInput,
+) -> AppResult<VisualAsset> {
+    let actor = Actor::ui();
+    ui_write(&db, |core| {
+        core.import_visual_asset(&actor, &project_id, &input)
+    })
+}
+
+#[tauri::command]
+pub fn collab_visual_asset_list(
+    db: State<'_, Arc<Db>>,
+    project_id: String,
+    document_id: Option<String>,
+) -> AppResult<Vec<VisualAsset>> {
+    let actor = Actor::ui();
+    ui_call(&db, |core| {
+        core.list_visual_assets(&actor, &project_id, document_id.as_deref())
+    })
+}
+
+#[tauri::command]
+pub fn collab_visual_asset_archive(
+    db: State<'_, Arc<Db>>,
+    id: String,
+) -> AppResult<VisualAsset> {
+    let actor = Actor::ui();
+    ui_write(&db, |core| core.archive_visual_asset(&actor, &id))
+}
+
+#[tauri::command]
+pub fn collab_asset_read(db: State<'_, Arc<Db>>, id: String) -> AppResult<AssetContent> {
+    let actor = Actor::ui();
+    ui_call(&db, |core| core.read_visual_asset(&actor, &id))
+}
+
+#[tauri::command]
+pub fn collab_ai_modify(
+    db: State<'_, Arc<Db>>,
+    id: String,
+    instruction: String,
+    selection: Option<Vec<String>>,
+) -> AppResult<AiProposal> {
+    let actor = Actor::ui();
+    let selection = selection.unwrap_or_default();
+    ui_write(&db, |core| {
+        core.propose_visual_modification(&actor, &id, &instruction, &selection)
+    })
+}
+
+#[tauri::command]
 pub fn collab_ai_generate(
     db: State<'_, Arc<Db>>,
     project_id: String,

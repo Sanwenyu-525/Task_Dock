@@ -117,6 +117,47 @@
   background: var(--surface-raised);
 }
 
+.collab-pane-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.collab-visual-filters {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--card-face);
+}
+
+.collab-visual-filters > :first-child {
+  flex: 0 1 140px;
+}
+
+.collab-search {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  min-width: 120px;
+  color: var(--text-tertiary);
+}
+
+.collab-search .input {
+  flex: 1;
+  min-width: 0;
+}
+
+.collab-dialog-form {
+  border-bottom: 0;
+  background: transparent;
+  padding: 0;
+}
+
 .collab-create-form label,
 .collab-edit-form label {
   display: flex;

@@ -1,7 +1,7 @@
 # 协作与可视化规划中心（Collab Center）
 
 > 模块代号：`collab` · 导航归属：规划中心（`roadmap`）下的「协作」数据源
-> 文档基线：2026-11-18 · 状态口径见下表，**未实现的功能不得标记为完成**
+> 文档基线：2026-11-20 · 状态口径见下表，**未实现的功能不得标记为完成**
 
 ## 1. 一句话
 
@@ -38,8 +38,9 @@
 | 现状调研 | 完成 | `01-现状调研.md`（代码路径/行号） |
 | 产品方案 / 功能矩阵 / 架构 / 数据模型 / 接口 / 清单 / 安全 | 完成（设计基线） | 本目录 |
 | v77 迁移 + Rust 服务层 | 完成（代码+测试） | `src-tauri/src/collab/schema.rs` 等 14 个模块；`collab::tests` 11/11 通过 |
-| IPC / MCP 接入 | 完成（代码+测试） | 实际 47 个 IPC（`src-tauri/src/collab/commands.rs`）、26 个 MCP（`src-tauri/src/collab/mcp_tools.rs`）；MCP 测试通过 |
+| IPC / MCP 接入 | 完成（代码+测试） | 实际 52 个 IPC（`src-tauri/src/collab/commands.rs`）、27 个 MCP（`src-tauri/src/collab/mcp_tools.rs`）；MCP 测试通过 |
 | 前端协作视图 / 可视化渲染 | 部分完成（主链路与第二轮 UI 已真实验收） | `src/components/collab/`、`src/lib/collab.ts`；首轮 `npm run typecheck`/`npm run build` exit 0；第二轮改动已 `vite build` exit 0，但正式 typecheck/build 因验证机内存不足 OOM（`ENVIRONMENT BLOCKED`）；真实 WebView2 已跑通需求/方案/审批/任务、Bug 复现字段/文件证据、两页交互原型、可视化编辑 v2/diff/恢复、320·600 宽度、深色主题；窄容器布局已修复 |
+| 统一创作工作台（v85） | 代码+自动化测试完成；真实 UI 走查未执行 | 图表/原型/图片编辑器、`authoring_mode`、资产服务、AI 修改提案、MCP 通用创建；`cargo test --test collab_workbench` 7/7、`cargo test --lib collab::` 15/15、前端编辑器测试 8/8、`npm run typecheck` / `npm run build` exit 0；真实 WebView2 因共享 Dev 实例归属未由本会话操作 |
 | CLI / REST 对等接入 | 受阻 | 入口文件属并行任务（`src-tauri/src/bin/taskdock.rs`、`agent_access/rest.rs`），未修改 |
 | 自动化测试 / 真机验收 | 单元/集成测试完成；真实 UI 主路径与第二轮场景通过，剩余边界/错误态未走查 | `tmp/acceptance/collab-center/report.md`；11 tests exit 0（7.40s）；UI 截图 `ui-issue-detail-fixed.png`、`ui-plan2-tasks.png`、`ui-bug-fields-detail.png`、`ui-prototype-320-fixed.png`、`ui-prototype-page2-320.png`、`ui-prototype-modal.png`、`ui-dark-theme.png`；文件证据边界、编辑器错误态、静态灯箱、400px 未走查 |
 

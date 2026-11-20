@@ -175,13 +175,109 @@ fn apply_one(content: &mut Value, op: &PatchOp) -> AppResult<()> {
                 obj.insert(k.clone(), v.clone());
             }
         }
+        "page_add" => {
+            let pages = content
+                .get_mut("pages")
+                .and_then(|v| v.as_array_mut())
+                .ok_or_else(|| AppError::Validation("原型缺少 pages".to_string()))?;
+            if pages.len() >= 20 {
+                return Err(AppError::Validation("页面数不超过 20".to_string()));
+            }
+            let page = match &op.page {
+                Some(raw) => {
+                    let obj = raw
+                        .as_object()
+                        .ok_or_else(|| AppError::Validation("page 必须是对象".to_string()))?;
+                    let id = obj
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .trim()
+                        .to_string();
+                    if id.is_empty() {
+                        return Err(AppError::Validation("新页面需要 id".to_string()));
+                    }
+                    if pages
+                        .iter()
+                        .any(|p| p.get("id").and_then(|v| v.as_str()) == Some(id.as_str()))
+                    {
+                        return Err(AppError::Validation(format!("页面 id 重复：{id}")));
+                    }
+                    json!({
+                        "id": id,
+                        "name": obj.get("name").and_then(|v| v.as_str()).unwrap_or(&id),
+                        "components": obj.get("components").cloned().unwrap_or_else(|| json!([]))
+                    })
+                }
+                None => {
+                    let name = op
+                        .name
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or("新页面")
+                        .to_string();
+                    let id = next_page_id(pages);
+                    json!({"id": id, "name": name, "components": []})
+                }
+            };
+            pages.push(page);
+        }
+        "page_remove" => {
+            let page_id = op
+                .page_id
+                .as_deref()
+                .ok_or_else(|| AppError::Validation("page_remove 需要 pageId".to_string()))?;
+            let pages = content
+                .get_mut("pages")
+                .and_then(|v| v.as_array_mut())
+                .ok_or_else(|| AppError::Validation("原型缺少 pages".to_string()))?;
+            if pages.len() <= 1 {
+                return Err(AppError::Validation("至少保留一个页面".to_string()));
+            }
+            let before = pages.len();
+            pages.retain(|p| p.get("id").and_then(|v| v.as_str()) != Some(page_id));
+            if pages.len() == before {
+                return Err(AppError::NotFound(format!("页面不存在：{page_id}")));
+            }
+        }
+        "page_rename" => {
+            let page_id = op
+                .page_id
+                .as_deref()
+                .ok_or_else(|| AppError::Validation("page_rename 需要 pageId".to_string()))?;
+            let name = op
+                .name
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| AppError::Validation("page_rename 需要非空 name".to_string()))?;
+            let page = find_page_mut(content, page_id)?;
+            page["name"] = json!(name);
+        }
         other => {
             return Err(AppError::Validation(format!(
-                "未知 Patch 操作：{other}（允许 add/update/remove/move/style/events）"
+                "未知 Patch 操作：{other}（允许 add/update/remove/move/style/events/page_add/page_remove/page_rename）"
             )))
         }
     }
     Ok(())
+}
+
+/// 生成下一个稳定页面 ID：`page-<n>`，跳过已被占用的编号。
+fn next_page_id(pages: &[Value]) -> String {
+    let used: BTreeSet<&str> = pages
+        .iter()
+        .filter_map(|p| p.get("id").and_then(|v| v.as_str()))
+        .collect();
+    let mut n = pages.len() + 1;
+    loop {
+        let candidate = format!("page-{n}");
+        if !used.contains(candidate.as_str()) {
+            return candidate;
+        }
+        n += 1;
+    }
 }
 
 fn find_page_mut<'a>(content: &'a mut Value, page_id: &str) -> AppResult<&'a mut Value> {

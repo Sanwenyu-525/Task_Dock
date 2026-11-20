@@ -10,6 +10,7 @@ use crate::error::AppResult;
 
 use super::actor::{self, Actor};
 use super::ai;
+use super::assets;
 use super::context;
 use super::evidence;
 use super::issue;
@@ -344,6 +345,33 @@ impl<'a> Core<'a> {
         serde_json::to_value(visual::list_renderers()).unwrap_or(Value::Null)
     }
 
+    // ── 资产 ──
+    pub fn import_visual_asset(
+        &self,
+        actor: &Actor,
+        project_id: &str,
+        input: &VisualAssetInput,
+    ) -> AppResult<VisualAsset> {
+        assets::import_asset(self.conn, actor, project_id, input)
+    }
+
+    pub fn list_visual_assets(
+        &self,
+        actor: &Actor,
+        project_id: &str,
+        document_id: Option<&str>,
+    ) -> AppResult<Vec<VisualAsset>> {
+        assets::list_assets(self.conn, actor, project_id, document_id)
+    }
+
+    pub fn read_visual_asset(&self, actor: &Actor, asset_id: &str) -> AppResult<AssetContent> {
+        assets::read_asset(self.conn, actor, asset_id)
+    }
+
+    pub fn archive_visual_asset(&self, actor: &Actor, asset_id: &str) -> AppResult<VisualAsset> {
+        assets::archive_asset(self.conn, actor, asset_id)
+    }
+
     // ── 原型 ──
     pub fn apply_prototype_patch(
         &self,
@@ -393,6 +421,16 @@ impl<'a> Core<'a> {
         prompt: &str,
     ) -> AppResult<AiJob> {
         ai::generate_visual(self.conn, actor, project_id, plan_id, issue_id, kind, prompt)
+    }
+
+    pub fn propose_visual_modification(
+        &self,
+        actor: &Actor,
+        document_id: &str,
+        instruction: &str,
+        selection: &[String],
+    ) -> AppResult<AiProposal> {
+        ai::propose_modification(self.conn, actor, document_id, instruction, selection)
     }
 
     pub fn create_image_job(

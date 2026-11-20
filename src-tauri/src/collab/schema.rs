@@ -187,3 +187,36 @@ CREATE TABLE collab_audit (
 CREATE INDEX idx_collab_audit_entity ON collab_audit(entity_kind, entity_id, created_at);
 CREATE INDEX idx_collab_audit_project ON collab_audit(project_id, created_at);
 "#;
+
+/// v85（2026-11-20）：创作工作台。
+///
+/// - 文档与版本增加 `authoring_mode`（人工/AI/Agent/导入），与 `source` 正交；
+/// - 新增可视化资产表（图片），只存元数据与受控路径，不复用证据表。
+///
+/// 纯新增列 + 新表，不重建 v77 表；`ADD COLUMN` 不带 CHECK，枚举由服务层校验，
+/// 避免旧数据在升级时被数据库约束卡住。
+pub const MIGRATION_85: &str = r#"
+ALTER TABLE collab_visual_docs ADD COLUMN authoring_mode TEXT NOT NULL DEFAULT 'manual';
+ALTER TABLE collab_visual_versions ADD COLUMN authoring_mode TEXT NOT NULL DEFAULT 'manual';
+
+CREATE TABLE collab_visual_assets (
+  id TEXT PRIMARY KEY NOT NULL,
+  project_id TEXT NOT NULL REFERENCES planning_projects(id) ON DELETE CASCADE,
+  document_id TEXT REFERENCES collab_visual_docs(id) ON DELETE SET NULL,
+  title TEXT NOT NULL DEFAULT '',
+  path TEXT NOT NULL,
+  sha256 TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  mime TEXT NOT NULL DEFAULT '',
+  ext TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'active',
+  meta_json TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL DEFAULT 'ui'
+    CHECK (source IN ('ui','cli','mcp','rest','file','system','ai')),
+  created_at TEXT NOT NULL,
+  UNIQUE(project_id, sha256)
+);
+CREATE INDEX idx_collab_visual_assets_project ON collab_visual_assets(project_id, status, created_at);
+CREATE INDEX idx_collab_visual_assets_document ON collab_visual_assets(document_id);
+"#;

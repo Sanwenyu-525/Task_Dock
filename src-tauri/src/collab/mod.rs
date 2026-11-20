@@ -8,6 +8,7 @@
 
 pub mod actor;
 pub mod ai;
+pub mod assets;
 pub mod commands;
 pub mod context;
 pub mod evidence;

@@ -12,8 +12,11 @@ import {
   CheckCircle2,
   FileText,
   GitBranch,
+  ImagePlus,
   Loader2,
   Plus,
+  RefreshCw,
+  Search,
   Send,
   Sparkles,
   Workflow,
@@ -39,8 +42,11 @@ import {
   collabPlanReview,
   collabPlanSubmit,
   collabPlanUpdate,
+  collabVisualAssetImport,
+  collabVisualCreate,
   collabVisualGet,
   collabVisualList,
+  CREATABLE_VISUAL_KINDS,
   type AiJob,
   type AiNotice,
   type Issue,
@@ -51,12 +57,16 @@ import {
   type PlanDetail,
   type PlanProgress,
   type VisualDocument,
+  type VisualKind,
 } from "../../lib/collab";
 import { errorMessage } from "../../lib/errors";
 import EmptyState from "../ui/EmptyState";
 import Select from "../ui/Select";
 import StatusBadge from "../ui/StatusBadge";
+import { Dialog } from "../ui/Dialog";
 import VisualViewer from "./VisualViewer";
+import { graphTemplate, type GraphKind } from "./editors/graph-types";
+import { emptyPrototype, prototypeTemplate } from "./editors/prototype-types";
 import "./collab.css";
 
 type View = "issues" | "bugs" | "plans" | "visuals";
@@ -130,6 +140,32 @@ interface IssueDraft {
   relatedFiles: string;
 }
 
+const VISUAL_KIND_LABEL: Record<string, string> = {
+  flowchart: "流程图",
+  architecture: "架构图",
+  dataflow: "数据流图",
+  prototype: "交互式原型",
+  bug_annotation: "Bug 标注",
+  static_image: "静态图片",
+  diff: "版本对比（只读）",
+};
+
+interface VisualDraft {
+  title: string;
+  kind: Exclude<VisualKind, "diff">;
+  description: string;
+  planId: string;
+  template: "blank" | "sample";
+}
+
+const EMPTY_VISUAL_DRAFT: VisualDraft = {
+  title: "",
+  kind: "flowchart",
+  description: "",
+  planId: "",
+  template: "sample",
+};
+
 const EMPTY_DRAFT: IssueDraft = {
   kind: "feature",
   title: "",
@@ -164,6 +200,11 @@ export default function CollabPanel() {
   const [creating, setCreating] = useState(false);
   const [draft, setDraft] = useState<IssueDraft>(EMPTY_DRAFT);
   const [noticeDismissed, setNoticeDismissed] = useState(false);
+  const [visualFilter, setVisualFilter] = useState("");
+  const [visualSearch, setVisualSearch] = useState("");
+  const [visualDialog, setVisualDialog] = useState<"create" | "import" | null>(null);
+  const [visualDraft, setVisualDraft] = useState<VisualDraft>(EMPTY_VISUAL_DRAFT);
+  const [visualBusy, setVisualBusy] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -319,6 +360,106 @@ export default function CollabPanel() {
   const filteredIssues = (issues?.items ?? []).filter((i) =>
     view === "bugs" ? i.kind === "bug" : view === "issues" ? i.kind !== "bug" : true,
   );
+
+  const filteredVisuals = (visuals?.items ?? []).filter((doc) => {
+    if (visualFilter && doc.kind !== visualFilter) return false;
+    const keyword = visualSearch.trim().toLowerCase();
+    if (keyword && !doc.title.toLowerCase().includes(keyword)) return false;
+    return true;
+  });
+
+  const handleRefreshVisuals = async () => {
+    await reload();
+  };
+
+  const handleOpenVisualEditor = async (doc: VisualDocument) => {
+    setView("visuals");
+    await openVisual(doc);
+  };
+
+  const handleCreateVisual = () => {
+    setVisualDraft({ ...EMPTY_VISUAL_DRAFT });
+    setVisualDialog("create");
+  };
+
+  const buildVisualContent = (kind: Exclude<VisualKind, "diff">, template: "blank" | "sample") => {
+    if (kind === "flowchart" || kind === "architecture" || kind === "dataflow") {
+      return JSON.stringify(graphTemplate(kind as GraphKind, template));
+    }
+    if (kind === "prototype") {
+      return JSON.stringify(template === "sample" ? prototypeTemplate() : emptyPrototype());
+    }
+    return "";
+  };
+
+  const handleCreateVisualFromTemplate = async (
+    kind: Exclude<VisualKind, "diff">,
+    template: "blank" | "sample",
+  ) => {
+    if (!projectId) return;
+    setVisualBusy(true);
+    setError("");
+    try {
+      const doc = await collabVisualCreate(projectId, {
+        title: visualDraft.title.trim() || `${VISUAL_KIND_LABEL[kind]} ${new Date().toLocaleDateString()}`,
+        description: visualDraft.description,
+        kind,
+        sourceFormat: "json",
+        sourceContent: buildVisualContent(kind, template),
+        planId: visualDraft.planId || null,
+      });
+      setVisualDialog(null);
+      await reload();
+      setSelectedVisual(doc);
+      setView("visuals");
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setVisualBusy(false);
+    }
+  };
+
+  const handleImportVisual = async (kind: "static_image" | "bug_annotation") => {
+    if (!projectId) return;
+    setError("");
+    try {
+      const path = await openDialog({
+        multiple: false,
+        directory: false,
+        title: "选择图片（png/jpg/jpeg/webp/gif，≤32 MiB）",
+      });
+      if (typeof path !== "string") return;
+      setVisualBusy(true);
+      const title = visualDraft.title.trim() || path.split(/[\\/]/).pop() || "导入图片";
+      const asset = await collabVisualAssetImport(projectId, { path, title });
+      const content =
+        kind === "static_image"
+          ? JSON.stringify({ assetId: asset.id, width: 1280, height: 720, params: {} })
+          : JSON.stringify({
+              assetId: asset.id,
+              width: 1280,
+              height: 720,
+              annotations: [],
+            });
+      const doc = await collabVisualCreate(projectId, {
+        title,
+        description: visualDraft.description,
+        kind,
+        sourceFormat: "json",
+        sourceContent: content,
+        planId: visualDraft.planId || null,
+        authoringMode: "imported",
+      });
+      setVisualDialog(null);
+      await reload();
+      setSelectedVisual(doc);
+      setView("visuals");
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setVisualBusy(false);
+    }
+  };
 
   return (
     <div className="collab-panel">
@@ -545,27 +686,95 @@ export default function CollabPanel() {
               <>
                 <div className="collab-pane-head">
                   <strong>可视化文档</strong>
+                  <div className="collab-pane-actions">
+                    <button className="btn small" onClick={handleCreateVisual}>
+                      <Plus size={14} /> 新建
+                    </button>
+                    <button
+                      className="btn ghost small"
+                      onClick={() => {
+                        setSelectedVisual(null);
+                        setView("visuals");
+                      }}
+                      data-tip="在右侧输入描述生成"
+                    >
+                      <Sparkles size={14} /> AI 生成
+                    </button>
+                    <button
+                      className="btn ghost small"
+                      onClick={() => {
+                        setVisualDraft({ ...EMPTY_VISUAL_DRAFT, kind: "static_image" });
+                        setVisualDialog("import");
+                      }}
+                    >
+                      <ImagePlus size={14} /> 导入
+                    </button>
+                    <button className="btn icon-btn" aria-label="刷新可视化列表" data-tip="刷新" onClick={() => void handleRefreshVisuals()}>
+                      <RefreshCw size={14} />
+                    </button>
+                  </div>
+                </div>
+                <div className="collab-visual-filters">
+                  <Select
+                    value={visualFilter}
+                    options={[
+                      { value: "", label: "全部类型" },
+                      ...CREATABLE_VISUAL_KINDS.map((kind) => ({
+                        value: kind,
+                        label: VISUAL_KIND_LABEL[kind] ?? kind,
+                      })),
+                    ]}
+                    onChange={setVisualFilter}
+                    ariaLabel="按类型筛选可视化"
+                    size="sm"
+                    block
+                  />
+                  <label className="collab-search">
+                    <Search size={14} />
+                    <input
+                      className="input small"
+                      placeholder="搜索标题"
+                      aria-label="搜索可视化"
+                      value={visualSearch}
+                      onChange={(e) => setVisualSearch(e.target.value)}
+                    />
+                  </label>
                 </div>
                 <div className="collab-rows">
-                  {(visuals?.items ?? []).map((doc) => (
+                  {filteredVisuals.map((doc) => (
                     <button
                       key={doc.id}
                       type="button"
                       className={`collab-row ${selectedVisual?.id === doc.id ? "is-selected" : ""}`}
-                      onClick={() => void openVisual(doc)}
+                      onClick={() => void handleOpenVisualEditor(doc)}
                     >
                       <div className="collab-row-title">{doc.title}</div>
                       <div className="collab-row-meta">
                         <StatusBadge tone="info" size="sm">
-                          {doc.kind}
+                          {VISUAL_KIND_LABEL[doc.kind] ?? doc.kind}
                         </StatusBadge>
                         <span className="collab-muted">v{doc.version}</span>
+                        <span className="collab-muted">
+                          {doc.authoringMode === "manual"
+                            ? "人工"
+                            : doc.authoringMode === "ai_generated"
+                              ? "AI 生成"
+                              : doc.authoringMode === "ai_assisted"
+                                ? "AI 辅助"
+                                : doc.authoringMode === "agent_authored"
+                                  ? "Agent"
+                                  : "导入"}
+                        </span>
                         {doc.planId ? <span className="collab-muted">已关联方案</span> : null}
                       </div>
                     </button>
                   ))}
-                  {!(visuals?.items ?? []).length && !loading ? (
-                    <EmptyState title="还没有可视化文档" hint="用下方 AI 生成，或由外部 Agent 创建。" framed />
+                  {!filteredVisuals.length && !loading ? (
+                    <EmptyState
+                      title={visuals?.items.length ? "没有匹配的可视化" : "还没有可视化文档"}
+                      hint="新建空白/模板、导入图片，或用右侧 AI 生成；外部 Agent 也可通过 MCP 创建。"
+                      framed
+                    />
                   ) : null}
                 </div>
               </>
@@ -627,6 +836,164 @@ export default function CollabPanel() {
           </section>
         </div>
       )}
+
+      <Dialog
+        open={visualDialog === "create"}
+        onClose={() => setVisualDialog(null)}
+        title="新建可视化文档"
+        size="md"
+        footer={
+          <>
+            <button className="btn ghost small" onClick={() => setVisualDialog(null)}>
+              取消
+            </button>
+            <button
+              className="btn small"
+              disabled={visualBusy}
+              onClick={() => {
+                if (visualDraft.kind === "static_image" || visualDraft.kind === "bug_annotation") {
+                  void handleImportVisual(visualDraft.kind);
+                } else {
+                  void handleCreateVisualFromTemplate(visualDraft.kind, visualDraft.template);
+                }
+              }}
+            >
+              {visualBusy ? <Loader2 size={14} className="spin" /> : <Plus size={14} />}
+              {visualDraft.kind === "static_image" || visualDraft.kind === "bug_annotation"
+                ? "选择图片并创建"
+                : "创建并编辑"}
+            </button>
+          </>
+        }
+      >
+        <div className="collab-create-form collab-dialog-form">
+          <label>
+            标题
+            <input
+              className="input"
+              value={visualDraft.title}
+              placeholder="如：登录流程 / 方案确认原型"
+              onChange={(e) => setVisualDraft({ ...visualDraft, title: e.target.value })}
+            />
+          </label>
+          <label>
+            类型
+            <Select
+              value={visualDraft.kind}
+              options={CREATABLE_VISUAL_KINDS.map((kind) => ({
+                value: kind,
+                label: VISUAL_KIND_LABEL[kind] ?? kind,
+              }))}
+              onChange={(value) => setVisualDraft({ ...visualDraft, kind: value as VisualDraft["kind"] })}
+              ariaLabel="可视化类型"
+              size="sm"
+              block
+            />
+          </label>
+          <label>
+            描述
+            <textarea
+              className="input"
+              rows={2}
+              value={visualDraft.description}
+              onChange={(e) => setVisualDraft({ ...visualDraft, description: e.target.value })}
+            />
+          </label>
+          <label>
+            关联项目
+            <input className="input" value={projects.find((p) => p.id === projectId)?.name ?? ""} readOnly />
+          </label>
+          <label>
+            关联方案（可选）
+            <Select
+              value={visualDraft.planId}
+              options={[
+                { value: "", label: "不关联" },
+                ...(plans?.items ?? []).map((p) => ({ value: p.id, label: p.title })),
+              ]}
+              onChange={(value) => setVisualDraft({ ...visualDraft, planId: value })}
+              ariaLabel="关联方案"
+              size="sm"
+              block
+            />
+          </label>
+          {visualDraft.kind === "flowchart" ||
+          visualDraft.kind === "architecture" ||
+          visualDraft.kind === "dataflow" ||
+          visualDraft.kind === "prototype" ? (
+            <label>
+              初始模板
+              <Select
+                value={visualDraft.template}
+                options={[
+                  { value: "sample", label: "示例模板" },
+                  { value: "blank", label: "空白" },
+                ]}
+                onChange={(value) =>
+                  setVisualDraft({ ...visualDraft, template: value as VisualDraft["template"] })
+                }
+                ariaLabel="初始模板"
+                size="sm"
+                block
+              />
+            </label>
+          ) : (
+            <div className="collab-muted">图片类型会在创建前先导入受控资产；创建后进入标注编辑器。</div>
+          )}
+          <div className="collab-muted">diff 类型由版本对比自动生成，不能人工创建。</div>
+        </div>
+      </Dialog>
+
+      <Dialog
+        open={visualDialog === "import"}
+        onClose={() => setVisualDialog(null)}
+        title="导入图片"
+        size="sm"
+        footer={
+          <>
+            <button className="btn ghost small" onClick={() => setVisualDialog(null)}>
+              取消
+            </button>
+            <button
+              className="btn small"
+              disabled={visualBusy}
+              onClick={() => void handleImportVisual(visualDraft.kind === "bug_annotation" ? "bug_annotation" : "static_image")}
+            >
+              {visualBusy ? <Loader2 size={14} className="spin" /> : <ImagePlus size={14} />} 选择文件并创建
+            </button>
+          </>
+        }
+      >
+        <div className="collab-create-form collab-dialog-form">
+          <label>
+            文档类型
+            <Select
+              value={visualDraft.kind === "bug_annotation" ? "bug_annotation" : "static_image"}
+              options={[
+                { value: "static_image", label: "静态图片" },
+                { value: "bug_annotation", label: "Bug 标注" },
+              ]}
+              onChange={(value) =>
+                setVisualDraft({ ...visualDraft, kind: value as VisualDraft["kind"] })
+              }
+              ariaLabel="导入类型"
+              size="sm"
+              block
+            />
+          </label>
+          <label>
+            标题（可选）
+            <input
+              className="input"
+              value={visualDraft.title}
+              onChange={(e) => setVisualDraft({ ...visualDraft, title: e.target.value })}
+            />
+          </label>
+          <div className="collab-muted">
+            支持 png/jpg/jpeg/webp/gif，单个 ≤32 MiB；文件会复制到应用资产目录并按 SHA-256 去重。
+          </div>
+        </div>
+      </Dialog>
     </div>
   );
 }

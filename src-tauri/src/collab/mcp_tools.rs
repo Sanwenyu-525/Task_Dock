@@ -74,7 +74,7 @@ where
     serde_json::to_value(value).map_err(|e| ToolError::Failed(AppError::from(e)))
 }
 
-pub(crate) fn definitions_for_registry() -> Vec<ToolDef> {
+pub fn definitions_for_registry() -> Vec<ToolDef> {
     let project = json!({ "type": "string", "description": "规划中心项目 ID" });
     vec![
         ToolDef {
@@ -246,6 +246,26 @@ pub(crate) fn definitions_for_registry() -> Vec<ToolDef> {
                     "expected_revision": { "type": "integer", "minimum": 1 },
                 }),
                 &["plan_id", "expected_revision"],
+            ),
+            write: true,
+        },
+        ToolDef {
+            name: "taskdock_collab_create_visualization",
+            description:
+                "提交任意结构化可视化文档（流程/架构/数据流/原型/静态图/Bug 标注）。内容必须是可重新编辑的结构化 JSON 或受限 Mermaid；服务端校验后生成 v1 并写审计，authoring_mode=agent_authored。",
+            input_schema: schema(
+                json!({
+                    "project_id": project,
+                    "kind": { "type": "string", "enum": [
+                        "flowchart","architecture","dataflow","prototype","static_image","bug_annotation"
+                    ] },
+                    "title": { "type": "string", "maxLength": 200 },
+                    "description": { "type": "string", "maxLength": 20000 },
+                    "source_format": { "type": "string", "enum": ["json","mermaid","image","svg"] },
+                    "source_content": { "type": "string", "description": "结构化内容；静态图/标注使用 assetId 引用已导入资产" },
+                    "plan_id": { "type": "string", "description": "可选关联方案（必须同项目）" },
+                }),
+                &["project_id", "kind", "title", "source_content"],
             ),
             write: true,
         },
@@ -741,6 +761,33 @@ fn call_owned(
             })?;
             Ok(outcome(value, "plan", id, None))
         }
+        "taskdock_collab_create_visualization" => {
+            let project_id = require_str(args, "project_id")?;
+            let kind = require_str(args, "kind")?;
+            let title = require_str(args, "title")?;
+            let input = VisualInput {
+                title,
+                description: args
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                kind,
+                source_format: args
+                    .get("source_format")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("json")
+                    .to_string(),
+                source_content: require_str(args, "source_content")?,
+                plan_id: args.get("plan_id").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                preview_asset: None,
+                authoring_mode: None,
+            };
+            let value = write(write_conn, |core| {
+                core.create_visual(&actor, &project_id, &input)
+            })?;
+            Ok(outcome(value, "visual", String::new(), None))
+        }
         "taskdock_collab_generate_visualization" => {
             let project_id = require_str(args, "project_id")?;
             let kind = require_str(args, "kind")?;
@@ -782,6 +829,7 @@ fn call_owned(
                     .map(|s| s.to_string()),
                 preview_asset: None,
                 status: None,
+                authoring_mode: None,
             };
             let summary = args
                 .get("change_summary")
