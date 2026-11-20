@@ -5,6 +5,7 @@
 // - fetchImpl 可注入，默认使用全局 fetch，测试可替换为纯内存实现；
 // - 不做任何落库/合并，收到 PullResult / PushResult 后由调用方决定如何应用。
 import { AppError, isAppError, toAppError } from "../errors";
+import { safeLog } from "../safeLog";
 
 import { AAD_PULL, AAD_PUSH, decryptEnvelope, encryptEnvelope } from "./crypto";
 import { parsePullResult, parsePushResult, type Op, type PullResult, type PushResult } from "./protocol";
@@ -53,7 +54,12 @@ export interface SyncClientOptions {
 
 export interface SyncClient {
   pull(since: string, limit?: number): Promise<PullResult>;
-  push(ops: readonly Op[]): Promise<PushResult>;
+  /**
+   * `echo.traceId`：把上一轮 pull 收到的链路 ID 原样回传（JSON 字段 `traceId`）。
+   * 移动端只回传不生成；桌面端只透传回包、不参与鉴权。无值时字段整个缺省，
+   * 与旧客户端/旧服务端完全兼容。
+   */
+  push(ops: readonly Op[], echo?: { traceId?: string }): Promise<PushResult>;
   /** 取消所有在途请求与退避定时器；取消后客户端仍可继续发起新请求 */
   cancel(): void;
 }
@@ -156,6 +162,13 @@ export function createSyncClient(options: SyncClientOptions): SyncClient {
       }
     } catch (error) {
       if (operation.cancelled) throw cancelledError();
+      // 网络错误采集点（每次失败尝试一行；取消不记）：只记状态码与错误分类，
+      // 不带 URL 查询参数与响应正文。
+      safeLog.warn("net", "请求失败", {
+        status: error instanceof HttpStatusError ? error.status : null,
+        kind: error instanceof AppError ? error.kind : "network",
+        code: error instanceof AppError ? error.code ?? "" : "",
+      });
       if (timedOut) throw new AppError("network", "同步请求超时（5s）", error);
       if (error instanceof HttpStatusError) throw error;
       throw toAppError(error, "network");
@@ -222,13 +235,15 @@ export function createSyncClient(options: SyncClientOptions): SyncClient {
     );
   }
 
-  function push(ops: readonly Op[]): Promise<PushResult> {
+  function push(ops: readonly Op[], echo?: { traceId?: string }): Promise<PushResult> {
     // 空队列不发请求，避免无意义的鉴权与流量
     if (ops.length === 0) return Promise.resolve({ ack: [], conflicts: [] });
 
     const operation = createOperation();
     const url = `${baseUrl}/v1/ops`;
-    const payload = { device_id: options.deviceId, ops };
+    const payload: Record<string, unknown> = { device_id: options.deviceId, ops };
+    // traceId 只回传桌面端下发的值；缺省时字段整个省略（协议向后兼容）。
+    if (echo?.traceId) payload.traceId = echo.traceId;
     const body = JSON.stringify(
       options.syncKey ? encryptEnvelope(options.syncKey, AAD_PUSH, payload) : payload,
     );

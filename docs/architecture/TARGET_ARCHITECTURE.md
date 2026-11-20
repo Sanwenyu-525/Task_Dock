@@ -46,7 +46,7 @@ Platform 层    ← Win32 / Tauri / Android 原生 API 适配
 | Tauri 多窗口独立 Capability | `capabilities/` 8 文件 | 保留；收敛主窗权限面 |
 | 移动端 domain/db/screens 分层 | `apps/mobile/src/` | 保留；作为分层正确参照 |
 | 有界 Agent 管线 | `agents/pipeline.rs` | 保留；修正持锁跨 await |
-| Build Scheduler / Integration Snapshot | `scripts/build-sched.mjs`、`taskdock-integration.mjs` | 保留；重构产物一律走此链路 |
+| Integration Snapshot | `scripts/taskdock-integration.mjs` | 保留；2026-11-19 按用户要求删除构建调度器，快照构建直接执行 |
 | 启动诊断/日志/异常 | `diagnostics/`、`globalErrors.ts` | 保留；纳入生命周期规范 |
 | 文件所有权与集成规范 | `AGENTS.md` §3 | 保留；重构线强制串行写共享枢纽文件 |
 

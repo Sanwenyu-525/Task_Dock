@@ -46,6 +46,7 @@ import {
 } from "./src/lib/sync/autoSync";
 import { transferPendingAttachments } from "./src/lib/sync/attachmentTransfer";
 import { offerPairingUri } from "./src/lib/sync/pendingPairing";
+import { safeLog } from "./src/lib/safeLog";
 import { notifyWidgetDataChanged } from "./src/lib/widgetSnapshot";
 import { subscribeReminderActions } from "./src/notifications/actions";
 import { rebuildAllReminders, rescheduleAllReminders } from "./src/notifications/reminderEngine";
@@ -118,6 +119,11 @@ const PUSH_BOTTOM_BAR_HEIGHT: Partial<Record<RouteKey, number>> = {
 // 默认 400ms 淡出反而会把动画开头盖掉。
 SplashScreen.setOptions({ duration: 0 });
 void SplashScreen.preventAutoHideAsync().catch(() => undefined);
+
+// SafeLog 早期初始化：本文件的 import 链（App.tsx → safeLog → modules/logger）在模块
+// 加载时即创建原生模块，其 OnCreate 安装 CrashHandler 并初始化文件日志（幂等）。
+// 启动事件落第一条日志；原生不可用时 safeLog 内部静默降级，绝不影响启动。
+safeLog.info("app", "应用启动");
 
 /** 切换标签页时的轻微淡入：不位移、不缩放，避免打断正在阅读的列表 */
 function ScreenFade({ children }: { children: ReactNode }) {
@@ -292,7 +298,11 @@ function Shell() {
       const active = state === "active";
       // 前台上限内才排重试定时器；退后台/被系统收走时立刻取消，不假装能准点后台执行
       setAutoSyncForeground(active);
-      if (!active) return;
+      if (!active) {
+        // 退后台：把日志缓冲刷进文件（原生有界等待），之后原生侧无任何常驻工作。
+        void safeLog.flush();
+        return;
+      }
       setVersion((v) => v + 1);
       consumeLaunchAction();
       requestAutoSync("foreground");

@@ -25,6 +25,7 @@ import {
   updateSettings,
   type Settings,
 } from "../lib/bridge";
+import { logEvent } from "../lib/diagnostics";
 import { errorMessage } from "../lib/errors";
 import { isWindowMode, resolveWindowMode } from "../lib/windowMode";
 import {
@@ -168,7 +169,13 @@ function normalizeLoadedSettings(
   if (!s || typeof s !== "object") {
     if (!invalidSnapshotReported) {
       invalidSnapshotReported = true;
-      console.warn("[settings] 设置快照不是对象，已保留当前设置");
+      logEvent({
+        level: "WARN",
+        module: "settings",
+        action: "snapshot_normalize",
+        event: "invalid",
+        message: "设置快照不是对象，已保留当前设置",
+      });
     }
     if (prev) return prev;
     // 没有任何可用旧值：交给调用方，由外壳层的 mode 归一化兜底。
@@ -188,7 +195,14 @@ function normalizeLoadedSettings(
     const fallback = isWindowMode(prev?.mode) ? prev!.mode : resolveWindowMode(next.mode);
     if (!invalidModeReported) {
       invalidModeReported = true;
-      console.warn("[settings] 非法显示模式已回退", { mode: next.mode, fallback });
+      logEvent({
+        level: "WARN",
+        module: "settings",
+        action: "mode_fallback",
+        event: "invalid",
+        message: `非法显示模式已回退（fallback=${fallback}）`,
+        metadata: { mode: next.mode },
+      });
     }
     next = { ...next, mode: fallback };
   }
@@ -456,7 +470,14 @@ export const useSettingsStore = create<{
       // 原生后端已不再按预设名分支，这里保留重放以覆盖并行修改。
       if (patch.material || next.visual_preset) await applyMaterial();
     } catch (e) {
-      console.warn("[settings] 设置已保存，但界面副作用执行失败", e);
+      logEvent({
+        level: "WARN",
+        module: "settings",
+        action: "apply_side_effects",
+        event: "failed",
+        status: "failed",
+        message: `设置已保存，但界面副作用执行失败：${errorMessage(e)}`,
+      });
     }
     return stale;
   }
@@ -475,7 +496,14 @@ export const useSettingsStore = create<{
       applyPresetToDom();
       applyThemeToDom();
     } catch (e) {
-      console.warn("[settings] 写入失败后对齐数据库失败，保留当前设置", e);
+      logEvent({
+        level: "WARN",
+        module: "settings",
+        action: "align_database",
+        event: "failed",
+        status: "failed",
+        message: `设置写入失败后对齐数据库失败，保留当前设置：${errorMessage(e)}`,
+      });
     }
   }
 
@@ -519,7 +547,14 @@ export const useSettingsStore = create<{
       if (repair.visual_preset) await applyMaterial();
     } catch (e) {
       // 核对失败不重置设置：界面保留较新的外部值，下次事件/写入会再次对齐。
-      console.warn("[settings] 外部写入冲突核对失败，保留界面值", e);
+      logEvent({
+        level: "WARN",
+        module: "settings",
+        action: "conflict_reconcile",
+        event: "failed",
+        status: "failed",
+        message: `外部写入冲突核对失败，保留界面值：${errorMessage(e)}`,
+      });
     } finally {
       reconciling = false;
     }

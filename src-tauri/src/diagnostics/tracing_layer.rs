@@ -5,7 +5,7 @@
 //! - 只接收本 crate（`task_dock_lib`）的事件，第三方库日志不落盘；
 //! - 默认只落 WARN 及以上；INFO/DEBUG/TRACE 仅在详细诊断模式下接收（避免长期噪声）；
 //! - 只提取白名单字段（`message`/`action`/`stage`/`operation_id`/`error_code`/`status`/
-//!   `window`/`duration_ms`），其余结构化字段全部丢弃——防止把业务参数原样写入日志；
+//!   `window`/`duration_ms`/`trace_id`），其余结构化字段全部丢弃——防止把业务参数原样写入日志；
 //! - 不修改 `tracing` 的原有控制台输出（fmt layer 仍然独立工作）。
 
 use std::sync::Arc;
@@ -64,6 +64,7 @@ impl<S: Subscriber> Layer<S> for DiagnosticsLayer {
         out.message = visitor.message;
         out.stage = visitor.stage;
         out.operation_id = visitor.operation_id;
+        out.trace_id = visitor.trace_id;
         out.window_id = visitor.window;
         out.error_code = visitor.error_code;
         out.status = visitor.status.as_deref().and_then(DiagStatus::parse);
@@ -116,6 +117,10 @@ struct FieldVisitor {
     status: Option<String>,
     duration_ms: Option<u64>,
     window: Option<String>,
+    /// 跨端链路追踪标识。约束：trace_id 只应挂在**操作边界事件**
+    /// （started/success/failed/cancelled/recovered）上；高频 stage 事件不要携带
+    /// （设计文档 §4.4.2）。格式由 `normalize` 经 `trace::validate_external_id` 兜底校验。
+    trace_id: Option<String>,
 }
 
 impl FieldVisitor {
@@ -130,6 +135,7 @@ impl FieldVisitor {
             "error_code" => self.error_code = Some(value),
             "status" => self.status = Some(value),
             "window" | "window_id" => self.window = Some(value),
+            "trace_id" => self.trace_id = Some(value),
             // 白名单之外：丢弃。
             _ => {}
         }
@@ -205,5 +211,16 @@ mod tests {
         assert_eq!(visitor.action.as_deref(), Some("create"));
         assert!(visitor.message.is_none());
         assert!(visitor.error_code.is_none());
+    }
+
+    #[test]
+    fn visitor_extracts_trace_id() {
+        let mut visitor = FieldVisitor::default();
+        visitor.assign("trace_id", "0123456789abcdef".to_string());
+        // 同名之外的字段不干扰；trace_id 只提取一份（后写覆盖先写）。
+        visitor.assign("operation_id", "op-1".to_string());
+        visitor.assign("trace_id", "fedcba9876543210".to_string());
+        assert_eq!(visitor.trace_id.as_deref(), Some("fedcba9876543210"));
+        assert_eq!(visitor.operation_id.as_deref(), Some("op-1"));
     }
 }

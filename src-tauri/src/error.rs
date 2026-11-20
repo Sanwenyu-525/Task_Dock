@@ -10,7 +10,9 @@
 //! 同时兼容旧的纯字符串错误（旧版本后端 / 第三方插件抛出）。
 
 use std::io::ErrorKind;
+use std::sync::OnceLock;
 
+use regex::Regex;
 use serde::Serialize;
 
 #[derive(Debug, thiserror::Error)]
@@ -424,9 +426,37 @@ fn redact_home_dirs(raw: &str) -> String {
     out
 }
 
-/// 显式凭证脱敏：`Authorization: xxx`、`token=xxx`、`password=xxx` 等。
+/// 裸凭证值的结束字符：空白、ASCII 分隔标点与全角标点。
+/// 全角标点用于中文错误文案——凭证值后跟 `，目录…` 时不得把「目录」一起吞进占位符。
+fn is_value_delimiter(c: char) -> bool {
+    c.is_whitespace() || matches!(c, ',' | '"' | '\'' | '，' | '、' | '；' | '）')
+}
+
+/// 脱敏形态规则（懒编译一次；`regex` 为既有依赖）。
+struct Patterns {
+    /// URL 查询参数凭证值：名称必须紧跟 `?`/`&`，`?keyword=`、`keyboard=` 不会误伤。
+    query: Regex,
+    /// `sk-` 前缀密钥：词边界后 `sk-` + ≥16 位密钥字符（字母/数字/`-`/`_`）。
+    /// 前缀大小写敏感以压低误伤；`risk-`/`task-` 等词中形态由词边界排除。
+    sk: Regex,
+    /// 邮箱：域名首字符须为字母、TLD ≥2 位字母，排除 `logo@2x.png` 这类资源名。
+    email: Regex,
+}
+
+fn patterns() -> &'static Patterns {
+    static PATTERNS: OnceLock<Patterns> = OnceLock::new();
+    PATTERNS.get_or_init(|| Patterns {
+        query: Regex::new(r#"(?i)([?&](?:key|auth|sig|access_token)=)[^&#\s"'()]+"#).unwrap(),
+        sk: Regex::new(r"(^|[^A-Za-z0-9])(sk-[A-Za-z0-9_-]{16,})").unwrap(),
+        email: Regex::new(r"[A-Za-z0-9._%+-]+@[A-Za-z][A-Za-z0-9.-]*\.[A-Za-z]{2,}").unwrap(),
+    })
+}
+
+/// 显式凭证脱敏：`Authorization: xxx`、`token=xxx`、`password: xxx` 等；另有
+/// URL 查询参数（`?key=`/`?auth=`/`?sig=`）、`sk-` 前缀密钥与邮箱三条形态规则。
+/// 占位符保持短小，错误码与错误原因原样保留。
 fn redact_secrets(raw: &str) -> String {
-    const MARKERS: [&str; 10] = [
+    const MARKERS: [&str; 16] = [
         "authorization:",
         "authorization=",
         "bearer ",
@@ -434,9 +464,15 @@ fn redact_secrets(raw: &str) -> String {
         "token:",
         "access_token=",
         "api_key=",
+        "api_key:",
+        "apikey=",
+        "apikey:",
         "api-key=",
+        "api-key:",
         "password=",
+        "password:",
         "secret=",
+        "secret:",
     ];
     let mut out = raw.to_string();
     for marker in MARKERS {
@@ -472,19 +508,43 @@ fn redact_secrets(raw: &str) -> String {
                 from = token_start + "<已隐藏>".len();
                 continue;
             }
-            let end = token_rest
-                .find(|c: char| c.is_whitespace() || c == ',' || c == '"' || c == '\'')
-                .unwrap_or(token_rest.len());
-            if end < 6 {
+            // 值形态一：引号包裹（Debug/JSON 对象 `token: "abc123"`）——只隐藏引号内内容；
+            // 值形态二：裸值——到空白或分隔标点为止。
+            let (replace_start, value_len) = match token_rest.chars().next() {
+                Some(q @ ('"' | '\'')) => match token_rest[1..].find(q) {
+                    Some(close_rel) => {
+                        if token_rest[1..1 + close_rel].starts_with("<已隐藏>") {
+                            from = token_start + 1 + close_rel;
+                            continue;
+                        }
+                        (token_start + 1, close_rel)
+                    }
+                    // 只有开引号没有闭引号：无可识别值，跳过。
+                    None => (token_start, 0),
+                },
+                _ => (
+                    token_start,
+                    token_rest.find(is_value_delimiter).unwrap_or(token_rest.len()),
+                ),
+            };
+            if value_len < 6 {
                 // 没有可识别的凭证值：跳过该标记，继续找后面的出现位置
                 from = pos + marker.len();
                 continue;
             }
-            out.replace_range(token_start..token_start + end, "<已隐藏>");
-            from = token_start + "<已隐藏>".len();
+            out.replace_range(replace_start..replace_start + value_len, "<已隐藏>");
+            from = replace_start + "<已隐藏>".len();
         }
     }
-    out
+    let out = patterns()
+        .query
+        .replace_all(&out, "${1}<已隐藏>")
+        .into_owned();
+    let out = patterns()
+        .sk
+        .replace_all(&out, "${1}<已隐藏>")
+        .into_owned();
+    patterns().email.replace_all(&out, "<邮箱>").into_owned()
 }
 
 #[derive(Serialize)]
@@ -567,6 +627,144 @@ mod tests {
         assert!(!msg.contains("SELECT"));
         assert!(!msg.contains("main.rs"));
         assert!(msg.contains("<已隐藏>"));
+    }
+
+    #[test]
+    fn sanitize_redacts_password_and_secret_colon_variants() {
+        let e = AppError::Validation("登录失败 password: hunter2secret, secret: abcdef123456".into());
+        let msg = e.user_message();
+        assert!(!msg.contains("hunter2secret"), "{msg}");
+        assert!(!msg.contains("abcdef123456"), "{msg}");
+        assert!(msg.contains("登录失败"), "{msg}");
+    }
+
+    #[test]
+    fn sanitize_redacts_delimiterless_apikey_and_header_form() {
+        let e = AppError::Validation(
+            "调用失败 apikey=abcd1234efgh5678 ApiKey: abcd1234efgh5678 X-Api-Key: abcd1234efgh5678"
+                .into(),
+        );
+        let msg = e.user_message();
+        assert!(!msg.contains("abcd1234efgh5678"), "{msg}");
+        assert!(msg.contains("X-Api-Key:"), "{msg}"); // 头名保留，只有值被隐藏
+        assert!(msg.contains("调用失败"), "{msg}");
+    }
+
+    #[test]
+    fn sanitize_redacts_url_query_credentials_without_false_positives() {
+        let e = AppError::Validation(
+            "GET https://api.example.com/v1/items?sig=abcdef123456&auth=zzzz9999yyyy&keyword=plain&key=abcd1234efgh5678#frag"
+                .into(),
+        );
+        let msg = e.user_message();
+        assert!(!msg.contains("abcdef123456"), "{msg}");
+        assert!(!msg.contains("zzzz9999yyyy"), "{msg}");
+        assert!(!msg.contains("abcd1234efgh5678"), "{msg}");
+        assert!(msg.contains("keyword=plain"), "{msg}"); // 普通参数不误伤
+        assert!(msg.contains("#frag"), "{msg}");
+        // `keyboard=` 与无 `?`/`&` 前缀的 `key=` 不得命中
+        let plain = AppError::Validation("keyboard=abc&theme=dark".into());
+        assert_eq!(plain.user_message(), "keyboard=abc&theme=dark");
+    }
+
+    #[test]
+    fn sanitize_redacts_emails() {
+        let e = AppError::Validation("用户 bob@example.com 的同步失败，联系 alice@test.org".into());
+        let msg = e.user_message();
+        assert!(!msg.contains("bob@example.com"), "{msg}");
+        assert!(!msg.contains("alice@test.org"), "{msg}");
+        assert!(msg.contains("<邮箱>"), "{msg}");
+        assert!(msg.contains("的同步失败，联系"), "{msg}"); // 错误原因保留
+    }
+
+    #[test]
+    fn sanitize_redacts_sk_prefixed_keys_without_word_false_positive() {
+        let e = AppError::Validation(
+            "模型调用失败 sk-abcdEFGH12345678ijklMnOp，重试 risk-assessment 未受影响".into(),
+        );
+        let msg = e.user_message();
+        assert!(!msg.contains("sk-abcdEFGH"), "{msg}");
+        assert!(msg.contains("risk-assessment"), "{msg}"); // 词中 sk- 不误伤
+        assert!(msg.contains("模型调用失败"), "{msg}");
+        assert!(msg.contains("<已隐藏>"), "{msg}");
+    }
+
+    #[test]
+    fn sanitize_redacts_quoted_debug_object_values() {
+        let e = AppError::Validation(r#"Request { token: "abc123", user: "bob" } 序列化失败"#.into());
+        let msg = e.user_message();
+        assert!(!msg.contains("abc123"), "{msg}");
+        assert!(msg.contains(r#"user: "bob""#), "{msg}"); // 非敏感字段保留
+        assert!(msg.contains("序列化失败"), "{msg}");
+    }
+
+    #[test]
+    fn sanitize_combines_multiple_credential_kinds() {
+        let e = AppError::Validation(
+            "同步失败 Authorization: Bearer eyJhbGciOiJIUzI1，目录 C:\\Users\\alice\\cache，邮箱 bob@example.com，密钥 sk-AbCdEf0123456789ghIjKl，URL https://x.dev/api?sig=qq99ww22ee44".into(),
+        );
+        let msg = e.user_message();
+        assert!(!msg.contains("eyJhbGciOiJIUzI1"), "{msg}");
+        assert!(!msg.contains("alice"), "{msg}");
+        assert!(!msg.contains("bob@example.com"), "{msg}");
+        assert!(!msg.contains("sk-AbCdEf"), "{msg}");
+        assert!(!msg.contains("qq99ww22ee44"), "{msg}");
+        assert!(msg.contains("<用户>"), "{msg}");
+        assert!(msg.contains("<邮箱>"), "{msg}");
+        // 全角标点后的错误原因不得被吞进占位符
+        assert!(msg.contains("目录"), "{msg}");
+        assert!(msg.contains("同步失败"), "{msg}");
+    }
+
+    #[test]
+    fn sanitize_third_party_error_messages_keep_reason() {
+        // reqwest 风格：URL 中的凭证隐藏，超时原因保留
+        let e = AppError::Agent(
+            "error sending request for url (https://api.example.com/v1/chat?auth=abcd1234efgh5678): operation timed out"
+                .into(),
+        );
+        let msg = e.user_message();
+        assert!(!msg.contains("abcd1234efgh5678"), "{msg}");
+        assert!(msg.contains("operation timed out"), "{msg}");
+        assert!(msg.contains("error sending request"), "{msg}");
+
+        // serde 风格：无值字段名不是凭证，整句保留
+        let e = AppError::Agent("missing field `api_key` at line 1 column 42".into());
+        let msg = e.user_message();
+        assert!(msg.contains("missing field `api_key`"), "{msg}");
+        assert!(msg.contains("line 1 column 42"), "{msg}");
+    }
+
+    #[test]
+    fn sanitize_keeps_error_codes_and_reasons() {
+        let e = AppError::Agent("HTTP 503 SQLITE_BUSY token=abcdef1234567890 拒绝访问".into());
+        let msg = e.user_message();
+        assert!(msg.contains("HTTP 503 SQLITE_BUSY"), "{msg}");
+        assert!(msg.contains("拒绝访问"), "{msg}");
+        assert!(msg.contains("<已隐藏>"), "{msg}");
+        assert!(!msg.contains("abcdef1234567890"), "{msg}");
+    }
+
+    #[test]
+    fn sanitize_truncates_overlong_text_with_ellipsis() {
+        let out = sanitize_diagnostic(&format!("前缀 {}", "x".repeat(600)), 400);
+        assert_eq!(out.chars().count(), 401, "{}", out.chars().count());
+        assert!(out.ends_with('…'));
+        assert!(out.starts_with("前缀"));
+    }
+
+    #[test]
+    fn sanitize_home_dir_shape_keeps_marker_and_hides_name() {
+        let e = AppError::Validation(
+            "读取 C:\\Users\\alice\\db.sqlite 与 /home/bob/.config 与 /Users/carol/x 失败".into(),
+        );
+        let msg = e.user_message();
+        assert!(msg.contains("C:\\Users\\<用户>\\db.sqlite"), "{msg}");
+        assert!(msg.contains("/home/<用户>/.config"), "{msg}");
+        assert!(msg.contains("/Users/<用户>/x"), "{msg}");
+        assert!(!msg.contains("alice"), "{msg}");
+        assert!(!msg.contains("bob"), "{msg}");
+        assert!(!msg.contains("carol"), "{msg}");
     }
 
     #[test]

@@ -32,8 +32,15 @@ pub(crate) mod privacy;
 pub(crate) mod query;
 mod tracing_layer;
 mod writer;
+/// Rust panic 捕获（把崩溃现场写进诊断日志，见模块注释）。
+pub mod panic_hook;
 /// 批量文件操作的诊断事件构造（暂存架投递与文件工作区共用，见模块注释）。
 pub mod batch;
+/// 跨模块/跨端追踪标识（trace_id）契约：生成、外部传入校验与线程局部上下文。
+/// 只用于诊断事件关联，**绝不参与认证/授权**（见模块注释）。
+pub mod trace;
+/// 性能指标聚合：阈值触发 + 有界统计（设计文档 §4.5，见模块注释）。
+pub mod metrics;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -48,7 +55,15 @@ use serde_json::{Map, Value};
 use crate::error::AppResult;
 
 pub use query::{DiagnosticPage, DiagnosticQuery, DiagnosticSummary};
+/// 业务侧生成 trace_id 的便捷 re-export（与 `trace::new_trace_id` 同一契约）。
+pub use trace::new_trace_id;
 pub use tracing_layer::DiagnosticsLayer;
+/// 性能指标 API（阈值触发 + 有界聚合，与前端 `diagnostics.ts` 同名语义）。
+#[allow(unused_imports)]
+pub use metrics::{
+    measure_operation, record_duration, record_failure, record_slow_operation, summary as metrics_summary,
+    MetricsEntry, MetricsSummary,
+};
 
 /// 单个日志文件上限（5 MB）。超过即轮转。
 pub const MAX_FILE_BYTES: u64 = 5 * 1024 * 1024;
@@ -56,6 +71,11 @@ pub const MAX_FILE_BYTES: u64 = 5 * 1024 * 1024;
 pub const MAX_ARCHIVE_FILES: usize = 4;
 /// 目录总量上限（活动 + 归档）。
 pub const MAX_TOTAL_BYTES: u64 = 25 * 1024 * 1024;
+/// 归档保留天数（时间维度）。超过即在启动或轮转后删除。
+///
+/// 与「归档数 / 总量」两个上限互补：数量与容量上限防的是**空间**，时间上限防的是
+/// **长期堆积的过期现场**——低频使用时日志目录可能几个月不动，总量上限永远碰不到。
+pub const MAX_AGE_DAYS: u64 = 14;
 /// 写入队列容量（事件条数）。
 pub const CHANNEL_CAPACITY: usize = 1024;
 /// 异常聚合表容量（指纹条数）。
@@ -200,6 +220,10 @@ pub struct DiagnosticEvent {
     pub operation_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_id: Option<String>,
+    /// 一次跨端/跨进程业务链路的追踪标识（16 位小写 hex）。只用于诊断事件关联，
+    /// **不参与认证/授权**；外部传入值经 `trace::validate_external_id` 校验，非法丢弃。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub component: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -288,6 +312,17 @@ impl DiagnosticEvent {
                 self.operation_id = Some(cleaned);
             }
         }
+        if let Some(trace) = self.trace_id.take() {
+            // 外部/前端传入的 trace_id 统一校验：非法或超长直接丢弃（置 None），
+            // 不报错、不透传、绝不 panic（trace_id 与认证/授权完全无关）。
+            self.trace_id = trace::validate_external_id(&trace);
+        }
+        if self.trace_id.is_none() && self.event != "stage" {
+            // 无显式值时从当前线程追踪上下文补齐（同步段专用；跨 await 需显式传参，
+            // 见 trace 模块注释）。stage 事件高频且只有 operation_id，不挂 trace_id
+            // （设计文档 §4.4.2：避免高频事件产生海量追踪记录）。
+            self.trace_id = trace::current_trace();
+        }
         self.count = self.count.max(1);
         true
     }
@@ -350,11 +385,13 @@ pub struct Counters {
     pub rotations: AtomicU64,
     pub failures: AtomicU64,
     pub skipped_lines: AtomicU64,
+    /// 轮转失败次数（文件被占用等）。降级恢复后不清零，供诊断中心观察故障历史。
+    pub rotate_failures: AtomicU64,
 }
 
 impl Counters {
-    /// 快照（`(written, dropped, queue_full, aggregated, rotations, failures, skipped)`）。
-    pub fn snapshot(&self) -> [u64; 7] {
+    /// 快照（`(written, dropped, queue_full, aggregated, rotations, failures, skipped, rotate_failures)`）。
+    pub fn snapshot(&self) -> [u64; 8] {
         [
             self.written.load(Ordering::Relaxed),
             self.dropped.load(Ordering::Relaxed),
@@ -363,7 +400,53 @@ impl Counters {
             self.rotations.load(Ordering::Relaxed),
             self.failures.load(Ordering::Relaxed),
             self.skipped_lines.load(Ordering::Relaxed),
+            self.rotate_failures.load(Ordering::Relaxed),
         ]
+    }
+}
+
+/// 写入失败分类。
+///
+/// 界面需要区分「磁盘满」「没权限」「文件被占用」——这三者的处置方式完全不同
+/// （清盘 / 改目录权限 / 关掉占用进程），笼统的「日志写入失败」无法指导用户。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteFailureKind {
+    /// 磁盘空间不足。
+    DiskFull,
+    /// 无写入权限。
+    PermissionDenied,
+    /// 文件被其它进程占用（杀毒软件、索引器、另一个实例）。
+    FileLocked,
+    /// 其它 IO 错误。
+    Unknown,
+}
+
+impl WriteFailureKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DiskFull => "disk_full",
+            Self::PermissionDenied => "permission_denied",
+            Self::FileLocked => "file_locked",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// 从 IO 错误推断分类。
+    ///
+    /// `std::io::ErrorKind::StorageFull` 尚未稳定，因此按平台原始错误码判定：
+    /// Windows `ERROR_HANDLE_DISK_FULL(39)` / `ERROR_DISK_FULL(112)`，
+    /// POSIX `ENOSPC(28)`；Windows `ERROR_SHARING_VIOLATION(32)` /
+    /// `ERROR_LOCK_VIOLATION(33)` 视为文件被占用。
+    pub fn from_io(err: &std::io::Error) -> Self {
+        match err.kind() {
+            std::io::ErrorKind::PermissionDenied => Self::PermissionDenied,
+            std::io::ErrorKind::WouldBlock => Self::FileLocked,
+            _ => match err.raw_os_error() {
+                Some(39) | Some(112) | Some(28) => Self::DiskFull,
+                Some(32) | Some(33) => Self::FileLocked,
+                _ => Self::Unknown,
+            },
+        }
     }
 }
 
@@ -373,6 +456,8 @@ pub struct WriterConfig {
     pub max_file_bytes: u64,
     pub max_archive_files: usize,
     pub max_total_bytes: u64,
+    /// 归档保留天数（时间维度）。`0` 表示**不启用**时间淘汰。
+    pub max_age_days: u64,
     pub agg_window: Duration,
     pub agg_capacity: usize,
 }
@@ -383,6 +468,7 @@ impl Default for WriterConfig {
             max_file_bytes: MAX_FILE_BYTES,
             max_archive_files: MAX_ARCHIVE_FILES,
             max_total_bytes: MAX_TOTAL_BYTES,
+            max_age_days: MAX_AGE_DAYS,
             agg_window: AGG_WINDOW,
             agg_capacity: AGG_MAX_ENTRIES,
         }
@@ -409,6 +495,8 @@ pub struct Diagnostics {
     filter_reload: Mutex<Option<FilterReload>>,
     join: Mutex<Option<JoinHandle<()>>>,
     last_writer_error: Mutex<Option<String>>,
+    /// 最近一次写失败的分类（与 `last_writer_error` 同时写入）。
+    last_failure_kind: Mutex<Option<WriteFailureKind>>,
 }
 
 impl Diagnostics {
@@ -442,6 +530,7 @@ impl Diagnostics {
             filter_reload: Mutex::new(None),
             join: Mutex::new(None),
             last_writer_error: Mutex::new(None),
+            last_failure_kind: Mutex::new(None),
         });
         let thread_diag = diag.clone();
         let handle = std::thread::Builder::new()
@@ -732,13 +821,21 @@ impl Diagnostics {
             .and_then(|slot| slot.clone())
     }
 
+    /// 最近一次写失败的分类（`None` = 尚未发生过写失败）。
+    pub fn last_failure_kind(&self) -> Option<WriteFailureKind> {
+        self.last_failure_kind.lock().ok().and_then(|slot| *slot)
+    }
+
     pub(crate) fn set_disabled(&self, value: bool) {
         self.disabled.store(value, Ordering::Relaxed);
     }
 
-    pub(crate) fn record_writer_error(&self, message: String) {
+    pub(crate) fn record_writer_error(&self, message: String, kind: WriteFailureKind) {
         if let Ok(mut slot) = self.last_writer_error.lock() {
             *slot = Some(message);
+        }
+        if let Ok(mut slot) = self.last_failure_kind.lock() {
+            *slot = Some(kind);
         }
     }
 

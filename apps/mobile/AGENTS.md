@@ -74,7 +74,7 @@
   明确拒绝，需先在集成构建工作区内 `npx expo prebuild` 或改用主工作区的调试产物；该工作区的
   `apps/mobile/node_modules` 也按 `apps/mobile/package-lock.json` 一致性链接，缺依赖时不会静默构建。
   日常自测仍可直接用
-  `npm --prefix apps/mobile run build:android`（已接入构建调度器）。机制见
+  `npm --prefix apps/mobile run build:android`（直接执行 Gradle）。机制见
   [docs/INTEGRATION_BUILD.md](../../docs/INTEGRATION_BUILD.md)。
 
 ## 6. 改完必须做

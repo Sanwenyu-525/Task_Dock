@@ -4,7 +4,14 @@
 的操作手册。它解决一个问题：**多 Agent 并行开发时，如何从「已完成任务」的代码生成一个可追溯、
 可被多个 Agent 同时验收的测试版本，而不把仍在开发的改动混进去，也不为每个 Agent 重复打包。**
 
-相关边界不变：构建排队用 [BUILD_SCHEDULER.md](BUILD_SCHEDULER.md) 的调度器；磁盘与缓存清理用
+> **适用边界（先读这一段）**：本文件描述的是 **Release 正式验收体系**，是**阶段性**的，
+> **不是每个普通功能的日常开发门槛**。普通功能（UI、交互、IPC、Rust 业务逻辑、SQLite 读写、
+> 普通桌面功能）默认走 **Dev 功能验收**（`npm run tauri dev`，见 §8.1 与
+> [DEVELOPMENT.md](DEVELOPMENT.md) §2.3），**不需要安装包、不需要 `buildId`、不推进本状态机**。
+> 只有需要安装包、安装/升级/卸载、签名与更新、生产资源加载、Release 专属行为、正式性能基线或
+> 正式交付版本时，才走本文件的 `task ready → snapshot create → build → accept` 流程。
+
+相关边界不变：构建命令直接执行；磁盘与缓存清理用
 `scripts/build-guard.mjs`（[DEVELOPMENT.md](DEVELOPMENT.md) 第七章）；单任务隔离用
 `scripts/worktree-guard.mjs`（DEVELOPMENT.md 第八章）；验收通道与证据格式用
 [ACCEPTANCE_ROUTING.md](ACCEPTANCE_ROUTING.md) 与 `.agents/skills/taskdock-acceptance`。
@@ -55,7 +62,7 @@ baseline 提交（人工选定，snap-01）
 | `module` / `owner` | 模块与负责人（人读，用于交接与派发核对） |
 | `paths` | **写入范围白名单**（文件或目录；目录按前缀覆盖，`src/foo` 覆盖 `src/foo/...`）；集成只应用这些路径 |
 | `commit` + `from` | 交付提交与起点（默认 `commit^`）；多提交任务用 `--from` 指定起点，起点必须是交付提交的祖先 |
-| `checks` | 检查证据：真实执行（`source=executed`，含提交/日志/工作区/耗时/调度任务）或外部登记（`source=external`，可选证据路径）；只有真实执行或带证据的外部检查可满足 `task ready` |
+| `checks` | 检查证据：真实执行（`source=executed`，含提交/日志/工作区/耗时）或外部登记（`source=external`，可选证据路径）；只有真实执行或带证据的外部检查可满足 `task ready` |
 | `rev` | 台账修订号：每次写入 +1；写入前在任务锁内重新读取，用于发现并拒绝覆盖并发的更新 |
 | `publicInterface` | 是否改动公共接口（IPC/类型/迁移/设置键），供人工复核顺序与兼容性 |
 | `needs` | 依赖的其他任务；集成时用于拓扑排序与依赖校验，不在本批的依赖必须已集成 |
@@ -66,9 +73,9 @@ baseline 提交（人工选定，snap-01）
 npm run integrate -- task add --id files-rescan --owner agent-a --module 资源管理器 \
     --paths src/components/files/FilesWorkspacePanel.tsx,src/lib/filesWorkspace/interactions.ts
 # 真实执行：在 <仓库>-integration-verify 的干净 detached 工作区 checkout 到交付提交，
-# 按该提交核对依赖，经构建调度器执行命令，日志与退出码写入台账（失败仍写记录并返回 2）
+# 按该提交核对依赖，直接执行命令，日志与退出码写入台账（失败仍写记录并返回 2）
 npm run integrate -- task verify --id files-rescan --commit <交付提交> --cmd "npm test -- src/components/files" \
-    [--priority P1] [--class light|medium|heavy]  # 仅当命令确实轻量时显式降级，默认由调度器自动判定
+    [--timeout <秒>]  # 可选运行超时
 npm run integrate -- task ready --id files-rescan --commit <交付提交>
 ```
 
@@ -80,8 +87,8 @@ npm run integrate -- task ready --id files-rescan --commit <交付提交>
   防止空补丁任务被标成已集成。
 - 检查记录应显式用 `--commit` 绑定它实际运行的提交；省略时工具绑定执行时的 `HEAD`。`task ready`
   只接受与交付提交相同的通过检查。这避免“在旧版本上跑过的测试”被当成新版本证据。
-- **检查必须真实执行**：`task verify` 在隔离工作区 checkout 指定提交、核对依赖、经调度器运行命令，
-  写 `source=executed`、`commit`、`logPath`、`exitCode`、`durationMs` 与 `schedulerTaskId`。`task check`
+- **检查必须真实执行**：`task verify` 在隔离工作区 checkout 指定提交、核对依赖、直接运行命令，
+  写 `source=executed`、`commit`、`logPath`、`exitCode`、`durationMs`；兼容字段 `schedulerTaskId` 固定为 null。`task check`
   是人工登记，只记 `source=external`；没有证据的手动登记可用于留痕，但不能让任务进入待集成。
   集成时工具还会执行一次真实的静态检查（`--check static`，默认），这次结果才是「快照可构建」的证据。
 - **检查绑定提交**：`task verify --commit` 必须是任务当前交付提交；返工时（任务为 `accept-failed`/
@@ -129,7 +136,7 @@ npm run integrate -- snapshot create --all-ready --base <稳定提交>  # 首次
    `git apply --index --3way`；冲突 → 拒绝并提示先读双方 diff；
 7. **越界复核**：应用后工作区改动必须仍在声明范围（含显式放行的路径）；
 8. **集成检查**：`--check static`（默认）在集成工作区执行 `npm run typecheck`（即 `tsc --noEmit`），
-   经构建调度器排队（label `integration-<快照>-static`），失败则不提交快照。该阶段**不再执行
+   直接执行，失败则不提交快照。该阶段**不再执行
    `vite build`**：Vite 打包由正式构建自身的 `beforeBuildCommand` 完成，避免同一份 dist 被生成两次。
    若旧快照的 `package.json` 尚未定义 `typecheck`（例如 `snap-04` 之前的提交），自动回退到本地
    `node_modules/typescript/bin/tsc --noEmit`；仍不执行 Vite。本地 TypeScript 缺失时检查失败，
@@ -169,10 +176,10 @@ npm run integrate -- build --snapshot snap-02 --platform desktop --dry-run   # �
 `batch plan` 输出：当前待验收任务数、已就绪未集成任务、上一快照累计任务、当前可纳入新增任务、
 依赖/冲突阻塞任务、已有构建是否可复用、预计回归任务、推荐快照与验收范围，以及本轮是否建议正式构建。
 默认 `min-ready=2`：低于 2 个可合批任务时建议继续等待；`urgent` 用于阻塞性故障/安全修复，
-`manual` 用于人工指定任务或固定快照，最终都走同一条独立快照、调度器、产物校验流程，不绕过安全机制。
+`manual` 用于人工指定任务或固定快照，最终都走同一条独立快照、直接执行、产物校验流程，不绕过安全机制。
 不新增后台轮询/常驻服务；在任务就绪、主 Agent 请求、`batch plan` 与正式构建前评估即可。
 
-| 平台 | 配置 | 命令（经调度器） | 产物 |
+| 平台 | 配置 | 命令（直接执行） | 产物 |
 |---|---|---|---|
 | `desktop` | `release-nsis-msi` | `npm run tauri:raw -- build` | `bundle/nsis/*.exe`、`bundle/msi/*.msi`（至少一个本次生成的安装包） |
 | `web` | `frontend-dist` | `npm run build:raw`（tsc + vite） | `dist/`（目录摘要 + 文件清单摘要） |
@@ -197,8 +204,8 @@ npm run integrate -- build --snapshot snap-02 --platform desktop --dry-run   # �
   `environment-error` / `packaging-error` / `unknown`，写 `failureClass` 与 `failureHint`；工具**不自动
   重试**昂贵正式构建，资源类失败先等空闲/降并发再人工重试。`STATUS_STACK_BUFFER_OVERRUN` 或
   `memory allocation of ... failed` 不得误报为源码错误。
-- **调度**：一律经 `scripts/build-sched.mjs run`（label `integration-<构建ID>`），与其他会话共享
-  全局并发与槽位，不另造锁；`build.json` 记录 `schedulerTaskId`（若日志可解析）与日志路径。
+- **执行**：在隔离构建工作区直接执行；保留集成构建锁与日志。`schedulerTaskId` 为兼容历史记录保留，
+  新记录固定为 null；不再生成调度器 provenance。并行资源与输出目录由任务负责人协调。
 - **复用**：复用键 = `快照提交 | 平台 | 配置 | CPU 架构 | 构建输入指纹`。输入指纹覆盖
   `package-lock.json`、根/移动端依赖段、命令与 Node/Rust/Java 工具链版本；旧记录没有指纹一律
   视为不可复用。只复用 `status=succeeded`、`dirty=false`、有平台可用产物**且重新计算校验值一致**
@@ -222,7 +229,7 @@ npm run integrate -- build --snapshot snap-02 --platform desktop --dry-run   # �
   catch 不会执行，骨架或仅 `build.log` 的目录保留现场。`status` 把 `running` 与「只有
   `build.log`、`build.json` 从未写出」的目录分别归为 `interrupted`（中断未收尾）；`build.json`
   存在但 JSON 损坏是另一类告警。**中断/损坏记录一律不删除、不容错解析**：不计入成功、不可复用、
-  不参与验收覆盖与批次判定；人工核对 `build.log` 与调度器 provenance 后再决定是否重试。
+  不参与验收覆盖与批次判定；人工核对 `build.log` 与构建记录 后再决定是否重试。
 
 构建记录（`tmp/integration/builds/<构建ID>/build.json`）字段（`tasks` 是本批增量，`snapshotChain` /
 `includedTasks` 是按快照 base 链累计的完整来源，供安装包追溯）：
@@ -241,7 +248,7 @@ npm run integrate -- build --snapshot snap-02 --platform desktop --dry-run   # �
   "failureClass": null, "failureHint": null,
   "command": ["npm", "run", "tauri:raw", "--", "build"],
   "cwd": "<仓库父目录>/<仓库名>-integration-build", "targetDir": "<target-integration>",
-  "logPath": "tmp/integration/builds/.../build.log", "schedulerTaskId": "h-...",
+  "logPath": "tmp/integration/builds/.../build.log", "schedulerTaskId": null,
   "artifacts": [{ "name": "Task Dock_0.5.0_x64-setup.exe", "kind": "file", "bytes": 7650000,
                   "sha256": "<64 位>", "copiedTo": "tmp/integration/builds/b02-desktop-r1/artifacts/..." }]
 }
@@ -307,7 +314,74 @@ build b02-desktop-r1 ── accept fail（记录失败构建 + 现象 + 复现�
 - 旧构建记录与旧验收记录**保留**，用于追溯；不能拿旧版本的通过结论证明新版本通过；
 - 修复步骤只声明实际改动过的路径，避免把无关改动带进下一个快照。
 
-## 8. 开发与验收并行
+## 8. Dev 功能验收（默认路径，与本机制解耦）
+
+**Dev 功能验收可以独立完成，不依赖本文件的任何一步。** 它是普通功能开发的默认验收方式。
+
+### 8.1 Dev 验收做什么 / 不做什么
+
+| | Dev 功能验收 | Release 正式验收 |
+|---|---|---|
+| 运行环境 | `npm run tauri dev`（真实 Tauri Debug 桌面应用） | Integration Snapshot 产出的安装包 |
+| 是否需要安装包 | **否** | 是 |
+| 是否需要 `buildId` | **否** | 是（`accept --build <buildId>`） |
+| 是否调用 `accept --build` | **否** | 是 |
+| 是否推进 `verifying` / `accept-passed` / `accept-failed` | **否——一个都不碰** | 是 |
+| 是否需要 `snapshot create` / `build` | **否** | 是 |
+| 结论落点 | `tmp/acceptance/<task-name>/` 独立记录 | `<构建目录>/acceptance/<任务>.json`（按 `buildId+taskId`） |
+| 结论用语 | 「Dev 功能验收通过 / 部分通过 / 不通过 / 证据不足」 | 「验收通过 / 验收失败」 |
+| 能证明什么 | 该功能在当前代码 + 隔离数据目录下按预期工作 | 指定构建版本上的正式结论 |
+
+**Dev 验收明确不做的事**：
+
+- 不调用 `snapshot create`、`build`、`accept`，**不生成也不伪造 `buildId`**；
+- 不修改 `verifying` / `accept-passed` / `accept-failed`，**不新建未经代码实现的新状态**；
+- 不把 Dev 结论写成「Release 正式验收通过」，不占用正式验收记录；
+- 不用 Dev 截图/结论替代安装包、升级卸载、签名更新、生产资源加载或正式性能结论。
+
+### 8.2 Dev 验收流程
+
+```
+检查 Git 状态 → 确定任务修改范围 → 执行定向自动化测试 → 检查 Dev 实例是否运行
+→ 设置独立数据目录 → 启动或复用 npm run tauri dev → 检查是否运行最新代码
+→ 真实操作与业务链路验证 → 记录截图、日志与执行证据 → 输出 Dev 功能验收结论
+→ （必要时）进入 Release 正式验收
+```
+
+完整操作规范（逐步命令、PowerShell 示例、证据字段表）见
+[DEVELOPMENT.md](DEVELOPMENT.md) §2.3「Dev 功能验收操作规范」。
+
+### 8.3 Dev 验收记录要求
+
+每次 Dev 验收在 `tmp/acceptance/<task-name>/` 下记录，至少包含：
+
+| 项 | 说明 |
+|---|---|
+| 完整命令 | 含参数与脚本路径，可复制执行 |
+| 工作目录 | 仓库根 / `src-tauri/` 等 |
+| Git HEAD | `git rev-parse HEAD` |
+| Git dirty 状态与相关修改文件 | `git status --porcelain` + 本次改动清单 |
+| 运行模式 | Debug / Release（Dev 验收固定 Debug） |
+| 实际运行的 exe 路径 | 必要时附 SHA256 |
+| 开始 / 结束时间 | 含时区 |
+| 隔离数据目录 | `TASK_DOCK_DATA_DIR` / `WEBVIEW2_USER_DATA_FOLDER` 的实际值 |
+| 实际操作步骤 | 可复现的步骤序列 |
+| 可观察结果 | 界面上看到什么、数据里存了什么 |
+| 截图或日志路径 | `tmp/acceptance/<task-name>/` 下的真实文件 |
+| 未覆盖的边界 | 明确写出没测到的部分 |
+
+**不得伪造证据**：未执行写「未执行」，环境阻塞写 `ENVIRONMENT BLOCKED`，证据不足写「证据不足」。
+
+### 8.4 Dev 验收与正式验收的关系
+
+- Dev 验收**通过**只是进入正式验收的前置条件之一，不等于正式验收通过；正式结论仍要
+  `task ready → snapshot create → build → accept`。
+- Dev 验收**失败**：先在 Dev 上定位并修复，重做 Dev 验收；必要时再走正式验收流程记录失败。
+- Dev 验收**未覆盖**的部分，若属于 Release 专属范围（安装/升级/卸载、签名与更新、生产资源加载、
+  正式性能基线），必须在正式验收中补做。
+- 一次 Release 构建应尽量包含多个已完成任务；**不允许**每个 Agent 为自己的模块单独打安装包。
+
+## 9. 开发与验收并行
 
 ```
 snap-02 / b02-desktop-r1  ← 当前稳定验收版本（Agent A、B 在此验收）
@@ -318,9 +392,9 @@ snap-02 / b02-desktop-r1  ← 当前稳定验收版本（Agent A、B 在此验�
 - 验收方读取固定 `buildId` 与 commit，不受后续集成影响；
 - 开发方继续在共享工作区改代码，改动在 `main` 或任务分支上，不进 `b02` 的构建目录；
 - 需要真机/窗口验收的 Agent 用构建目录里的安装包或 exe，配合独立 `TASK_DOCK_DATA_DIR`；
-- 同一时刻只保留一个重型构建在跑（调度器保证），避免验收机器被构建拖慢。
+- 验收时自行协调只运行一个重型构建，避免验收机器被构建拖慢。
 
-## 9. 命令与退出码
+## 10. 命令与退出码
 
 | 命令 | 用途 |
 |---|---|
@@ -330,7 +404,7 @@ snap-02 / b02-desktop-r1  ← 当前稳定验收版本（Agent A、B 在此验�
 | `npm run integrate -- worktree adopt\|status` | 迁移/查看工具自有工作区身份（只校验登记，不重建不重置） |
 | `npm run integrate -- snapshot bootstrap\|create` | 基线 / 增量快照 |
 | `npm run integrate -- build --snapshot <id> --platform <p>` | 统一构建（含复用、`--mode` 与 dry-run） |
-| `npm run integrate -- accept --build <id> --task <id> --status <s>` | 写验收结论 |
+| `npm run integrate -- accept --build <id> --task <id> --status <s>` | 写验收结论（**仅 Release 正式验收**；Dev 验收不调用） |
 | `npm run integrate:test` | 本机制的自动化用例（临时仓库，不碰真实工作区） |
 
 | 退出码 | 含义 |
@@ -343,7 +417,7 @@ snap-02 / b02-desktop-r1  ← 当前稳定验收版本（Agent A、B 在此验�
 
 注：`task check` 是**人工登记**（`source=external`），只绑定提交与退出码，可用于留痕；无证据的登记
 不能让任务进入待集成。正式资格来自 `task verify --commit <交付提交> --cmd "<真实命令>"`：它会在
-隔离工作区 checkout 该提交、核对依赖、经调度器执行，并记录日志/退出码/调度任务。`--exit` 非 0 时
+隔离工作区 checkout 该提交、核对依赖、直接执行，并记录日志/退出码。`--exit` 非 0 时
 `task check` 仍写记录但返回 2；`task ready` 需要同一交付提交上至少一条 `source=executed`（或带
 `--evidence` 的外部）通过记录，否则返回 2。
 
@@ -351,7 +425,7 @@ snap-02 / b02-desktop-r1  ← 当前稳定验收版本（Agent A、B 在此验�
 位置（`C:\Program Files\Git\cmd\git.exe` 等）——不同 Agent 的 shell 未必都带 Git；构建命令里的
 `node` 也统一用当前 Node 进程的可执行文件，不依赖 `PATH`。
 
-## 10. 记录位置与清理
+## 11. 记录位置与清理
 
 | 内容 | 位置 | 是否入库 |
 |---|---|---|
@@ -381,11 +455,13 @@ node scripts/build-guard.mjs cleanup --dir <主仓库绝对路径>/src-tauri/tar
 `tmp/integration` 是本地台账，不作为唯一事实来源：**代码状态以快照提交为准，任务与构建的对应关系
 以提交信息 + `build.json` 为准**。清理本地台账不会改变已生成的快照提交。
 
-## 11. 它不做什么
+## 12. 它不做什么
 
 - 不推送、不打标签、不合并到 `main`、不改任何任务分支；
 - 不替代人工判断：`--allow-overlap`、`--allow-extra-paths` 都是显式留痕的例外；后者会真正应用
   未声明路径，使用前必须确认这些文件属于本任务，不能默认放宽；
 - 不创建 Worktree 给每个 Agent（那仍由 AGENTS.md §3.1 / §3.5 按冲突判定）；
 - 不新增后台服务/常驻进程：所有命令都是一次性 CLI，读写的只是 JSON 与 Git 对象；
-- 不修改构建看板界面，不实现 Relay。
+- 不修改构建看板界面，不实现 Relay；
+- **不是日常功能验收的门槛**：普通功能默认走 Dev 功能验收（§8），本机制只负责 Release 正式验收；
+  不因为「要做验收」就强制每个任务先出安装包。

@@ -83,6 +83,8 @@ export function installGlobalErrorHandlers(options: GlobalErrorOptions = {}): vo
         // 已归属，reportError 只负责用户提示（不会再写一条日志）。
         if (toast) reportError(err, { operation: "后台任务" });
       } else {
+        // 保留 console（最终兜底）：无 Toast 宿主的独立小窗口在诊断管道不可用时，
+        // 这里是唯一可见出口；与 logUnhandledRejection 并行，不互相替代。
         console.warn(`[unhandledrejection] ${err.code}: ${err.message}`, err.detail ?? "");
       }
     } catch {

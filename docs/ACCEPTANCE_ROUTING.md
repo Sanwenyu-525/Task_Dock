@@ -76,6 +76,35 @@
 | `scripts/perf/sampler.ps1`、`memory-probe.mjs`、`ingest-load.mjs` | A + E | 长跑负载 + 进程树资源采样（线程/句柄/内存/CPU） |
 | computer-use 物理鼠标/键盘 | F | 需授权后覆盖手感、系统级命中、通知可见性 |
 
+### 2.4 验收目标 → 默认方式（Dev-First）
+
+**默认运行环境是 Dev 实例**（`npm run tauri dev`，真实 Tauri Debug 桌面应用），不是安装包。
+下表是「验收目标 → 默认方式」的第一落点；只有涉及 Release 专属行为时才升级到安装包。
+
+| 验收目标 | 默认方式 | 说明 |
+|---|---|---|
+| 业务逻辑 | **A 自动化测试** | `npm test` / `cargo test`；纯逻辑层不需要起桌面程序 |
+| CSS、布局、视觉 | **B 预览** 或 **C 真实 WebView2** | 纯视觉走查用 B（快、不占桌面）；要真实渲染/主题材质用 C |
+| 页面交互 | **C Dev 实例** | 真实点击、悬停、填写、键盘、焦点 |
+| IPC 与前后端联调 | **C Dev 实例** | Dev 实例有真实 Rust 后端，命令缺失会被立即暴露 |
+| Rust 业务功能 | **C Dev 实例** + 相关自动化测试 | Dev 实例跑真实 SQLite / 文件 / 系统调用 |
+| 可访问性结构 | **C Dev 实例**（读 `role` / `aria-*`） | 结构断言在真实 WebView2 里做 |
+| Win32 窗口行为 | **E 原生验收** | 区域裁剪、窗口矩形、DPI 几何 |
+| DWM、材质、桌面合成 | **E 原生验收**（必要时 Release） | Debug 与 Release 的材质表现可能不同，涉及交付结论时补 Release |
+| 物理操作与真实手感 | **F** | 吸附手感、系统级命中 |
+| 安装 / 升级 / 卸载 | **Release 正式验收** | 只能对安装包做 |
+| 正式性能测试 | **Release 正式验收** | Debug 未优化，不能出正式性能结论 |
+
+**通道与运行环境的边界**：
+
+- **Dev 模式运行的是真实桌面程序**（真实 WebView2、真实 SQLite、真实 IPC、真实 Win32 窗口），
+  因此 C 与 E 在 Dev 实例上**都是真实测量**，可以支撑 Dev 功能验收结论；
+- 但**不能用 Dev 截图证明** Release 安装包、生产环境资源加载、安装升级卸载或正式性能——
+  这些必须走 Release 正式验收（[INTEGRATION_BUILD.md](INTEGRATION_BUILD.md) §5–§6 与 §9）；
+- **不能用预览页面（B）截图冒充真实桌面运行**：B 有 IPC mock，只证明 CSS 与布局层；
+- Dev 结论只写「Dev 功能验收通过 / 部分通过 / 不通过 / 证据不足」，**不写**「Release 正式验收通过」，
+  也不生成 `buildId`。
+
 ## 三、通道选择决策流程
 
 1. 先写验收目标与失败判据（含非目标）。
@@ -341,6 +370,8 @@ python .agents/skills/taskdock-acceptance/scripts/validate_evidence.py --repo . 
 
 - [ ] 任务范围与非目标已写明，未超范围改动。
 - [ ] 开工前与交付前各执行一次 `git status`，只含本次预期改动。
+- [ ] **已判定验收模式**：普通功能走 Dev 功能验收（§2.4），Release 专属行为才走正式验收；
+      Dev 结论未写成「Release 正式验收通过」，未伪造 `buildId`。
 - [ ] 每条结论都有「通道 + 操作 + 可观察结果 + 证据路径 + 未覆盖边界」。
 - [ ] 六要素齐全（命令、工作目录、退出码、时间、证据路径、样本条件）。
 - [ ] `PASS/FAIL/BLOCKED/NOT_RUN` 与四态结论一致；`BLOCKED` 未计入通过。
@@ -356,6 +387,10 @@ python .agents/skills/taskdock-acceptance/scripts/validate_evidence.py --repo . 
 
 - 伪造测试结果、真机验证、性能数据或截图；用「应该/理论上」替代证据。
 - 用 Mock、预览截图、CDP 页面截图冒充真实运行或桌面合成。
+- **用 Dev 截图冒充 Release 安装包、生产资源加载、安装升级卸载或正式性能**；
+  用预览页面截图冒充真实桌面运行。
+- **为普通功能强制先出安装包**，或把 Dev 验收结果写成「Release 正式验收通过」、
+  擅自修改 `verifying` / `accept-passed` / `accept-failed`、伪造 `buildId`。
 - 用 `GetWindowRgn`/设置命令成功冒充像素正确；用 `PrintWindow` 冒充窗口背后透出。
 - 用 `dispatchEvent()`/DOM `.click()` 冒充真实交互；用 `page.evaluate` 改状态后宣称通过。
 - 在共享实例或用户数据上做破坏性验收；结束非本会话启动的进程。

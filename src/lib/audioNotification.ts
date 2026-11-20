@@ -20,6 +20,7 @@ import { useEffect } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import type { Settings, TtsSynthesisReport, VoiceClip, VoiceEventKind } from "./bridge";
 import { onAudioEvent, ttsSynthesize, voiceAssetPath, voiceResolveClip } from "./bridge";
+import { logEvent } from "./diagnostics";
 import { useSettingsStore } from "../store/useSettingsStore";
 
 export type AudioEventKind =
@@ -629,7 +630,16 @@ export function createDefaultAdapters(): AudioAdapters {
     now: () => Date.now(),
     setTimeout: (fn, ms) => setTimeout(fn, ms),
     clearTimeout: (id) => clearTimeout(id),
-    log: (...args) => console.debug(...args),
+    // 失败计数已由服务 stats 负责；这里只保留调试轨迹（仅详细诊断模式落盘）。
+    // 错误对象不整体序列化：字符串原样，其余取稳定错误码。
+    log: (...args) =>
+      logEvent({
+        level: "DEBUG",
+        module: "voice",
+        action: "notification",
+        event: "log",
+        message: args.map((item) => (typeof item === "string" ? item : errorCode(item))).join(" "),
+      }),
     closeAudio,
   };
 }

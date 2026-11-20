@@ -159,5 +159,7 @@ export default function FeatureView<P>({
   }
 
   // 首次加载占位：不做持续动画（本地 chunk 通常 < 100ms，动画反而像卡顿）。
+  // 加载中就切走时，children 内的 hidden 容器还没生成，必须在这里隐藏旧页占位。
+  if (!active) return null;
   return <div className="panel-loading" role="status" aria-label={t("nav.loading")} />;
 }

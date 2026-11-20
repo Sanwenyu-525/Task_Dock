@@ -3,7 +3,7 @@
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use super::*;
 
@@ -54,6 +54,7 @@ fn small_config() -> WriterConfig {
         max_file_bytes: 1024,
         max_archive_files: 2,
         max_total_bytes: 10 * 1024 * 1024,
+        max_age_days: MAX_AGE_DAYS,
         agg_window: Duration::from_millis(50),
         agg_capacity: 8,
     }
@@ -870,4 +871,463 @@ fn level_from_category_separates_real_failures_from_expected_rejections() {
             "可预期拒绝 {category} 不应升级为 ERROR"
         );
     }
+}
+
+// ── 时间维度保留（M2）───────────────────────────────────────
+
+/// 造一个「N 天前修改」的归档文件。
+fn write_stale_archive(dir: &Path, name: &str, age_days: u64) -> PathBuf {
+    let path = dir.join(name);
+    std::fs::write(&path, "{}\n").unwrap();
+    let file = std::fs::File::options().write(true).open(&path).unwrap();
+    file.set_modified(SystemTime::now() - Duration::from_secs(age_days * 86_400))
+        .unwrap();
+    drop(file);
+    path
+}
+
+#[test]
+fn startup_prunes_archives_older_than_max_age() {
+    let dir = temp_dir("age-expired");
+    let stale = write_stale_archive(&dir, "diagnostics-20200101-000000-000.jsonl", 30);
+
+    let diag = Diagnostics::init_at(
+        dir.clone(),
+        WriterConfig {
+            max_age_days: 14,
+            ..WriterConfig::default()
+        },
+    );
+    // 写线程先跑 startup（内含 prune）再处理消息：flush 返回即代表 prune 已执行完。
+    diag.flush_blocking();
+    assert!(
+        !stale.exists(),
+        "超过保留期（14 天）的归档必须在启动时被删除"
+    );
+    diag.shutdown();
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn startup_keeps_archives_within_max_age() {
+    let dir = temp_dir("age-keep");
+    let recent = write_stale_archive(&dir, "diagnostics-20260101-000000-000.jsonl", 3);
+
+    let diag = Diagnostics::init_at(
+        dir.clone(),
+        WriterConfig {
+            max_age_days: 14,
+            ..WriterConfig::default()
+        },
+    );
+    diag.flush_blocking();
+    assert!(recent.exists(), "保留期内的归档不得被删除");
+    diag.shutdown();
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn age_retention_can_be_disabled() {
+    let dir = temp_dir("age-off");
+    let stale = write_stale_archive(&dir, "diagnostics-20200101-000000-000.jsonl", 365);
+
+    let diag = Diagnostics::init_at(
+        dir.clone(),
+        WriterConfig {
+            max_age_days: 0,
+            ..WriterConfig::default()
+        },
+    );
+    diag.flush_blocking();
+    assert!(
+        stale.exists(),
+        "max_age_days = 0 表示关闭时间淘汰，不应删除任何归档"
+    );
+    diag.shutdown();
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ── 写失败分类（M3）──────────────────────────────────────────
+
+#[test]
+fn write_failure_kind_classifies_io_errors() {
+    let permission = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+    assert_eq!(
+        WriteFailureKind::from_io(&permission),
+        WriteFailureKind::PermissionDenied
+    );
+
+    // Windows ERROR_DISK_FULL(112) / ERROR_HANDLE_DISK_FULL(39) / POSIX ENOSPC(28)
+    for code in [112, 39, 28] {
+        let err = std::io::Error::from_raw_os_error(code);
+        assert_eq!(
+            WriteFailureKind::from_io(&err),
+            WriteFailureKind::DiskFull,
+            "错误码 {code} 应判定为磁盘满"
+        );
+    }
+
+    // Windows ERROR_SHARING_VIOLATION(32) / ERROR_LOCK_VIOLATION(33)
+    for code in [32, 33] {
+        let err = std::io::Error::from_raw_os_error(code);
+        assert_eq!(
+            WriteFailureKind::from_io(&err),
+            WriteFailureKind::FileLocked,
+            "错误码 {code} 应判定为文件被占用"
+        );
+    }
+
+    // ERROR_FILE_NOT_FOUND(2) → 未命中任何特例 → unknown
+    let other = std::io::Error::from_raw_os_error(2);
+    assert_eq!(WriteFailureKind::from_io(&other), WriteFailureKind::Unknown);
+}
+
+#[test]
+fn write_failure_kind_has_stable_strings() {
+    assert_eq!(WriteFailureKind::DiskFull.as_str(), "disk_full");
+    assert_eq!(
+        WriteFailureKind::PermissionDenied.as_str(),
+        "permission_denied"
+    );
+    assert_eq!(WriteFailureKind::FileLocked.as_str(), "file_locked");
+    assert_eq!(WriteFailureKind::Unknown.as_str(), "unknown");
+}
+
+// ── 故障注入：轮转降级、队列过载（批次 2 / M13）──────────────
+//
+// 计数快照下标（与 Counters::snapshot 顺序一致）：
+// 0=written 1=dropped 2=queue_full 3=aggregated 4=rotations 5=failures
+// 6=skipped_lines 7=rotate_failures。
+
+/// 以「允许读/写共享、不给删除共享」的方式占用活动日志文件：
+/// 写线程的 rename（需要 DELETE 访问）因此失败（Windows ERROR_SHARING_VIOLATION(32)，
+/// 分类为 file_locked），但重新打开追加（写共享放行）仍然成功——
+/// 复现杀毒软件 / 索引器锁定日志文件的典型场景。
+#[cfg(windows)]
+fn hold_active_file_no_delete_share(dir: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_SHARE_READ: u32 = 0x1;
+    const FILE_SHARE_WRITE: u32 = 0x2;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .open(dir.join(ACTIVE_FILE))
+}
+
+/// 降级写入决策的边界（纯函数，不构造 64 MB 真实文件）。
+#[test]
+fn degraded_should_drop_enforces_hard_cap_and_level_policy() {
+    use super::writer::{degraded_should_drop, ACTIVE_HARD_CAP_BYTES};
+    // 低等级在降级期一律计数丢弃。
+    for level in [DiagLevel::Trace, DiagLevel::Debug, DiagLevel::Info] {
+        assert!(degraded_should_drop(level, 0, 10), "{level:?} 在降级期必须丢弃");
+    }
+    // 高等级在硬上限之内保留（故障现场不能丢）。
+    for level in [DiagLevel::Warn, DiagLevel::Error, DiagLevel::Critical] {
+        assert!(
+            !degraded_should_drop(level, ACTIVE_HARD_CAP_BYTES - 100, 10),
+            "{level:?} 在硬上限内必须保留"
+        );
+    }
+    // 触到硬上限：任何级别都整体停止写入（只计数）。
+    for level in [
+        DiagLevel::Trace,
+        DiagLevel::Info,
+        DiagLevel::Warn,
+        DiagLevel::Error,
+        DiagLevel::Critical,
+    ] {
+        assert!(
+            degraded_should_drop(level, ACTIVE_HARD_CAP_BYTES, 1),
+            "达到硬上限后 {level:?} 必须整体停止写入"
+        );
+    }
+}
+
+/// 真实文件占用（Windows 独占共享模式）触发轮转失败：
+/// 必须进入降级、退避窗口内**不再每次写入重试 rename**（消除失败风暴）、
+/// 高等级事件继续写入且活动文件不超过硬上限。
+#[cfg(windows)]
+#[test]
+fn rotation_lock_enters_degradation_without_rename_storm() {
+    let dir = temp_dir("rotate-lock");
+    let diag = Diagnostics::init_at(dir.clone(), small_config());
+
+    // 1) 先把活动文件推过 1024 字节阈值（首条写入时 bytes=0，不触发轮转判断）。
+    diag.record(event(
+        DiagLevel::Info,
+        "probe",
+        "fill",
+        &"x".repeat(1100),
+    ));
+    diag.flush_blocking();
+
+    // 2) 真实占用活动日志（写共享放行、删除共享不放行）。
+    let holder = hold_active_file_no_delete_share(&dir).expect("必须能以读共享方式占用活动日志");
+    diag.record(event(
+        DiagLevel::Warn,
+        "probe",
+        "trigger",
+        "占用下触发轮转",
+    ));
+    diag.flush_blocking();
+    let after_first = diag.counters().snapshot();
+    assert_eq!(
+        after_first[7], 1,
+        "首次 rename 失败必须记 rotate_failures=1: {after_first:?}"
+    );
+    assert_eq!(after_first[4], 0, "占用期间不得成功轮转: {after_first:?}");
+    assert_eq!(
+        diag.last_failure_kind(),
+        Some(WriteFailureKind::FileLocked),
+        "共享冲突必须归类为 file_locked"
+    );
+
+    // 3) 失败风暴消除：退避窗口（测试构建 1s）内继续写入，不得重复尝试 rename。
+    for i in 0..20 {
+        // 带 operation_id：绕开聚合器，保证「纯写入/丢弃策略」可精确断言。
+        let mut warn = event(DiagLevel::Warn, "probe", "noise", "占用期间告警");
+        warn.operation_id = Some(format!("noise-warn-{i}"));
+        assert!(diag.record(warn), "高等级事件必须继续接收");
+        let info = event(DiagLevel::Info, "probe", "noise", "占用期间低等级");
+        assert!(diag.record(info), "入队仍成功（丢弃发生在写入线程内）");
+    }
+    diag.flush_blocking();
+    let during = diag.counters().snapshot();
+    assert_eq!(
+        during[7], 1,
+        "退避窗口内不得重复尝试 rename（失败风暴必须被消除）: {during:?}"
+    );
+    assert_eq!(
+        during[5], 1,
+        "failures 计数不得随写入次数膨胀: {during:?}"
+    );
+    // 降级策略：低等级计数丢弃、高等级逐条写入（fill + trigger + 20 条 Warn）。
+    assert_eq!(during[1], 20, "20 条低等级事件必须全部计数丢弃: {during:?}");
+    assert_eq!(during[0], 22, "Warn 必须继续写入: {during:?}");
+    // 活动文件继续追加但远未触及硬上限。
+    let active_bytes = std::fs::metadata(dir.join(ACTIVE_FILE))
+        .map(|m| m.len())
+        .unwrap_or(0);
+    assert!(
+        active_bytes < super::writer::ACTIVE_HARD_CAP_BYTES,
+        "活动文件不得超过硬上限: {active_bytes}"
+    );
+
+    // 4) 释放占用 → 退避窗口过后重试 → 轮转恢复并退出降级。
+    drop(holder);
+    std::thread::sleep(Duration::from_millis(1200));
+    diag.record(event(
+        DiagLevel::Warn,
+        "probe",
+        "recover",
+        "占用释放后重试",
+    ));
+    diag.flush_blocking();
+    let recovered = diag.counters().snapshot();
+    assert!(
+        recovered[4] >= 1,
+        "释放占用后必须成功轮转: {recovered:?}"
+    );
+    assert_eq!(
+        recovered[7], 1,
+        "恢复不得引入新的失败计数: {recovered:?}"
+    );
+
+    // 5) 降级退出后低等级事件恢复写入（恢复正常轮转的直接证据）。
+    diag.record(event(
+        DiagLevel::Info,
+        "probe",
+        "post",
+        "恢复后的低等级事件",
+    ));
+    diag.flush_blocking();
+    let events = read_events(&dir);
+    assert!(
+        events
+            .iter()
+            .any(|e| e.module == "probe" && e.action == "post"),
+        "降级退出后低等级事件必须恢复写入: {:?}",
+        events.iter().map(|e| (&e.module, &e.action)).collect::<Vec<_>>()
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| e.module == "diagnostics" && e.action == "rotate" && e.event == "recovered"),
+        "轮转恢复必须留下 recovered 里程碑事件"
+    );
+    diag.shutdown();
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// 轮转恢复（独立场景）：占用释放后再写入，rotations 计数增长、降级退出。
+#[cfg(windows)]
+#[test]
+fn rotation_recovers_after_lock_released() {
+    let dir = temp_dir("rotate-recover");
+    let diag = Diagnostics::init_at(dir.clone(), small_config());
+    diag.flush_blocking();
+
+    diag.record(event(DiagLevel::Info, "probe", "fill", &"x".repeat(1100)));
+    diag.flush_blocking();
+    let holder = hold_active_file_no_delete_share(&dir).expect("占用活动日志");
+    diag.record(event(DiagLevel::Warn, "probe", "trigger", "占用触发轮转"));
+    diag.flush_blocking();
+    assert_eq!(diag.counters().snapshot()[7], 1, "必须先进入降级");
+
+    drop(holder);
+    std::thread::sleep(Duration::from_millis(1200));
+    diag.record(event(DiagLevel::Warn, "probe", "after", "占用释放后写入"));
+    diag.flush_blocking();
+
+    let snapshot = diag.counters().snapshot();
+    assert!(snapshot[4] >= 1, "rotations 必须增长: {snapshot:?}");
+    assert_eq!(snapshot[7], 1, "不得有额外轮转失败: {snapshot:?}");
+    // 恢复事件落盘（降级退出的可观测里程碑）。
+    let events = read_events(&dir);
+    assert!(
+        events
+            .iter()
+            .any(|e| e.module == "diagnostics" && e.action == "rotate" && e.event == "recovered"),
+        "恢复必须写 recovered 事件: {:?}",
+        events.iter().map(|e| (&e.module, &e.action, &e.event)).collect::<Vec<_>>()
+    );
+    diag.shutdown();
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// 队列过载：8 线程高并发写入（Info + Critical 混合）。
+/// 断言「尝试总数 = 写入 + 丢弃」的账目一致、Critical 全部可解释且尽量保留、
+/// 测试本身完成（无死循环/死锁）。
+///
+/// 注：队列容量是进程级常量 `CHANNEL_CAPACITY`（1024，见 mod.rs），
+/// 测试无法按 WriterConfig 调小；此处以高并发灌满的方式逼近过载场景。
+#[test]
+fn queue_overload_under_concurrency_keeps_accounting() {
+    let dir = temp_dir("overload-concurrent");
+    let diag = Diagnostics::init_at(dir.clone(), WriterConfig::default());
+    const THREADS: usize = 8;
+    const PER_THREAD: usize = 2000;
+
+    let mut attempted_total: u64 = 0;
+    let mut attempted_critical: u64 = 0;
+    let handles: Vec<_> = (0..THREADS)
+        .map(|thread| {
+            let diag = diag.clone();
+            std::thread::spawn(move || {
+                let mut attempted = 0u64;
+                let mut critical = 0u64;
+                for i in 0..PER_THREAD {
+                    let level = if i % 100 == 0 {
+                        DiagLevel::Critical
+                    } else {
+                        DiagLevel::Info
+                    };
+                    if diag.record(event(
+                        level,
+                        "flood",
+                        &format!("worker-{thread}"),
+                        "高并发压测事件",
+                    )) {
+                        attempted += 1;
+                        if level == DiagLevel::Critical {
+                            critical += 1;
+                        }
+                    }
+                }
+                (attempted, critical)
+            })
+        })
+        .collect();
+    for handle in handles {
+        let (attempted, critical) = handle.join().expect("写入线程不得 panic（无死循环）");
+        attempted_total += attempted;
+        attempted_critical += critical;
+    }
+
+    // 刷盘（必要时重试，保证队列清空后再核对账目）。
+    for _ in 0..10 {
+        if diag.flush_blocking().flushed {
+            break;
+        }
+    }
+    let snapshot = diag.counters().snapshot();
+    let written = snapshot[0];
+    let dropped = snapshot[1];
+    // 账目一致：接收（written）+ 拒收与写入期丢弃（dropped）= 尝试总数。
+    assert_eq!(
+        attempted_total,
+        written,
+        "队列接收数必须等于写入数（本场景无写线程侧丢弃）: {snapshot:?}"
+    );
+    assert_eq!(
+        THREADS as u64 * PER_THREAD as u64,
+        attempted_total + dropped,
+        "尝试总数 = 写入 + 丢弃（计数必须可解释）: {snapshot:?}"
+    );
+    // Critical 尽量保留：全部可解释且大多真正落盘。
+    let critical_written = read_events(&dir)
+        .iter()
+        .filter(|e| e.module == "flood" && e.level == DiagLevel::Critical)
+        .count() as u64;
+    assert!(
+        critical_written >= attempted_critical / 2,
+        "Critical 必须尽量保留（尝试 {attempted_critical}，落盘 {critical_written}）: {snapshot:?}"
+    );
+    diag.shutdown();
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// 微基准（#[ignore]：由 scripts/logging-benchmark.mjs 以 --ignored --nocapture 调起）。
+/// Debug 构建数字仅用于回归观察，**不得作为正式性能结论**（AGENTS §5.3：
+/// 正式基线必须走 Release 集成构建 + 固定采样条件）。
+/// 输出 `MICRO_RESULT {…}` JSON 行供脚本解析：record 延迟分位数、吞吐、刷盘与退出耗时。
+#[test]
+#[ignore]
+fn bench_writer_pipeline_micro() {
+    use std::time::Instant;
+
+    let dir = temp_dir("bench-micro");
+    let diag = Diagnostics::init_at(dir.clone(), WriterConfig::default());
+    const N: usize = 20_000;
+
+    // 预热：让写线程与文件句柄进入稳定状态。
+    for _ in 0..1000 {
+        let _ = diag.record(event(DiagLevel::Info, "bench", "warmup", "预热事件"));
+    }
+    diag.flush_blocking();
+
+    let mut latencies_ns: Vec<u128> = Vec::with_capacity(N);
+    let enqueue_started = Instant::now();
+    for _ in 0..N {
+        let t0 = Instant::now();
+        let _ = diag.record(event(DiagLevel::Info, "bench", "record", "微基准事件"));
+        latencies_ns.push(t0.elapsed().as_nanos());
+    }
+    let enqueue_elapsed = enqueue_started.elapsed();
+    let flush_started = Instant::now();
+    let _ = diag.flush_blocking();
+    let flush_elapsed = flush_started.elapsed();
+    let shutdown_started = Instant::now();
+    diag.shutdown();
+    let shutdown_elapsed = shutdown_started.elapsed();
+
+    latencies_ns.sort_unstable();
+    let pct = |q: usize| -> u64 {
+        let index = (q * latencies_ns.len() / 100).min(latencies_ns.len() - 1);
+        latencies_ns[index] as u64
+    };
+    let result = serde_json::json!({
+        "records": N,
+        "profile": if cfg!(debug_assertions) { "debug" } else { "release" },
+        "enqueue_p50_ns": pct(50),
+        "enqueue_p95_ns": pct(95),
+        "enqueue_p99_ns": pct(99),
+        "enqueue_max_ns": latencies_ns[latencies_ns.len() - 1] as u64,
+        "enqueue_throughput_per_sec": (N as f64 / enqueue_elapsed.as_secs_f64()) as u64,
+        "flush_ms": flush_elapsed.as_millis() as u64,
+        "shutdown_ms": shutdown_elapsed.as_millis() as u64,
+    });
+    println!("MICRO_RESULT {result}");
+    std::fs::remove_dir_all(&dir).ok();
 }

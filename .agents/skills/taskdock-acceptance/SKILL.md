@@ -1,6 +1,6 @@
 ---
 name: taskdock-acceptance
-description: "验收 task_dock 功能实现与跨模块回归：用户说验收一下功能、复查实现、检查修复是否生效时使用；按需求到证据的完整业务链路核查并区分未实现、部分实现、已实现未验证、自动化已验证、原生已验证、缺陷与环境阻塞，输出 P0–P3 与四态结论，不自动改代码。纯视觉、拖拽光标或原生窗口问题优先 taskdock-ui-acceptance；常驻 CPU/内存增长优先 taskdock-performance-audit；仅索要提示词优先 taskdock-remediation-prompt。"
+description: "验收 task_dock 功能实现与跨模块回归：用户说验收一下功能、复查实现、检查修复是否生效时使用；默认走 Dev 功能验收（npm run tauri dev 真实桌面实例），仅 Release 专属行为才要求正式构建；按需求到证据的完整业务链路核查并区分未实现、部分实现、已实现未验证、自动化已验证、原生已验证、缺陷与环境阻塞，输出 P0–P3 与四态结论，不自动改代码。纯视觉、拖拽光标或原生窗口问题优先 taskdock-ui-acceptance；常驻 CPU/内存增长优先 taskdock-performance-audit；仅索要提示词优先 taskdock-remediation-prompt。"
 ---
 
 # task_dock：功能验收
@@ -10,6 +10,29 @@ description: "验收 task_dock 功能实现与跨模块回归：用户说验收�
 - 仓库 `AGENTS.md` 优先约束 Git/数据/架构安全；`docs/ACCEPTANCE_ROUTING.md` 是 A–F 通道权威；`docs/TESTING.md` 是测试策略与历史记录。**不要复制这些文件为快照**，现有代码与当次证据优先于历史报告。
 - 区分四类证据：本轮执行、静态检查、历史记录、用户截图。后两种不当作当前真机通过。
 - **路由**：功能链路或回归为主时用本 Skill；专项视觉/拖拽/原生窗口时用 `taskdock-ui-acceptance`；专项常驻资源增长时用 `taskdock-performance-audit`；仅生成提示词且不做完整验收时用 `taskdock-remediation-prompt`。用户说“验收一下，给我提示词”时先本 Skill 验收，再转交 `taskdock-remediation-prompt`。不要无条件遍历所有 Skill，也不要因提到一个 UI 名词就改跑完整 UI 验收。
+
+## 先定验收模式：Dev 功能验收（默认） / Release 正式验收
+
+收到「验收一下」时，**不要机械地先构建安装包**。先按风险选验收模式：
+
+| | **A. Dev 功能验收（默认）** | **B. Release 正式验收** |
+|---|---|---|
+| 何时用 | UI 样式与布局、页面交互、组件功能、前后端 IPC、Rust 业务逻辑、SQLite 数据读写、普通桌面功能、普通原生窗口行为、模块级功能与跨模块业务链路 | 安装包生成、安装/升级/卸载、签名与更新机制、生产环境资源加载、Release 专属行为、正式性能基线、内存/CPU/启动性能等正式结论、正式交付版本 |
+| 怎么跑 | `npm run tauri dev`（真实 Tauri Debug 桌面应用：真实 WebView2、真实 SQLite、真实 IPC、真实 Win32 窗口，**不是** Mock、**不是**浏览器预览） | Integration Snapshot：`task ready → snapshot create → build → accept` |
+| 要安装包吗 | **不要** | 要 |
+| 要 `buildId` 吗 | **不要**，也**不得伪造** | 要，验收记录绑定 `buildId` |
+| 结论落点 | `tmp/acceptance/<task-name>/` | `<构建目录>/acceptance/<任务>.json` |
+| 结论用语 | 「Dev 功能验收通过 / 部分通过 / 不通过 / 证据不足」 | 「验收通过 / 验收失败」 |
+
+**硬边界**：
+
+- Dev 验收**不调用** `snapshot create` / `build` / `accept`，**不修改** `verifying` / `accept-passed` /
+  `accept-failed`，**不新建**未经代码实现的状态，**不伪造** `buildId`；
+- **不能**把 Dev 结论写成「Release 正式验收通过」；**不能**用 Dev 截图证明 Release 安装包、
+  生产资源加载、安装升级卸载或正式性能；
+- **不能**用预览页面（B 通道）截图冒充真实桌面运行；
+- 需要 Release 专属结论时**不得**用 Dev 结果顶替，反之亦然；两者的覆盖范围要分别写清楚；
+- 一次 Release 构建应尽量覆盖多个已完成任务；**不要**为每个模块单独出安装包。
 
 ## 需求到证据的检查模型
 内部检查状态只用于定位，不代替最终四态结论；每个发现必须先定状态再定严重度：
@@ -21,19 +44,24 @@ description: "验收 task_dock 功能实现与跨模块回归：用户说验收�
 - `DEFECT` 已确认缺陷：触发条件、预期、实际均有证据。
 - `ENVIRONMENT BLOCKED` 环境阻塞：锁屏、前台锁、端口/磁盘等导致无法验证，单列阻塞项。
 最终结论只能用**通过 / 部分通过 / 不通过 / 证据不足**，环境阻塞不并入通过，也不折算为代码缺陷。
+**Dev 通过 / Release 通过 / 未验证 / 环境阻塞必须在输出里分开写，不混为一谈。**
 
 ## 顺序
 1. 确认仓库根、任务范围、原需求与非目标；先读 `AGENTS.md`/就近子目录规则，查 `git status` 和相关 diff，保留并行会话改动。
 2. 从实际代码、类型、测试、配置、迁移、模块文档确认实现；定位到文件/函数及条件分支。参考 [references/acceptance-matrix.md](references/acceptance-matrix.md) 选择业务链路与检查项。
-3. 可用终端时先运行 `python .agents/skills/taskdock-acceptance/scripts/preflight.py --repo .` 获取**只读**环境快照；这不是测试通过证据。不可运行时报告能力限制。
-4. 建立“需求→可观察结果→失败判据→验证通道→证据”矩阵；只检查本次范围，未开发功能标 `UNIMPLEMENTED` 而不是自动记 Bug。沿完整业务链路走：功能入口→成功/失败/边界路径→持久化与状态同步，不要以 UI 存在性、测试文件存在性或静态代码代替功能结论。
-5. 根据 `docs/ACCEPTANCE_ROUTING.md` 选最低干扰通道 A–F；原生、系统或物理行为不能用 mock、CDP 页面截图替代。按需使用已有 `scripts/acceptance/` 和 `scripts/perf/`；执行任何现有脚本**先检查参数、写入与副作用**。
-6. 先做相关单测/类型/契约，再按风险扩大；Rust 在 `src-tauri/` 执行，构建前检查 `scripts/build-guard.mjs` 约束。不能执行则写“未执行”，不要借历史输出伪称通过。
-7. 分辨本轮缺陷、并行工作树噪声、已有失败、环境阻塞。对每项注明根因是“确认”还是“待查”。只对有证据的问题按 P0–P3 分级。跨模块回归只选有真实依赖关系的模块，不无限扩大（隐藏入口后的轮询/订阅、重复监听、设置持久化、跨窗口状态同步、错误区分、取消/恢复路径，细节见 references）。
-8. 如有实际证据，可按 [references/evidence-contract.md](references/evidence-contract.md) 记录；运行 `scripts/validate_evidence.py` 校验**证据引用存在性与字段完整性**，注意这不能证明结论真实。
+3. **先看现有代码与测试**：已有定向测试能覆盖的先跑，避免重复造检查；**再看现有 Dev 环境**：
+   `Get-Process task-dock -ErrorAction SilentlyContinue | Select-Object Id, Path` 只读盘点是否已有本仓库的 Dev 实例在跑；有就复用，不要重复起窗口。
+4. **按风险选择验证方式**（见上表）：普通功能默认 Dev 实例；只有 Release 专属行为才要求正式构建。
+   可用终端时先运行 `python .agents/skills/taskdock-acceptance/scripts/preflight.py --repo .` 获取**只读**环境快照；这不是测试通过证据。不可运行时报告能力限制。
+5. 建立“需求→可观察结果→失败判据→验证通道→证据”矩阵；只检查本次范围，未开发功能标 `UNIMPLEMENTED` 而不是自动记 Bug。沿完整业务链路走：功能入口→成功/失败/边界路径→持久化与状态同步，不要以 UI 存在性、测试文件存在性或静态代码代替功能结论。
+6. 根据 `docs/ACCEPTANCE_ROUTING.md` 选最低干扰通道 A–F；原生、系统或物理行为不能用 mock、CDP 页面截图替代。按需使用已有 `scripts/acceptance/` 和 `scripts/perf/`；执行任何现有脚本**先检查参数、写入与副作用**。
+7. 先做相关单测/类型/契约，再按风险扩大；Rust 在 `src-tauri/` 执行，构建前检查 `scripts/build-guard.mjs` 约束。不能执行则写“未执行”，不要借历史输出伪称通过。
+8. **Dev 实例纪律**：`scripts/dev-launch.mjs` 探测到本仓库 debug 实例在跑时**只唤醒、不重编译**——不要以为再执行一次 `npm run tauri dev` 就会重新编译；需要新 Rust 代码时先正常关闭**本会话自己的**实例再启动。Dev 实例必须用独立数据目录（`TASK_DOCK_DATA_DIR` 指向 `tmp/debug/<task-name>/`，必要时隔离 `WEBVIEW2_USER_DATA_FOLDER`）。**多 Agent 并行时默认由主 Agent 或指定集成 Agent 管理共享的 Tauri Dev 实例**，不允许所有子 Agent 同时各起一个造成端口/数据目录冲突；需要独立实例的 Agent 必须用独立 Worktree、数据目录和不冲突的端口。
+9. 分辨本轮缺陷、并行工作树噪声、已有失败、环境阻塞。对每项注明根因是“确认”还是“待查”。只对有证据的问题按 P0–P3 分级。跨模块回归只选有真实依赖关系的模块，不无限扩大（隐藏入口后的轮询/订阅、重复监听、设置持久化、跨窗口状态同步、错误区分、取消/恢复路径，细节见 references）。
+10. 如有实际证据，可按 [references/evidence-contract.md](references/evidence-contract.md) 记录；运行 `scripts/validate_evidence.py` 校验**证据引用存在性与字段完整性**，注意这不能证明结论真实。
 
 ## 产物与结果
-- 固定顺序输出：**结论（通过/部分通过/不通过/证据不足）→ 主要发现（P0–P3）→ 证据（通道+命令/动作+结果+路径）→ 验证范围 → 未验证项（含环境阻塞）→ 遗留风险**。
+- 固定顺序输出：**结论（通过/部分通过/不通过/证据不足）→ 验收模式（Dev / Release）→ 主要发现（P0–P3）→ 证据（通道+命令/动作+结果+路径）→ 验证范围 → 未验证项（含环境阻塞）→ 遗留风险**。
 - 每项说明触发步骤、实际观察、影响、文件位置、来源、验证通道及未覆盖边界；环境阻塞使用 `ENVIRONMENT BLOCKED`，不计为通过。
 - 纯视觉任务不留大量报告；需要留存的本轮资料写 `tmp/acceptance/<task-name>/`，不覆盖历史文件，不写敏感剪贴板或个人数据。
 - 可复制报告骨架：`assets/templates/report.template.md`；可检查的证据清单格式：`assets/templates/evidence.template.json`。所有模板只能复制到 `tmp/acceptance/...` 后填写，Skill 内禁止保存真实执行报告。

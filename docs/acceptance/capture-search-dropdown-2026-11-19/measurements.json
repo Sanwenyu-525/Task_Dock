@@ -1,0 +1,407 @@
+[
+  {
+    "width": 720,
+    "search": {
+      "field": {
+        "left": 54,
+        "right": 436,
+        "width": 382,
+        "top": 7,
+        "bottom": 39
+      },
+      "topbar": {
+        "left": 1,
+        "right": 719,
+        "width": 718,
+        "top": 1,
+        "bottom": 75.9375
+      },
+      "context": {
+        "left": 17,
+        "right": 705,
+        "width": 688,
+        "top": 45,
+        "bottom": 68.9375
+      },
+      "create": {
+        "left": 444,
+        "right": 476,
+        "width": 32,
+        "top": 8,
+        "bottom": 38
+      },
+      "controls": {
+        "left": 611,
+        "right": 705,
+        "width": 94,
+        "top": 8,
+        "bottom": 38
+      }
+    },
+    "panel": {
+      "x": 54.994136810302734,
+      "y": 45.605430603027344,
+      "width": 467.2434730529785,
+      "height": 516.9501724243164
+    },
+    "select": {
+      "trigger": {
+        "width": 688,
+        "height": 23.9375,
+        "left": 17,
+        "right": 705
+      },
+      "popover": {
+        "width": 688,
+        "height": 94,
+        "left": 17,
+        "right": 705
+      },
+      "widthMode": null
+    },
+    "menu": {
+      "trigger": {
+        "x": 444,
+        "y": 8,
+        "width": 32,
+        "height": 30
+      },
+      "menu": {
+        "x": 382.3581237792969,
+        "y": 42.402645111083984,
+        "width": 93.64187622070312,
+        "height": 97.71127700805664
+      },
+      "widthMode": null
+    },
+    "errors": [],
+    "fieldOk": true,
+    "topbarActionsOk": true,
+    "selectDelta": 0,
+    "selectOverflowX": 0
+  },
+  {
+    "width": 960,
+    "search": {
+      "field": {
+        "left": 260,
+        "right": 596,
+        "width": 336,
+        "top": 12.5,
+        "bottom": 44.5
+      },
+      "topbar": {
+        "left": 1,
+        "right": 959,
+        "width": 958,
+        "top": 1,
+        "bottom": 57
+      },
+      "context": {
+        "left": 58,
+        "right": 248,
+        "width": 190,
+        "top": 16.53125,
+        "bottom": 40.46875
+      },
+      "create": {
+        "left": 604,
+        "right": 636,
+        "width": 32,
+        "top": 13.5,
+        "bottom": 43.5
+      },
+      "controls": {
+        "left": 851,
+        "right": 945,
+        "width": 94,
+        "top": 13.5,
+        "bottom": 43.5
+      }
+    },
+    "panel": {
+      "x": 260.9700012207031,
+      "y": 50.029998779296875,
+      "width": 455.8999938964844,
+      "height": 504.4000549316406
+    },
+    "select": {
+      "trigger": {
+        "width": 190,
+        "height": 23.9375,
+        "left": 58,
+        "right": 248
+      },
+      "popover": {
+        "width": 190,
+        "height": 94,
+        "left": 58,
+        "right": 248
+      },
+      "widthMode": null
+    },
+    "menu": {
+      "trigger": {
+        "x": 604,
+        "y": 13.5,
+        "width": 32,
+        "height": 30
+      },
+      "menu": {
+        "x": 541.495361328125,
+        "y": 48.97771453857422,
+        "width": 94.504638671875,
+        "height": 98.61151885986328
+      },
+      "widthMode": null
+    },
+    "errors": [],
+    "fieldOk": true,
+    "topbarActionsOk": true,
+    "selectDelta": 0,
+    "selectOverflowX": 0
+  },
+  {
+    "width": 1200,
+    "search": {
+      "field": {
+        "left": 378,
+        "right": 770,
+        "width": 392,
+        "top": 12.5,
+        "bottom": 44.5
+      },
+      "topbar": {
+        "left": 1,
+        "right": 1199,
+        "width": 1198,
+        "top": 1,
+        "bottom": 57
+      },
+      "context": {
+        "left": 139.609375,
+        "right": 349.609375,
+        "width": 210,
+        "top": 16.53125,
+        "bottom": 40.46875
+      },
+      "create": {
+        "left": 778,
+        "right": 872,
+        "width": 94,
+        "top": 13.5,
+        "bottom": 43.5
+      },
+      "controls": {
+        "left": 1091,
+        "right": 1185,
+        "width": 94,
+        "top": 13.5,
+        "bottom": 43.5
+      }
+    },
+    "panel": {
+      "x": 378.99517822265625,
+      "y": 51.6746711730957,
+      "width": 467.72955322265625,
+      "height": 517.4879875183105
+    },
+    "select": {
+      "trigger": {
+        "width": 210,
+        "height": 23.9375,
+        "left": 139.609375,
+        "right": 349.609375
+      },
+      "popover": {
+        "width": 210,
+        "height": 94,
+        "left": 140,
+        "right": 350
+      },
+      "widthMode": null
+    },
+    "menu": {
+      "trigger": {
+        "x": 778,
+        "y": 13.5,
+        "width": 94,
+        "height": 30
+      },
+      "menu": {
+        "x": 778.3516845703125,
+        "y": 48.406890869140625,
+        "width": 93.6483154296875,
+        "height": 97.71798706054688
+      },
+      "widthMode": null
+    },
+    "errors": [],
+    "fieldOk": true,
+    "topbarActionsOk": true,
+    "selectDelta": 0,
+    "selectOverflowX": 0
+  },
+  {
+    "width": 1440,
+    "search": {
+      "field": {
+        "left": 618,
+        "right": 1010,
+        "width": 392,
+        "top": 12.5,
+        "bottom": 44.5
+      },
+      "topbar": {
+        "left": 1,
+        "right": 1439,
+        "width": 1438,
+        "top": 1,
+        "bottom": 57
+      },
+      "context": {
+        "left": 139.609375,
+        "right": 349.609375,
+        "width": 210,
+        "top": 16.53125,
+        "bottom": 40.46875
+      },
+      "create": {
+        "left": 1018,
+        "right": 1112,
+        "width": 94,
+        "top": 13.5,
+        "bottom": 43.5
+      },
+      "controls": {
+        "left": 1331,
+        "right": 1425,
+        "width": 94,
+        "top": 13.5,
+        "bottom": 43.5
+      }
+    },
+    "panel": {
+      "x": 618.969970703125,
+      "y": 50.029998779296875,
+      "width": 455.9000244140625,
+      "height": 504.4000549316406
+    },
+    "select": {
+      "trigger": {
+        "width": 210,
+        "height": 23.9375,
+        "left": 139.609375,
+        "right": 349.609375
+      },
+      "popover": {
+        "width": 210,
+        "height": 94,
+        "left": 140,
+        "right": 350
+      },
+      "widthMode": null
+    },
+    "menu": {
+      "trigger": {
+        "x": 1018,
+        "y": 13.5,
+        "width": 94,
+        "height": 30
+      },
+      "menu": {
+        "x": 1018.352294921875,
+        "y": 48.40650177001953,
+        "width": 93.647705078125,
+        "height": 97.71736907958984
+      },
+      "widthMode": null
+    },
+    "errors": [],
+    "fieldOk": true,
+    "topbarActionsOk": true,
+    "selectDelta": 0,
+    "selectOverflowX": 0
+  },
+  {
+    "width": 1920,
+    "search": {
+      "field": {
+        "left": 1098,
+        "right": 1490,
+        "width": 392,
+        "top": 12.5,
+        "bottom": 44.5
+      },
+      "topbar": {
+        "left": 1,
+        "right": 1919,
+        "width": 1918,
+        "top": 1,
+        "bottom": 57
+      },
+      "context": {
+        "left": 139.609375,
+        "right": 349.609375,
+        "width": 210,
+        "top": 16.53125,
+        "bottom": 40.46875
+      },
+      "create": {
+        "left": 1498,
+        "right": 1592,
+        "width": 94,
+        "top": 13.5,
+        "bottom": 43.5
+      },
+      "controls": {
+        "left": 1811,
+        "right": 1905,
+        "width": 94,
+        "top": 13.5,
+        "bottom": 43.5
+      }
+    },
+    "panel": {
+      "x": 1098.99853515625,
+      "y": 51.90253829956055,
+      "width": 469.3221435546875,
+      "height": 519.2499885559082
+    },
+    "select": {
+      "trigger": {
+        "width": 210,
+        "height": 23.9375,
+        "left": 139.609375,
+        "right": 349.609375
+      },
+      "popover": {
+        "width": 210,
+        "height": 94,
+        "left": 140,
+        "right": 350
+      },
+      "widthMode": null
+    },
+    "menu": {
+      "trigger": {
+        "x": 1498,
+        "y": 13.5,
+        "width": 94,
+        "height": 30
+      },
+      "menu": {
+        "x": 1498.365234375,
+        "y": 48.39793395996094,
+        "width": 93.634765625,
+        "height": 97.70384216308594
+      },
+      "widthMode": null
+    },
+    "errors": [],
+    "fieldOk": true,
+    "topbarActionsOk": true,
+    "selectDelta": 0,
+    "selectOverflowX": 0
+  }
+]

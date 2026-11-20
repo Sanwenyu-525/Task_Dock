@@ -8,6 +8,12 @@
 //! WHERE request_id <> '' AND success = 1`。该索引作为事务幂等流程的最后约束；
 //! 读工具 request_id 恒存 ''，可重复审计。
 //!
+//! 安全审计双写（`security_audit_log`，迁移 v82）：权限拒绝（`authz=false`）
+//! 与高风险工具调用会追加一条 `category="mcp"` 事件（`correlation_id=request_id`）；
+//! 普通成功调用**不双写**。双写失败不阻塞主审计，只记 warn——安全审计表
+//! 与 mcp_audit_log 的强约束（写工具审计失败必须回滚）不同，按「尽力而为
+//! + 诊断告警」处理。
+//!
 //! 保留策略（两段式，区分「安全审计元数据」与「幂等重放载荷」）：
 //! - 元数据（谁、何时、哪个工具、成功/拒绝）保留 `metadata_days`；
 //! - 幂等载荷 `result_json` 只保留 `payload_days`，到期先清空载荷，**不删行**；
@@ -19,6 +25,9 @@ use rusqlite::Connection;
 use serde::Serialize;
 
 use crate::error::AppResult;
+use crate::mobile_sync::audit_events::{
+    insert_event, AuditEvent, CATEGORY_MCP, EVENT_MCP_HIGH_RISK_CALL, EVENT_MCP_TOOL_DENIED,
+};
 
 pub struct AuditEntry<'a> {
     /// 未知身份（token 不被识别）时为 None，仍要留痕
@@ -113,6 +122,47 @@ pub fn list_page(conn: &Connection, offset: u32, limit: u32) -> AppResult<AuditP
     })
 }
 
+/// 高风险动作清单（首批）：外部 Agent 驱动项目级状态迁移或身份/会话绑定的写操作。
+/// 常规内容写入（任务/笔记/收集箱）与全部读工具不在其列，避免安全审计表双写膨胀；
+/// 后续批次可按验收结论扩充（只增不改，与 event_type 同为稳定枚举）。
+const HIGH_RISK_ACTIONS: &[&str] = &[
+    "taskdock_create_project",
+    "taskdock_update_project",
+    "taskdock_submit_for_review",
+    "taskdock_link_agent_session",
+    "taskdock_unlink_agent_session",
+];
+
+fn is_high_risk(action: &str) -> bool {
+    HIGH_RISK_ACTIONS.contains(&action)
+}
+
+/// 追加一条 `security_audit_log` 事件（category="mcp"）。只在本连接上追加；
+/// 失败不向调用方传播（不阻塞主审计与业务），留 warn 供排查。
+fn record_security_event(conn: &Connection, e: &AuditEntry<'_>, event_type: &str, reason: &str) {
+    let event = AuditEvent {
+        subject: if e.agent_id.is_empty() {
+            None
+        } else {
+            Some(e.agent_id.to_string())
+        },
+        reason_code: Some(reason.to_string()),
+        correlation_id: if e.request_id.is_empty() {
+            None
+        } else {
+            Some(e.request_id.to_string())
+        },
+        ..AuditEvent::new(CATEGORY_MCP, event_type, e.action, if e.success { "ok" } else { "failed" })
+    };
+    if let Err(error) = insert_event(conn, &event) {
+        tracing::warn!(
+            "MCP 安全审计双写失败（action={} event_type={}）: {error}",
+            e.action,
+            event_type
+        );
+    }
+}
+
 pub fn write(conn: &Connection, e: &AuditEntry<'_>) -> AppResult<()> {    conn.execute(
         "INSERT INTO mcp_audit_log
            (id, agent_row_id, agent_id, action, entity_type, entity_id, request_id,
@@ -133,6 +183,13 @@ pub fn write(conn: &Connection, e: &AuditEntry<'_>) -> AppResult<()> {    conn.e
             crate::agents::now_iso(),
         ],
     )?;
+    // 安全审计双写：权限拒绝与高风险调用进 security_audit_log；普通成功调用不双写。
+    if !e.authz {
+        record_security_event(conn, e, EVENT_MCP_TOOL_DENIED, "authorization_denied");
+    } else if is_high_risk(e.action) {
+        let reason = if e.success { "high_risk_action" } else { "high_risk_failed" };
+        record_security_event(conn, e, EVENT_MCP_HIGH_RISK_CALL, reason);
+    }
     Ok(())
 }
 
@@ -255,4 +312,124 @@ pub fn prune(
         metadata_cutoff,
         payload_cutoff,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::Db;
+
+    fn security_rows(
+        db: &Db,
+    ) -> Vec<(String, Option<String>, Option<String>, String, Option<String>)> {
+        db.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT event_type, subject, reason_code, result, correlation_id
+                 FROM security_audit_log ORDER BY created_at, id",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+            })?;
+            let out: Vec<_> = rows
+                .collect::<Result<Vec<_>, rusqlite::Error>>()
+                .map_err(crate::error::AppError::from)?;
+            Ok(out)
+        })
+        .unwrap()
+    }
+
+    fn entry<'a>(
+        agent_id: &'a str,
+        action: &'a str,
+        request_id: &'a str,
+        success: bool,
+        authz: bool,
+    ) -> AuditEntry<'a> {
+        AuditEntry {
+            agent_row_id: None,
+            agent_id,
+            action,
+            entity_type: "",
+            entity_id: "",
+            request_id,
+            success,
+            authz,
+            detail: "test",
+            result_json: "",
+        }
+    }
+
+    #[test]
+    fn authorization_denied_is_dual_written_with_request_id() {
+        let db = Db::open_in_memory().unwrap();
+        db.with_conn(|conn| write(conn, &entry("agent-a", "taskdock_list_tasks", "req-1", false, false)))
+            .unwrap();
+        // 主审计照写
+        let mcp_rows: i64 = db
+            .with_conn(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM mcp_audit_log", [], |r| r.get(0))
+                    .map_err(crate::error::AppError::from)
+            })
+            .unwrap();
+        assert_eq!(mcp_rows, 1);
+
+        let rows = security_rows(&db);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, EVENT_MCP_TOOL_DENIED);
+        assert_eq!(rows[0].1.as_deref(), Some("agent-a"));
+        assert_eq!(rows[0].2.as_deref(), Some("authorization_denied"));
+        assert_eq!(rows[0].3, "failed");
+        // correlation_id = request_id（供与诊断日志交叉验证）
+        assert_eq!(rows[0].4.as_deref(), Some("req-1"));
+    }
+
+    #[test]
+    fn high_risk_call_is_dual_written_but_normal_success_is_not() {
+        let db = Db::open_in_memory().unwrap();
+        // 高风险工具成功调用 → 双写（result=ok）
+        db.with_conn(|conn| {
+            write(conn, &entry("agent-a", "taskdock_update_project", "req-2", true, true))
+        })
+        .unwrap();
+        // 普通工具成功调用 → 不双写
+        db.with_conn(|conn| {
+            write(conn, &entry("agent-a", "taskdock_create_task", "", true, true))
+        })
+        .unwrap();
+        // 读工具成功调用 → 不双写
+        db.with_conn(|conn| {
+            write(conn, &entry("agent-a", "taskdock_list_tasks", "", true, true))
+        })
+        .unwrap();
+
+        let rows = security_rows(&db);
+        assert_eq!(rows.len(), 1, "普通成功调用不得双写");
+        assert_eq!(rows[0].0, EVENT_MCP_HIGH_RISK_CALL);
+        assert_eq!(rows[0].3, "ok");
+        assert_eq!(rows[0].2.as_deref(), Some("high_risk_action"));
+
+        // 高风险工具失败（已授权但执行出错）→ result=failed
+        db.with_conn(|conn| {
+            write(conn, &entry("agent-a", "taskdock_submit_for_review", "req-3", false, true))
+        })
+        .unwrap();
+        let rows = security_rows(&db);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1].0, EVENT_MCP_HIGH_RISK_CALL);
+        assert_eq!(rows[1].3, "failed");
+        assert_eq!(rows[1].2.as_deref(), Some("high_risk_failed"));
+    }
+
+    #[test]
+    fn unknown_token_denial_has_no_subject() {
+        let db = Db::open_in_memory().unwrap();
+        // 未知身份（agent_id 空串）的失败尝试也写审计，但 subject 不编造
+        db.with_conn(|conn| write(conn, &entry("", "bridge_request", "", false, false)))
+            .unwrap();
+        let rows = security_rows(&db);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, EVENT_MCP_TOOL_DENIED);
+        assert!(rows[0].1.is_none(), "未知身份不得编造 subject");
+        assert!(rows[0].4.is_none(), "无 request_id 时 correlation_id 为空");
+    }
 }

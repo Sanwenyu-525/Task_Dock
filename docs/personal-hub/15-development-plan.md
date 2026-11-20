@@ -23,9 +23,9 @@
 | 阶段 | 工作 | 完成门槛 | 当前状态 |
 |---|---|---|---|
 | P0 | 架构基线 + 旧 ADR 决策锁定 | 文档状态统一；无 Proposed 分叉 | **已完成** |
-| P1 | Windows PersonalHubService 骨架、Named Pipe、进程生命周期 | UI/服务分离；无公网监听；服务异常恢复 | 未开始 |
-| P2 | Cloud Control Plane、设备注册、信令、TURN 凭证 | 设备公钥验证、限流、无密码/私钥存储 | 未开始 |
-| P3 | 设备身份、二维码配对、PC 本机批准 | 远程分享邀请也不能绕过 PC 批准 | 未开始 |
+| P1 | Windows PersonalHubService 骨架、Named Pipe、进程生命周期 | UI/服务分离；无公网监听；服务异常恢复 | 已有服务骨架；完整阶段验收未完成（见 §5） |
+| P2 | Cloud Control Plane、设备注册、信令、TURN 凭证 | 设备公钥验证、限流、无密码/私钥存储 | 实施中；云端模块 62 项测试通过，真实部署未验 |
+| P3 | 设备身份、二维码配对、PC 本机批准 | 远程分享邀请也不能绕过 PC 批准 | 三端已有实现；PC UI 与跨端完整闭环尚未验收 |
 | P4 | WebRTC P2P、STUN/TURN、Hub RPC/文件 DataChannel | LAN/P2P/TURN 网络矩阵真实通过 | 未开始 |
 | P5 | Android Device Credential + Windows Hello/设备 PIN PoC 与 SessionManager | 所有认证失败路径安全关闭 | 未开始 |
 | P6 | Android/Windows 屏幕采集与输入控制 | **只有 P5 全通过才允许开发/启用** | 未开始（阻塞于 P5） |
@@ -88,5 +88,23 @@
 
 - 遵守根 `AGENTS.md` §3：共享工作区、文件所有权、统一集成线；正式安装包只从集成快照构建。
 - 开工前/交付前 `git status`；当前未跟踪与未提交文件默认属于其他任务，不覆盖、不清理。
-- 不自动 commit/push；不用 `git clean`/`git reset --hard`；不绕过构建调度器。
+- 不自动 commit/push；不用 `git clean`/`git reset --hard`；并行构建需协调输出目录与资源。
 - 每个阶段/Agent 交付报告含：任务 ID/负责人/模块、精确文件列表、对照基线完成项、真实命令与退出码、测试结果、安全证据、未验证项、BLOCKED 原始证据、依赖接口、**是否偏离架构（必须为"无"）**。
+
+## 5. 2026-11-19 实现进度更正与信令修复
+
+原阶段表的 P1/P2/P3「未开始」已落后于实际代码。本次依据现存源码及本轮可复现检查修正状态，
+不将已有实现或历史模块测试等同于阶段验收完成。
+
+- P1：`src-tauri/src/personal_hub/` 与独立 bin 已存在。历史报告
+  `tmp/acceptance/personal-hub-p1-windows/report.md` 的 GUI 关窗存活、自启动与跨用户测试等边界仍保留；本轮未重跑 Rust。
+- P2：修复 WebSocket 插件与路由注册顺序导致的升级 500，以及每连接独立连接表导致的跨设备零投递。
+  增加连接身份绑定、多连接关闭处理、认证期间断线清理与并发回执 ID 隔离。
+  本轮服务模块测试 **62 passed / 0 failed**，类型检查 exit 0；采用内存仓储、模拟 socket 与
+  Fastify `injectWS`，不代表 TLS、PostgreSQL、TURN 或真实网络通过。
+- P3：Windows 身份/配对 API、云端 PC 批准状态机、Android 身份与配对代码已存在；
+  指纹双端人工确认与桌面管理 UI 的集成仍需继续核查和完成，不能标为已交付。
+- 下一步优先闭合 P1/P3 桌面管理与跨端配对链路，并核对云端注册、撤销同步及真实数据库行为；
+  未达到 P3 完成定义前不进入 P4，P5 未通过前不开发或启用 P6。
+- 本轮任务：`personal-hub-signaling-20261119`；报告与失败/通过原始输出：
+  `tmp/acceptance/personal-hub-signaling-20261119/`。未提交、未生成快照或正式安装包，台账保留开发中。

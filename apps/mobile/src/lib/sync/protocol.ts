@@ -29,6 +29,12 @@ export interface PullResult {
   /** 不透明游标；客户端原样保存，下一次 pull 原样回传 */
   cursor: string;
   changes: Change[];
+  /**
+   * 跨端链路 ID（JSON 字段 `traceId`，桌面端生成）：移动端只解析、写日志关联并在
+   * push 时原样回传，**绝不生成、不校验语义**（16-hex 形态由桌面端入队兜底）。
+   * 桌面端未接线或旧协议响应中缺省。
+   */
+  traceId?: string;
 }
 
 /**
@@ -70,6 +76,8 @@ export interface Conflict {
 export interface PushResult {
   ack: string[];
   conflicts: Conflict[];
+  /** 桌面端对请求 `traceId` 的原样回传；无链路时缺省。 */
+  traceId?: string;
 }
 
 const CONFLICT_REASONS: readonly ConflictReason[] = [
@@ -200,7 +208,16 @@ export function parsePullResult(value: unknown): PullResult {
   return {
     cursor: record.cursor,
     changes: record.changes.map(parseChange),
+    traceId: parseTraceId(record.traceId),
   };
+}
+
+/**
+ * 可选 traceId 透传：只接受非空字符串，非字符串/缺失一律 undefined。
+ * 移动端不校验语义、不参与任何鉴权判断（与桌面端 mobile_sync 契约一致）。
+ */
+function parseTraceId(value: unknown): string | undefined {
+  return typeof value === "string" && value ? value : undefined;
 }
 
 function parseConflict(value: unknown, opsById: Map<string, Op>): Conflict {
@@ -243,5 +260,6 @@ export function parsePushResult(value: unknown, ops: readonly Op[]): PushResult 
   return {
     ack: record.ack as string[],
     conflicts: record.conflicts.map((conflict) => parseConflict(conflict, opsById)),
+    traceId: parseTraceId(record.traceId),
   };
 }

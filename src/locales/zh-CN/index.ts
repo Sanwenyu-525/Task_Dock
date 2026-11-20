@@ -931,6 +931,11 @@ export const zhCN = {
   "settings.section.appearance": "外观与主题",
   "settings.section.navigation": "导航自定义",
   "settings.section.navigationDesc": "选择常驻功能，其余通过「更多」访问；隐藏不删除数据。",
+  "settings.section.appearanceDesc": "视觉预设、明暗主题、材质与界面语言",
+  "settings.section.windowHotkeysDesc": "贴边吸附、开机自启与全局快捷键",
+  "settings.section.notificationsDesc": "提醒开关、聚合与超额限流",
+  "settings.section.dataDesc": "自动备份、备份记录、导入导出与测试数据清理",
+  "settings.section.helpDesc": "帮助中心与新手引导",
   "settings.section.windowHotkeys": "窗口与快捷键",
   "settings.section.features": "功能模块",
   "settings.section.featuresDesc": "独立启停；关闭不会删除已有数据，Agent 核心接入始终保留",
@@ -1313,6 +1318,7 @@ export const zhCN = {
   "settings.appearance.workbenchLayoutResetFailed": "恢复默认布局失败：{error}",
   "settings.appearance.workbenchLayoutNote": "只重置工作台导航宽度、详情栏宽度与详情栏开关；主题、配色、导航排序与业务设置不受影响。",
   "settings.currentConfig.title": "当前配置",
+  "settings.currentConfig.page": "当前页面",
   "settings.currentConfig.category": "当前分类",
   "settings.currentConfig.theme": "主题",
   "settings.currentConfig.preset": "视觉预设",
@@ -1749,6 +1755,12 @@ export const zhCN = {
   "settings.jump.placeholder": "搜索分组或分类",
   "settings.jump.clear": "清除查找",
   "settings.jump.empty": "没有匹配的设置分组",
+
+  // ── 设置中心树形导航（2026-11-20 重构）──
+  "settings.nav.selectCategory": "切换分类",
+  "settings.preview.show": "显示预览",
+  "settings.preview.hide": "隐藏预览",
+  "settings.preview.caption": "当前 {count} 项",
 
   // ── 设置一级分类（信息架构）──
   "settings.category.aria": "设置分类",

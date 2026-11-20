@@ -52,7 +52,9 @@
 | 移除 | `ready()` | 160ms 淡出后 DOM 移除 |
 
 规则：阈值 `SLOW_MS=4000` / `TIMEOUT_MS=15000`（watchdog 与 bootProtocol.ts 跨文件由
-`src/test/bootSplash.test.ts` 锁一致）；「继续等待」回 `slow` 且不再重设 15s 计时器；
+`src/test/bootSplash.test.ts` 锁一致）；「继续等待」保持 `timeout` 恢复卡，更新等待说明，
+保留「重新加载 / 复制诊断」入口，且不再重设 15s 计时器（2026-11-19 修复：回到 `slow`
+会隐藏恢复卡，导致提示中的恢复操作无法访问）；
 重新加载只由用户点击触发（`location.reload()`），**禁止任何自动刷新/重试循环**；
 计时器全局仅一对，ready/error 清空。
 
@@ -132,3 +134,21 @@ Settings settled: / Workbench ready:
 - Edge/WebView2 在 `prefers-reduced-motion: reduce` 下平台级钳制动画时长（实测 0.01ms），
   spinner 实际静止；CSS 的 3s 减速仅对不钳制的引擎生效。
 - 真机（custom-protocol）路径、真实 `diagnostics_record` 落库需按验收路由 C/E 通道人工验证。
+
+## 8. Dev 冷启动依赖加载（2026-11-19）
+
+排查时观察到 bootstrap 已执行，但 main 动态导入长时间处于 pending，无模块错误/CSP 拦截。
+当前安装的 Vite 7 在裸导入解析中等待 `scanProcessing`，
+因此仅设置 `holdUntilCrawlEnd: false` 仍无法绕过多页面业务图的依赖扫描。
+
+`vite.config.ts` 改为 `optimizeDeps.noDiscovery: true`，显式预构建 React（包括 DOM 与 JSX
+运行时）、Lucide、Floating UI 与 Zustand。Tauri API/插件及 PDF.js 是 ESM，按真实访问加载；
+不为首屏主动下载 PDF。新增 CommonJS 依赖时必须检查并更新 `optimizeDeps.include`，否则浏览器
+无法直接执行。参见 [Vite 依赖预构建说明](https://vite.dev/guide/dep-pre-bundling) 与
+[配置契约](https://github.com/vitejs/vite/blob/v7.1.0/docs/config/dep-optimization-options.md)。
+
+预热仅保留零业务静态依赖的 `workspace/bootstrap.ts`；不同时预热全部窗口与业务图。
+桌面 watcher 忽略移动端目录、`tmp/`、`dist`/`dist-*` 与 `.preview*` 产物，防止大量缓存扫描
+争抢文件读取，以及 Android 生成 `problems-report.html` 时触发桌面整页重载。
+这些配置不改变生产构建、页面注册或后台服务生命周期。修改配置后需确认 Vite 实际完成重启；
+再次执行 `npm run tauri dev` 只唤醒已有实例时，不能当作重新编译或冷启动验证。

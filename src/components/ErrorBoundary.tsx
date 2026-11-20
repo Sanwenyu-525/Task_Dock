@@ -68,7 +68,8 @@ export default class ErrorBoundary extends Component<Props, State> {
       // ignore
     }
     // 处理器自身不能抛出异常：日志失败也不能影响兜底渲染。
-    // 原始对象与堆栈只进 console（审查过的诊断通道），不进入 DOM。
+    // 保留 console（最终兜底）：诊断管道自身不可用（IPC 失效/队列丢弃）时，
+    // 渲染树崩溃仍必须有一条 stderr 出口；原始对象与堆栈只进 console，不进入 DOM。
     try {
       console.error("[error-boundary]", this.props.scope ?? "main", error, info.componentStack);
     } catch {

@@ -17,6 +17,7 @@ import {
 import { loadConnection, readToken } from "../../db/syncConnection";
 import type { Attachment } from "../../domain/types";
 import { AppError, describeError } from "../errors";
+import { safeLog } from "../safeLog";
 
 import { deriveSyncKey } from "./crypto";
 import { createFileClient } from "./files";
@@ -106,11 +107,18 @@ async function transferAttachments(target: TransferTarget): Promise<AttachmentTr
         await setAttachmentTransferState(item.id, "sent", { remoteFileId: remote.id });
         outcome.sent += 1;
         outcome.sentIds.push(item.id);
+        // 传输结果采集：只记类型/大小/结果，绝不记文件名正文或路径。
+        safeLog.info("transfer", "附件已发送", { kind: item.kind, bytes: item.size });
       } catch (error) {
         const message = describeError(error);
         await setAttachmentTransferState(item.id, "failed", { error: message });
         outcome.failed += 1;
         outcome.errors.push(`${item.name || item.kind}：${message}`);
+        safeLog.warn("transfer", "附件发送失败", {
+          kind: item.kind,
+          bytes: item.size,
+          code: error instanceof AppError ? error.code ?? "" : "",
+        });
       } finally {
         outcome.handledIds.push(item.id);
       }

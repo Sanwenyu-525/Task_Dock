@@ -16,6 +16,11 @@ use crate::secure_vault::error::VaultError;
 
 pub const SCHEMA_VERSION: u32 = 1;
 
+/// 审计保留「数量上限」：超出后删除最旧（替代原 500 条硬截断，上限放宽到 1000）。
+pub const AUDIT_MAX_ROWS: i64 = 1000;
+/// 审计保留「时间上限」（天）：更早的行删除最旧优先。
+pub const AUDIT_MAX_AGE_DAYS: i64 = 90;
+
 #[derive(Debug, Clone)]
 pub struct StoredEnvelope {
     pub slot: String,
@@ -540,11 +545,7 @@ impl VaultStore {
                 count
             ],
         )?;
-        // 只保留最近 500 条。
-        conn.execute(
-            "DELETE FROM audit WHERE id IN (SELECT id FROM audit ORDER BY id DESC LIMIT -1 OFFSET 500)",
-            [],
-        )?;
+        prune_audit(&conn)?;
         Ok(())
     }
 
@@ -570,6 +571,42 @@ impl VaultStore {
         let conn = self.conn.lock();
         digest_conn(&conn, dek, vault_salt)
     }
+}
+
+/// 审计保留「时间 + 数量」双上限（调用点签名不变）：
+/// - 数量：只保留最近 [`AUDIT_MAX_ROWS`] 条（id 单调递增 = 写入顺序）；
+/// - 时间：删除 [`AUDIT_MAX_AGE_DAYS`] 天前的行。
+///
+/// `at` 是 RFC3339 字符串，`to_rfc3339` 的亚秒精度可变，字典序比较不可靠，
+/// 因此时间维度在 Rust 侧解析比对（行数受数量上限约束，全量扫描代价可忽略）。
+fn prune_audit(conn: &Connection) -> Result<(), VaultError> {
+    conn.execute(
+        "DELETE FROM audit WHERE id IN (SELECT id FROM audit ORDER BY id DESC LIMIT -1 OFFSET ?1)",
+        params![AUDIT_MAX_ROWS],
+    )?;
+    let cutoff = chrono::Utc::now() - chrono::Duration::days(AUDIT_MAX_AGE_DAYS);
+    let stale: Vec<i64> = {
+        let mut stmt = conn.prepare("SELECT id, at FROM audit")?;
+        let rows = stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))?;
+        let mut stale = Vec::new();
+        for row in rows {
+            let (id, at) = row?;
+            match chrono::DateTime::parse_from_rfc3339(&at) {
+                // 解析失败的时间戳视为异常行，一并按过期处理（宁删勿留脏数据）。
+                Ok(parsed) => {
+                    if parsed.with_timezone(&chrono::Utc) < cutoff {
+                        stale.push(id);
+                    }
+                }
+                Err(_) => stale.push(id),
+            }
+        }
+        stale
+    };
+    for id in stale {
+        conn.execute("DELETE FROM audit WHERE id = ?1", params![id])?;
+    }
+    Ok(())
 }
 
 fn digest_conn(
@@ -664,4 +701,101 @@ pub fn decode_salt(b64: &str) -> Result<[u8; 16], VaultError> {
     let mut out = [0u8; 16];
     out.copy_from_slice(&bytes);
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_store(tag: &str) -> VaultStore {
+        let dir = std::env::temp_dir().join(format!(
+            "taskdock-vault-audit-test-{}-{}",
+            tag,
+            uuid::Uuid::new_v4().simple()
+        ));
+        VaultStore::open(&dir.join("secure-vault.db")).unwrap()
+    }
+
+    fn audit_total(store: &VaultStore) -> i64 {
+        let conn = store.conn.lock();
+        conn.query_row("SELECT COUNT(*) FROM audit", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    fn audit_min_id(store: &VaultStore) -> i64 {
+        let conn = store.conn.lock();
+        conn.query_row("SELECT COALESCE(MIN(id), 0) FROM audit", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    fn audit_newest_event(store: &VaultStore) -> String {
+        let conn = store.conn.lock();
+        conn.query_row(
+            "SELECT event FROM audit ORDER BY id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    fn cleanup(store: &VaultStore) {
+        if let Some(parent) = store.path.parent() {
+            let _ = std::fs::remove_dir_all(parent);
+        }
+    }
+
+    #[test]
+    fn audit_count_cap_keeps_newest_rows() {
+        let store = temp_store("count");
+        {
+            let conn = store.conn.lock();
+            conn.execute_batch("BEGIN").unwrap();
+            for _ in 0..1000 {
+                conn.execute(
+                    "INSERT INTO audit(at,event,outcome,reason_code,count) VALUES(?1,'filler','ok',NULL,NULL)",
+                    params![chrono::Utc::now().to_rfc3339()],
+                )
+                .unwrap();
+            }
+            conn.execute_batch("COMMIT").unwrap();
+        }
+        // 第 1001 条写入触发数量上限：删除最旧，保留最新 1000 条。
+        store.audit("vault_create", "ok", None, None).unwrap();
+        assert_eq!(audit_total(&store), AUDIT_MAX_ROWS);
+        assert!(audit_min_id(&store) > 1, "最早一批 filler 行应被裁剪");
+        assert_eq!(audit_newest_event(&store), "vault_create");
+        cleanup(&store);
+    }
+
+    #[test]
+    fn audit_time_cap_deletes_rows_older_than_window() {
+        let store = temp_store("time");
+        let old_at = (chrono::Utc::now() - chrono::Duration::days(AUDIT_MAX_AGE_DAYS + 5))
+            .to_rfc3339();
+        {
+            let conn = store.conn.lock();
+            for _ in 0..5 {
+                conn.execute(
+                    "INSERT INTO audit(at,event,outcome,reason_code,count) VALUES(?1,'old','ok',NULL,NULL)",
+                    params![old_at],
+                )
+                .unwrap();
+            }
+        }
+        // 行数远低于数量上限，但全部超出 90 天 → 时间上限删除
+        store.audit("unlock", "ok", None, None).unwrap();
+        assert_eq!(audit_total(&store), 1);
+        assert_eq!(audit_newest_event(&store), "unlock");
+        cleanup(&store);
+    }
+
+    #[test]
+    fn audit_rows_within_window_and_limit_are_kept() {
+        let store = temp_store("keep");
+        for _ in 0..3 {
+            store.audit("unlock", "ok", None, None).unwrap();
+        }
+        assert_eq!(audit_total(&store), 3);
+        cleanup(&store);
+    }
 }

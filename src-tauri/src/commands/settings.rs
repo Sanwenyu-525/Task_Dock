@@ -536,16 +536,24 @@ pub fn validate_setting(key: &str, v: &serde_json::Value) -> AppResult<()> {
                     ));
                 }
             }
-            for key in ["navWidth", "detailWidth"] {
+            // 宽度按字段分别校验：导航栏与详情栏的合法区间不同，
+            // 必须与前端 `src/lib/workbenchLayout.ts` 的常量保持一致，
+            // 否则前端归一化出的合法值会被后端拒收（表现为“保存失败 + 宽度回退”）。
+            // 区间：navWidth 96–320（含端点，96 = 图标轨）、detailWidth 260–480（含端点）。
+            for (key, min, max) in [
+                ("navWidth", 96u64, 320u64),
+                ("detailWidth", 260u64, 480u64),
+            ] {
                 if let Some(width) = obj.get(key) {
+                    // `as_u64` 对小数 / 负数 / 非数字都返回 None → 非整数直接拒绝。
                     let value = width.as_u64().ok_or_else(|| {
                         AppError::Validation(format!(
                             "workbench_layout.{key} 必须是正整数"
                         ))
                     })?;
-                    if !(120..=800).contains(&value) {
+                    if !(min..=max).contains(&value) {
                         return Err(AppError::Validation(format!(
-                            "workbench_layout.{key} 超出范围（120–800）"
+                            "workbench_layout.{key} 超出范围（{min}–{max}）"
                         )));
                     }
                 }
@@ -1264,6 +1272,93 @@ mod tests {
         )
         .is_err());
         assert_eq!(Settings::default().workbench_layout, serde_json::Value::Null);
+    }
+
+    /// 工作台分栏宽度：navWidth 与 detailWidth 的合法区间不同，必须按字段分别校验。
+    /// 契约（与前端 `src/lib/workbenchLayout.ts` 常量一一对应）：
+    /// navWidth 96–320、detailWidth 260–480，两端点都必须接受。
+    #[test]
+    fn workbench_layout_width_ranges_are_per_field() {
+        let layout = |nav: serde_json::Value, detail: serde_json::Value| {
+            serde_json::json!({ "version": 1, "route": "home", "navWidth": nav, "detailWidth": detail })
+        };
+
+        // navWidth 端点：96（图标轨）与 320 必须通过。
+        assert!(validate_setting("workbench_layout", &layout(serde_json::json!(96), serde_json::json!(304))).is_ok());
+        assert!(validate_setting("workbench_layout", &layout(serde_json::json!(320), serde_json::json!(304))).is_ok());
+        // navWidth 越界：95 / 321 必须拒绝。
+        assert!(validate_setting("workbench_layout", &layout(serde_json::json!(95), serde_json::json!(304))).is_err());
+        assert!(validate_setting("workbench_layout", &layout(serde_json::json!(321), serde_json::json!(304))).is_err());
+
+        // detailWidth 端点：260 与 480 必须通过。
+        assert!(validate_setting("workbench_layout", &layout(serde_json::json!(200), serde_json::json!(260))).is_ok());
+        assert!(validate_setting("workbench_layout", &layout(serde_json::json!(200), serde_json::json!(480))).is_ok());
+        // detailWidth 越界：259 / 481 必须拒绝。
+        assert!(validate_setting("workbench_layout", &layout(serde_json::json!(200), serde_json::json!(259))).is_err());
+        assert!(validate_setting("workbench_layout", &layout(serde_json::json!(200), serde_json::json!(481))).is_err());
+
+        // 两个字段互不串扰：navWidth 合法但 detailWidth 越界 → 仍然拒绝。
+        assert!(validate_setting("workbench_layout", &layout(serde_json::json!(96), serde_json::json!(259))).is_err());
+        assert!(validate_setting("workbench_layout", &layout(serde_json::json!(321), serde_json::json!(480))).is_err());
+    }
+
+    /// 工作台分栏宽度必须是非负整数：小数 / 负数 / 非数字一律拒绝。
+    #[test]
+    fn workbench_layout_width_must_be_integer() {
+        for key in ["navWidth", "detailWidth"] {
+            for bad in [
+                serde_json::json!(200.5),
+                serde_json::json!(-1),
+                serde_json::json!("200"),
+                serde_json::json!(true),
+                serde_json::json!(null),
+                serde_json::json!([200]),
+            ] {
+                let value = serde_json::json!({ "version": 1, "route": "home", key: bad });
+                assert!(
+                    validate_setting("workbench_layout", &value).is_err(),
+                    "{key} 非法值必须被拒绝：{bad}"
+                );
+            }
+        }
+        // 缺失可选字段沿用兼容策略：`obj.get(key)` 为 None 时跳过校验。
+        assert!(validate_setting(
+            "workbench_layout",
+            &serde_json::json!({ "version": 1, "route": "home" })
+        )
+        .is_ok());
+        assert!(validate_setting(
+            "workbench_layout",
+            &serde_json::json!({ "version": 1, "route": "home", "navWidth": 96 })
+        )
+        .is_ok());
+    }
+
+    /// 错误信息必须写明该字段自己的范围（前端据此区分是哪一个字段被拒）。
+    #[test]
+    fn workbench_layout_width_error_message_names_own_range() {
+        let nav_err = validate_setting(
+            "workbench_layout",
+            &serde_json::json!({ "version": 1, "route": "home", "navWidth": 95 }),
+        )
+        .expect_err("navWidth=95 必须被拒绝");
+        let nav_msg = nav_err.to_string();
+        assert!(nav_msg.contains("navWidth"), "错误信息必须点名字段：{nav_msg}");
+        assert!(nav_msg.contains("96") && nav_msg.contains("320"), "错误信息必须写明范围：{nav_msg}");
+        assert!(!nav_msg.contains("800"), "不得残留旧范围 800：{nav_msg}");
+
+        let detail_err = validate_setting(
+            "workbench_layout",
+            &serde_json::json!({ "version": 1, "route": "home", "detailWidth": 259 }),
+        )
+        .expect_err("detailWidth=259 必须被拒绝");
+        let detail_msg = detail_err.to_string();
+        assert!(detail_msg.contains("detailWidth"), "错误信息必须点名字段：{detail_msg}");
+        assert!(
+            detail_msg.contains("260") && detail_msg.contains("480"),
+            "错误信息必须写明范围：{detail_msg}"
+        );
+        assert!(!detail_msg.contains("120"), "不得残留旧范围 120：{detail_msg}");
     }
 
     /// 设置广播：只含键名/来源/修订号，不携带任何设置值。

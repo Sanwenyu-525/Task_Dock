@@ -22,12 +22,22 @@ import { useSettingsStore } from "../store/useSettingsStore";
 
 const bridgeMocks = vi.hoisted(() => ({ updateSettings: vi.fn() }));
 const updateSettings = bridgeMocks.updateSettings;
+const diagMocks = vi.hoisted(() => ({ logEvent: vi.fn() }));
+const logEventMock = diagMocks.logEvent;
 
 vi.mock("../lib/bridge", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/bridge")>();
   return {
     ...actual,
     updateSettings: (patch: Record<string, unknown>) => bridgeMocks.updateSettings(patch),
+  };
+});
+
+vi.mock("../lib/diagnostics", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/diagnostics")>();
+  return {
+    ...actual,
+    logEvent: (input: Parameters<typeof actual.logEvent>[0]) => diagMocks.logEvent(input),
   };
 });
 
@@ -92,6 +102,7 @@ afterEach(() => {
   cleanup();
   resetNavOrderIntents();
   updateSettings.mockReset();
+  logEventMock.mockClear();
   useSettingsStore.setState({ settings: null, materialInfo: null });
   vi.useRealTimers();
   vi.restoreAllMocks();
@@ -273,7 +284,6 @@ describe("卸载路径", () => {
 
   it("关闭设置页时在途写入失败：回滚并留下可追踪记录", async () => {
     vi.useFakeTimers();
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const gate = deferred();
     updateSettings.mockImplementation(async () => {
       await gate.promise;
@@ -297,9 +307,14 @@ describe("卸载路径", () => {
 
     expect(readNavOrderIntent("left")).toBeNull();
     expect(savedLeft()).toEqual(original);
-    expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining("[nav-order]"),
-      expect.stringContaining("disk full"),
+    // 迁移到诊断通道后，可追踪记录改为断言 logEvent（强度不变：模块 + 动作 + 错误文案）。
+    expect(logEventMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: "WARN",
+        module: "navigation",
+        action: "persist_unmount",
+        message: expect.stringContaining("disk full"),
+      }),
     );
   });
 

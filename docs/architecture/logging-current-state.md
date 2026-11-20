@@ -1,0 +1,428 @@
+# TaskDock 日志系统现状报告（代码级审计）
+
+> 审计日期：2026-11-19
+> 审计范围：`src/`（React/TS）、`src-tauri/src/`（Rust/Tauri）、`apps/mobile/`（Android/Kotlin）、
+> `scripts/`（构建与验收脚本）
+> 审计方式：全仓库关键字检索 + 逐文件精读 + 调用点计数。所有结论均给出 `文件:行号` 证据。
+> 审计约束：**未执行**的检查一律标注「未执行」，不以代码存在推定功能可用。
+
+---
+
+## 0. 一句话结论
+
+TaskDock **不存在「没有日志系统」的问题，而是存在「日志系统被局部发明了四次」的问题**：
+`diagnostics` 诊断日志主干（Rust + TS 双端）已经具备生产级质量（单写线程、有界队列、
+字段白名单脱敏、分页查询、脱敏导出、65 个自动化测试），但它**只覆盖了桌面端**；
+Android 端、配对/远控审计、性能指标、跨进程 Trace、Panic 捕获四个方向**要么缺失、
+要么各自另建体系**，且四套体系的保留策略、字段契约、查询入口互不统一。
+
+**因此本轮工作的性质是「收敛 + 补齐」，不是「从零建设」。**
+
+---
+
+## 1. 日志实现清单（按体系分组）
+
+### 1.1 体系 A：`diagnostics` 诊断日志主干（主体系，保留并扩展）
+
+**位置**：`src-tauri/src/diagnostics/`（7 文件 3926 行）+ `src-tauri/src/commands/diagnostics.rs`（249 行）
++ `src/lib/diagnostics.ts`（784 行）
+
+| 文件 | 行数 | 职责 |
+|---|---|---|
+| `src-tauri/src/diagnostics/mod.rs` | 902 | 事件契约、级别/状态枚举、写线程生命周期、事件构建器 |
+| `src-tauri/src/diagnostics/writer.rs` | 596 | 单写线程、BufWriter 批量写、轮转、清理、聚合 |
+| `src-tauri/src/diagnostics/query.rs` | 984 | 分页查询、摘要、脱敏报告导出 |
+| `src-tauri/src/diagnostics/privacy.rs` | 362 | metadata 白名单、路径形态识别、敏感 key 拒绝 |
+| `src-tauri/src/diagnostics/tracing_layer.rs` | 209 | `tracing` → 诊断事件桥接层 |
+| `src-tauri/src/diagnostics/batch.rs` | 434 | 批量文件操作诊断事件构造 |
+| `src-tauri/src/diagnostics/tests.rs` | 873 | 21 个 `#[test]` |
+| `src-tauri/src/commands/diagnostics.rs` | 249 | 7 个 Tauri 命令 |
+| `src/lib/diagnostics.ts` | 784 | 前端有界队列、批量 IPC、操作生命周期、跨层去重 |
+
+#### 1.1.1 事件契约
+
+`DiagnosticEvent`（`src-tauri/src/diagnostics/mod.rs:184-227`）字段：
+
+`timestamp` / `level` / `module` / `action` / `event` / `session_id` / `operation_id` /
+`window_id` / `component` / `stage` / `status` / `error_code` / `error_category` /
+`duration_ms` / `retry_count` / `message` / `metadata` / `source` / `count`
+
+- 落盘为 JSONL，字段名 snake_case，属**稳定存储契约**（`mod.rs:180-182` 注释明示）。
+- 全部字段 `#[serde(default)]`，旧日志/半截行不破坏查询（`mod.rs:182`）。
+- 级别枚举 `DiagLevel`（`mod.rs:88-96`）：Trace/Debug/Info/Warn/Error/Critical。
+- 状态枚举 `DiagStatus`（`mod.rs:137-144`）：started/success/failed/cancelled/recovered。
+- 来源枚举 `DiagSource`（`mod.rs:171-176`）：rust/frontend/system。
+
+#### 1.1.2 采集适配层
+
+- **Rust 显式埋点**：`diagnostics::event(...)`（`mod.rs:787`）+ `EventBuilder`
+  （`mod.rs:794-855`，链式 `.stage() .status() .operation() .window() .component()
+  .message() .error_code() .error_category() .metadata()`）；全仓库 36 处调用
+  （`diagnostics::event` 28 处 + `diagnostics::emit` 8 处）。
+- **`tracing` 桥接层**：`DiagnosticsLayer`（`tracing_layer.rs:21-73`）挂在
+  `tracing_subscriber` 上（`src-tauri/src/lib.rs:652`）。只接收 target 以
+  `task_dock_lib` 开头的本 crate 事件（`tracing_layer.rs:33`），第三方库日志不落盘。
+  `FieldVisitor`（`tracing_layer.rs:107-137`）只提取 10 个白名单字段，其余结构化字段**全部丢弃**。
+  全仓库 `tracing::` 宏共 493 处：`warn!` 297、`info!` 102、`debug!` 72、`error!` 22。
+- **前端采集**：`src/lib/diagnostics.ts`
+  - `logEvent(input)`（`diagnostics.ts:339`）：同步入队，绝不 `await`、绝不抛出。
+  - `startOperation(module, action, options)`（`diagnostics.ts:509`）：返回
+    `DiagnosticOperation`，提供 `stage() / success() / fail() / cancel() / recovered()`
+    与 `elapsedMs`（用 `performance.now()` 单调时钟，`diagnostics.ts:516`）。
+  - `logIpcFailure` / `logIpcSuccess`（`diagnostics.ts:626` / `674`）：IPC 层自动归类。
+  - 前端 `logEvent` / `startOperation` 调用点共 **59 处**，分布在 23 个文件。
+- **模块归类**：`moduleForCommand(command)`（`diagnostics.ts:402-442`）把命令名映射到稳定
+  模块标识（`clipboard`/`agent`/`task`/`mcp`/`ipc`…），未知命令归 `ipc`。
+
+#### 1.1.3 输出目的地与持久化
+
+- 目录：`<app_data>/diagnostics/`（`mod.rs:419`），活动文件 `diagnostics-active.jsonl`，
+  归档 `diagnostics-<stamp>-<seq>.jsonl`（`mod.rs:77-78`）。
+- **单写线程**：`writer::run`（`writer.rs:45-82`）是唯一接触文件的线程，
+  线程名 `diagnostics-writer`（`mod.rs:448`）。
+- **异步批量写**：`BufWriter::with_capacity(64 * 1024, file)`（`writer.rs:141`），
+  200ms 批次 flush（`FLUSH_INTERVAL`，`writer.rs:39`），绝不对每条日志 `sync_all`。
+- 落盘格式：每条事件一行 JSON（`writer.rs:169-177`）。
+
+#### 1.1.4 有界与背压
+
+| 层级 | 上限 | 位置 | 溢出策略 |
+|---|---|---|---|
+| 前端队列 | 128 条 | `diagnostics.ts:36` | 优先丢最早 DEBUG/INFO；否则丢最旧非 CRITICAL；全 CRITICAL 才丢本条 |
+| 前端在途批次 | 4 | `diagnostics.ts:42` | 超限直接 return，不排队 |
+| 前端单批 | 20 条 | `diagnostics.ts:38` | 与后端 `MAX_BATCH` 对齐 |
+| Rust 队列 | 1024 条 | `mod.rs:60` (`CHANNEL_CAPACITY`) | `try_send`；ERROR/CRITICAL 允许 ≤2ms 重试 2 次，其余直接丢弃计数 |
+| 聚合表 | 256 指纹 | `mod.rs:62` (`AGG_MAX_ENTRIES`) | 同指纹 60s 窗口合并为计数行（`count` 字段） |
+| 单文件 | 5 MB | `mod.rs:54` (`MAX_FILE_BYTES`) | 写前判断，轮转 |
+| 归档数 | 4 | `mod.rs:56` (`MAX_ARCHIVE_FILES`) | 删最旧 |
+| 目录总量 | 25 MB | `mod.rs:58` (`MAX_TOTAL_BYTES`) | 删最旧归档直至达标 |
+
+- 背压失败路径：`record()`（`mod.rs:558-596`）返回 `bool`，丢弃计入 `counters.dropped`。
+- **日志失败不影响业务**：写线程内任何 IO 错误只更新计数器并按 30s 间隔打 stderr
+  （`writer.rs:399-412`），绝不 panic、绝不向调用方返回错误。
+- **防递归**：写线程内部只用 `eprintln!`，绝不调用 `tracing`（`writer.rs:8-9`）。
+
+#### 1.1.5 敏感信息保护（体系 A）
+
+- **字段白名单**：`privacy.rs:23-89` 的 `ALLOWED_META_KEYS`（**66 个键**），非白名单一律丢弃。
+- **敏感 key 拒绝**：`FORBIDDEN_KEY_PARTS`（`privacy.rs:121-139`）含
+  `token/password/passwd/secret/api_key/apikey/authorization/cookie/credential/content/body/
+  clipboard_text/transcript/prompt/message_text/full_path/file_path`；
+  `is_allowed_key`（`privacy.rs:141-147`）即使误加白名单也会拒绝。
+- **对象/数组/null 一律丢弃**（`privacy.rs:205-206`），避免业务对象整体入库。
+- **路径形态识别**：`looks_like_path`（`privacy.rs:98-118`）识别盘符/UNC/POSIX 绝对路径；
+  `PATH_LIKE_META_KEYS`（`source/target/from/to`，`privacy.rs:95`）命中时整值替换为 `<路径>`。
+- **消息脱敏**：复用 `error::sanitize_diagnostic`（`privacy.rs:172-175`），限长 400 字符。
+- **标识符归一**：`normalize_ident`（`privacy.rs:151-170`）只保留小写字母数字与 `_-.:`，截断。
+- **错误码形态校验**：`normalize_error_code`（`privacy.rs:218-233`）要求 `A-Z0-9_`、长度 3..=40，
+  非法归一为 `UNKNOWN_ERROR`。
+- **前端不可信字段重写**：`parse_frontend_event`（`commands/diagnostics.rs:98-112`）
+  强制清空 `session_id`/`timestamp`/`count`，并把 `source` 固定为 `Frontend`，
+  防止多窗口伪造时钟、计数或来源。
+
+#### 1.1.6 错误归属与去重
+
+- **实例级**：`markLogged` / `isLogged`（`diagnostics.ts:193` / `202`），基于 `WeakSet`。
+- **指纹窗口级**：`reserveReport`（`diagnostics.ts:266-287`），同指纹 250ms 内只抑制
+  「次级观察」，主要归属（IPC 失败）始终记录；被抑制次数通过
+  `metadata.suppressed_since_last` 带回，真实发生次数不丢。
+- **Toast 去重**：`globalErrors.ts:26-33`，同根因 30s 内只提示一次。
+- 指纹表上限 64 条（`MAX_REPORT_FINGERPRINTS`，`diagnostics.ts:219`），TTL 60s。
+
+#### 1.1.7 生命周期
+
+- **初始化**：仅一次。`Diagnostics::init`（`mod.rs:418-421`）→ `init_at`（`mod.rs:423`），
+  目录创建失败则 `disabled=true` 降级（`mod.rs:427-430`）。
+- **详细诊断模式**：`set_mode`（`mod.rs:513`），默认 30 分钟、最长 120 分钟
+  （`VERBOSE_DEFAULT_MINUTES` / `VERBOSE_MAX_MINUTES`，`mod.rs:66` / `68`）。
+  必须**真正改变 `tracing` 过滤**，通过 `attach_filter_reload`（`mod.rs:602-609`）回调
+  `EnvFilter::reload`，否则 DEBUG/TRACE 在到达诊断层前就被丢弃（`mod.rs:600-601` 注释）。
+- **退出刷盘**：写线程 `finish()`（`writer.rs:388-397`）做一次 `flush` + `sync_all`。
+- **有界 flush**：`flush_blocking`（`mod.rs:642-661`），入队等待 ≤300ms，
+  回执等待 ≤2s（`FLUSH_ACK_TIMEOUT`，`mod.rs:71`），超时返回 `flushed=false`，
+  调用方**不得**在此时声称数据完整。
+- **前端退出 flush**：`installDiagnosticsFlushHooks`（`diagnostics.ts:772-784`）在
+  `pagehide` / `beforeunload` 尽力 flush。
+- **清理取消语义**：`clear()`（`mod.rs:667+`）单飞占用 + 有界入队 + 等待回执；
+  超时会**请求取消**（写线程在开始删除前检查 `cancelled` 标记，`writer.rs:64-68`），
+  避免「界面提示失败、稍后静默删除」。
+
+#### 1.1.8 查询与导出
+
+- 查询过滤 `DiagnosticQuery`（`query.rs:93-112`）：`levels` / `modules` / `error_codes` /
+  `statuses` / `window_ids` / `operation_id` / `text` / `since` / `until` / `limit` / `offset` /
+  `anomalies_only`。
+- 查询/摘要/导出均走 `spawn_blocking`，不占命令线程（`commands/diagnostics.rs:173` / `188` / `203`）。
+- 导出产出**脱敏诊断报告**（本机文件，不上传）：`ExportResult`（`query.rs:612-625`）包含
+  `path`/`bytes`/`records`/`truncated`/`flushed`/`flush_issue`/`complete`；
+  schema `taskdock.diagnostic-report/1`（`query.rs:721`），含 app 版本、OS/arch、
+  session_id、range、summary、records。
+- 导出前先 `flush_blocking`（`commands/diagnostics.rs:205`），无法确认时如实标记不完整。
+
+#### 1.1.9 测试证据
+
+- Rust：`src-tauri/src/diagnostics/tests.rs` **21 个 `#[test]`**；
+  `privacy.rs` 内联测试 **9 个**（`privacy.rs:236-362`）；`tracing_layer.rs` 内联 **2 个**
+  （`tracing_layer.rs:166-209`）。
+- 前端：`src/lib/diagnostics.test.ts` **33 个用例**。
+- UI：`src/components/diagnostics/DiagnosticsCenterPanel.test.tsx`、
+  `src/components/settings/DiagnosticsLogsSection.test.tsx` 存在。
+
+---
+
+### 1.2 体系 B：`tracing` 控制台日志（基础设施，非独立日志系统）
+
+- 依赖：`tracing` + `tracing_subscriber`，全局 subscriber 在 `src-tauri/src/lib.rs:636-652` 装配，
+  `DiagnosticsLayer` 与 fmt layer 并列挂载。
+- 493 处宏调用遍布 72/310 个 Rust 源文件（不含 `tests.rs`）。
+- 与体系 A 的关系：**体系 B 是体系 A 的上游数据源**，`DiagnosticsLayer` 把已有
+  `warn!/error!` 自动导入持久化诊断日志，无需改几十个业务文件（`tracing_layer.rs:3-8`）。
+- 默认落盘级别：**仅 WARN 及以上**；INFO/DEBUG/TRACE 需开启详细诊断模式
+  （`tracing_layer.rs:44-47`）。
+- 控制台输出不受影响，fmt layer 仍独立工作（`tracing_layer.rs:9`）。
+
+### 1.3 体系 C：MCP 审计（`mcp_audit_log`，SQLite）
+
+- 位置：`src-tauri/src/mcp/audit.rs`（258 行），表定义 `src-tauri/src/db/mod.rs:1255-1272`。
+- 每次 MCP 工具调用一条记录。字段：`agent_row_id` / `agent_id` / `action` / `entity_type` /
+  `entity_id` / `request_id` / `success` / `authz` / `detail` / `result_json` / `created_at`。
+- **幂等键**：`UNIQUE(agent_row_id, action, request_id) WHERE request_id <> '' AND success = 1`
+  （`db/mod.rs:1271-1272`）。
+- **两段式保留**（`mcp/audit.rs:209-258`）：元数据保留 `metadata_days`，幂等载荷
+  `result_json` 保留 `payload_days`；先清载荷、再删行；**仍在重试窗口内的 requestId
+  永远不会被清理**。
+- 清理**只由用户显式触发**（`mcp_audit_prune`），不在启动时静默执行（`mcp/audit.rs:16-17`）。
+- 脱敏边界：`detail` 只放动作结果摘要，`result_json` 只保存写工具成功结果（`mcp/audit.rs:3-5`）。
+- 查询：`list_page`（`mcp/audit.rs:73`）分页，**不返回** `result_json`/`detail`/`request_id`。
+
+### 1.4 体系 D：Personal Hub 审计（`ph_audit_log`，独立 SQLite）
+
+- 位置：`src-tauri/src/personal_hub/store.rs:401-428` 的 `append_audit`。
+- 事件类型（由测试断言反推，`personal_hub/pairing.rs:830` / `900` / `901` / `944`）：
+  `PAIRING_APPROVED`、`PAIRING_REJECTED`、`INVITATION_REVOKED`、`SECURITY_FAILURE`。
+- 字段：`event_type` / `device_id` / `request_id` / `fingerprint` / `result` / `detail` / `created_at`。
+- **与体系 A 完全无关联**：`personal_hub/` 下 17 个 Rust 文件**零** `tracing::` /
+  `diagnostics::` 调用（实测计数 0）。
+
+### 1.5 体系 E：安全钥匙库审计（`audit` 表，独立 SQLite）
+
+- 位置：`src-tauri/src/secure_vault/store.rs:525-546` 的 `audit()`。
+- 事件：`vault_create` / `unlock` / `change_master_password` / `recover_set_password` /
+  `regenerate_recovery` / `record_create` / `record_delete` / `settings_update` /
+  `backup_export`（`secure_vault/commands.rs:564` / `697` / `796` / `849` / `898` /
+  `1098` / `1200` / `1586`，`secure_vault/backup.rs:389` / `635`）。
+- 字段：`at` / `event` / `outcome` / `reason_code` / `count`。
+- **保留策略：只保留最近 500 条**（`store.rs:543-546`），硬截断、无时间维度。
+- `secure_vault/` 下 13 个 Rust 文件**零** `tracing::` / `diagnostics::` 调用。
+
+### 1.6 体系 F：`resource_cleanup/diagnostics.rs`（命名撞车，非日志系统）
+
+- 位置：`src-tauri/src/resource_cleanup/diagnostics.rs`（805 行）。
+- 实际职责：**只读资源诊断**——采样应用自身进程指标与开发相关进程列表，
+  「轻量诊断，不是任务管理器」（文件头注释）。不写任何持久化表。
+- **与日志系统无任何关系**，仅模块名与 `diagnostics` 撞车。审计时容易误判，需在文档中显式排除。
+
+### 1.7 体系 G：`mcp/diagnostics.rs`（命名撞车，非日志系统）
+
+- 位置：`src-tauri/src/mcp/diagnostics.rs`（455 行）。
+- 实际职责：**MCP 连接诊断医生**——探测 bridge 端口、校验工具注册表、查数据库完整性、
+  检查 Agent 身份，产出 `DiagnosticsReport`（`ok`/`failed`/`not_run`/`unverified` 四态）。
+- **不写日志、不落盘**，是一次性健康检查。同样是命名撞车。
+
+---
+
+## 2. 其它日志痕迹（统计，不逐条列出）
+
+### 2.1 前端 `console.*`
+
+- 全仓库 `src/` 命中 `console.(log|error|warn|info|debug)(` 共 **40 处 / 16 个文件**，其中
+  测试文件 3 处（`help/__tests__/health.test.ts` 2、`QuickPreviewDialog.preview.test.tsx` 1），
+  **生产代码 37 处 / 14 个文件**：
+  `useEdgeSnap.ts`(15)、`useSettingsStore.ts`(5)、`useNavOrderDraft.ts`(4)、
+  `WidgetDesktopBridge.tsx`(2)，以及 `ErrorBoundary.tsx` / `globalErrors.ts` /
+  `i18n/messages.ts` / `workspace/bootstrap.ts` / `useAgentHistory.ts` /
+  `FilesWorkspacePanel.tsx` / `WidgetWindow.tsx` / `capsule/actions.ts` /
+  `audioNotification.ts` / `usePlanningStore.ts` 各 1 处。
+- **判定**：`ErrorBoundary.tsx` / `globalErrors.ts` 的 console 属于「已接入诊断体系的兜底输出」，
+  非缺陷；其余为**开发期调试残留**，属轻微缺陷（生产构建中 console 输出无级别控制）。
+
+### 2.2 Android
+
+- `apps/mobile/`（排除 `node_modules` 与 `build/`）中 `android.util.Log` 调用 **0 处**。
+- Kotlin 异常处理方式：`catch (_: Exception) {}` 静默吞异常
+  （`apps/mobile/modules/clipboard/android/.../ClipboardModule.kt:63`、
+  `apps/mobile/modules/device-identity/android/.../Ed25519Ops.kt:59` 与 `:78`）。
+- `IdentityStore.kt` / `DeviceIdentityModule.kt` 有完整错误分类并抛
+  `IdentityStorageException`（如 `IdentityStore.kt:104`、`:109`、`:112`、`:177`），
+  但**无任何日志落点**，错误只经 JS 桥返回。
+- 移动端 TS 仅 3 处 `console.*`，全部在**测试文件**内
+  （`apps/mobile/src/domain/tools/diffEngine.test.ts:224`、
+  `regexEngine.test.ts:429`、`src/lib/sync/__tests__/engine.test.ts:229`）。
+- **无自定义 logger、无本地持久化日志、无崩溃捕获（`UncaughtExceptionHandler`）**。
+
+### 2.3 构建与验收脚本
+
+- `scripts/` 下 22 个 `.mjs` / `.ps1` 使用 `console.log` / `Write-Host`。
+- 这些是**一次性构建/验收脚本的终端输出**，不属于应用运行时日志，判定为**不适用**
+  （但缺少统一的脚本日志格式，影响跨平台一致性，见能力矩阵 F-15）。
+
+---
+
+## 3. 关键链路现状（用户要求的四条链路）
+
+### 3.1 React UI → Tauri Command → Rust Service → 文件系统 → 返回
+
+| 环节 | 现状 | 证据 |
+|---|---|---|
+| React → Tauri | **已覆盖**。IPC 失败自动归类落盘 | `diagnostics.ts:626-671`；`bridge.ts` 统一 `invokeCommand` |
+| Tauri Command → Rust | **部分覆盖**。`tracing` 宏 + `diagnostics::event` | 493 处 `tracing::`，36 处 `diagnostics::event` |
+| Rust → 文件系统 | **部分覆盖**。仅 `fsops`(1/1)、`file_workspace`(0/4)、`shelf`(4/13) 等有埋点 | 顶层模块覆盖统计 |
+| 结果返回 | **已覆盖**。前端 `logIpcFailure` 带 `duration_ms` | `diagnostics.ts:626-671` |
+| 跨层关联 ID | **已实现（部分）**。`operation_id` 贯穿 `started → stage → failed` | `diagnostics.ts:509-617` |
+
+**结论**：链路 1 的**主干已通**，但 Rust 侧文件级操作埋点密度低（`file_workspace` 0/4、
+`transfer` 0/8、`capability` 0/9）。
+
+### 3.2 Desktop → 设备通信 → Android → 操作执行 → 返回
+
+| 环节 | 现状 | 证据 |
+|---|---|---|
+| Desktop 侧监听 | **已覆盖**。`tracing::info!` 记录监听地址、TLS 就绪、关闭 | `mobile_sync/mod.rs:297,304,328,342,351` |
+| 配对码错误/次数过多 | **已覆盖**（WARN 级） | `mobile_sync/server.rs:198,202` |
+| 配对写入设备失败 | **已覆盖**（WARN 级） | `mobile_sync/mod.rs:644,691` |
+| 鉴权失败 | **已覆盖**（WARN 级） | `mobile_sync/server.rs:259,305` |
+| 同步/互传失败 | **已覆盖**（WARN 级） | `mobile_sync/server.rs` 共 40+ 处 |
+| Android 侧 | **完全缺失**。无日志、无持久化、无崩溃捕获 | 实测 `Log.x` 调用 0 处 |
+| 跨端关联 ID | **缺失**。Desktop 有 `session_id`/`operation_id`，Android 无对应标识 | Android 侧无任何 ID 概念 |
+
+**结论**：链路 2 的 **Desktop 半段可用，Android 半段空白**，且两端**无共同关联 ID**。
+
+### 3.3 Agent → MCP → TaskDock → 业务模块 → 执行结果
+
+| 环节 | 现状 | 证据 |
+|---|---|---|
+| MCP 工具调用审计 | **已实现且质量高**。`mcp_audit_log` 两段式保留 + 幂等键 | `mcp/audit.rs`、`db/mod.rs:1255-1272` |
+| MCP 工具调用诊断事件 | **稀疏**。`mcp/` 18 个文件仅 1 个有 `tracing::`/`diagnostics::` | 顶层模块覆盖统计 |
+| Agent 管线事件 | **已覆盖**。`tracing::warn!/error!` 记录暂存失败、批量写入回退 | `agents/pipeline.rs:1282,1298,1316,1518` |
+| Agent 失败原因 | **部分覆盖**。`agents/` 27 文件仅 7 个有埋点 | 顶层模块覆盖统计 |
+| MCP→诊断日志的关联 ID | **缺失**。审计表有 `request_id`，诊断日志侧无 `trace_id` 概念 | 全仓库 `trace_id`/`span_id` 检索结果为空 |
+
+### 3.4 跨模块追踪标识
+
+| 标识 | 状态 | 证据 |
+|---|---|---|
+| `session_id` | **已实现**。进程级 UUID，前端不可伪造 | `mod.rs:433`；`commands/diagnostics.rs:107` |
+| `operation_id` | **已实现**。操作生命周期主键，支持精确回溯全链路 | `diagnostics.ts:493-502`；`query.rs:101` |
+| `window_id` | **已实现**。入口 HTML 表驱动推断 | `diagnostics.ts:84-109` |
+| `trace_id` | **未实现**。全仓库检索 `trace_id`/`traceId` 结果为空 | 实测 grep 无命中 |
+| `span_id` | **未实现**。同上 | 实测 grep 无命中 |
+| `device_id` | **未实现**。`DiagnosticEvent` 无该字段；`window_id` 是窗口不是设备 | `mod.rs:184-227` |
+| 跨进程传播 | **未实现**。无上下文注入机制 | — |
+
+---
+
+## 4. 重复实现与命名冲突清单
+
+| # | 冲突 | 位置 | 判定 |
+|---|---|---|---|
+| C-1 | 诊断日志持久化 vs 三套审计表 | `diagnostics/` vs `mcp_audit_log` / `ph_audit_log` / `vault.audit` | **需收敛**：四套独立存储、独立保留期、独立查询入口 |
+| C-2 | `diagnostics` 模块名撞车 ×2 | `resource_cleanup/diagnostics.rs`、`mcp/diagnostics.rs` | **需文档消歧**（功能上不是日志系统） |
+| C-3 | `commands/audit.rs` 命名撞车 | `commands/audit.rs:1-8` | 实为「历史测试数据审计与清理」，与安全审计无关 |
+| C-4 | 保留策略三套 | 诊断 5MB×4=25MB（数量+容量）；MCP 两段式天数；vault 硬截断 500 条 | **需统一策略语义** |
+| C-5 | 事件字段契约三套 | `DiagnosticEvent` vs `mcp_audit_log` 列 vs `ph_audit_log` 列 | 需定义「审计事件」与「诊断事件」的关系与映射 |
+| C-6 | 前端 console 与诊断体系并存 | 37 处生产 `console.*` | 需明确「开发期调试」与「生产日志」的边界 |
+
+---
+
+## 5. 安全风险点（有代码证据）
+
+| # | 风险 | 位置 | 等级 |
+|---|---|---|---|
+| S-1 | **Panic 不被记录**。全仓库无 `std::panic::set_hook`，Rust panic 直接终止进程，无任何落盘记录 | 实测 `set_hook` 检索为 0 | **高** |
+| S-2 | **Android 静默吞异常**。`catch (_: Exception) {}` 无日志、无上报 | `ClipboardModule.kt:63`、`Ed25519Ops.kt:59,78` | **高** |
+| S-3 | **Android 无崩溃捕获**。无 `UncaughtExceptionHandler`，崩溃原因不可得 | 实测检索为 0 | **高** |
+| S-4 | **配对/信任变更未进统一审计**。`mobile_sync` 的配对流程（`start_pairing` / `complete_pairing`）只写库、不写诊断日志；成功配对**完全无痕迹** | `mobile_sync/mod.rs:450`、`:568` | **高** |
+| S-5 | **MCP 审计与诊断日志无关联 ID**。审计表的 `request_id` 无法在诊断中心检索 | `mcp/audit.rs` vs `mod.rs:184-227` | 中 |
+| S-6 | **钥匙库审计硬截断 500 条**。高频操作会挤掉早期安全事件 | `secure_vault/store.rs:543-546` | 中 |
+| S-7 | **诊断日志无时间维度保留**。只有数量/容量上限，无「7–14 天」过期 | `writer.rs:294-328` | 中 |
+| S-8 | **`tracing` DEBUG 消息含自由文本**。`tracing_layer` 提取 `message` 字段后经 `sanitize_diagnostic` 处理，但自由文本仍可能被塞入业务数据 | `tracing_layer.rs:64`；`mobile_sync/server.rs` 多处 `format!` | 中 |
+| S-9 | **无日志目录权限收紧**。`create_dir_all` 使用默认权限，未显式设置 | `mod.rs:427`、`writer.rs:125` | 低 |
+| S-10 | **诊断目录无防篡改**。JSONL 可被任意编辑（本机威胁模型下可接受，但需在文档中明示边界） | `writer.rs:136-144` | 低（需明示） |
+
+---
+
+## 6. 性能相关现状
+
+| 项 | 现状 | 证据 |
+|---|---|---|
+| 日志写入对业务线程的阻塞 | **受控**。`try_send` + ERROR 最多 2ms×2 重试 | `mod.rs:566-589` |
+| 磁盘同步写 | **无**。200ms 批量 flush，退出时才 `sync_all` 一次 | `writer.rs:39`、`writer.rs:388-397` |
+| 高频事件噪声控制 | **已实现**。后端 60s 指纹聚合 + 前端 DEBUG/INFO 常态丢弃 | `writer.rs` Aggregator；`diagnostics.ts:342-345` |
+| 投屏/剪贴板/文件扫描逐条日志 | **未逐条记录**。文件拖放只记录订阅失败/恢复 | `diagnostics.ts:691-769` |
+| **通用耗时指标体系** | **不存在**。无 `measureOperation` / `recordDuration` / `recordSlowOperation` 统一 API | 实测检索无命中 |
+| `performance_diagnostics` 命令 | **仅 SQLite 专项**，不是通用性能指标 | `commands/system.rs:563-571` |
+| 启动耗时 | **部分覆盖**。`lib.rs:1068` 有启动超时事件 | `lib.rs:1068` |
+| 慢查询/锁等待 | **未实现**。无慢查询检测 | 实测检索无命中 |
+| 日志系统自身性能基准 | **不存在**。无「日志开/关业务耗时差异」基准 | 实测检索无命中 |
+
+---
+
+## 7. 已有文档与本文档的关系
+
+- `docs/DIAGNOSTICS.md`（699 行）是**体系 A 的技术说明与接入规范**，内容准确、
+  与代码一致，**继续有效**，本文档不替代它。
+- `docs/DIAGNOSTICS.md:255-263`（§15 已知限制）已记录 4 条限制，与本文档一致。
+- `docs/DIAGNOSTICS.md` 引用 `tmp/acceptance/diagnostics-logging/report.md` 作为验收证据，
+  但该目录**当前不存在**（实测 `ls` 失败）——属于**已声明但证据缺失**。
+- `docs/architecture/` 已有 12 篇架构文档，本文档系列按仓库既有规范落在同目录。
+
+---
+
+## 8. 未执行 / 无法验证的检查（诚实声明）
+
+| 项 | 状态 | 原因 |
+|---|---|---|
+| Rust 单元测试实际执行 | **未执行** | 本阶段为只读审计，未执行 `cargo test` |
+| 前端测试实际执行 | **未执行** | 未执行 `npm run test` |
+| 完整构建 | **未执行** | 审计阶段不构建 |
+| 真机/真窗口日志落盘取证 | **未执行** | 未启动应用 |
+| 诊断日志实际文件内容抽样 | **未执行** | 未读取用户机器上的 `%APPDATA%` 日志目录 |
+| 磁盘写满/权限不足的故障注入 | **未执行** | 属后续阶段 |
+| 性能基准实测 | **未执行** | 属后续阶段 |
+| Android 端真机行为 | **未执行** | 需真机/模拟器 |
+| `cargo clippy` / `npm run typecheck` | **未执行** | 审计阶段未跑 |
+
+---
+
+## 9. 审计证据索引（可复现命令）
+
+```bash
+# 体系规模
+find src-tauri/src/diagnostics -name "*.rs" | xargs wc -l
+wc -l src/lib/diagnostics.ts src/components/diagnostics/DiagnosticsCenterPanel.tsx
+
+# tracing 宏分布
+grep -roh "tracing::\(trace\|debug\|info\|warn\|error\)!" src-tauri/src --include=*.rs | sort | uniq -c
+
+# 显式诊断埋点
+grep -roh "diagnostics::event\|diagnostics::emit" src-tauri/src --include=*.rs | sort | uniq -c
+
+# Rust 文件级覆盖密度
+for d in src-tauri/src/*/; do echo "$(basename $d): $(grep -rl 'tracing::\|diagnostics::event' "$d" --include=*.rs | wc -l)/$(find "$d" -name '*.rs' | wc -l)"; done
+
+# Android 日志（预期 0）
+grep -rn "Log\.[dveiw](" apps/mobile --include=*.kt | grep -v node_modules | wc -l
+
+# Panic 钩子（预期 0）
+grep -rn "panic::set_hook" src-tauri/src --include=*.rs | wc -l
+
+# Trace/Span 概念（预期 0）
+grep -rn "trace_id\|span_id\|traceId\|spanId" src-tauri/src src --include=*.rs --include=*.ts --include=*.tsx | wc -l
+
+# 审计表清单
+grep -rn "CREATE TABLE.*audit" src-tauri/src --include=*.rs
+grep -rn "INSERT INTO.*audit" src-tauri/src --include=*.rs
+
+# 前端 console 调用点
+grep -rn "console\.(log|error|warn|info|debug)(" src --include=*.ts --include=*.tsx | grep -v "\.test\."
+```

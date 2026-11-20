@@ -52,6 +52,7 @@ import {
   type CapsuleRegionMode,
   type SnapDisplayInfo,
 } from "../lib/bridge";
+import { logEvent } from "../lib/diagnostics";
 import { createSubscriptionScope } from "../lib/subscriptions";
 import { hasAutoHideBlockingOverlay } from "../lib/overlayStack";
 import { resolveWindowMode } from "../lib/windowMode";
@@ -654,9 +655,13 @@ export function useEdgeSnap(enabled: boolean) {
         const rect = await fetchRectOnly();
         if (disposed) return null;
         if (Math.abs(rect.w - w) > 2 || Math.abs(rect.h - h) > 2) {
-          console.warn("[edge-snap] 尺寸写入未生效", {
-            want: { w, h },
-            actual: { w: rect.w, h: rect.h },
+          logEvent({
+            level: "WARN",
+            module: "window",
+            action: "resize_verify",
+            event: "failed",
+            status: "failed",
+            message: `尺寸写入未生效（期望 ${w}x${h}，实际 ${rect.w}x${rect.h}）`,
           });
           return null;
         }
@@ -674,9 +679,13 @@ export function useEdgeSnap(enabled: boolean) {
         const rect = await fetchRectOnly();
         if (disposed) return false;
         if (Math.abs(rect.x - x) > 1 || Math.abs(rect.y - y) > 1) {
-          console.warn("[edge-snap] 位置写入未生效", {
-            want: { x, y },
-            actual: { x: rect.x, y: rect.y },
+          logEvent({
+            level: "WARN",
+            module: "window",
+            action: "move_verify",
+            event: "failed",
+            status: "failed",
+            message: `位置写入未生效（期望 ${x},${y}，实际 ${rect.x},${rect.y}）`,
           });
           return false;
         }
@@ -905,10 +914,14 @@ export function useEdgeSnap(enabled: boolean) {
       regionRecoveryAttempts += 1;
       if (regionRecoveryAttempts >= REGION_RECOVERY_MAX_ATTEMPTS) {
         regionRecoveryAt = Number.POSITIVE_INFINITY;
-        console.warn("[edge-snap] 原生胶囊区域连续校准失败，已停止自动重试", {
-          phase: machine.phase,
-          edge: machine.edge,
-          mode: target,
+        logEvent({
+          level: "WARN",
+          module: "window",
+          action: "region_recover",
+          event: "failed",
+          status: "failed",
+          message: `原生胶囊区域连续校准失败，已停止自动重试（phase=${machine.phase} edge=${machine.edge}）`,
+          metadata: { mode: target },
         });
         // 自动退避用尽：保留失准状态并暴露可操作的重新校准入口，
         // 不让用户面对「界面完整但仍被裁剪」且无出口的窗口。
@@ -1105,7 +1118,14 @@ export function useEdgeSnap(enabled: boolean) {
         actual = await resizeVerified(target.w, target.h);
         if (!actual) {
           ok = false;
-          console.warn("[edge-snap] 停靠回滚恢复窗口尺寸失败", { target });
+          logEvent({
+            level: "WARN",
+            module: "window",
+            action: "rollback_restore",
+            event: "failed",
+            status: "failed",
+            message: `停靠回滚恢复窗口尺寸失败（target=${target.w}x${target.h}）`,
+          });
           // 尺寸恢复失败仍要尽力恢复位置：不能让窗口停在贴边坐标上。
           actual = current;
         }
@@ -1115,7 +1135,14 @@ export function useEdgeSnap(enabled: boolean) {
         // 位置同样回读确认；失败不把恢复结果当成功。
         if (!(await moveVerified(target.x, target.y))) {
           ok = false;
-          console.warn("[edge-snap] 停靠回滚恢复窗口位置失败", { target });
+          logEvent({
+            level: "WARN",
+            module: "window",
+            action: "rollback_restore",
+            event: "failed",
+            status: "failed",
+            message: `停靠回滚恢复窗口位置失败（target=${target.x},${target.y}）`,
+          });
         }
       }
       return ok;
@@ -1326,7 +1353,17 @@ export function useEdgeSnap(enabled: boolean) {
         void useSettingsStore
           .getState()
           .update({ snap_display_mode: committed })
-          .catch((err) => console.warn("[edge-snap] 回滚停靠形态偏好失败", err));
+          // update_settings 失败已由 invokeCommand 归属记录；这里只补记回滚结果本身。
+          .catch(() =>
+            logEvent({
+              level: "WARN",
+              module: "window",
+              action: "form_rollback",
+              event: "failed",
+              status: "failed",
+              message: "停靠形态切换失败后回滚偏好失败，偏好可能与实际形态不一致",
+            }),
+          );
       }
       useUiStore
         .getState()
@@ -1739,7 +1776,14 @@ export function useEdgeSnap(enabled: boolean) {
         if (disposed || mySeq !== tabDragSeq) return;
         if (tabAnimating || machine.phase !== "docked-tab" || !machine.edge) return;
         if (!rect) {
-          console.warn("[edge-snap] Edge Tab 拖动终态回读失败，本次不落库");
+          logEvent({
+            level: "WARN",
+            module: "window",
+            action: "tab_drag_finalize",
+            event: "failed",
+            status: "failed",
+            message: "Edge Tab 拖动终态回读失败，本次不落库",
+          });
           // 不留幻影内存：清空未确认中心，恢复/巡检改用真实矩形
           capsuleCenter = null;
           return;
@@ -1748,9 +1792,12 @@ export function useEdgeSnap(enabled: boolean) {
         const actualCenter = alongCenterOf(edge, rect);
         const expected = expectedAtEnd;
         if (expected !== null && Math.abs(actualCenter - expected) >= 1) {
-          console.warn("[edge-snap] Edge Tab 拖动终态位置回读不一致，已按实际位置落库", {
-            expected,
-            actual: actualCenter,
+          logEvent({
+            level: "WARN",
+            module: "window",
+            action: "tab_drag_finalize",
+            event: "mismatch",
+            message: `Edge Tab 拖动终态位置回读不一致，已按实际位置落库（expected=${expected} actual=${actualCenter}）`,
           });
         }
         dockedPos = { x: rect.x, y: rect.y };
@@ -1804,8 +1851,16 @@ export function useEdgeSnap(enabled: boolean) {
         snapMoveGuard.noteGeometryRollback();
         try {
           await applyMode(mode);
-        } catch (err) {
-          console.warn("[edge-snap] 解除后恢复模式尺寸失败", { mode, attempt, err });
+        } catch {
+          // apply_mode 失败已由 invokeCommand 归属记录；这里补记重试上下文。
+          logEvent({
+            level: "WARN",
+            module: "window",
+            action: "mode_restore",
+            event: "failed",
+            message: "解除吸附后恢复模式尺寸失败，继续有界重试",
+            metadata: { mode, attempt },
+          });
         }
         if (disposed) return false;
         try {
@@ -1833,7 +1888,15 @@ export function useEdgeSnap(enabled: boolean) {
       }
       // 重试用尽仍停在容器尺寸：延长抑制，避免随后把容器尺寸写进 window_rect。
       snapMoveGuard.noteGeometryRollback();
-      console.warn("[edge-snap] 解除后窗口仍停在胶囊容器尺寸，已停止重试", { mode });
+      logEvent({
+        level: "WARN",
+        module: "window",
+        action: "mode_restore",
+        event: "failed",
+        status: "failed",
+        message: "解除吸附后窗口仍停在胶囊容器尺寸，已停止重试",
+        metadata: { mode },
+      });
       return false;
     }
 
@@ -1900,7 +1963,14 @@ export function useEdgeSnap(enabled: boolean) {
         }
       }
       snapMoveGuard.noteGeometryRollback();
-      console.warn("[edge-snap] 解除后用户尺寸未恢复，已停止重试", { target });
+      logEvent({
+        level: "WARN",
+        module: "window",
+        action: "user_size_restore",
+        event: "failed",
+        status: "failed",
+        message: `解除吸附后用户尺寸未恢复，已停止重试（target=${target.w}x${target.h}）`,
+      });
       return false;
     }
 
@@ -2027,12 +2097,15 @@ export function useEdgeSnap(enabled: boolean) {
             } catch {
               // 读不回按「无法确认」处理
             }
-            console.warn("[edge-snap] 解除完成但模式尺寸未恢复", {
-              mode,
-              regionUndocked: true,
-              sizeRestored: false,
-              inWorkArea,
-              persisted: false, // 容器尺寸在持久化路径被显式拒绝
+            logEvent({
+              level: "WARN",
+              module: "window",
+              action: "undock_complete",
+              event: "failed",
+              status: "failed",
+              // 容器尺寸在持久化路径被显式拒绝（persisted=false）。
+              message: `解除完成但模式尺寸未恢复（inWorkArea=${inWorkArea}）`,
+              metadata: { mode },
             });
           }
           if (anchorRequested) {
@@ -2276,7 +2349,14 @@ export function useEdgeSnap(enabled: boolean) {
               dockRetryAt = Date.now() + DOCK_RETRY_MS;
               if (restoreAttempts >= RESTORE_MAX_ATTEMPTS) {
                 pendingRestore = null;
-                console.warn("[edge-snap] 重启恢复等待显示器超时，已停止重试", { edge });
+                logEvent({
+                  level: "WARN",
+                  module: "window",
+                  action: "restore_reboot",
+                  event: "failed",
+                  status: "failed",
+                  message: `重启恢复等待显示器超时，已停止重试（edge=${edge}）`,
+                });
                 // 放弃恢复：清掉陈旧停靠记录，避免每次启动都重复尝试（并再次空白）。
                 persistedCenter = null;
                 void persistSnap(null, false, null);
@@ -2335,9 +2415,14 @@ export function useEdgeSnap(enabled: boolean) {
               if (restoreAttempts >= RESTORE_MAX_ATTEMPTS) {
                 pendingRestore = null;
                 persistedCenter = null;
-                console.warn("[edge-snap] 重启恢复停靠连续失败，已停止重试", {
-                  edge,
-                  attempts: restoreAttempts,
+                logEvent({
+                  level: "WARN",
+                  module: "window",
+                  action: "restore_reboot",
+                  event: "failed",
+                  status: "failed",
+                  message: `重启恢复停靠连续失败，已停止重试（edge=${edge}）`,
+                  metadata: { attempt: restoreAttempts },
                 });
                 // 放弃恢复：陈旧停靠记录已不可用，清掉后再放行显示，
                 // 避免每次启动都重复一次「空白 → 恢复失败」的循环。
@@ -2791,7 +2876,13 @@ export function useEdgeSnap(enabled: boolean) {
       }
       if (disposed) return undefined;
       if (busy) {
-        console.warn("[edge-snap] 引擎持续忙碌，停靠形态切换已延后");
+        logEvent({
+          level: "WARN",
+          module: "window",
+          action: "form_switch",
+          event: "deferred",
+          message: "引擎持续忙碌，停靠形态切换已延后",
+        });
         return undefined;
       }
       busy = true;

@@ -96,3 +96,25 @@
 - 基线 §15.2 补充场景：Android MediaProjection 拒绝授权、AccessibilityService 未启用、认证后更换 session_id/controller_id；Windows 锁屏/注销/UAC 安全桌面、认证后替换控制端或会话 ID；**任何认证未通过的测试都必须证明没有产生可用控制通道**。
 - Windows 系统凭据在本机确认不可用时：Windows 远控标 BLOCKED 并提交原始证据，不因此降低其它链路安全标准、不退化 App PIN。
 - 阶段 8 门：全部 P/A/S/N 真机执行 + 安全回归，出具完整测试报告与剩余风险。
+
+## 7. 2026-11-19 云端信令连接回归
+
+自动化入口：仓库根直接执行
+`npm --prefix services/personal-hub-control-plane test`，
+类型检查将最后的 `test` 换为 `run typecheck`。
+
+新增 `test/integration/signaling-delivery.test.ts` 覆盖：
+
+1. Fastify WebSocket 升级入口的双客户端认证与实际消息投递（`injectWS`，非公网/TLS 实测）。
+2. 认证尚未完成时关闭连接、并发认证身份替换拒绝。
+3. 目标连接收到原始签名信封、其他服务实例不接收。
+4. 同设备多连接关闭其中一个仍在线，最后一个关闭才离线；关闭连接不再接收。
+5. 撤销事件从发布连接传至同服务其他设备连接。
+6. 连接认证身份与信令发送者/状态请求/撤销请求不一致时拒绝且无业务副作用。
+7. 并发异步失败回执使用原请求 ID。
+
+首次新增的 5 项用例在修改前全部失败；补充 Fastify 入口后另复现升级请求 500。
+修复后云端全套 **62 passed / 0 failed**，类型检查 exit 0；证据见
+`tmp/acceptance/personal-hub-signaling-20261119/`。
+本轮未运行 Rust/Android、PG 集成、TLS/WSS 真部署、真实设备/网络、P5 系统认证或正式安装包，
+不能据此认定 P1–P3 阶段门通过。

@@ -1544,3 +1544,13 @@ D 盘原生调用超过 15 分钟未返回，应用清空未通过该卷的真�
 重新同步仅保留 1 条原本就缺少元数据的不可恢复孤立载荷诊断。独立程序直接编译生产回收站模块，定向
 测试 36 项通过、1 个默认忽略。共享工作树整应用构建受其他模块编译错误阻塞。证据见
 `tmp/acceptance/recycle-batch-shell-20261118/report.md`。
+
+## 2026-11-19 构建调度器移除回归范围
+
+- `npm run test:scripts`：磁盘守卫、Dev 启动、Worktree、集成状态机/快照/构建锁/产物校验及架构守卫。
+- `scripts/taskdock-integration.test.mjs` 的“集成验证、静态检查和构建直接执行”场景：主工作区放置会抛错的旧调度器，
+  验证任务检查、快照静态检查和 Web 构建仍成功，且新台账的 `schedulerTaskId` 为 null。
+- 命令入口检查：桌面 Vite/预览/Vitest、Tauri/Cargo、移动端 Expo；Tauri 非法参数应保留非零退出码。
+- `scripts/perf/gate-run.sh`：Bash 语法检查及 dry-run 核对直接执行命令；不把 dry-run 计为实际性能测试通过。
+- 历史测试中的调度命令与日志仅保留为证据。实际本轮结果和日志位于 `tmp/acceptance/remove-build-scheduler-20261119/`；
+  本轮不执行正式安装包构建或原生 GUI 验收，不形成 Release 正式验收结论。

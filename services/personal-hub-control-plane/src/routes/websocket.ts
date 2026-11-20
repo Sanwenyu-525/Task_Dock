@@ -16,6 +16,7 @@ import {
 } from '../schema/validation.js';
 import type { AppDeps } from '../app.js';
 import { toApiError } from './errors.js';
+import { SecurityError } from '../core/errors.js';
 
 interface WsLike {
   send(data: string): void;
@@ -28,26 +29,35 @@ interface WsFrame {
   payload?: unknown;
 }
 
+// 每个服务依赖实例共享连接表；WeakMap 不把已释放的服务实例永久留在进程中。
+const serviceConnections = new WeakMap<AppDeps, Map<string, Set<WsLike>>>();
+
 /** 处理一个已建立的 WSS 连接：先认证，再按 type 分派签名帧。 */
 export function handleSignalingSocket(socket: unknown, deps: AppDeps): void {
   const ws = socket as unknown as WsLike;
-  const connections = new Map<string, Set<WsLike>>();
+  let connections = serviceConnections.get(deps);
+  if (!connections) {
+    connections = new Map<string, Set<WsLike>>();
+    serviceConnections.set(deps, connections);
+  }
+  const activeConnections = connections;
   let authenticatedDeviceId: string | null = null;
-  let currentFrameId: string | undefined;
+  let authenticating = false;
+  let closed = false;
 
   const addConnection = (deviceId: string, s: WsLike) => {
-    const set = connections.get(deviceId) ?? new Set<WsLike>();
+    const set = activeConnections.get(deviceId) ?? new Set<WsLike>();
     set.add(s);
-    connections.set(deviceId, set);
+    activeConnections.set(deviceId, set);
   };
   const removeConnection = (deviceId: string, s: WsLike) => {
-    const set = connections.get(deviceId);
+    const set = activeConnections.get(deviceId);
     if (!set) return;
     set.delete(s);
-    if (set.size === 0) connections.delete(deviceId);
+    if (set.size === 0) activeConnections.delete(deviceId);
   };
   const broadcast = (message: string) => {
-    for (const set of connections.values()) {
+    for (const set of activeConnections.values()) {
       for (const target of set) target.send(message);
     }
   };
@@ -56,6 +66,7 @@ export function handleSignalingSocket(socket: unknown, deps: AppDeps): void {
     ok: boolean,
     extra: Record<string, unknown> = {},
   ) => {
+    if (closed) return;
     ws.send(
       JSON.stringify({
         ...(id !== undefined ? { id } : {}),
@@ -71,16 +82,12 @@ export function handleSignalingSocket(socket: unknown, deps: AppDeps): void {
     });
   };
 
-  const handleFrame = async (raw: Buffer): Promise<void> => {
-    let frame: WsFrame;
-    try {
-      frame = JSON.parse(raw.toString('utf8')) as WsFrame;
-    } catch {
-      throw new ZodError([]);
-    }
-    if (!frame || typeof frame !== 'object') throw new ZodError([]);
+  const requireConnectionIdentity = (deviceId: string) => {
+    if (deviceId !== authenticatedDeviceId) throw new SecurityError('IDENTITY_MISMATCH');
+  };
+  const handleFrame = async (frame: WsFrame): Promise<void> => {
+    if (closed) return;
     const { id, type } = frame;
-    currentFrameId = id;
 
     // 未认证：只允许 auth。
     if (authenticatedDeviceId === null) {
@@ -89,10 +96,22 @@ export function handleSignalingSocket(socket: unknown, deps: AppDeps): void {
         return;
       }
       const auth = WssAuthSchema.parse(frame.payload);
-      const { deviceId } = await deps.signaling.connectDevice(auth);
+      if (authenticating) throw new SecurityError('AUTH_IN_PROGRESS');
+      authenticating = true;
+      let deviceId: string;
+      try {
+        ({ deviceId } = await deps.signaling.connectDevice(auth));
+      } finally {
+        authenticating = false;
+      }
+      if (closed) return;
       authenticatedDeviceId = deviceId;
       addConnection(deviceId, ws);
       await deps.presence.setOnline(deviceId, true);
+      if (closed) {
+        if (!activeConnections.has(deviceId)) await deps.presence.setOnline(deviceId, false);
+        return;
+      }
       reply(id, true, { data: { deviceId } });
       return;
     }
@@ -101,9 +120,10 @@ export function handleSignalingSocket(socket: unknown, deps: AppDeps): void {
     switch (type) {
       case 'signal.forward': {
         const signal = SignedSignalSchema.parse(frame.payload);
+        requireConnectionIdentity(signal.fromDeviceId);
         const forwarded: SignedSignal =
           await deps.signaling.forwardSignedSignal(signal);
-        const targets = connections.get(forwarded.toDeviceId);
+        const targets = activeConnections.get(forwarded.toDeviceId);
         if (targets) {
           const delivery = JSON.stringify({
             type: 'signal.deliver',
@@ -117,16 +137,19 @@ export function handleSignalingSocket(socket: unknown, deps: AppDeps): void {
       }
       case 'presence.update': {
         const update = PresenceUpdateSchema.parse(frame.payload);
+        requireConnectionIdentity(update.deviceId);
         reply(id, true, { data: await deps.presence.updatePresence(update) });
         return;
       }
       case 'presence.get': {
         const query = PresenceQuerySchema.parse(frame.payload);
+        requireConnectionIdentity(query.deviceId);
         reply(id, true, { data: await deps.presence.getPresence(query) });
         return;
       }
       case 'revocations.list': {
         const query = RevocationListSchema.parse(frame.payload);
+        requireConnectionIdentity(query.deviceId);
         await deps.devices.verifyRequestSignature(
           query.deviceId,
           query as unknown as Record<string, unknown>,
@@ -140,6 +163,7 @@ export function handleSignalingSocket(socket: unknown, deps: AppDeps): void {
       }
       case 'revocation.publish': {
         const revoke = RevokeDeviceSchema.parse(frame.payload);
+        requireConnectionIdentity(revoke.deviceId);
         const result = await deps.revocations.publishRevocation(revoke);
         broadcast(
           JSON.stringify({ type: 'revocation.published', payload: result }),
@@ -153,12 +177,23 @@ export function handleSignalingSocket(socket: unknown, deps: AppDeps): void {
   };
 
   ws.on('message', (raw: Buffer) => {
-    currentFrameId = undefined;
-    void handleFrame(raw).catch((err: unknown) => sendError(currentFrameId, err));
+    if (closed) return;
+    let frame: WsFrame;
+    try {
+      frame = JSON.parse(raw.toString('utf8')) as WsFrame;
+      if (!frame || typeof frame !== 'object' || Array.isArray(frame)) throw new ZodError([]);
+    } catch {
+      sendError(undefined, new ZodError([]));
+      return;
+    }
+    void handleFrame(frame).catch((err: unknown) => sendError(frame.id, err));
   });
   ws.on('close', () => {
+    closed = true;
     if (authenticatedDeviceId === null) return;
     removeConnection(authenticatedDeviceId, ws);
-    void deps.presence.setOnline(authenticatedDeviceId, false);
+    if (!activeConnections.has(authenticatedDeviceId)) {
+      void deps.presence.setOnline(authenticatedDeviceId, false);
+    }
   });
 }

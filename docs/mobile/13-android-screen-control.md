@@ -306,8 +306,8 @@ scrcpy），需用户确认。
 node --max-old-space-size=3072 ./node_modules/typescript/bin/tsc --noEmit
 npx vitest run src/components/mobile/VirtualDisplaySection.test.tsx src/components/mobile/MobileTransferPanel.test.tsx
 
-# Rust 单测：必须经调度器并在 src-tauri/ 内运行
-node scripts/build-sched.mjs cargo --priority P1 --label vd-rust-test -- test --lib commands::virtual_display
+# Rust 单测：入口自动在 src-tauri/ 内直接运行
+npm run cargo -- test --lib commands::virtual_display
 
 # cargo test --lib 的测试 exe 需要 Common-Controls v6 manifest（工装限制，不是产品代码问题）
 # 编译完成后用 mt.exe 嵌入并直接运行测试二进制：
@@ -316,7 +316,7 @@ mt.exe -manifest src-tauri/tests.manifest -outputresource:<target>/debug/deps/ta
 
 # 真机联调（显式启用；需 adb 设备在线，会真实启动/关闭 scrcpy 窗口）
 $env:TASK_DOCK_VD_LIVE = "1"
-node scripts/build-sched.mjs cargo --priority P1 --label vd-live -- test --test virtual_display_live -- --nocapture
+npm run cargo -- test --test virtual_display_live -- --nocapture
 
 # 构建
 npm run build

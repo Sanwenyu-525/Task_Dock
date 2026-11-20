@@ -19,6 +19,13 @@ vi.mock("../lib/bridge", async (importOriginal) => ({
   onAgentChanged: ipc.listen,
 }));
 
+// 固定诊断已收敛到 logEvent；保留其余真实导出（errors.ts 依赖其诊断函数）。
+const diagMock = vi.hoisted(() => ({ logEvent: vi.fn() }));
+vi.mock("../lib/diagnostics", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/diagnostics")>()),
+  logEvent: diagMock.logEvent,
+}));
+
 const item = (id = "head", source = "codex"): AgentHistorySession => ({
   id, source_id: source, external_id: id, title: id, status: "completed",
   first_seen_at: "2026-11-05T00:00:00Z", last_seen_at: "2026-11-05T01:00:00Z",
@@ -48,6 +55,7 @@ const probes = () => ipc.sessions.mock.calls.filter(([query]) => query.limit ===
 
 beforeEach(() => {
   vi.useFakeTimers();
+  diagMock.logEvent.mockClear();
   ipc.sessions.mockReset();
   ipc.groups.mockReset();
   ipc.runs.mockReset();
@@ -141,14 +149,20 @@ describe("Agent 历史共享监听与生命周期", () => {
   });
 
   it("注册失败只有一条固定诊断且保留分页，手动刷新可恢复监听", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     ipc.listen.mockRejectedValueOnce(new Error("native listen failed"));
     const { result } = renderHook(() => useAgentSessionHistory({ sourceId: "codex", enabled: true }));
     await flush();
     expect(result.current.liveError).toContain("可手动刷新");
     expect(result.current.items[0].id).toBe("head");
     expect(result.current.error).toBeNull();
-    expect(warn).toHaveBeenCalledExactlyOnceWith("[agent-history] event-listen-failed");
+    expect(diagMock.logEvent).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        level: "WARN",
+        module: "agent",
+        action: "history_listen",
+        error_code: "AGENT_HISTORY_LISTEN_FAILED",
+      }),
+    );
     act(() => result.current.reload());
     await flush();
     expect(ipc.listen).toHaveBeenCalledTimes(2);

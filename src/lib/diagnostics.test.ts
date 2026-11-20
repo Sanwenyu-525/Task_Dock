@@ -339,6 +339,78 @@ describe("startOperation 生命周期", () => {
   });
 });
 
+describe("trace 上下文", () => {
+  it("createTraceContext 生成 16 位小写 hex", () => {
+    const seen = new Set<string>();
+    for (let i = 0; i < 32; i += 1) {
+      const { traceId } = diag.createTraceContext();
+      expect(traceId).toMatch(/^[0-9a-f]{16}$/);
+      seen.add(traceId);
+    }
+    // 随机性抽查：连续生成不重复。
+    expect(seen.size).toBe(32);
+  });
+
+  it("isValidTraceId 只接受 16 位小写 hex", () => {
+    expect(diag.isValidTraceId("0123456789abcdef")).toBe(true);
+    expect(diag.isValidTraceId("0123456789ABCDEF")).toBe(false); // 大写
+    expect(diag.isValidTraceId("0123456789abcde")).toBe(false); // 15 位
+    expect(diag.isValidTraceId("0123456789abcdef0")).toBe(false); // 超长
+    expect(diag.isValidTraceId("0123456789abcdeg")).toBe(false); // 非 hex
+    expect(diag.isValidTraceId("")).toBe(false);
+    expect(diag.isValidTraceId(123)).toBe(false);
+    expect(diag.isValidTraceId(undefined)).toBe(false);
+    expect(diag.isValidTraceId(null)).toBe(false);
+  });
+
+  it("logEvent 丢弃非法 trace_id，合法值透传", async () => {
+    diag.logEvent(makeEvent({ trace_id: "NOT-VALID-TOKEN!" }));
+    diag.logEvent(makeEvent({ trace_id: "0123456789abcdef" }));
+    diag.logEvent(makeEvent());
+    await flushAll();
+    const [invalid, valid, absent] = allEvents();
+    expect(invalid.trace_id).toBeUndefined();
+    expect(valid.trace_id).toBe("0123456789abcdef");
+    expect(absent.trace_id).toBeUndefined();
+  });
+
+  it("startOperation 全生命周期携带同一 traceId，stage 不携带，不产生重复日志", async () => {
+    diag.setClientVerboseMode(true);
+    const { traceId } = diag.createTraceContext();
+    const op = diag.startOperation("task", "sync_task", { traceId });
+    op.stage("persist");
+    op.success();
+    // 终态后再调用不得产生新事件（不产生重复日志）。
+    op.fail({ code: "IO_ERROR" });
+    op.cancel();
+    await flushAll();
+
+    const events = allEvents().filter((event) => event.operation_id === op.id);
+    expect(events.map((event) => event.status)).toEqual(["started", undefined, "success"]);
+    // started 与 success 携带创建时传入的同一 traceId（显式传递，无全局变量）。
+    expect(events[0].trace_id).toBe(traceId);
+    // stage 事件不携带 trace_id（设计文档 §4.4.2：避免高频事件产生海量追踪记录）。
+    expect(events[1].trace_id).toBeUndefined();
+    expect(events[2].trace_id).toBe(traceId);
+  });
+
+  it("cancel / recovered 终态同样携带 traceId，非法 traceId 被丢弃", async () => {
+    diag.setClientVerboseMode(true);
+    const { traceId } = diag.createTraceContext();
+    const cancelled = diag.startOperation("task", "cancel_task", { traceId });
+    cancelled.cancel("用户取消");
+    const bad = diag.startOperation("task", "bad_trace", { traceId: "zzz-not-hex" });
+    bad.recovered("已恢复");
+    await flushAll();
+
+    const cancelledEvents = allEvents().filter((event) => event.operation_id === cancelled.id);
+    expect(cancelledEvents.map((event) => event.trace_id)).toEqual([traceId, traceId]);
+    for (const event of allEvents().filter((event) => event.operation_id === bad.id)) {
+      expect(event.trace_id).toBeUndefined();
+    }
+  });
+});
+
 describe("logIpcFailure", () => {
   it("按严重度映射级别，并携带 duration_ms 与 command/operation", async () => {
     expect(

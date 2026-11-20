@@ -566,7 +566,9 @@
     if (waitEl) {
       waitEl.addEventListener("click", function () {
         if (state.state !== "timeout") return;
-        setState("slow"); // 回到 slow；不重设 15s 计时器
+        // 等待不取消恢复能力：slow 会隐藏恢复卡及重载/复制按钮。
+        // 保持 timeout，不重设计时器；迟到的 ready() 仍会正常移除占位。
+        setState("timeout", "继续等待中……仍可重新加载界面，或复制诊断信息后反馈。");
         var statusEl = byId("boot-status");
         if (statusEl) statusEl.textContent = "继续等待中……若仍无界面，可重新加载或复制诊断信息。";
       });

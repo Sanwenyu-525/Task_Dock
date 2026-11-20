@@ -12,6 +12,7 @@
 import nacl from "tweetnacl";
 import { decodeBase64, decodeUTF8, encodeUTF8 } from "tweetnacl-util";
 
+import { safeLog } from "../safeLog";
 import { sha256Hex } from "../sync/sha256";
 
 import { recordHubAudit, type HubAuditEventInput } from "./audit";
@@ -467,6 +468,9 @@ export async function pairWithHub(options: PairWithHubOptions): Promise<HubPairi
       "本机设备身份不可用",
       error,
     );
+    // 原生身份错误（IdentityStorageException 等）抛回 JS 的采集点：只记稳定码，
+    // 绝不记底层异常文本（可能含文件路径）。
+    safeLog.warn("identity", "设备身份不可用", { code: pairingError.code });
     void audit({ type: "identity_created", result: "error", reason: pairingError.code });
     notify({ phase: "failed", error: pairingError, invitation: view });
     throw pairingError;

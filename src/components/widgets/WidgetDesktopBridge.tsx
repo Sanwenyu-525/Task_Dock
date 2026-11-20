@@ -21,6 +21,7 @@ import {
   type ActiveReminder,
   type Task,
 } from "../../lib/bridge";
+import { logEvent } from "../../lib/diagnostics";
 import { errorMessage } from "../../lib/errors";
 import { useLocale } from "../../hooks/useLocale";
 import { WIDGET_SOURCES } from "./liveSources";
@@ -193,13 +194,26 @@ export default function WidgetDesktopBridge() {
       // 发布失败不阻断其它微件；只记录分型与次数，不含业务数据。
       .then((ok) => {
         if (!ok) {
-          console.warn("[widget-connect] snapshot publish rejected", { widgetType: type });
+          logEvent({
+            level: "WARN",
+            module: "widget",
+            action: "snapshot_publish",
+            event: "rejected",
+            message: "微件快照发布被拒绝",
+            metadata: { widget_type: type },
+          });
         }
       })
       .catch((error) => {
-        console.warn("[widget-connect] snapshot publish failed", {
-          widgetType: type,
-          error: errorMessage(error),
+        // publish_widget_snapshot 走原始 invoke，不经 invokeCommand：失败在此首次归属。
+        logEvent({
+          level: "WARN",
+          module: "widget",
+          action: "snapshot_publish",
+          event: "failed",
+          status: "failed",
+          message: `微件快照发布失败：${errorMessage(error)}`,
+          metadata: { widget_type: type },
         });
       });
   }, []);

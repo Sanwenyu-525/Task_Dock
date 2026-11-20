@@ -298,6 +298,66 @@ export function persistSettingsCategory(category: SettingsCategoryId): void {
   }
 }
 
+// ── 二级页面选中态持久化（2026-11-20 设置中心重构）──────────────────────
+//
+// 分组升级为二级页面后，「上次看到哪一页」以 section 为粒度记忆
+// （`taskdock.settings.section.v1`）。恢复顺序：有效 section → 旧分类键推导的
+// 第一个页面 → 第一个分类的第一个页面。旧 `taskdock.settings.category.v1`
+// 不再写入、但保留读取，老版本升级后仍能回到大致位置。
+
+export const SETTINGS_SECTION_ACTIVE_STORAGE_KEY = "taskdock.settings.section.v1";
+
+const SECTION_ACTIVE_STORAGE_VERSION = 1;
+
+export function readSettingsActiveSection(): SettingsSectionId {
+  if (typeof localStorage === "undefined") return firstSectionOf(defaultSettingsCategory());
+  let valid = false;
+  let section: string | null = null;
+  try {
+    const raw = localStorage.getItem(SETTINGS_SECTION_ACTIVE_STORAGE_KEY);
+    if (raw) {
+      const parsed: unknown = JSON.parse(raw);
+      if (
+        typeof parsed === "object" &&
+        parsed !== null &&
+        (parsed as { version?: unknown }).version === SECTION_ACTIVE_STORAGE_VERSION
+      ) {
+        const value = (parsed as { section?: unknown }).section;
+        if (typeof value === "string") {
+          section = value;
+          valid = settingsSectionMeta(value as SettingsSectionId) !== undefined;
+        }
+      }
+    }
+  } catch {
+    // 存储被拒 / JSON 损坏：按「无有效记录」处理，走分类回退。
+    valid = false;
+  }
+  if (valid) return section as SettingsSectionId;
+  // 无记录/损坏/未知值：回退旧分类键（老版本升级路径），仍无效则全局默认。
+  const category = readSettingsCategory();
+  return firstSectionOf(category);
+}
+
+/** 持久化二级页面选中态；写入失败静默忽略（本次会话仍然有效）。 */
+export function persistSettingsActiveSection(section: SettingsSectionId): void {
+  try {
+    if (typeof localStorage === "undefined") return;
+    localStorage.setItem(
+      SETTINGS_SECTION_ACTIVE_STORAGE_KEY,
+      JSON.stringify({ version: SECTION_ACTIVE_STORAGE_VERSION, section }),
+    );
+  } catch {
+    // 存储不可用：只失去下次启动的记忆，不影响当前页面。
+  }
+}
+
+/** 分类下的第一个页面（注册表顺序）；分类未知时回退全局第一个页面。 */
+export function firstSectionOf(category: SettingsCategoryId): SettingsSectionId {
+  const first = sectionsForCategory(category)[0];
+  return first?.id ?? SETTINGS_SECTION_META[0].id;
+}
+
 /**
  * 设置页内“查找设置”的匹配函数（大小写不敏感；中文按连续子串匹配）。
  * 命中范围：分组标题、分类标题、别名。

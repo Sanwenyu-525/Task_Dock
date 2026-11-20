@@ -40,6 +40,7 @@ import {
   targetToAddress,
   type PairingTarget,
 } from "../lib/sync/pairing";
+import { safeLog } from "../lib/safeLog";
 import { pairWithDesktop, pairingErrorMessage } from "../lib/sync/pairClient";
 import {
   AUTHORIZATION_LABEL,
@@ -219,6 +220,8 @@ export function PairingScreen({ nav }: { nav: Nav }) {
       setCode("");
       // 授权=已配对；连接保持「未检测」——配对成功不代表电脑此刻在线。
       reportLinkPaired();
+      // 配对结果采集：只记结果与设备 ID，绝不记配对码。
+      safeLog.info("pairing", "配对成功", { deviceId: result.deviceId });
     } catch (reason) {
       setError(pairingErrorMessage(reason));
       // 只有授权/安全类问题才污染全局授权状态；配对码错误、地址错误等只在本页提示。
@@ -226,6 +229,8 @@ export function PairingScreen({ nav }: { nav: Nav }) {
         typeof reason === "object" && reason !== null && "code" in reason
           ? String((reason as { code?: unknown }).code ?? "")
           : "";
+      // 失败采集：reason 是稳定错误码（invalid_code / network / ...），不带配对码。
+      safeLog.warn("pairing", "配对失败", { reason: code || "unknown" });
       const kind = failureKindFromError(reason);
       if (kind === "auth" || kind === "tls" || code === "network") {
         reportLinkFailure(kind, pairingErrorMessage(reason));

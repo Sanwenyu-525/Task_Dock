@@ -63,10 +63,8 @@ export interface GroupKindCounts {
 
 export type ClipGroupFamily = "image" | "text" | "link" | "files" | "mixed";
 
-type GroupCountSource = Pick<
-  ClipboardGroup,
-  "kind_counts" | "image_count" | "item_count"
->;
+type GroupCountSource = Pick<ClipboardGroup, "kind_counts"> &
+  Partial<Pick<ClipboardGroup, "image_count" | "item_count">>;
 
 /**
  * 组内类型计数。列表接口已下发 kind_counts；旧数据/旧后端缺失时按
@@ -113,16 +111,33 @@ export function groupComposition(group: GroupCountSource): string[] {
   return parts;
 }
 
-/** 图片组仅有「图片 W×H」这类预览，不作为可读摘要展示。 */
+/** 图片预览的形状（「图片」/「图片 W×H」）：只作辅助识别，不作类型判定。 */
 const IMAGE_ONLY_PREVIEW = /^图片(?:\s+\d+×\d+)?$/;
 
 /**
  * 分组卡片的一句话摘要：只使用后端已下发的 preview（首条内容摘要），
  * 不读正文、不联网补元数据；图片预览转成空串，由缩略图承担识别。
+ *
+ * 形状过滤只在「组里确实有图片」或「类型分布未知」时生效：纯文本组里出现
+ * 「图片 1476×1198」可能是用户真的复制了这串字符，不能凭字符串形状就断定
+ * 它是图片预览——内容类型由后端 `kind` 决定，不靠字符串猜。
  */
-export function groupExcerpt(group: Pick<ClipboardGroup, "preview">): string {
+export function groupExcerpt(
+  group: Pick<ClipboardGroup, "preview"> &
+    Partial<Pick<ClipboardGroup, "kind_counts" | "image_count" | "item_count">>,
+): string {
   const flat = (group.preview ?? "").replace(/\s+/g, " ").trim();
-  if (!flat || IMAGE_ONLY_PREVIEW.test(flat)) return "";
+  if (!flat) return "";
+  const known =
+    group.kind_counts !== undefined ||
+    group.item_count !== undefined ||
+    group.image_count !== undefined;
+  const counts = groupKindCounts({
+    kind_counts: group.kind_counts,
+    image_count: group.image_count,
+    item_count: group.item_count,
+  });
+  if ((counts.image > 0 || !known) && IMAGE_ONLY_PREVIEW.test(flat)) return "";
   return flat.length > 120 ? `${flat.slice(0, 120)}…` : flat;
 }
 

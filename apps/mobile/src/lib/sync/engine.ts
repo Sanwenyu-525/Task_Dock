@@ -20,6 +20,7 @@ import {
 import { loadConnection, readToken, touchConnection } from "../../db/syncConnection";
 import { rescheduleAllReminders } from "../../notifications/reminderEngine";
 import { AppError } from "../errors";
+import { safeLog } from "../safeLog";
 
 import { createSyncClient, type FetchLike, type SyncClient } from "./client";
 import { deriveSyncKey } from "./crypto";
@@ -92,16 +93,26 @@ interface PullTotals extends PullApplyResult {
   pulled: number;
 }
 
+/** 本轮同步的跨端链路关联：桌面端 pull 响应下发，移动端只回传、绝不生成。 */
+interface SyncTrace {
+  id?: string;
+}
+
 function emptyPullTotals(): PullTotals {
   return { pulled: 0, applied: 0, deleted: 0, stale: 0, deferred: 0, rejected: 0, skipped: 0 };
 }
 
-async function pullAll(client: SyncClient): Promise<PullTotals> {
+async function pullAll(client: SyncClient, trace: SyncTrace): Promise<PullTotals> {
   let cursor = await loadSyncCursor();
   const total = emptyPullTotals();
 
   for (let page = 0; page < MAX_PAGES; page += 1) {
     const result = await client.pull(cursor, PAGE_SIZE);
+    if (result.traceId && result.traceId !== trace.id) {
+      trace.id = result.traceId;
+      // 响应处理采集点：日志只带 16 位关联 ID，不带任何同步内容。
+      safeLog.info("sync", "同步链路关联", { traceId: result.traceId });
+    }
     total.pulled += result.changes.length;
     const outcome = await applyPullChanges(result.changes);
     total.applied += outcome.applied;
@@ -146,14 +157,16 @@ async function execute(options: { fetchImpl?: FetchLike }): Promise<SyncLastResu
   });
 
   try {
-    const pull = await pullAll(client);
+    const trace: SyncTrace = {};
+    const pull = await pullAll(client, trace);
     const pending = await buildPendingOps();
     let pushed = 0;
     let conflicts = 0;
 
     if (pending.length > 0) {
       for (const batch of chunkPending(pending)) {
-        const result = await client.push(batch.map((item) => item.op));
+        // 只回传桌面端下发的 traceId；无链路时 echo 缺省，字段整个省略。
+        const result = await client.push(batch.map((item) => item.op), { traceId: trace.id });
         pushed += result.ack.length;
         conflicts += result.conflicts.length;
         await settlePush(result, batch);
@@ -161,7 +174,7 @@ async function execute(options: { fetchImpl?: FetchLike }): Promise<SyncLastResu
       // 服务端对每个 ack 的操作都会写变更日志；再拉一次把新 rev 落到本地，
       // 否则下一次本地编辑仍用旧 base_rev，会立刻自己和自己冲突。
       // 第二次 pull 的应用结果同样计入本次同步，不能只统计第一次。
-      const afterPush = await pullAll(client);
+      const afterPush = await pullAll(client, trace);
       pull.pulled += afterPush.pulled;
       pull.applied += afterPush.applied;
       pull.deleted += afterPush.deleted;
@@ -194,6 +207,12 @@ async function execute(options: { fetchImpl?: FetchLike }): Promise<SyncLastResu
     return outcome;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    // 失败采集点：只记分类与结构化码，不记正文；kv 里的 result 已含完整文案。
+    if (error instanceof AppError) {
+      safeLog.warn("sync", "同步失败", { kind: error.kind, code: error.code ?? "" });
+    } else {
+      safeLog.warn("sync", "同步失败", { kind: "unknown" });
+    }
     await saveSyncResult({
       at: Date.now(),
       pulled: 0,

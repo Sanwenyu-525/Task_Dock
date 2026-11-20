@@ -11,6 +11,9 @@
 
 ## 1. 门禁分层
 
+**原则：门禁强度与风险匹配。** Release 构建**不是**每个普通任务的强制门禁；
+日常开发在 Dev 实例上就能完成真实的功能验证。
+
 | 门禁 | 触发 | 当前策略 |
 |---|---|---|
 | 类型检查 | 提交前 | `npm run typecheck`（strict）强制 |
@@ -19,7 +22,26 @@
 | Lint | 提交前 | ESLint/Biome 待评估引入 |
 | 架构守卫 | 提交前 | **报告模式 → 逐步强制**（见 §3） |
 | 契约测试 | 提交前 | 待建立（Phase 2/3） |
-| 集成/真机 | 交付/验收 | 走 Integration Snapshot + Build Scheduler，真机按 ACCEPTANCE_ROUTING |
+| Dev 功能验证 | 日常开发 / 模块交付 | `npm run tauri dev` 真实桌面实例（**默认门禁**，不需安装包） |
+| 集成/真机 | 按功能风险 | 走 Integration Snapshot，真机按 ACCEPTANCE_ROUTING |
+
+### 1.1 四级门禁（按交付层级）
+
+| 层级 | 何时触发 | 必须做什么 | 不要求做什么 |
+|---|---|---|---|
+| **日常开发** | 每次改动 | 定向自动化测试（受影响范围）+ 类型检查 + **Dev 实例功能验证** | 安装包、Release 构建、`buildId` |
+| **模块交付** | 模块完成、`task ready` 前 | 在交付提交上**真实执行**模块级检查（`task verify`）+ Dev 实例完整链路验证 + 证据记录 | 为单个模块单独打安装包 |
+| **集成验收** | 需要跨模块结论或 Release 专属结论时 | 按功能风险选择 Dev 或 Release：跨模块链路可在 Dev 上验证；安装/升级/卸载、生产资源加载、正式性能必须走 Release | 无关模块的全量端到端 |
+| **正式发布** | 里程碑 / 正式交付版本 | Release 构建（Integration Snapshot → Build → Accept）+ 对应正式验收 | — |
+
+**规则**：
+
+- **不得把 Release 构建设为每个普通任务的强制门禁**；"要做验收"不构成先出安装包的理由。
+- Dev 验收**不修改** `verifying` / `accept-passed` / `accept-failed`，**不生成** `buildId`；
+  结论只写「Dev 功能验收通过 / 部分通过 / 不通过 / 证据不足」。
+- 需要 Release 专属结论时**不得**用 Dev 结果顶替，反之亦然。
+- 一次 Release 构建应尽量覆盖多个已完成任务；不允许每个 Agent 为自己的模块单独出包。
+- 门禁不通过就修，不降级为"记录在案"。
 
 ## 2. 已有守卫（保留）
 
@@ -68,5 +90,9 @@ node --test scripts/architecture/architecture-guard.test.mjs   # 守卫自测
 ## 6. 真机与性能门禁
 
 - 真实窗口/通知/剪贴板/DPI/多显示器/贴边必须原生验收；jsdom/单测/预览截图不能替代。
+- **Dev 实例即真实运行环境**：Dev 模式跑的是真实 Tauri Debug 桌面应用（真实 WebView2、真实
+  SQLite、真实 IPC、真实 Win32 窗口），可直接用于功能验收与原生验收（通道 C/E）。
+- 但**正式性能结论必须走 Release**：Debug 未优化，不能出性能、内存、动画流畅度、启动耗时结论；
+  安装/升级/卸载、签名与更新、生产资源加载同样只能由 Release 验收证明。
 - 性能结论附可复核条件；`#[ignore]` 套件不计普通通过。
 - 环境失败记 `ENVIRONMENT BLOCKED`，不标通过也不臆断为代码缺陷。

@@ -6,6 +6,7 @@
 
 import { zhCN, type MessageKey } from "../locales/zh-CN";
 import { enUS } from "../locales/en-US";
+import { logEvent } from "../lib/diagnostics";
 
 export type LocaleCode = "zh-CN" | "en-US";
 /** 用户偏好：显式语言或跟随系统。 */
@@ -38,7 +39,15 @@ function reportMissing(locale: LocaleCode, key: string): void {
   missingKeys.add(key);
   if (isDev() && !warnedKeys.has(key)) {
     warnedKeys.add(key);
-    console.warn(`[i18n] missing key "${key}" in ${locale}; fell back to ${DEFAULT_LOCALE}`);
+    // 开发期告警改走诊断通道（键名为稳定标识，不含用户文案）；生产构建不记录。
+    logEvent({
+      level: "WARN",
+      module: "i18n",
+      action: "missing_key",
+      event: "fallback",
+      message: `[i18n] missing key "${key}" in ${locale}; fell back to ${DEFAULT_LOCALE}`,
+      metadata: { key },
+    });
   }
 }
 

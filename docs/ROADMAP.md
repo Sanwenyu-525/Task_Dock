@@ -19,10 +19,16 @@
 **「已实现」不等于「已通过验收」**。按目录契约，`partial` 不标 verified（缺口的验收尚未完成）；
 子链路的真机证据写入条目 `detail`，不外推为整体通过。
 
-**当前计数（2026-11-18，按 `featureCatalog.ts` 实测）**：
+**当前计数（2026-11-20 更正，按 `featureCatalog.ts` 实测与 `featureCatalog.test.ts` 锁定）**：
 
-共 **61** 项（核心 **12** 项）· 7 个展示分区
-——已实现 **33** · 部分实现 **23** · 待开发 **5** · 受阻 **0**；已验证 **10** · 未验证 **51**。
+共 **62** 项（核心 **12** 项）· 7 个展示分区
+——已实现 **33** · 部分实现 **24** · 待开发 **5** · 受阻 **0**；已验证 **10** · 未验证 **52**。
+
+> 更正记录（2026-11-20，第二轮架构审计）：2026-11-18 统计为 61/33/23/5/0 与 10/51；同日
+> `security.secure-vault`（partial / unverified）已按用户要求登记为第 62 项（见下方
+> 2026-11-18 变更记录），但本计数行与「设备、系统与数据」分区表漏更。现按目录实测与测试
+> 断言（62 = 33 + 24 + 5 + 0；verified 10 / unverified 52；分区计数 system = 9）同步更正，
+> 历史数字不改写、保留于 2026-11-18 记录。
 
 > 统计由 `featureCatalogSummary()` 生成，测试锁定总数、状态与验证计数；不要手工改数字而不改目录。
 
@@ -114,7 +120,7 @@
 | WebDAV / 文件同步 `eco.sync` | planned | 用户显式开启的自托管同步，默认永不开启；凭据不入日志 |
 | macOS / Linux 适配 `eco.cross-platform` | planned | 平台抽象已预留；需补 Vibrancy/AppIndicator/剪贴板平台层 |
 
-## 设备、系统与数据（8 项）
+## 设备、系统与数据（9 项）
 
 | 功能 | 状态 | 摘要 |
 |---|---|---|
@@ -126,6 +132,7 @@
 | 资源管理与智能清理 `system.resources` | implemented | 应用缓存（TTS/暂存架残留/无引用缩略图）与用户级垃圾（回收站/临时/崩溃转储）两套独立能力；预览只读 + previewId 一次性消费 + 归属/身份/年龄复核 + 作业闸 + 暂存架互斥；资源占用与只读进程诊断。真机 Tauri 窗口高 DPI 走查未执行 |
 | 诊断中心 `system.diagnostics` | implemented | 脱敏 DiagnosticEvent、有界队列 + 单写线程 + JSONL 轮转/聚合；异常列表与 operationId 操作链、摘要/导出/清理；页面可见才查询，不做后台轮询。预览夹具缺 IPC handler，真实数据链未验收 |
 | 备份与恢复 `system.backup` | implemented ✅已验证 | 完整/快速备份、流式 JSONL bundle + 完整性校验、恢复状态机可续跑/回滚、preferences.json、BACKUP_TABLES；P1-04 PASS（100k 夹具 61.9MB 往返、真机 78.44MB 恢复 14.28s、25 表一致、21 个故障测试）。多 GB 包未测 |
+| 安全保险箱 `security.secure-vault` | partial | 独立 `secure-vault.db`（不进 BACKUP_TABLES）、AES-256-GCM + 每载荷 HKDF 子密钥、Argon2id 主密码 + 20B 恢复密钥双信封、`vault_*` 命令在 MCP/CLI/REST/全局搜索结构性不可达、`.tdvault` 独立加密备份。P1 代码完成（2026-11-18：cargo check 0、23 项单测、typecheck 0）；P1 Gate 未过（真机验收未执行）。移动端/同步/TOTP/自动填充等不在 P1。设计见 docs/features/secure-vault/ |
 
 ---
 
@@ -253,3 +260,8 @@
   25 项功能矩阵、F-01..F-08 现状结论、T-01..T-15 威胁、D-01..D-13 决策、P-01..P-08 待决）。
 - 依赖前置：新增 `argon2` / `aes-gcm` / `hkdf` / `hmac` / `base32` / `unicode-normalization`
   六个 crate 与 `windows-sys` 的 `Win32_System_RemoteDesktop` feature，**P-01 已批准并接入**。
+
+### 2026-11-19 构建基础设施简化
+
+- 已按用户要求移除构建调度器，开发、测试与构建命令直接执行；保留集成快照与磁盘保护。
+- 本文此前提及构建调度器的记录为移除前历史，不代表当前仍存在。决策见 [ADR-0007](adr/0007-remove-build-scheduler.md)。

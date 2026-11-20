@@ -14,6 +14,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { AlertTriangle, Loader2, Pin, PinOff, RefreshCw, X } from "lucide-react";
 
 import { getSettings } from "../lib/bridge";
+import { logEvent } from "../lib/diagnostics";
 import { attachDragCursorSession } from "../lib/dragCursorSession";
 import { errorMessage } from "../lib/errors";
 import { useLocale } from "../hooks/useLocale";
@@ -256,11 +257,15 @@ export default function WidgetWindow() {
         return;
       }
       // 只记录分型、次数与耗时；不含任务/提醒正文等业务数据。
-      console.warn("[widget-connect] first snapshot failed", {
-        widgetType: type,
-        reason,
-        attempts: failed,
-        elapsedMs: Date.now() - connectStartedAtRef.current,
+      logEvent({
+        level: "WARN",
+        module: "widget",
+        action: "snapshot_connect",
+        event: "failed",
+        status: "failed",
+        duration_ms: Date.now() - connectStartedAtRef.current,
+        message: "微件首帧快照连接失败，已停止重试",
+        metadata: { widget_type: type, reason, attempt: failed },
       });
     };
 

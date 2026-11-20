@@ -941,8 +941,6 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
             : fsMoveJobStart(paths, targetDir, strategy, op.id),
         );
         // 立即登记快照：终态任务（空选择/全部预检失败）不必等 2.5s 轮询。
-        // eslint-disable-next-line no-console
-        console.log("APPLY-PROBE before register", initial?.status);
         registerFileJob(initial);
         const { job: final, report } = await finishFileJob(initial.id);
         invalidateDirs(transferRefreshDirs(paths, targetDir));

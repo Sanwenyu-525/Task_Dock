@@ -25,12 +25,14 @@ TypeScript + Vite + Zustand（`src/`）、SQLite；Android 客户端 `apps/mobil
 | 移动端（Android） | [apps/mobile/AGENTS.md](apps/mobile/AGENTS.md) + [docs/mobile/](docs/mobile/) |
 | 多 Agent 并行 / Worktree 隔离 | 本文件第 3 节 + [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) 第八章 |
 | 任务交付 / 统一集成 / 统一构建 / 联合验收 | 本文件 §3.3–3.4、§5.2 + [docs/INTEGRATION_BUILD.md](docs/INTEGRATION_BUILD.md) |
-| 构建排队、并发构建、资源准入 | 本文件 5.1 + [docs/BUILD_SCHEDULER.md](docs/BUILD_SCHEDULER.md) |
+| 并发构建与命令执行 | 本文件 5.1 + [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) §7.8 |
 | 构建产物、缓存、磁盘 | 本文件 5.3 + [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) 第七章 |
 | 测试、验收、真机、性能 | [docs/TESTING.md](docs/TESTING.md)、[docs/ACCEPTANCE_ROUTING.md](docs/ACCEPTANCE_ROUTING.md)、`docs/PERFORMANCE_*.md` |
+| 日常功能验证 / Dev 验收 | 本文件 §5.4（两种验收模式）+ [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) 第二章（命令与 Dev 验收操作规范） |
 | UI/UX、视觉 | 本文件第 6 节 + [docs/ui-themes/](docs/ui-themes/) + [docs/AGENT_SKILL_ROUTING.md](docs/AGENT_SKILL_ROUTING.md) |
 | 新增页面 / 页面加载 / 启动体积 | [docs/ON_DEMAND_LOADING.md](docs/ON_DEMAND_LOADING.md)（四层架构、生命周期、策略矩阵、检查清单） |
 | Agent 接入、导航 | [docs/AGENT_ADAPTERS.md](docs/AGENT_ADAPTERS.md)、[AGENT_COVERAGE_MATRIX.md](AGENT_COVERAGE_MATRIX.md)、[APP_NAVIGATION_MATRIX.md](APP_NAVIGATION_MATRIX.md) |
+| Agent 时代产品战略、功能架构规划 | [docs/AGENT_ERA_STRATEGY.md](docs/AGENT_ERA_STRATEGY.md)（定位、边界、阶段轴 S0–S6、功能矩阵）+ [docs/AGENT_ERA_STRATEGY_FACTCHECK.md](docs/AGENT_ERA_STRATEGY_FACTCHECK.md)（事实核对与偏差） |
 
 链接不会自动加载，执行对应任务时必须实际读取；本规范不依赖特定 Agent 工具。
 
@@ -45,9 +47,10 @@ TypeScript + Vite + Zustand（`src/`）、SQLite；Android 客户端 `apps/mobil
 
 ## 3. 多 Agent 并行、Git 安全与统一集成
 
-总原则：**共享工作区优先、文件所有权优先、Worktree 按需使用、交付与验收走统一集成线**。
-并行本身不是创建 Worktree 的理由；是否隔离取决于写入范围、共享资源与 Git 状态风险。
+总原则：**共享工作区优先、文件所有权优先、Worktree 按需使用、验收 Dev-First、交付与正式验收走
+统一集成线**。并行本身不是创建 Worktree 的理由；是否隔离取决于写入范围、共享资源与 Git 状态风险。
 「Agent 声称完成」不等于「已集成」；**只有集成快照可以生成正式测试安装包**（§5.2）。
+**日常功能验证不需要安装包**——默认在 Dev 实例上验收（§5.4.1）。
 
 ### 3.1 并行与隔离判定（四类情况）
 
@@ -86,6 +89,17 @@ TypeScript + Vite + Zustand（`src/`）、SQLite；Android 客户端 `apps/mobil
 
 ### 3.3 任务状态与交付
 
+**两种验收模式（Dev-First）**：本项目的验收分「Dev 功能验收」与「Release 正式验收」两套，
+**默认走 Dev 功能验收**，普通功能开发不必等安装包。
+
+| 模式 | 运行环境 | 结论落点 | 推进任务状态机 |
+|---|---|---|---|
+| **A. Dev 功能验收** | `npm run tauri dev`（真实 Tauri Debug 桌面应用，非 Mock、非浏览器预览） | `tmp/acceptance/<task-name>/` 独立记录 | **否**——不改 `verifying` / `accept-passed` / `accept-failed`，不生成 `buildId` |
+| **B. Release 正式验收** | Integration Snapshot 产出的安装包 | `npm run integrate -- accept --build <buildId> ...` | 是（按 §3.4 状态机推进） |
+
+下表是**任务台账状态机**，服务于 Release 正式验收（`task add` → `ready` → `snapshot create`
+→ `build` → `accept`）：
+
 | 状态 | 含义 | 推进方式 |
 |---|---|---|
 | 开发中 | 正在改代码 | 负责人 `task add` / `task update` |
@@ -93,6 +107,12 @@ TypeScript + Vite + Zustand（`src/`）、SQLite；Android 客户端 `apps/mobil
 | 已集成 | 改动进入快照提交 | 工具 `snapshot create` 成功 |
 | 待验收 | 代码在可测产物中 | 工具 `build` 成功（一个构建可包含多个累计任务） |
 | 验收通过 / 验收失败 | 在指定构建版本上的结论 | 验收 Agent `accept --status pass 或 fail`（按 `buildId` 各写记录） |
+
+**Dev 功能验收与状态机解耦**：Dev 验收在共享工作区的开发实例上完成，**不调用** `snapshot create`
+/ `build` / `accept`，**不修改**上述任何状态，**不伪造** `buildId`。它的结论只写进
+`tmp/acceptance/<task-name>/`，标题只能写「Dev 功能验收通过 / 部分通过 / 不通过 / 证据不足」，
+**不得**写成「Release 正式验收通过」。Dev 验收失败同样要回到 `developing` 修代码，修完重新走
+`task ready → snapshot create → build → accept` 才能得到正式结论。
 
 交付时必须提供：**任务标识与模块、写入范围、主要改动、实际执行的检查与结果、未解决问题、
 是否改公共接口、是否需其他模块配合、交付提交（可追溯）**。用统一台账登记，不另建数据库：
@@ -109,6 +129,8 @@ npm run integrate -- batch plan --platform desktop   # 只读：查看下一验�
 任务完成（`ready`）只代表可进入下一验收批次，**默认不立即触发正式安装包构建**。默认 `batch`
 模式按 `min-ready`（默认 2）合批；`urgent` 用于阻塞性故障/安全修复，`manual` 用于人工指定任务或
 固定快照。`batch plan` 不写台账、不加锁、不构建，正式构建仍走 `build --snapshot`。
+**`task ready` 之前不必先出安装包**：模块级检查与功能验证可以先在 Dev 实例上做（见 §5.4 的
+Dev 验收流程）；`task verify` 仍要求在隔离工作区对该交付提交**真实执行**命令，二者不是一回事。
 写入范围是集成与冲突判定的唯一依据：交付提交里出现未声明路径会被拒绝（防串味）；确属本任务时
 用 `--allow-extra-paths` 显式放行，**这些路径会一并进入快照、参与交集判定**并记入
 `includedExtraPaths`，不是“只记录不应用”。**`task verify` 才是在隔离工作区对指定提交真实执行检查**；
@@ -117,22 +139,28 @@ npm run integrate -- batch plan --platform desktop   # 只读：查看下一验�
 
 ### 3.4 集成、构建与验收职责
 
+- **开发与 Dev 功能验收（任务负责人 / 各任务 Agent）**：日常功能改动默认在 Dev 实例
+  （`npm run tauri dev`）上验证，证据写入 `tmp/acceptance/<task-name>/`；Dev 验收**不产生**
+  `buildId`、**不推进**任务状态机。Dev 验收通过只说明「该功能在当前代码与隔离数据目录下按预期
+  工作」，**不构成**安装包、升级/卸载、生产资源加载或正式性能结论。
 - **集成（主 Agent / 集成负责人）**：只把「待集成」任务的声明路径改动叠加到 `integration` 分支，
   生成带 `TaskDock-Snapshot/Tasks` 提交信息的快照；检查交集、越界、冲突，执行集成静态检查
   （类型检查 `npm run typecheck`，不重复 Vite 打包）。不等待未完成任务；已完成任务按批次集成。
   失败时快照工作区回到基线，日志与台账记录保留供复现，不会把半个补丁留在工作区。
-- **构建（集成负责人）**：**只有快照提交能出正式测试安装包**；在独立的干净构建工作区执行、经构建
-  调度器排队、桌面与移动端分别构建；同一「提交+平台+配置+依赖/工具链指纹」复用已有产物，不因第二个
+- **构建（集成负责人）**：**只有快照提交能出正式测试安装包**；在独立的干净构建工作区直接执行，桌面与移动端分别构建；同一「提交+平台+配置+依赖/工具链指纹」复用已有产物，不因第二个
   Agent 要验收重打。默认按 `batch` 合批，任务刚 `ready` 不自动出包；`build` 记录 `mode`、累计
   `includedTasks`、失败分类与资源快照，失败不自动重试。
-- **验收（各任务 Agent + 集成验收 Agent）**：多 Agent 可基于**同一 `buildId`** 并行验收各自模块，
+- **Release 正式验收（各任务 Agent + 集成验收 Agent）**：仅在需要 Release 专属结论时执行——安装包
+  生成、安装/升级/卸载、签名与更新机制、生产环境资源加载、Release 专属行为、正式性能基线与正式
+  交付版本。多 Agent 可基于**同一 `buildId`** 并行验收各自模块，
   各写自己的验收记录（不改他人结论），记录以 `buildId + taskId` 保留 revision/history；
   只要任务代码仍在构建的累计 `includedTasks` 中，旧任务可在包含其代码的新构建上首次/回归验收；
   历史通过结论不能自动复制成新版本通过。跨模块链路与回归由集成验收 Agent 负责。
   并行验收的共享资源（同一窗口/实例、手机、剪贴板、CDP 端口、数据库目录）按
   [docs/ACCEPTANCE_ROUTING.md](docs/ACCEPTANCE_ROUTING.md) §5.4–5.5 串行或隔离。
 - **验收失败**：记录构建版本、现象与复现 → 负责人修复 → 新交付提交 → 下一个快照与构建 →
-  定向复测 + 受影响链路回归。**不得用旧版本的通过结论证明新版本通过**。
+  定向复测 + 受影响链路回归。**不得用旧版本的通过结论证明新版本通过**。Dev 验收失败先在 Dev 上修复
+  并重做 Dev 验收，再走正式验收流程。
 - 命令、状态机、记录字段、构建平台与复用规则、清理方式见
   [docs/INTEGRATION_BUILD.md](docs/INTEGRATION_BUILD.md)。
 
@@ -178,28 +206,21 @@ npm run integrate -- batch plan --platform desktop   # 只读：查看下一验�
 
 ## 5. 构建、测试与验收
 
-### 5.1 构建资源调度（所有会话与子智能体共用）
-- **所有高资源构建必须经统一入口**：`npm run build|tauri|test|dev|preview|cargo` 或
-  `node scripts/build-sched.mjs run -- <命令>`；手机端 `npm --prefix apps/mobile run build:android`
-  已接入。`*-raw`、直接 `cargo`/`vite`/`gradlew` 只用于调度器排障，**不得绕过排队**（改
-  `package.json` 绕开同样算绕过）。
-- 准入 = **全局构建并发（heavy/medium/light 合计 3 个，第 4 个排队）+ 分类槽位 + P0–P3 老化**；
-  dev 常驻服务单独限流。**没有内存维度**：不读物理/可用内存、不按体积估算准入；低内存下重型
-  构建可能 `exit 101`（OOM），按运行期 OOM 处理，正确做法是局部检查、降 `cargoJobs` 或等空闲。
-- 调度器只管构建，不管代码：构建排队期间可继续读代码、写文档、改无关模块；**无文件冲突不强制
-  Worktree**。
-- 优先局部检查再全量：能单 crate `cargo check` / 单测 / 单模块 `tsc` 就不整包构建。
-- 失败先判层级：**代码错误（子进程码）/ 槽位或名额不足（exit 3 + reason）/ 超时（exit 3）/
-  运行期 OOM（exit 101）/ 调度或磁盘错误（exit 5/6）**分别处理，不能把「没抢到槽位」当代码缺陷，
-  也不能为跑通绕过准入。
-- 不清理他人构建缓存/target/隔离目录，不终止未经授权的他人进程（含 dev 服务器）；陈旧锁或活动
-  台账用 `npm run sched:doctor`（默认只读），`--reap` 前必须证明对象已死亡（`unknown` 一律不动）。
-- 用法、配置、退出码、锁与回收原理见 [docs/BUILD_SCHEDULER.md](docs/BUILD_SCHEDULER.md)；
-  现状查 `npm run sched:status|queue|history`。
+### 5.1 构建执行（2026-11-19）
+
+- 按用户要求移除构建调度器；开发、测试、构建命令直接执行，不再排队、分配槽位或维护调度台账。
+- 优先定向检查再全量；并行任务自行协调 CPU、磁盘、Cargo target、dist 与端口，避免共享输出竞争。
+- `npm run cargo -- <参数>` 在 `src-tauri/` 内执行 Cargo；`npm run tauri` 保留磁盘预检与 Dev 实例复用。
+- Vite 默认端口仍为 1420（strictPort）；第二个实例需独立端口、数据目录和输出目录。
+- 不清理他人缓存，不终止他人进程；构建失败按真实子进程退出码与日志判断，不自动重试。
+- `:raw` 命令保留为兼容别名，与普通入口执行相同工具；已删除 `sched*` 命令。
 
 ### 5.2 统一构建与安装包
 - **正式测试安装包只从集成快照构建**：`npm run integrate -- build --snapshot <快照> --platform
   desktop|web|android`。共享工作区里的未提交改动、`main` 上更晚的提交都不进入产物。
+- **构建不是日常开发的门槛**：普通功能验证在 Dev 实例上完成（§5.4），**不为每个普通功能出安装包**。
+  只有需要 Release 专属结论（安装包生成、安装/升级/卸载、签名与更新、生产资源加载、正式性能基线、
+  正式交付版本）时才走本节的正式构建流程；一次 Release 构建应尽量覆盖多个已完成任务。
 - **构建前先对齐“最新代码”**：执行 `npm run integrate:status` 与 `batch plan`，在不违反批次和资源规则的
   前提下，把本轮所有已 `ready` / 待验收任务尽量纳入同一快照批次；核对快照 `commit`、`includedTasks` 与
   各任务当前交付提交。目标任务代码不在最新快照内时，先集成并生成新快照，**不得复用缺代码的旧快照或
@@ -214,15 +235,11 @@ npm run integrate -- batch plan --platform desktop   # 只读：查看下一验�
 - 构建记录必须含：构建 ID、Git commit（`dirty` 为构建前后实测，不得硬编码 false）、平台与配置、
   架构与构建输入指纹、时间、包含的任务（声明路径与显式放行的额外路径；`snapshotChain` /
   `includedTasks` 给出累计来源）、退出码、产物路径与 sha256、
-  调度任务与日志路径；`status=succeeded` 还必须
+  构建日志路径；`status=succeeded` 还必须
   至少有一个平台可用产物（web `dist/index.html`、桌面安装包、Android apk），零产物或 dirty 构建
   一律记失败。记录位置与字段见 [docs/INTEGRATION_BUILD.md](docs/INTEGRATION_BUILD.md) §5。
-- 每个调度任务收尾写 `<state>/logs/<taskId>.provenance.json`：记录开始执行时的 Git
-  HEAD/分支/脏文件内容哈希，结束时本轮写出的安装包与 `dist/` 资源 SHA256。包 SHA256 可用
-  `npm run sched -- provenance --artifact <sha256>` 反查任务，再按任务查源码边车；该文件只记
-  元数据与哈希，不记正文，也不替代正式集成构建的 `build.json`。
-- 集成任务的构建走调度器（label `integration-<构建ID>`），与日常构建共享同一队列，不另造锁；
-  构建工作区与快照工作区分离，构建使用 `<仓库>-integration-build`。
+- 集成构建由 `taskdock-integration.mjs` 在 `<仓库>-integration-build` 直接执行；保留构建锁、
+  commit/dirty 校验、产物 SHA256 与 `build.json`。不再生成调度 provenance；历史证据保留。
 - 未构建/构建失败写「未执行」或失败记录，不得用历史产物冒充本轮结果；只有 `status=succeeded`
   且 `dirty=false` 的构建才能进入 `verifying`，`accept pass|fail` 还必须匹配任务当前交付提交
   并出现在该构建的累计 `includedTasks` 中（旧任务可在新构建上验收，返工未入构建时拒绝）。
@@ -246,17 +263,68 @@ npm run integrate -- batch plan --platform desktop   # 只读：查看下一验�
 - 环境失败（锁屏、前台锁拒绝、权限不足、磁盘满）记 `ENVIRONMENT BLOCKED`，不标记通过，也不臆断
   为代码缺陷；同条件复跑结果一并保留。
 
-### 5.4 开发期自测：默认用 `tauri dev`，不要每改一处就打包
-- 功能/交互迭代自测默认 `npm run tauri dev`（经 `scripts/dev-launch.mjs` → 调度器 `dev` 类）：
-  前端走 Vite HMR，Rust 改动自动增量编译并重启；只占 dev 槽位（并发 2），**不占全局构建并发
-  名额**，打包排队时仍可自测，不必为每次验证打安装包。
-- dev 会话常驻复用：再次执行 `npm run tauri dev` 只会唤醒已运行的 `target/debug` 实例、不会重新
-  编译；需按新代码重启时先关闭该实例再启动，不为每次验证新开会话或另起 Vite 端口。
-- dev 实例必须隔离数据：`TASK_DOCK_DATA_DIR` 指向 `tmp/debug/<task-name>/`（必要时
-  `WEBVIEW2_USER_DATA_FOLDER` 隔离 WebView2 缓存），避免读写用户或其他会话正在使用的数据目录。
-- dev 结论只用于开发期功能自测：debug 未优化版不能出性能、内存、动画流畅度结论，也不能充当
-  验收证据（不含安装包与升级/卸载路径）。正式验收仍按 §5.2 从集成快照构建，按批次/里程碑出包，
-  不为单个普通任务单独打安装包。
+### 5.4 两种验收模式：Dev 功能验收（默认） / Release 正式验收
+
+**默认用 Dev 功能验收，不要每改一处就打包。**
+
+#### 5.4.1 A. Dev 功能验收
+
+- **适用**：UI 样式与布局、页面交互、组件功能、前后端 IPC、Rust 业务逻辑、SQLite 数据读写、
+  普通桌面功能、普通原生窗口行为、模块级功能与跨模块业务链路。
+- **默认命令**：`npm run tauri dev`（经 `scripts/dev-launch.mjs` 直接执行 Tauri CLI）。
+  Dev 模式运行的是**真实的 Tauri Debug 桌面应用**（真实 WebView2、真实 SQLite、真实 IPC、
+  真实 Win32 窗口），不是 Mock，也不是浏览器预览。
+- **允许在 Dev 模式下完成模块功能验收**，真实运行结果可作为验收证据记录在
+  `tmp/acceptance/<task-name>/`。
+- **Dev 验收不碰正式状态机**：不调用 `snapshot create` / `build` / `accept`，不生成 `buildId`，
+  不修改 `verifying` / `accept-passed` / `accept-failed`，不新建未经实现的状态。
+  结论只写「Dev 功能验收通过 / 部分通过 / 不通过 / 证据不足」，**不能**写成「Release 正式验收通过」。
+- **Dev 结论的边界**：Debug 构建未优化，**不能**给出性能、内存、动画流畅度、启动耗时等正式结论，
+  也**不能**证明安装包生成、安装/升级/卸载、签名与更新、生产环境资源加载。这些必须走 §5.2 的
+  Release 正式验收。
+
+**Dev 验收标准流程**：
+
+```
+检查 Git 状态 → 确定任务修改范围 → 执行定向自动化测试 → 检查 Dev 实例是否运行
+→ 设置独立数据目录 → 启动或复用 npm run tauri dev → 检查是否运行最新代码
+→ 真实操作与业务链路验证 → 记录截图、日志与执行证据 → 输出 Dev 功能验收结论
+→ （必要时）进入 Release 正式验收
+```
+
+**Dev 验收证据（每次至少记录）**：完整命令、工作目录、Git HEAD、Git dirty 状态与相关修改文件、
+运行模式（Debug/Release）、实际运行的 exe 路径（必要时附 SHA256）、开始与结束时间、隔离数据目录、
+实际操作步骤、可观察结果、截图或日志路径、未覆盖边界。不得伪造证据。
+
+#### 5.4.2 B. Release 正式验收
+
+- **适用**：安装包生成、安装/升级/卸载、签名与更新机制、生产环境资源加载、Release 专属行为、
+  正式性能基线、内存/CPU/启动性能等正式结论、正式交付版本。
+- **必须**使用 Integration Snapshot：
+  `task ready → snapshot create → build → accept`，验收记录绑定 `buildId`。
+- 其余机制（快照复用、多 Agent 共享同一 `buildId`、各写各的记录、修复后定向复测与回归、
+  不得拿旧版本结论证明新版本）见 §3.4 与
+  [docs/INTEGRATION_BUILD.md](docs/INTEGRATION_BUILD.md)。
+
+#### 5.4.3 Dev 实例使用纪律
+
+- **复用优先**：启动前先检查本仓库是否已有 Dev 实例在跑（可用 `Get-Process task-dock -ErrorAction SilentlyContinue` 核对进程路径）。
+  `scripts/dev-launch.mjs` 探测到本仓库 `target/debug/task-dock.exe` 正在运行时，**只会唤醒该实例**
+  （单实例回调聚焦工作台）并退出——**不会重新编译、不会启动第二个窗口**。因此：
+  - **不要误以为再次执行 `npm run tauri dev` 一定会重新编译**；
+  - 需要按新 Rust 代码重启时，**先正常关闭本会话自己的实例**，再重新执行 `npm run tauri dev`；
+  - 前端改动优先用 Vite HMR；Rust 改动看 Tauri 的实际增量编译与重启日志，确认跑的是新代码再操作。
+- **只操作本会话的实例**：不结束非本会话启动的进程；发现别的实例在跑时优先复用而不是再起一个。
+- **独立数据目录**：Dev 实例必须用独立数据目录，`TASK_DOCK_DATA_DIR` 指向
+  `tmp/debug/<task-name>/`（必要时 `WEBVIEW2_USER_DATA_FOLDER` 隔离 WebView2 缓存），
+  避免读写用户数据或其他会话正在使用的数据目录。注意：未显式设置 `TASK_DOCK_DATA_DIR` 时，
+  Debug 构建会自动使用 `%APPDATA%\com.taskdock.desktop\dev-instance` 作为开发实例目录；
+  **显式设置时以显式值为准**，并据此派生独立的应用标识与单实例锁。
+- **多 Agent 并行**：默认由主 Agent 或指定集成 Agent 管理共享的 Tauri Dev 实例，
+  **不允许所有子 Agent 同时启动自己的 Dev 实例**造成端口/数据目录冲突。需要独立实例的 Agent
+  必须使用独立 Worktree、数据目录和不冲突的端口，并遵守构建执行规范（§5.1）。
+- 完整操作规范与命令对照见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) 第二章；
+  验收通道对应关系见 [docs/ACCEPTANCE_ROUTING.md](docs/ACCEPTANCE_ROUTING.md)。
 
 ## 6. UI/UX 与 Skill 路由
 - 复用 `src/components/ui/` 基元与语义 Token，不新增平行组件、不硬编码颜色/圆角/阴影；不产生重复
@@ -334,6 +402,9 @@ MANDATORY 先查」并输出 `### Modern Web Guidance` 披露段，**本项目�
 - 任务产物进 `tmp/acceptance|debug|experiments/<task-name>/`（短横线英文，一任务一目录；`tmp/` 已
   gitignore）；集成台账在 `tmp/integration/`；仓库根不新增零散验收文件；正式证据归档 `docs/` 并
   更新索引，不迁移、覆盖或删除历史资料。
+- **Dev 功能验收**的记录同样进 `tmp/acceptance/<task-name>/`，并注明运行模式（Debug/Release）、
+  Git HEAD/dirty、隔离数据目录与实际命令；**Release 正式验收**的结论以
+  `npm run integrate -- accept` 写入构建目录为准。两者结论必须分别标注，不得混写。
 - 任务级报告 `tmp/acceptance/<task-name>/report.md` 必含：任务范围、检查依据、P0–P3 问题清单
   （现象/根因/影响/证据）、修改文件与关键位置、命令与结果（工作目录/退出码）、已验证/未验证项及
   原因、遗留风险、结论、真实证据路径。P0 数据丢失/安全泄露/崩溃/核心流程不可用；P1 主要功能错误

@@ -82,13 +82,21 @@ fn map_page_item(row: &Row<'_>) -> rusqlite::Result<ClipboardItem> {
 
 /// `offset` 用于在查询前额外选择分组 id 等列（封面查询）。
 fn map_page_item_at(row: &Row<'_>, offset: usize) -> rusqlite::Result<ClipboardItem> {
+    let kind: String = row.get(offset + 1)?;
     let preview: String = row.get(offset + 2)?;
     let raw_paths: String = row.get(offset + 10)?;
+    // 分页不读正文：文本类回填 preview（与列表接口同一压缩协议）；
+    // 图片的 preview 只是尺寸描述（「图片 1476×1198」），不是文字正文，
+    // 写进 text 会凭空造出一条假正文。分页路径没有正文可回填，图片保持空串。
+    let text = if kind == KIND_IMAGE {
+        String::new()
+    } else {
+        preview.clone()
+    };
     Ok(ClipboardItem {
         id: row.get(offset)?,
-        kind: row.get(offset + 1)?,
-        // 分页不读正文：text 与列表接口一致地回填 preview，html 恒为空。
-        text: preview.clone(),
+        kind,
+        text,
         html: String::new(),
         preview,
         title: row.get(offset + 3)?,
@@ -429,11 +437,9 @@ pub fn get_group(db: &Db, group_id: &str) -> AppResult<ClipboardGroup> {
             let item: ClipboardItem = r?;
             group.kind_counts.add(&item.kind);
             if item.kind == KIND_IMAGE && group.cover_items.len() < 3 {
-                group.cover_items.push(ClipboardItem {
-                    text: item.preview.clone(),
-                    html: String::new(),
-                    ..item.clone()
-                });
+                // 封面同样不制造假正文：只保留采集时真实存在的附带文本，
+                // preview（尺寸描述）留在 preview 字段里独立保存。
+                group.cover_items.push(engine::compact_item(&item));
             }
             group.items.push(item);
         }
@@ -5299,7 +5305,17 @@ mod tests {
         let page = get_group_page(&db, &g.id, Some(50), Some(0), false).unwrap();
         for item in &page.items {
             assert!(item.html.is_empty(), "分页条目不得携带 HTML");
-            assert_eq!(item.text, item.preview, "分页条目 text 只回填 preview");
+            if item.kind == KIND_IMAGE {
+                // 图片没有正文：尺寸描述只留在 preview，不得当成文字正文
+                assert!(item.text.is_empty(), "分页图片条目不得携带正文");
+                assert!(
+                    item.preview.starts_with("图片"),
+                    "图片预览只描述尺寸：{}",
+                    item.preview
+                );
+            } else {
+                assert_eq!(item.text, item.preview, "分页文本条目 text 只回填 preview");
+            }
             assert!(item.preview.chars().count() <= 220);
         }
         let long_text = full

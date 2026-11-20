@@ -2129,6 +2129,28 @@ CREATE INDEX idx_novel_chapters_volume
     // 文件导入授权（v81）：目录策略 / 待审核请求 / 导入幂等声明。
     // 默认无策略 = 待审核，文件导入不再等价本机用户。
     crate::agent_access::schema::MIGRATION_81,
+    // 安全审计日志（v82，2026-11-20）：配对/鉴权/撤销与 MCP 高风险事件的统一审计落点，
+    // schema 与 docs/architecture/unified-observability-design.md §4.3.3 一致。
+    // 纯新增表，只追加不更新（应用层不提供 UPDATE）；删除该表即可完整回退。
+    // 现有 mcp_audit_log / vault.audit / ph_audit_log 三套审计保留原地，不做数据搬迁。
+    (
+        82,
+        r#"
+CREATE TABLE security_audit_log (
+  id TEXT PRIMARY KEY,
+  category TEXT NOT NULL,      -- pairing | auth | mcp（后续可扩展 permission/remote/vault/agent）
+  event_type TEXT NOT NULL,    -- PAIRING_SUCCEEDED 等稳定枚举
+  subject TEXT,                -- 设备库内 UUID / 最小化 peer_ip（/24、/48）
+  action TEXT NOT NULL,
+  result TEXT NOT NULL,        -- ok | denied | failed
+  reason_code TEXT,            -- 明细保留 30 天，到期由显式清理置空
+  correlation_id TEXT,         -- request_id / trace_id
+  created_at TEXT NOT NULL
+);
+CREATE INDEX idx_sec_audit_time ON security_audit_log(created_at);
+CREATE INDEX idx_sec_audit_cat ON security_audit_log(category, created_at);
+"#,
+    ),
 ];
 
 /// 历史测试数据的保守回填（幂等）。

@@ -109,14 +109,16 @@ export default function ClipboardItemCard({
   const linkTitleIsDomain =
     !!link && !!headline && !link.rest && link.domain.toLowerCase() === headline.toLowerCase();
   // 标题已经重复表达了同一信息时不再多画一行：
-  // - 图片自动标题「截图 1280×720」与 preview 相同；
   // - 链接标题本身就是域名（此时正文只保留域名 + 路径）；
   // - 文件卡片的「3 个文件」由文件清单与标题共同表达。
-  const duplicatePreview =
-    (isImage && !!headline && rawPreview === headline) ||
-    linkTitleIsDomain ||
-    (isFiles && files.length > 0);
-  const showPreview = !duplicatePreview && (rawPreview !== "" || !headline);
+  const duplicatePreview = linkTitleIsDomain || (isFiles && files.length > 0);
+  // 图片的 preview 只是尺寸描述（「图片 1476×1198」），不是文字正文：
+  // 把它当正文渲染会凭空造出一条并不存在的文本。图片只有采集时真实存在的
+  // 附带文本才算正文，没有就不显示正文行（尺寸已在元数据行里）。
+  const imageBody = isImage ? item.text.trim() : "";
+  const showPreview = isImage
+    ? imageBody !== ""
+    : !duplicatePreview && (rawPreview !== "" || !headline);
   const cardRef = useRef<HTMLElement>(null);
   const [previewRef, viewportVisible] = useInViewport<HTMLElement>();
 
@@ -290,6 +292,8 @@ export default function ClipboardItemCard({
                     <span className="clip-link-domain">{link.domain}</span>
                     {link.rest && <span className="clip-link-rest">{link.rest}</span>}
                   </span>
+                ) : isImage ? (
+                  imageBody
                 ) : (
                   item.preview || "（无文本预览）"
                 )}

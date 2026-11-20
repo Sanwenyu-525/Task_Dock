@@ -67,6 +67,27 @@ fn negotiated_version(client: &str) -> &'static str {
     "2024-11-05"
 }
 
+/// 从请求封套提取外部可选 `traceId`（顶层字段，见下）。
+///
+/// 位置选择说明：MCP 规范把 `params._meta` 保留给协议元数据（progressToken 等），
+/// 且各方法的 `params` 结构不一（`ping` 无 params、`tools/call` 的 params 受严格
+/// 校验）；顶层 `traceId` 对所有方法统一可用，JSON-RPC 对封套多余字段宽容，
+/// 因此**不影响协议兼容性**（旧客户端不传 → 行为不变）。
+///
+/// - 未提供 → `None`（保持现状，不生成）；
+/// - 合法（16 位小写 hex）→ `Some(原值)`，用于该请求处理期间的诊断事件关联；
+/// - 非法 → 静默丢弃并**重新生成**（不报错、不透传、不拒绝请求）。
+///
+/// **红线：trace_id 绝不参与 token 校验/权限判定**——`auth::find_agent_by_token`
+/// 等鉴权路径完全不读取本函数结果；trace_id 只用于诊断事件关联。
+fn extract_trace_id(body: &Value) -> Option<String> {
+    let raw = body.get("traceId")?.as_str()?;
+    match crate::diagnostics::trace::validate_external_id(raw) {
+        Some(valid) => Some(valid),
+        None => Some(crate::diagnostics::trace::new_trace_id()),
+    }
+}
+
 /// 单个已解析请求 → 响应 Value；通知（无 id 字段）返回 None。
 /// `call_tool` 由调用方注入：bridge 进程内接鉴权+审计+工具执行；
 /// 测试可注入桩实现。
@@ -161,7 +182,19 @@ pub fn handle_request_value_with(
                     ))
                 }
             };
-            Some(match call_tool(name, &args) {
+            // 外部可选 traceId：合法→关联本请求诊断事件；非法→丢弃并重新生成；
+            // 未提供→不改变现状。工具执行是同步段，用 `with_trace` 覆盖：期间经
+            // `diagnostics` 记录的事件由 `normalize` 自动携带该 trace_id；审计侧
+            // （mcp/audit.rs，归安全审计子任务所有）可用
+            // `diagnostics::trace::current_trace()` 读取并写入 correlation_id。
+            let trace = extract_trace_id(body);
+            let result = match trace {
+                Some(trace_id) => {
+                    crate::diagnostics::trace::with_trace(&trace_id, || call_tool(name, &args))
+                }
+                None => call_tool(name, &args),
+            };
+            Some(match result {
                 Ok(result) => success(id, result),
                 Err(e) => error_with_data(id, e.code, &e.message, e.data),
             })
@@ -365,5 +398,51 @@ mod tests {
     fn notifications_are_ignored_even_without_jsonrpc_version() {
         let payload = json!({"method":"notifications/cancelled","params":{"requestId":1}});
         assert!(handle_request_value(&payload, &|_, _| unreachable!()).is_none());
+    }
+
+    #[test]
+    fn tools_call_with_valid_trace_id_associates_events() {
+        let payload = json!({
+            "jsonrpc":"2.0","id":9,"method":"tools/call",
+            "traceId":"0123456789abcdef",
+            "params":{"name":"x","arguments":{}}
+        });
+        let resp = handle_request_value(&payload, &|_, _| {
+            Ok(json!({ "trace": crate::diagnostics::trace::current_trace() }))
+        })
+        .unwrap();
+        // 合法外部 traceId：工具执行期间可经 current_trace 关联诊断事件。
+        assert_eq!(resp["result"]["trace"], "0123456789abcdef");
+    }
+
+    #[test]
+    fn tools_call_invalid_trace_id_is_replaced_not_rejected() {
+        let payload = json!({
+            "jsonrpc":"2.0","id":10,"method":"tools/call",
+            "traceId":"!!!invalid!!!",
+            "params":{"name":"x","arguments":{}}
+        });
+        let resp = handle_request_value(&payload, &|_, _| {
+            Ok(json!({ "trace": crate::diagnostics::trace::current_trace() }))
+        })
+        .unwrap();
+        // 非法值被静默丢弃并重新生成（16 位小写 hex），请求本身不被拒绝、原值不透传。
+        let trace = resp["result"]["trace"].as_str().expect("应已重新生成 trace_id");
+        assert_ne!(trace, "!!!invalid!!!");
+        assert!(crate::diagnostics::trace::validate_external_id(trace).is_some());
+    }
+
+    #[test]
+    fn tools_call_without_trace_id_keeps_no_trace_context() {
+        let payload = json!({
+            "jsonrpc":"2.0","id":11,"method":"tools/call",
+            "params":{"name":"x","arguments":{}}
+        });
+        let resp = handle_request_value(&payload, &|_, _| {
+            Ok(json!({ "trace": crate::diagnostics::trace::current_trace() }))
+        })
+        .unwrap();
+        // 未提供 traceId：行为与旧版完全一致（无追踪上下文）。
+        assert!(resp["result"]["trace"].is_null());
     }
 }

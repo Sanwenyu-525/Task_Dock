@@ -268,6 +268,42 @@ describe("ClipboardGroupCard 预览", () => {
     expect(open).toBeTruthy();
   });
 
+  it("图片组封面是真实缩略图，尺寸描述不作为文本摘要", async () => {
+    renderCard(
+      makeGroup({
+        kind_counts: counts({ image: 3 }),
+        image_count: 3,
+        item_count: 3,
+        preview: "图片 1920×1080",
+        cover_items: [makeItem("c1"), makeItem("c2"), makeItem("c3")],
+      }),
+    );
+
+    await waitFor(() => expect(thumbMock).toHaveBeenCalledTimes(3));
+    const imgs = Array.from(document.querySelectorAll<HTMLImageElement>("img.clip-thumb"));
+    expect(imgs.length).toBe(3);
+    expect(imgs[0].getAttribute("src")).toBe("data:image/png;base64,c1");
+    // 尺寸描述只是图片预览，不能出现在卡片摘要里
+    expect(screen.queryByText("图片 1920×1080")).toBeNull();
+    // 图片数量统计准确
+    expect(screen.getByText(/3 张截图/)).toBeTruthy();
+  });
+
+  it("混合组里首条是图片时，尺寸描述不冒充文本摘要", () => {
+    renderCard(
+      makeGroup({
+        name: "混合 · 截图与说明",
+        kind_counts: counts({ image: 1, text: 1 }),
+        image_count: 1,
+        item_count: 2,
+        preview: "图片 1920×1080",
+        cover_items: [makeItem("mix-cover")],
+      }),
+    );
+    expect(screen.queryByText("图片 1920×1080")).toBeNull();
+    expect(screen.getByText(/1 张截图 · 1 段文本/)).toBeTruthy();
+  });
+
   it("旧数据缺 kind_counts 时按 image_count/item_count 兜底", () => {
     const legacy = makeGroup({
       kind_counts: undefined,

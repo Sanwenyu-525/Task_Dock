@@ -41,6 +41,22 @@ const FLUSH_INTERVAL: Duration = Duration::from_millis(200);
 const ERROR_BACKOFF: Duration = Duration::from_secs(60);
 /// stderr 提示的最小间隔（日志系统故障本身也要限流）。
 const STDERR_INTERVAL: Duration = Duration::from_secs(30);
+/// 轮转重试基础退避：rename 失败（文件被占用等）后至少等这么久再试，
+/// 重试窗口内**跳过 rotate 判断**，消除「每写一条就重试一次 rename」的失败风暴。
+/// （测试构建缩短到 500ms，保证故障注入测试可在秒级完成；生产行为不变。）
+#[cfg(not(test))]
+const ROTATE_RETRY_BACKOFF: Duration = Duration::from_secs(60);
+#[cfg(test)]
+const ROTATE_RETRY_BACKOFF: Duration = Duration::from_millis(500);
+/// 轮转重试退避上限（指数退避封顶）：60s → 120s → 240s → … 最长 16 分钟。
+#[cfg(not(test))]
+const ROTATE_RETRY_BACKOFF_MAX: Duration = Duration::from_secs(16 * 60);
+#[cfg(test)]
+const ROTATE_RETRY_BACKOFF_MAX: Duration = Duration::from_millis(4000);
+/// 活动文件绝对硬上限：轮转长期失败时活动文件增长到此值后**整体停止写入**
+/// （只计数），直到轮转恢复。64 MB 远大于正常的 5 MB 轮转阈值，
+/// 足以保留完整故障现场，又不会把磁盘撑爆。
+pub(crate) const ACTIVE_HARD_CAP_BYTES: u64 = 64 * 1024 * 1024;
 
 pub(crate) fn run(
     dir: PathBuf,
@@ -94,6 +110,12 @@ struct Writer {
     retry_after: Option<Instant>,
     agg: Aggregator,
     rotate_seq: u32,
+    /// 轮转降级：rename 失败后置位，重试成功后清除。
+    rotate_degraded: bool,
+    /// 连续轮转失败次数（指数退避依据；恢复后归零，计数器里的历史不清零）。
+    rotate_failures: u32,
+    /// 下次允许重试轮转的时间（`None` = 立即可试；降级窗口内跳过 rotate 判断）。
+    rotate_retry_at: Option<Instant>,
 }
 
 impl Writer {
@@ -118,18 +140,21 @@ impl Writer {
             retry_after: None,
             agg,
             rotate_seq: 0,
+            rotate_degraded: false,
+            rotate_failures: 0,
+            rotate_retry_at: None,
         }
     }
 
     fn startup(&mut self) {
         if let Err(e) = std::fs::create_dir_all(&self.dir) {
-            self.fail(format!("创建日志目录失败: {e}"));
+            self.fail_io(format!("创建日志目录失败: {e}"), &e);
             self.diag.set_disabled(true);
             return;
         }
         self.prune();
         if let Err(e) = self.open_active() {
-            self.fail(format!("打开活动日志失败: {e}"));
+            self.fail_io(format!("打开活动日志失败: {e}"), &e);
         }
     }
 
@@ -179,17 +204,31 @@ impl Writer {
         if self.out.is_none() {
             if let Err(e) = self.open_active() {
                 self.counters.dropped.fetch_add(1, Ordering::Relaxed);
-                self.fail(format!("重新打开活动日志失败: {e}"));
+                self.fail_io(format!("重新打开活动日志失败: {e}"), &e);
                 self.retry_after = Some(Instant::now() + ERROR_BACKOFF);
                 return;
             }
         }
 
         // 轮转在写入前判断，保证一行不会跨文件。
-        if self.bytes_in_file > 0
-            && self.bytes_in_file.saturating_add(line.len() as u64) > self.cfg.max_file_bytes
-        {
+        // 降级期内按退避窗口节流：窗口未到则跳过 rotate 判断，
+        // 消除「每写一条就重试一次 rename」的失败风暴。
+        let exceeds_limit = self.bytes_in_file > 0
+            && self
+                .bytes_in_file
+                .saturating_add(line.len() as u64)
+                > self.cfg.max_file_bytes;
+        if exceeds_limit && self.rotate_retry_due() {
             self.rotate();
+        }
+
+        // 降级写入策略：低等级事件计数丢弃以减缓增长；达到硬上限后整体停止
+        // 写入（只计数），直到轮转恢复。任何分支都不阻塞、不 panic。
+        if self.rotate_degraded
+            && degraded_should_drop(event.level, self.bytes_in_file, line.len() as u64)
+        {
+            self.counters.dropped.fetch_add(1, Ordering::Relaxed);
+            return;
         }
 
         let Some(out) = self.out.as_mut() else {
@@ -205,7 +244,7 @@ impl Writer {
             Err(e) => {
                 self.counters.dropped.fetch_add(1, Ordering::Relaxed);
                 self.out = None;
-                self.fail(format!("写入诊断日志失败: {e}"));
+                self.fail_io(format!("写入诊断日志失败: {e}"), &e);
                 self.retry_after = Some(Instant::now() + ERROR_BACKOFF);
             }
         }
@@ -224,7 +263,7 @@ impl Writer {
                 Err(e) => {
                     self.out = None;
                     self.dirty = false;
-                    self.fail(format!("刷新诊断日志失败: {e}"));
+                    self.fail_io(format!("刷新诊断日志失败: {e}"), &e);
                     self.retry_after = Some(Instant::now() + ERROR_BACKOFF);
                 }
             }
@@ -275,14 +314,36 @@ impl Writer {
         match std::fs::rename(&active, &target) {
             Ok(()) => {
                 self.counters.rotations.fetch_add(1, Ordering::Relaxed);
+                if self.rotate_degraded {
+                    // 轮转恢复：退出降级状态，恢复正常轮转（文件重新可用）。
+                    self.rotate_degraded = false;
+                    self.rotate_failures = 0;
+                    self.rotate_retry_at = None;
+                    self.diag.record(
+                        DiagnosticEvent::new(DiagLevel::Info, "diagnostics", "rotate", "recovered")
+                            .with_message("日志轮转已恢复"),
+                    );
+                }
             }
             Err(e) => {
-                // 重命名失败（文件被占用等）不阻断写入：保持追加，靠总量上限兜底。
-                self.fail(format!("日志轮转失败（继续追加）: {e}"));
+                // rename 失败（文件被占用等）进入降级：按指数退避窗口重试，窗口内
+                // 继续追加（低等级事件丢弃、硬上限兜底），绝不阻塞写入线程。
+                self.rotate_degraded = true;
+                self.rotate_failures = self.rotate_failures.saturating_add(1);
+                let backoff = self.rotate_backoff();
+                self.rotate_retry_at = Some(Instant::now() + backoff);
+                self.counters.rotate_failures.fetch_add(1, Ordering::Relaxed);
+                self.fail_io(
+                    format!(
+                        "日志轮转失败（进入降级，{} 后重试）: {e}",
+                        format_duration_secs(backoff)
+                    ),
+                    &e,
+                );
             }
         }
         if let Err(e) = self.open_active() {
-            self.fail(format!("轮转后重开活动日志失败: {e}"));
+            self.fail_io(format!("轮转后重开活动日志失败: {e}"), &e);
             self.out = None;
             self.retry_after = Some(Instant::now() + ERROR_BACKOFF);
             return;
@@ -290,7 +351,27 @@ impl Writer {
         self.prune();
     }
 
-    /// 保留策略：归档数量上限 + 目录总字节上限，删最旧的归档。
+    /// 连续轮转失败后的重试退避：60s → 120s → 240s → …（指数，封顶 16 分钟）。
+    fn rotate_backoff(&self) -> Duration {
+        let shift = self.rotate_failures.saturating_sub(1).min(4);
+        ROTATE_RETRY_BACKOFF
+            .saturating_mul(1u32 << shift)
+            .min(ROTATE_RETRY_BACKOFF_MAX)
+    }
+
+    /// 是否到了重试轮转的时间（非降级状态恒为 true，行为与旧逻辑一致）。
+    fn rotate_retry_due(&self) -> bool {
+        self.rotate_retry_at
+            .map(|at| Instant::now() >= at)
+            .unwrap_or(true)
+    }
+
+    /// 保留策略：时间维度 + 归档数量上限 + 目录总字节上限，删最旧的归档。
+    ///
+    /// 三个维度互补：
+    /// - **时间**（`max_age_days`）：防「低频使用时目录几个月不动，总量上限永远碰不到」；
+    /// - **数量**（`max_archive_files`）：防归档个数无限增长；
+    /// - **容量**（`max_total_bytes`）：防单次大量写入把磁盘吃满。
     fn prune(&mut self) {
         let mut archives = archive_files(&self.dir);
         // 新的在前。
@@ -300,6 +381,40 @@ impl Writer {
                 .map(|m| m.len())
                 .unwrap_or(0);
 
+        // 1) 时间维度：过期归档先删（最旧的一批在队尾）。`max_age_days = 0` 表示不启用。
+        let cutoff = if self.cfg.max_age_days == 0 {
+            None
+        } else {
+            Some(
+                std::time::SystemTime::now()
+                    .checked_sub(Duration::from_secs(
+                        self.cfg.max_age_days.saturating_mul(86_400),
+                    ))
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+            )
+        };
+        loop {
+            let expired = match (cutoff, archives.last()) {
+                (Some(cutoff), Some((_, modified, _))) => *modified < cutoff,
+                _ => false,
+            };
+            if !expired {
+                break;
+            }
+            let Some((path, _, bytes)) = archives.pop() else {
+                break;
+            };
+            match std::fs::remove_file(&path) {
+                Ok(()) => total = total.saturating_sub(bytes),
+                Err(e) => {
+                    self.fail_io(format!("删除过期归档失败: {e}"), &e);
+                    // 目录里还有删不掉的文件时不再继续尝试，留给下次启动。
+                    break;
+                }
+            }
+        }
+
+        // 2) 归档数量上限。
         while archives.len() > self.cfg.max_archive_files {
             let Some((path, _, bytes)) = archives.pop() else {
                 break;
@@ -307,12 +422,13 @@ impl Writer {
             match std::fs::remove_file(&path) {
                 Ok(()) => total = total.saturating_sub(bytes),
                 Err(e) => {
-                    self.fail(format!("删除过期归档失败: {e}"));
+                    self.fail_io(format!("删除过期归档失败: {e}"), &e);
                     // 目录里还有删不掉的文件时不再继续尝试，留给下次启动。
                     break;
                 }
             }
         }
+        // 3) 目录总字节上限。
         while total > self.cfg.max_total_bytes && !archives.is_empty() {
             let Some((path, _, bytes)) = archives.pop() else {
                 break;
@@ -320,7 +436,7 @@ impl Writer {
             match std::fs::remove_file(&path) {
                 Ok(()) => total = total.saturating_sub(bytes),
                 Err(e) => {
-                    self.fail(format!("按容量删除归档失败: {e}"));
+                    self.fail_io(format!("按容量删除归档失败: {e}"), &e);
                     break;
                 }
             }
@@ -397,8 +513,17 @@ impl Writer {
     }
 
     fn fail(&mut self, message: String) {
+        self.fail_with_kind(message, super::WriteFailureKind::Unknown);
+    }
+
+    /// 记录一次 IO 失败，并按错误类型分类（磁盘满 / 权限不足 / 文件被占用）。
+    fn fail_io(&mut self, message: String, err: &std::io::Error) {
+        self.fail_with_kind(message, super::WriteFailureKind::from_io(err));
+    }
+
+    fn fail_with_kind(&mut self, message: String, kind: super::WriteFailureKind) {
         self.counters.failures.fetch_add(1, Ordering::Relaxed);
-        self.diag.record_writer_error(message.clone());
+        self.diag.record_writer_error(message.clone(), kind);
         let now = Instant::now();
         let should_print = self
             .last_stderr
@@ -454,6 +579,28 @@ fn archive_files(dir: &Path) -> Vec<(PathBuf, std::time::SystemTime, u64)> {
         ));
     }
     out
+}
+
+/// 降级期写入决策：`true` = 该事件应被丢弃（只计入 dropped）。
+///
+/// - **硬上限优先**：活动文件将超过 [`ACTIVE_HARD_CAP_BYTES`] 时，任何级别都停止写入
+///   （防磁盘撑爆；轮转恢复后自动回到正常写入）；
+/// - **低等级丢弃**：Trace/Debug/Info 直接计数丢弃，保留 Warn/Error/Critical 故障现场。
+pub(crate) fn degraded_should_drop(level: DiagLevel, bytes_in_file: u64, line_bytes: u64) -> bool {
+    if bytes_in_file.saturating_add(line_bytes) > ACTIVE_HARD_CAP_BYTES {
+        return true;
+    }
+    matches!(level, DiagLevel::Trace | DiagLevel::Debug | DiagLevel::Info)
+}
+
+/// 退避时长的人类可读形式（提示信息用，只保留整数秒）。
+fn format_duration_secs(d: Duration) -> String {
+    let secs = d.as_secs();
+    if secs > 0 {
+        format!("{secs}s")
+    } else {
+        format!("{}ms", d.as_millis())
+    }
 }
 
 /// 异常聚合：同一指纹在窗口内只落一条原始行 + 一条摘要行。

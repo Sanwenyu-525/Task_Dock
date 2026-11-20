@@ -66,8 +66,11 @@ export function createApp(deps: AppDeps): FastifyInstance {
   });
   app.register(websocket);
   registerHttpRoutes(app, deps);
-  app.get('/v1/signaling', { websocket: true }, (socket) => {
-    handleSignalingSocket(socket, deps);
+  // 在 WebSocket 插件就绪后注册路由，使升级钩子先安装。
+  app.register(async (scope) => {
+    scope.get('/v1/signaling', { websocket: true }, (socket) => {
+      handleSignalingSocket(socket, deps);
+    });
   });
   return app;
 }

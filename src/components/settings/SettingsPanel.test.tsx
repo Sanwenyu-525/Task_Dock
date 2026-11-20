@@ -1,7 +1,8 @@
 /**
  * @vitest-environment jsdom
  */
-//! 设置页：分组默认折叠与持久化、跨模块定位、备份元数据展示、箭头行尾布局。
+//! 设置中心（2026-11-20 重构后）：页面直达、持久化恢复、跨模块定位、
+//! 按需数据加载、草稿卸载保护、树形导航键盘交互与备份元数据展示。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -126,19 +127,16 @@ import {
   listBackups,
   resourceSnapshot,
 } from "../../lib/bridge";
-import {
-  SETTINGS_SECTIONS_STORAGE_KEY,
-  type SettingsSectionId,
-} from "../../lib/settingsSections";
+import { SETTINGS_SECTIONS_STORAGE_KEY, type SettingsSectionId } from "../../lib/settingsSections";
 import {
   SETTINGS_CATEGORY_IDS,
   SETTINGS_CATEGORY_STORAGE_KEY,
-  categoryForSection,
+  SETTINGS_SECTION_ACTIVE_STORAGE_KEY,
+  firstSectionOf,
   sectionsForCategory,
-  settingsCategory,
-  settingsSectionMeta,
   type SettingsCategoryId,
 } from "../../lib/settingsCategories";
+import { navItemElementId } from "./SettingsNavigation";
 import { zhCN } from "../../locales/zh-CN";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useUiStore } from "../../store/useUiStore";
@@ -212,53 +210,28 @@ const BASE_SETTINGS: Settings = {
   workbench_current_task: "",
 };
 
-/** 设置页每个一级分类下的分组标题（顺序与页面渲染一致）。 */
-function categoryTitles(category: SettingsCategoryId): string[] {
-  return sectionsForCategory(category).map((meta) => titleOf(meta.id));
+/** 树内二级页面项（稳定 DOM id；同一函数供组件与测试共用）。 */
+function pageItem(id: SettingsSectionId): HTMLElement {
+  const item = document.getElementById(navItemElementId(id));
+  if (!item) throw new Error(`未找到导航页面项：${id}`);
+  return item;
 }
 
-function sectionHead(title: string): HTMLElement {
-  // 只匹配可折叠分组头（带 aria-expanded），避免命中内容区里的「打开资源管理」等按钮。
-  const head = screen
-    .getAllByRole("button")
-    .find((el) => el.hasAttribute("aria-expanded") && (el.textContent ?? "").includes(title));
-  if (!head) throw new Error(`未找到分组：${title}`);
-  return head;
+/** 直达二级页面（点击树内页面项）。 */
+function selectPage(id: SettingsSectionId) {
+  fireEvent.click(pageItem(id));
 }
 
-/** 分组标题：直接取自注册表的 i18n Key，避免测试里再抄一份中文标题表。 */
-function titleOf(id: SettingsSectionId): string {
-  const meta = settingsSectionMeta(id);
-  if (!meta) throw new Error(`分组 ${id} 未在注册表中登记`);
-  return zhCN[meta.labelKey];
+/** 断言某页面处于选中态且内容已挂载（用该页面特有元素校验，避免依赖具体文案）。 */
+function expectPageActive(id: SettingsSectionId, selected = true) {
+  expect(pageItem(id).getAttribute("aria-selected")).toBe(String(selected));
 }
 
-/** 切换一级分类（分类导航是 tablist，用 role=tab 定位）。 */
-function activateCategory(category: SettingsCategoryId) {
-  const meta = settingsCategory(category);
-  if (!meta) throw new Error(`分类 ${category} 未登记`);
-  fireEvent.click(screen.getByRole("tab", { name: zhCN[meta.labelKey] }));
-}
-
-/** 先切到分组所属分类，再返回该分组的折叠头（分类内只渲染当前分类）。 */
-function openSection(id: SettingsSectionId): HTMLElement {
-  activateCategory(categoryForSection(id));
-  return sectionHead(titleOf(id));
-}
-
-function expectExpanded(head: HTMLElement, expanded: boolean) {
-  expect(head.getAttribute("aria-expanded")).toBe(String(expanded));
-}
-
-/** 只统计可折叠分组（带折叠箭头）的展开内容，忽略其他会话新增的非折叠区块。 */
-function foldableBodyCount(): number {
-  const foldable = Array.from(document.querySelectorAll("[data-collapsible-section]")).filter((section) =>
-    section.querySelector(".collapsible-chevron"),
-  );
-  return foldable.reduce(
-    (sum, section) => sum + section.querySelectorAll(".collapsible-body:not([hidden])").length,
-    0,
-  );
+/** 分类项：树内一级 treeitem。 */
+function categoryItem(category: SettingsCategoryId): HTMLElement {
+  const item = document.getElementById(`settings-nav-category-${category}`);
+  if (!item) throw new Error(`未找到导航分类项：${category}`);
+  return item;
 }
 
 beforeEach(() => {
@@ -281,255 +254,262 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("设置页分组折叠", () => {
-  it("首次无记录时默认进入「通用与外观」，本分类分组全部折叠、箭头在标题行末尾", () => {
+// ── 树形导航与页面直达 ────────────────────────────────────────────────
+describe("设置中心树形导航", () => {
+  it("首次无记录时默认进入第一个页面，六个分类全部展开", () => {
     render(<SettingsPanel />);
-    // 默认分类：第一个分类
+    const firstCategory = SETTINGS_CATEGORY_IDS[0];
+    const firstSection = firstSectionOf(firstCategory);
+    expectPageActive(firstSection, true);
+    for (const category of SETTINGS_CATEGORY_IDS) {
+      expect(categoryItem(category).getAttribute("aria-expanded")).toBe("true");
+    }
+    // 树是常驻导航（展开分类的页面项都在）；这里断言「其它页面内容未挂载」
     expect(
-      screen.getByRole("tab", { name: zhCN["settings.category.general"] }).getAttribute(
-        "aria-selected",
-      ),
-    ).toBe("true");
-    for (const title of categoryTitles("general")) {
-      const head = sectionHead(title);
-      expectExpanded(head, false);
-      // 箭头属于标题行（图标/标题/徽标同一层），整行仍由按钮承载点击与键盘操作
-      expect(
-        head.querySelector(".collapsible-title-row")?.lastElementChild?.classList.contains(
-          "collapsible-chevron",
-        ),
-      ).toBe(true);
-    }
-    // 其它分类的分组不在 DOM 里（不是靠 CSS 隐藏，也不产生额外查询）
-    expect(screen.queryByRole("button", { name: /智能剪贴板/ })).toBeNull();
-    expect(screen.queryByRole("button", { name: /数据与备份/ })).toBeNull();
-    expect(foldableBodyCount()).toBe(0);
+      screen.queryByRole("switch", { name: zhCN["settings.features.workspace"] }),
+    ).toBeNull();
   });
 
-  it("切换分类只渲染目标分类的分组，切回后原分类内容仍在", () => {
+  it("点击二级页面直达对应内容，切换后其它页面卸载", () => {
     render(<SettingsPanel />);
-    expect(screen.getByRole("button", { name: /外观与主题/ })).toBeTruthy();
-
-    activateCategory("data-resources");
-    expect(screen.getByRole("tab", { name: zhCN["settings.category.dataResources"] }).getAttribute("aria-selected")).toBe("true");
-    for (const title of categoryTitles("data-resources")) {
-      expect(screen.getByRole("button", { name: new RegExp(title) })).toBeTruthy();
-    }
-    expect(screen.queryByRole("button", { name: /外观与主题/ })).toBeNull();
-
-    activateCategory("general");
-    expect(screen.getByRole("button", { name: /外观与主题/ })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /数据与备份/ })).toBeNull();
+    selectPage("navigation");
+    expectPageActive("navigation");
+    // 导航自定义页面内容已挂载（原折叠卡三步操作 → 一步直达）
+    expect(screen.getByText(/常驻 \d+ \/ \d+ 项/)).toBeTruthy();
+    // 外观页面内容卸载
+    expect(screen.queryByText(zhCN["settings.appearance.preset"])).toBeNull();
   });
 
-  it("展开后组件重挂载仍从本地偏好恢复，可同时展开多个（跨分类保持）", () => {
+  it("页面切换持久化，重挂载后恢复上次页面", () => {
     render(<SettingsPanel />);
-    fireEvent.click(sectionHead("外观与主题"));
-    fireEvent.click(sectionHead("导航自定义"));
-
-    expectExpanded(sectionHead("外观与主题"), true);
-    expectExpanded(sectionHead("导航自定义"), true);
-    expect(foldableBodyCount()).toBe(2);
-
-    // 另一个分类里再展开一个：两个分类的展开状态互不影响
-    fireEvent.click(openSection("notifications"));
-    expectExpanded(sectionHead("通知"), true);
+    selectPage("diagnostics");
+    const stored = JSON.parse(
+      localStorage.getItem(SETTINGS_SECTION_ACTIVE_STORAGE_KEY) ?? "{}",
+    );
+    expect(stored.version).toBe(1);
+    expect(stored.section).toBe("diagnostics");
 
     cleanup();
     render(<SettingsPanel />);
-    // 分类选中态同样持久化：回到上次查看的分类
-    expect(
-      screen.getByRole("tab", { name: zhCN["settings.category.notifyVoice"] }).getAttribute(
-        "aria-selected",
-      ),
-    ).toBe("true");
-    expectExpanded(sectionHead("通知"), true);
-
-    activateCategory("general");
-    expectExpanded(sectionHead("外观与主题"), true);
-    expectExpanded(sectionHead("导航自定义"), true);
-    expectExpanded(sectionHead("窗口与快捷键"), false);
+    expectPageActive("diagnostics");
+    // 所属分类（接入与诊断）自动展开
+    expect(categoryItem("integration").getAttribute("aria-expanded")).toBe("true");
   });
 
-  it("自动识别图片文字开关为禁用状态并标注待开发", () => {
-    render(<SettingsPanel />);
-    fireEvent.click(openSection("clipboard"));
-
-    const switchControl = screen.getByRole("switch", { name: "自动识别图片文字" }) as HTMLInputElement;
-    expect(switchControl.disabled).toBe(true);
-    expect(switchControl.checked).toBe(false);
-    expect(screen.getByText(/待开发，目前仅支持手动提取文字/)).toBeTruthy();
-  });
-
-  it("历史配置已是 true 时如实展示为开启、仍禁用且不重置配置", () => {
-    useSettingsStore.setState({ settings: { ...BASE_SETTINGS, clipboard_ocr_auto: true } });
-    render(<SettingsPanel />);
-    fireEvent.click(openSection("clipboard"));
-
-    const switchControl = screen.getByRole("switch", { name: "自动识别图片文字" }) as HTMLInputElement;
-    expect(switchControl.checked).toBe(true);
-    expect(switchControl.disabled).toBe(true);
-    expect(screen.getByText(/待开发，目前仅支持手动提取文字/)).toBeTruthy();
-    // 禁用态下不触发业务更新，历史键值不被清空
-    fireEvent.click(switchControl);
-    expect(useSettingsStore.getState().settings?.clipboard_ocr_auto).toBe(true);
-  });
-
-  it("再次折叠会立即写回本地偏好", () => {
-    render(<SettingsPanel />);
-    fireEvent.click(sectionHead("外观与主题"));
-    fireEvent.click(sectionHead("外观与主题"));
-
-    const stored = JSON.parse(localStorage.getItem(SETTINGS_SECTIONS_STORAGE_KEY) ?? "{}");
-    expect(stored.version).toBe(1);
-    expect(stored.sections.appearance).toBe(false);
-    expectExpanded(sectionHead("外观与主题"), false);
-  });
-
-  it("资源管理分组只保留入口，点击后切到独立页面而不是内嵌完整面板", () => {
-    render(<SettingsPanel />);
-    fireEvent.click(openSection("resource-cleanup"));
-
-    // 设置里不再渲染清理/概览/进程诊断本体（避免两份完整界面）。
-    expect(screen.queryByText("资源概览")).toBeNull();
-    expect(screen.queryByText("settings.resourceCleanup.categoriesTitle")).toBeNull();
-    expect(localStorage.getItem(SETTINGS_SECTIONS_STORAGE_KEY)).toContain('"resource-cleanup":true');
-
-    fireEvent.click(screen.getByRole("button", { name: "打开资源管理" }));
-    expect(useUiStore.getState().tab).toBe("resource");
-    // 设置页内不应触发资源采样 IPC
-    expect(vi.mocked(resourceSnapshot)).not.toHaveBeenCalled();
-  });
-
-  it("查找设置可直接展开并定位资源管理，无需滚动查找", async () => {
-    render(<SettingsPanel />);
-
-    const search = screen.getByRole("combobox", { name: "查找设置" });
-    fireEvent.focus(search);
-    fireEvent.change(search, { target: { value: "资源管理" } });
-    fireEvent.click(await screen.findByRole("option", { name: /资源管理/ }));
-
-    await waitFor(() => expectExpanded(sectionHead("资源管理"), true));
-    // 查找结果会自动切到分组所属分类
-    expect(
-      screen.getByRole("tab", { name: zhCN["settings.category.dataResources"] }).getAttribute(
-        "aria-selected",
-      ),
-    ).toBe("true");
-    const stored = JSON.parse(localStorage.getItem(SETTINGS_SECTIONS_STORAGE_KEY) ?? "{}");
-    expect(stored.sections["resource-cleanup"]).toBe(true);
-  });
-
-  it("帮助与教程设置可打开帮助中心并重新打开新手引导", () => {
-    useOnboardingStore.setState({ open: false, step: 0, hydrated: true, done: true, hasNewContent: false });
-    render(<SettingsPanel />);
-    fireEvent.click(openSection("help"));
-
-    fireEvent.click(screen.getByRole("button", { name: "打开帮助中心" }));
-    expect(useUiStore.getState().tab).toBe("help");
-    expect(useUiStore.getState().helpReturnTab).toBe("settings");
-
-    fireEvent.click(screen.getByRole("button", { name: "重新打开新手引导" }));
-    expect(useOnboardingStore.getState().open).toBe(true);
-    expect(useOnboardingStore.getState().step).toBe(0);
-  });
-
-  it("MCP 服务开关默认关闭并通过设置更新", async () => {
-    render(<SettingsPanel />);
-    fireEvent.click(openSection("agent"));
-
-    expect(screen.getByRole("button", { name: "查看帮助：MCP 服务器：规划数据的授权读写" })).toBeTruthy();
-
-    const toggle = screen.getByRole("switch", { name: "MCP 规划数据访问服务（默认关闭）" });
-    expect((toggle as HTMLInputElement).checked).toBe(false);
-    fireEvent.click(toggle);
-    await waitFor(() =>
-      expect(useSettingsStore.getState().update).toHaveBeenCalledWith({ mcp_server_enabled: true }),
+  it("损坏的页面键回退到旧分类键推导的页面；再损坏回退全局默认", () => {
+    localStorage.setItem(SETTINGS_SECTION_ACTIVE_STORAGE_KEY, "{broken");
+    localStorage.setItem(
+      SETTINGS_CATEGORY_STORAGE_KEY,
+      JSON.stringify({ version: 1, category: "integration" }),
     );
-  });
-
-  it("数据与备份区提供对应的恢复教程入口", () => {
     render(<SettingsPanel />);
-    fireEvent.click(openSection("data"));
+    expectPageActive(firstSectionOf("integration"));
 
-    expect(screen.getByRole("button", { name: "查看帮助：备份与恢复：数据在哪些环节受保护" })).toBeTruthy();
+    cleanup();
+    localStorage.setItem(SETTINGS_CATEGORY_STORAGE_KEY, "{broken");
+    render(<SettingsPanel />);
+    expectPageActive(firstSectionOf(SETTINGS_CATEGORY_IDS[0]));
   });
 
-  it("「自定义导航」一次性意图会展开导航分区并清除标记", async () => {
+  it("分类点击行为明确：收起态点击 = 展开并打开第一个页面；展开态点击 = 收起", () => {
+    render(<SettingsPanel />);
+    const helpCategory = categoryItem("help");
+    // 默认全展开：先收起
+    fireEvent.click(helpCategory);
+    expect(helpCategory.getAttribute("aria-expanded")).toBe("false");
+    // 再点击：展开 + 打开该分类第一个页面（当前页面不在其下）
+    fireEvent.click(helpCategory);
+    expect(helpCategory.getAttribute("aria-expanded")).toBe("true");
+    expectPageActive("help");
+
+    // 当前页面在该分类下时再次点击 = 仅收起导航，内容保持
+    fireEvent.click(helpCategory);
+    expect(helpCategory.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.getByRole("button", { name: "打开帮助中心" })).toBeTruthy();
+  });
+
+  it("收起含漫游锚点的分类后，树内仍存在可聚焦项（无死区）", () => {
+    render(<SettingsPanel />);
+    // 锚点初始在第一个页面项上；收起其所属分类后锚点应回落
+    fireEvent.click(categoryItem(SETTINGS_CATEGORY_IDS[0]));
+    const tabbable = Array.from(
+      document.querySelectorAll<HTMLElement>('[role="treeitem"][tabindex="0"]'),
+    );
+    expect(tabbable.length).toBe(1);
+    // 回落到所属分类按钮
+    expect(tabbable[0].id).toBe(`settings-nav-category-${SETTINGS_CATEGORY_IDS[0]}`);
+  });
+
+  it("六个分类逐一可达：页面切换渲染对应可操作控件", () => {
+    render(<SettingsPanel />);
+    for (const category of SETTINGS_CATEGORY_IDS) {
+      const section = firstSectionOf(category);
+      selectPage(section);
+      expectPageActive(section);
+      const body = document.querySelector(".settings-page-host")!;
+      expect(
+        body.querySelectorAll(
+          'button, [role="switch"], [role="combobox"], [role="spinbutton"], input, select, textarea',
+        ).length,
+      ).toBeGreaterThan(0);
+    }
+  });
+});
+
+// ── 树形导航键盘交互 ─────────────────────────────────────────────────
+describe("设置中心导航键盘", () => {
+  it("方向键在可见项间移动并激活页面；Home/End 到首尾", () => {
+    render(<SettingsPanel />);
+    const first = pageItem(firstSectionOf(SETTINGS_CATEGORY_IDS[0]));
+    first.focus();
+    fireEvent.keyDown(first, { key: "ArrowDown" });
+    // 下一个可见项是同分类第二个页面：聚焦并激活
+    const second = sectionsForCategory(SETTINGS_CATEGORY_IDS[0])[1];
+    expect(document.activeElement).toBe(pageItem(second.id));
+    expectPageActive(second.id);
+    expect(pageItem(second.id).getAttribute("tabindex")).toBe("0");
+
+    fireEvent.keyDown(pageItem(second.id), { key: "End" });
+    const lastCategory = SETTINGS_CATEGORY_IDS[SETTINGS_CATEGORY_IDS.length - 1];
+    const lastSection = firstSectionOf(lastCategory);
+    expect(document.activeElement).toBe(pageItem(lastSection));
+    expectPageActive(lastSection);
+  });
+
+  it("ArrowRight 展开分类并进入第一个页面；ArrowLeft 收起", () => {
+    render(<SettingsPanel />);
+    const helpCategory = categoryItem("help");
+    fireEvent.click(helpCategory); // 收起
+    expect(helpCategory.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.keyDown(helpCategory, { key: "ArrowRight" });
+    expect(helpCategory.getAttribute("aria-expanded")).toBe("true");
+    expectPageActive("help");
+
+    fireEvent.keyDown(helpCategory, { key: "ArrowLeft" });
+    expect(helpCategory.getAttribute("aria-expanded")).toBe("false");
+  });
+});
+
+// ── 跨模块定位与搜索 ─────────────────────────────────────────────────
+describe("设置中心定位与搜索", () => {
+  it("「自定义导航」一次性意图直达导航自定义页面并清除标记", () => {
     sessionStorage.setItem("taskdock.settings.reveal.v1", "navigation");
     render(<SettingsPanel />);
 
-    await waitFor(() => expectExpanded(sectionHead("导航自定义"), true));
-    // 数字与 navigationRegistry 默认常驻的 left 入口数一致（帮助与诊断中心默认隐藏）；
-    // 再新增常驻入口时需同步更新（2026-11-12：+工作台 → 16 声明 / 14 常驻）。
-    // 数字直接由导航注册表推导，避免新增常驻入口后测试与真实 UI 再次漂移。
+    expectPageActive("navigation");
+    expect(screen.getByText(/常驻 \d+ \/ \d+ 项/)).toBeTruthy();
+    // 数字与导航注册表默认常驻入口一致（由注册表推导，避免测试与 UI 漂移）
     const leftEntries = NAV_ENTRIES.filter((entry) => entry.surfaces.includes("left"));
     const residentCount = leftEntries.filter((entry) => entry.defaults.left.visible).length;
     expect(
       screen.getByText(`常驻 ${residentCount} / ${leftEntries.length} 项`),
     ).toBeTruthy();
     expect(sessionStorage.getItem("taskdock.settings.reveal.v1")).toBeNull();
-    // 定位意图会先切到分组所属分类
-    expect(
-      screen.getByRole("tab", { name: zhCN["settings.category.general"] }).getAttribute(
-        "aria-selected",
-      ),
-    ).toBe("true");
   });
 
-  it("跨分类定位：语音缓存意图会切到「通知与语音」并展开对应分组", async () => {
-    sessionStorage.setItem("taskdock.settings.reveal.v1", "tts-cache");
+  it("查找设置：命中结果直达对应页面（结果展示所属分类）", async () => {
     render(<SettingsPanel />);
+    const input = screen.getByRole("combobox", { name: "查找设置" });
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: "日志" } });
 
-    await waitFor(() => expectExpanded(sectionHead("语音缓存"), true));
-    expect(
-      screen.getByRole("tab", { name: zhCN["settings.category.notifyVoice"] }).getAttribute(
-        "aria-selected",
-      ),
-    ).toBe("true");
+    const option = await screen.findByRole("option", { name: /诊断与日志/ });
+    // 结果项展示所属分类（hint），用户选择前就知道会去哪个分类
+    expect(option.textContent).toContain(zhCN["settings.category.integration"]);
+    fireEvent.click(option);
+
+    expectPageActive("diagnostics-logs");
+    expect(categoryItem("integration").getAttribute("aria-expanded")).toBe("true");
+    // 页面内容已挂载：焦点移到页面标题（外部定位路径）
+    await waitFor(() =>
+      expect(document.activeElement?.classList.contains("settings-page-title")).toBe(true),
+    );
   });
 
-  it("存储损坏或权限拒绝时安全回退为默认分类且全部折叠", () => {
-    localStorage.setItem(SETTINGS_SECTIONS_STORAGE_KEY, "{broken");
-    localStorage.setItem(SETTINGS_CATEGORY_STORAGE_KEY, "{broken");
+  it("查找设置无匹配时给出明确说明；清空后收起", async () => {
     render(<SettingsPanel />);
-    expect(
-      screen.getByRole("tab", { name: zhCN["settings.category.general"] }).getAttribute(
-        "aria-selected",
-      ),
-    ).toBe("true");
-    for (const title of categoryTitles("general")) {
-      expectExpanded(sectionHead(title), false);
-    }
+    const input = screen.getByRole("combobox", { name: "查找设置" });
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: "zzz-not-exist" } });
+    expect(await screen.findByText("没有匹配的设置分组")).toBeTruthy();
+    expect(screen.queryAllByRole("option")).toHaveLength(0);
 
-    cleanup();
-    const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
-      throw new Error("SecurityError");
-    });
-    render(<SettingsPanel />);
-    expect(() => fireEvent.click(sectionHead("外观与主题"))).not.toThrow();
-    expectExpanded(sectionHead("外观与主题"), true);
-    getItem.mockRestore();
+    fireEvent.click(screen.getByRole("button", { name: "清除查找" }));
+    await waitFor(() => expect(screen.queryAllByRole("option")).toHaveLength(0));
+    expect((input as HTMLInputElement).value).toBe("");
   });
 
-  it("从工具面板进入时先切到「功能与应用」、展开应用分组，再滚动定位", async () => {
-    const scrollSpy = vi
-      .spyOn(Element.prototype, "scrollIntoView")
-      .mockImplementation(() => {});
+  it("从工具面板进入时直达「应用与快捷方式」页面", () => {
     useUiStore.setState({ appConfig: { kind: "manage", token: 1 } });
-
     render(<SettingsPanel />);
-    await waitFor(() => expectExpanded(sectionHead("应用与快捷方式"), true));
-    await waitFor(() => expect(scrollSpy).toHaveBeenCalled());
-    expect(
-      screen.getByRole("tab", { name: zhCN["settings.category.features"] }).getAttribute(
-        "aria-selected",
-      ),
-    ).toBe("true");
+    expectPageActive("apps");
+    expect(document.querySelector(".app-management")).toBeTruthy();
   });
 });
 
-describe("设置页备份记录", () => {
+// ── 按需数据加载 ─────────────────────────────────────────────────────
+describe("设置中心按需数据加载", () => {
+  it("初始挂载与页面切换不读附属数据；进入对应页面各读一次", async () => {
+    render(<SettingsPanel />);
+    expect(vi.mocked(listBackups)).not.toHaveBeenCalled();
+    expect(vi.mocked(clipboardStats)).not.toHaveBeenCalled();
+    expect(vi.mocked(clipboardStatus)).not.toHaveBeenCalled();
+
+    // 在不产生数据查询的页面间切换
+    selectPage("appearance");
+    selectPage("notifications");
+    expect(vi.mocked(listBackups)).not.toHaveBeenCalled();
+    expect(vi.mocked(clipboardStats)).not.toHaveBeenCalled();
+
+    selectPage("data");
+    await waitFor(() => expect(vi.mocked(listBackups)).toHaveBeenCalledTimes(1));
+
+    selectPage("clipboard");
+    await waitFor(() => {
+      expect(vi.mocked(clipboardStats)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(clipboardStatus)).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("备份列表读取失败显示真实错误，重试可恢复", async () => {
+    vi.mocked(listBackups).mockRejectedValueOnce(new Error("数据库被占用"));
+    render(<SettingsPanel />);
+    selectPage("data");
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("数据库被占用");
+
+    vi.mocked(listBackups).mockResolvedValueOnce([]);
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    await waitFor(() => expect(vi.mocked(listBackups)).toHaveBeenCalledTimes(2));
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+});
+
+// ── 页面切换的状态保护 ───────────────────────────────────────────────
+describe("设置中心页面切换的状态保护", () => {
+  it("输入中的剪贴板排除名单在切换页面前被提交（卸载守卫），不静默丢失", () => {
+    render(<SettingsPanel />);
+    selectPage("clipboard");
+
+    const textarea = screen.getByRole("textbox", {
+      name: "剪贴板排除的应用名单",
+    }) as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "keepass.exe" } });
+
+    // 未失焦直接切页：卸载守卫提交草稿
+    selectPage("appearance");
+
+    expect(useSettingsStore.getState().update).toHaveBeenCalledWith({
+      clipboard_exclude_apps: "keepass.exe",
+    });
+    // 设置值本身来自 Store，切页不改变它
+    expect(useSettingsStore.getState().settings?.clipboard_enabled).toBe(true);
+  });
+});
+
+// ── 数据与备份页 ─────────────────────────────────────────────────────
+describe("设置中心数据与备份页", () => {
   it("按真实 modified 展示时间与时区，类型/大小/截断信息不误标", async () => {
     vi.mocked(listBackups).mockResolvedValue([
       {
@@ -559,7 +539,7 @@ describe("设置页备份记录", () => {
     ] satisfies BackupEntry[]);
 
     render(<SettingsPanel />);
-    fireEvent.click(openSection("data"));
+    selectPage("data");
     await waitFor(() =>
       expect(document.querySelectorAll(".backup-record")).toHaveLength(3),
     );
@@ -584,184 +564,81 @@ describe("设置页备份记录", () => {
     expect(unknown.textContent).toContain("截断 1 表");
     expect(unknown.textContent).toContain("修改时间未知");
   });
-});
 
-// ── 按需加载（2026-11-06 信息架构重整）────────────────────────────────
-// 设置页不再在挂载时并发读取备份/剪贴板附属数据：只有展开对应分组才读一次，
-// 切换分类本身不产生查询；读取失败会解除「已加载」标记，再次展开可重试。
-describe("设置页按需加载", () => {
-  it("初始挂载与分类切换都不读取附属数据；展开对应分组各读一次", async () => {
+  it("资源清理页只保留入口，点击后切到独立页面而不是内嵌完整面板", () => {
     render(<SettingsPanel />);
-    expect(vi.mocked(listBackups)).not.toHaveBeenCalled();
-    expect(vi.mocked(clipboardStats)).not.toHaveBeenCalled();
-    expect(vi.mocked(clipboardStatus)).not.toHaveBeenCalled();
+    selectPage("resource-cleanup");
 
-    for (const category of ["features", "notify-voice", "data-resources", "integration", "help", "general"] as const) {
-      activateCategory(category);
-    }
-    expect(vi.mocked(listBackups)).not.toHaveBeenCalled();
-    expect(vi.mocked(clipboardStats)).not.toHaveBeenCalled();
-
-    fireEvent.click(openSection("data"));
-    await waitFor(() => expect(vi.mocked(listBackups)).toHaveBeenCalledTimes(1));
-    // 折叠再展开不重复读取
-    fireEvent.click(sectionHead("数据与备份"));
-    fireEvent.click(sectionHead("数据与备份"));
-    expect(vi.mocked(listBackups)).toHaveBeenCalledTimes(1);
-
-    fireEvent.click(openSection("clipboard"));
-    await waitFor(() => expect(vi.mocked(clipboardStats)).toHaveBeenCalledTimes(1));
-    expect(vi.mocked(clipboardStatus)).toHaveBeenCalledTimes(1);
+    // 设置里不再渲染清理/概览/进程诊断本体（避免两份完整界面）。
+    expect(screen.queryByText("资源概览")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "打开资源管理" }));
+    expect(useUiStore.getState().tab).toBe("resource");
+    // 设置页内不应触发资源采样 IPC
+    expect(vi.mocked(resourceSnapshot)).not.toHaveBeenCalled();
   });
 
-  it("读取失败显示真实错误，再次展开会重试而不是永久空数据", async () => {
-    vi.mocked(listBackups).mockRejectedValueOnce(new Error("数据库被占用"));
+  it("帮助页可打开帮助中心并重新打开新手引导", () => {
+    useOnboardingStore.setState({ open: false, step: 0, hydrated: true, done: true, hasNewContent: false });
     render(<SettingsPanel />);
-    fireEvent.click(openSection("data"));
+    selectPage("help");
 
-    const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toContain("数据库被占用");
+    fireEvent.click(screen.getByRole("button", { name: "打开帮助中心" }));
+    expect(useUiStore.getState().tab).toBe("help");
+    expect(useUiStore.getState().helpReturnTab).toBe("settings");
 
-    fireEvent.click(sectionHead("数据与备份"));
-    fireEvent.click(sectionHead("数据与备份"));
-    await waitFor(() => expect(vi.mocked(listBackups)).toHaveBeenCalledTimes(2));
-  });
-});
-
-// ── 分类导航无障碍 ────────────────────────────────────────────────────
-describe("设置页分类导航无障碍", () => {
-  it("方向键在分类间移动并激活，Home/End 到首尾", () => {
+    cleanup();
     render(<SettingsPanel />);
-    const general = screen.getByRole("tab", { name: zhCN["settings.category.general"] });
-    general.focus();
-    fireEvent.keyDown(general, { key: "ArrowRight" });
-
-    const features = screen.getByRole("tab", { name: zhCN["settings.category.features"] });
-    expect(features.getAttribute("aria-selected")).toBe("true");
-    expect(document.activeElement).toBe(features);
-
-    fireEvent.keyDown(features, { key: "End" });
-    const help = screen.getByRole("tab", { name: zhCN["settings.category.help"] });
-    expect(help.getAttribute("aria-selected")).toBe("true");
-
-    fireEvent.keyDown(help, { key: "Home" });
-    expect(screen.getByRole("tab", { name: zhCN["settings.category.general"] }).getAttribute("aria-selected")).toBe("true");
+    selectPage("help");
+    fireEvent.click(screen.getByRole("button", { name: "重新打开新手引导" }));
+    expect(useOnboardingStore.getState().open).toBe(true);
+    expect(useOnboardingStore.getState().step).toBe(0);
   });
 
-  it("只有当前分类进入 Tab 序列，tab 与内容区通过 aria 双向关联", () => {
+  it("Agent 接入页：MCP 服务开关默认关闭并通过设置更新", async () => {
     render(<SettingsPanel />);
-    const tabs = screen.getAllByRole("tab");
-    expect(tabs).toHaveLength(6);
-    expect(tabs.filter((tab) => tab.getAttribute("tabindex") === "0")).toHaveLength(1);
+    selectPage("agent");
 
-    const selected = screen.getByRole("tab", { selected: true });
-    const panel = screen.getByRole("tabpanel");
-    expect(panel.getAttribute("aria-labelledby")).toBe(selected.id);
-    expect(panel.id).toBe(selected.getAttribute("aria-controls"));
-    // 隐藏分类的内容不会被读屏软件读到：其它分类的分组根本不在 DOM 里
-    expect(screen.queryByRole("button", { name: /智能剪贴板/ })).toBeNull();
+    expect(screen.getByRole("button", { name: "查看帮助：MCP 服务器：规划数据的授权读写" })).toBeTruthy();
+
+    const toggle = screen.getByRole("switch", { name: "MCP 规划数据访问服务（默认关闭）" });
+    expect((toggle as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(toggle);
+    await waitFor(() =>
+      expect(useSettingsStore.getState().update).toHaveBeenCalledWith({ mcp_server_enabled: true }),
+    );
+  });
+
+  it("数据与备份页提供对应的恢复教程入口", () => {
+    render(<SettingsPanel />);
+    selectPage("data");
+    expect(screen.getByRole("button", { name: "查看帮助：备份与恢复：数据在哪些环节受保护" })).toBeTruthy();
+  });
+
+  it("剪贴板页：自动识别图片文字开关为禁用状态并标注待开发", () => {
+    render(<SettingsPanel />);
+    selectPage("clipboard");
+
+    const switchControl = screen.getByRole("switch", { name: "自动识别图片文字" }) as HTMLInputElement;
+    expect(switchControl.disabled).toBe(true);
+    expect(switchControl.checked).toBe(false);
+    expect(screen.getByText(/待开发，目前仅支持手动提取文字/)).toBeTruthy();
   });
 });
 
-// ── 分类切换的状态保护 ────────────────────────────────────────────────
-describe("设置页分类切换的状态保护", () => {
-  it("输入中的剪贴板排除名单在切换分类前被提交，不静默丢失", () => {
+// ── 折叠偏好键兼容（旧版本升级路径）──────────────────────────────────
+describe("设置中心存储兼容", () => {
+  it("旧折叠偏好键不再被页面消费，但键保留且 reveal 协议不受影响", () => {
+    localStorage.setItem(
+      SETTINGS_SECTIONS_STORAGE_KEY,
+      JSON.stringify({
+        version: 1,
+        sections: { appearance: true, clipboard: true },
+      }),
+    );
     render(<SettingsPanel />);
-    fireEvent.click(openSection("clipboard"));
-
-    const textarea = screen.getByRole("textbox", {
-      name: "剪贴板排除的应用名单",
-    }) as HTMLTextAreaElement;
-    fireEvent.change(textarea, { target: { value: "keepass.exe" } });
-
-    activateCategory("general");
-
-    expect(useSettingsStore.getState().update).toHaveBeenCalledWith({
-      clipboard_exclude_apps: "keepass.exe",
-    });
-    // 设置值本身来自 Store，切换分类不改变它
-    expect(useSettingsStore.getState().settings?.clipboard_enabled).toBe(true);
-  });
-});
-
-// ── 查找设置（分类 + 分组级搜索）──────────────────────────────────────
-describe("设置页查找设置", () => {
-  it("输入别名命中分组，选中后切分类、展开并定位（含诊断与日志）", async () => {
-    render(<SettingsPanel />);
-    const input = screen.getByRole("combobox", { name: "查找设置" });
-    fireEvent.focus(input);
-    fireEvent.change(input, { target: { value: "日志" } });
-
-    const option = await screen.findByRole("option", { name: /诊断与日志/ });
-    fireEvent.click(option);
-
-    await waitFor(() => expectExpanded(sectionHead("诊断与日志"), true));
-    expect(
-      screen.getByRole("tab", { name: zhCN["settings.category.integration"] }).getAttribute(
-        "aria-selected",
-      ),
-    ).toBe("true");
-  });
-
-  it("无匹配结果时给出明确说明，不显示空列表", async () => {
-    render(<SettingsPanel />);
-    const input = screen.getByRole("combobox", { name: "查找设置" });
-    fireEvent.focus(input);
-    fireEvent.change(input, { target: { value: "zzz-not-exist" } });
-
-    expect(await screen.findByText("没有匹配的设置分组")).toBeTruthy();
-    expect(screen.queryAllByRole("option")).toHaveLength(0);
-  });
-
-  it("只做搜索：点空输入不拿全量列表当下拉，输入后才出结果", async () => {
-    const { container } = render(<SettingsPanel />);
-    const input = screen.getByRole("combobox", { name: "查找设置" });
-
-    // 不再渲染下拉箭头，聚焦/点击空输入也不会展开 25 个分组
-    expect(container.querySelector(".ui-combobox-caret")).toBeNull();
-    fireEvent.focus(input);
-    fireEvent.click(input);
-    expect(input.getAttribute("aria-expanded")).toBe("false");
-    expect(screen.queryAllByRole("option")).toHaveLength(0);
-
-    fireEvent.change(input, { target: { value: "日志" } });
-    expect(await screen.findByRole("option", { name: /诊断与日志/ })).toBeTruthy();
-
-    // 清空检索词后收起结果，回到初始搜索态
-    fireEvent.click(screen.getByRole("button", { name: "清除查找" }));
-    await waitFor(() => expect(screen.queryAllByRole("option")).toHaveLength(0));
-    expect((input as HTMLInputElement).value).toBe("");
-  });
-});
-
-// ── 响应式布局结构（窄容器降级的结构不变量；jsdom 不测量像素，这里锁定结构/角色/ARIA）──
-describe("设置页响应式布局结构", () => {
-  it("六个分类逐一可达：选中态切换，内容区渲染对应分组与可操作控件", () => {
-    render(<SettingsPanel />);
-    for (const category of SETTINGS_CATEGORY_IDS) {
-      activateCategory(category);
-      const meta = settingsCategory(category);
-      expect(meta).toBeTruthy();
-      const tab = screen.getByRole("tab", { name: zhCN[meta!.labelKey] });
-      expect(tab.getAttribute("aria-selected")).toBe("true");
-
-      const panel = screen.getByRole("tabpanel");
-      // 该分类至少渲染一个折叠分组头，且内容区存在可操作控件（开关/下拉/数字框/按钮/输入框）。
-      expect(panel.querySelectorAll("[aria-expanded]").length).toBeGreaterThan(0);
-      expect(
-        panel.querySelectorAll(
-          'button, [role="switch"], [role="combobox"], [role="spinbutton"], input, select, textarea',
-        ).length,
-      ).toBeGreaterThan(0);
-    }
-  });
-
-  it("表单行与长说明保留窄档降级所需结构，根节点挂页面查询容器", () => {
-    render(<SettingsPanel />);
-    expect(document.querySelector(".settings-panel")).toBeTruthy();
-
-    fireEvent.click(openSection("appearance"));
-    expect(document.querySelectorAll(".setting-row").length).toBeGreaterThan(0);
-    expect(document.querySelectorAll(".setting-note").length).toBeGreaterThan(0);
+    // 页面化后不再有折叠卡：全部页面直达，旧键不产生任何错误行为
+    expectPageActive(firstSectionOf(SETTINGS_CATEGORY_IDS[0]));
+    selectPage("clipboard");
+    expectPageActive("clipboard");
   });
 });

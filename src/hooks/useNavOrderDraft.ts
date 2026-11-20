@@ -37,6 +37,7 @@
 
 import { useCallback, useEffect, useRef } from "react";
 import { persistNavigationLayout } from "../lib/navigationLayout";
+import { logEvent } from "../lib/diagnostics";
 import { errorMessage } from "../lib/errors";
 import { moveEntryInList, moveEntryToIndex, reconcileLeftGroups } from "../lib/navVisibility";
 import type { NavGroup, NavSurface } from "../lib/navigationRegistry";
@@ -320,7 +321,14 @@ export function useNavOrderDraft(
     const leftover = dropNavOrderIntent(previous);
     if (leftover) {
       // 正常路径不可达（切界面前已 flush）；留下可追踪的记录而不是静默丢弃。
-      console.warn("[nav-order] 切换界面时丢弃未保存的排序", { surface: previous });
+      logEvent({
+        level: "WARN",
+        module: "navigation",
+        action: "draft_discard",
+        event: "discarded",
+        message: "切换界面时丢弃未保存的导航排序",
+        metadata: { surface: previous },
+      });
     }
   }, [surface, clearTimer]);
 
@@ -354,10 +362,14 @@ export function useNavOrderDraft(
           .catch((error: unknown) => {
             // 组件已卸载，没有可提示的 UI：回滚 + 留下可追踪记录，不静默吞掉。
             clearNavOrderIntent(targetSurface, intent.seq);
-            console.warn(
-              "[nav-order] 设置页关闭时保存排序失败，已回滚到已提交顺序",
-              errorMessage(error),
-            );
+            logEvent({
+              level: "WARN",
+              module: "navigation",
+              action: "persist_unmount",
+              event: "failed",
+              status: "failed",
+              message: `设置页关闭时保存排序失败，已回滚到已提交顺序：${errorMessage(error)}`,
+            });
           });
       };
       if (!pending) {
@@ -370,18 +382,26 @@ export function useNavOrderDraft(
         (result) => {
           if (result.status === "failed") {
             // 失败已由 writeOnce 回滚；组件已卸载，没有 UI 可提示，补一条可追踪记录。
-            console.warn(
-              "[nav-order] 设置页关闭时排序保存失败，已回滚到已提交顺序",
-              result.error.message,
-            );
+            logEvent({
+              level: "WARN",
+              module: "navigation",
+              action: "persist_unmount",
+              event: "failed",
+              status: "failed",
+              message: `设置页关闭时排序保存失败，已回滚到已提交顺序：${result.error.message}`,
+            });
           }
           persistLatest();
         },
         (error: unknown) => {
-          console.warn(
-            "[nav-order] 设置页关闭时排序写入异常",
-            errorMessage(error),
-          );
+          logEvent({
+            level: "WARN",
+            module: "navigation",
+            action: "persist_unmount",
+            event: "failed",
+            status: "failed",
+            message: `设置页关闭时排序写入异常：${errorMessage(error)}`,
+          });
           persistLatest();
         },
       );

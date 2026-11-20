@@ -1,6 +1,10 @@
 import { defineConfig } from "vite";
 import { resolve } from "node:path";
 import react from "@vitejs/plugin-react";
+import { syncPdfjsAssets } from "./scripts/pdfjs-assets.mjs";
+
+// PDF 预览的 CMap/字体/WASM 必须随包本地提供（禁止 CDN）：配置求值时同步到 public/pdfjs。
+syncPdfjsAssets();
 
 // Tauri 开发服务器固定端口（与 tauri.conf.json devUrl 保持一致）
 const host = process.env.TAURI_DEV_HOST;
@@ -32,33 +36,29 @@ export default defineConfig({
     },
   },
   optimizeDeps: {
-    // 开发期首屏（2026-11-11）：默认 true 会等整个入口依赖扫描完成才放行请求，
-    // 本仓库模块图较大时首屏被拖到 40–100 秒，表现为「窗口在但没有 UI」。
-    // 先放行已发现的依赖，后续发现新依赖时由 Vite 客户端自动整页重载补齐。
+    // Vite 7 即使 holdUntilCrawlEnd=false，裸导入解析仍会 await scanProcessing。
+    // 禁止冷启动扫描整个多页面业务图：CJS/大型 UI 依赖显式预构建；Tauri 与 PDF
+    // 等原生 ESM 保持按需加载。新增 CJS 依赖时须同步加入 include。
+    noDiscovery: true,
+    include: ["react", "react-dom", "react-dom/client", "react/jsx-runtime", "react/jsx-dev-runtime", "lucide-react", "@floating-ui/react", "zustand"],
     holdUntilCrawlEnd: false,
   },
   server: {
     port: 1420,
     strictPort: true,
     host: host || false,
-    // 开发期首屏预热（2026-11-11）：Vite 冷启动的依赖预构建会阻塞入口模块请求，
-    // 大模块图能把 `#root` 空白拖到十几秒以上（表现为「窗口在但没有 UI」）。
-    // 在 dev server 启动时就预转换各入口及其依赖图，把这段时间挪到前端真正加载前。
+    // 只预热零业务依赖的启动入口。预热所有窗口会递归转换各自的静态图，
+    // 与真正的首屏请求争抢转换资源，延后首屏模块转换。
+    // 业务入口按实际窗口请求转换，不在启动时主动展开全部模块图。
     warmup: {
       clientFiles: [
-        "./src/main.tsx",
-        "./src/App.tsx",
-        "./src/capture/main.tsx",
-        "./src/context-menu/main.tsx",
-        "./src/notifications/main.tsx",
-        "./src/tab-hint/main.tsx",
-        "./src/widgets/main.tsx",
-        "./src/workspace/main.tsx",
-        "./src/toolbar/main.tsx",
+        "./src/workspace/bootstrap.ts",
       ],
     },
     watch: {
-      ignored: ["**/src-tauri/**"],
+      // 桌面 Dev 不监听移动端构建与验收产物：Android 的 HTML 报告曾触发整页重载，
+      // 大量缓存目录的监听也会与首屏文件读取争抢 I/O。
+      ignored: ["**/src-tauri/**", "**/apps/mobile/**", "**/tmp/**", "**/dist/**", "**/dist-*/**", "**/.preview*/**"],
     },
   },
   test: {

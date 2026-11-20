@@ -12,6 +12,9 @@
 
 ---
 
+> 2026-11-19 后续变更：按用户要求删除构建调度器（`build-sched.mjs` 与 `scripts/sched/`）；
+> 下文涉及调度器的内容为移除前审计基线。当前集成检查与构建直接执行，见 [ADR-0007](../adr/0007-remove-build-scheduler.md)。
+
 ## 0. 一页结论（给新 Agent 读）
 
 TaskDock 是一个**模块化单体（Modular Monolith）**，不是微服务，也不应该拆成微服务。它已经具备不少**良好机制**：按需加载（`featureRuntime`/`featureRegistry`）、有界 Agent 事件管线、SQLite WAL + 只追加迁移、Tauri 多窗口独立 capability、移动端 domain/db 分层与本地优先 Outbox、Build Scheduler + Integration Snapshot + 多 Agent 文件所有权规范。

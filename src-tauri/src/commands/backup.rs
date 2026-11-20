@@ -120,6 +120,9 @@ pub const EXTENDED_TABLES: &[&str] = &[
     "mcp_note_ownership",
     "mcp_workspace_roots",
     "mcp_audit_log",
+    // 安全审计日志（v82）：配对/鉴权/撤销与 MCP 高风险事件的追加式审计，
+    // 不含配对码/token/指纹值等敏感内容（subject 为库内 UUID 或最小化网段）。
+    "security_audit_log",
     "feature_agent_links",
     // 场景工作区（v38）：软引用 workflow 与现场快照，必须排在两者之后。
     "scenarios",
@@ -297,6 +300,15 @@ pub const BACKUP_TABLES: &[BackupTableRule] = &[
     // 无外键约束，但恢复时先于 draft、后于 tasks 更符合阅读顺序。
     rule!("quick_capture_items", "core", "all", 45, &["tasks"], false),
     rule!("quick_capture_draft", "core", "all", 46, &[], false),
+    // 快速捕获图片附件（v80）：只备份元数据行；图片文件在附件目录，不进入 bundle。
+    rule!(
+        "quick_capture_attachments",
+        "core",
+        "all",
+        47,
+        &["quick_capture_items"],
+        false
+    ),
     rule!("agent_sources", "agent", "all", 50, &[], false),
     rule!(
         "agent_instances",
@@ -578,6 +590,9 @@ pub const BACKUP_TABLES: &[BackupTableRule] = &[
         true
     ),
     rule!("mcp_audit_log", "agent", "all", 370, &["mcp_agents"], true),
+    // 安全审计日志（v82）：跨模块安全事件（mobile_sync 配对/鉴权、MCP 高风险），
+    // 行小且只追加，快速备份全量保存；无外键依赖。
+    rule!("security_audit_log", "agent", "all", 371, &[], true),
     rule!(
         "feature_agent_links",
         "agent",

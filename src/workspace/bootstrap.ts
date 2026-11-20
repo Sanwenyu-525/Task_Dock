@@ -86,12 +86,9 @@ void (async () => {
       message: err.message,
       stack: clampStack(err.stack),
     };
-    // console 留一份原始线索（devtools/诊断中心原始日志），不影响 UI 恢复卡。
-    try {
-      console.error("[TaskDock boot] main.tsx 动态导入失败", err);
-    } catch {
-      /* 控制台不可用时忽略 */
-    }
+    // 不再另留 console 副本：失败详情（stage/name/message/stack）由下方 fail() 经
+    // watchdog 写一次 UI_BOOT_FATAL 诊断——该通道独立于本模块加载图，比在
+    // 可能同样加载失败的入口里引日志模块更可靠，也不影响 UI 恢复卡。
     // 不静默吞：交给 watchdog 进入 error 态并写一次 UI_BOOT_FATAL。
     // fail 在 watchdog API 缺失时是 no-op，此时 HTML 的死人在场保险仍兜底。
     try {

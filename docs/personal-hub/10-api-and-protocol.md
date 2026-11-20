@@ -95,4 +95,23 @@ flowchart LR
 **云端只做**：设备注册、信令交换、设备发现、NAT 穿透协调、必要的中继。
 **云端不做**：不默认承担视频/文件/控制数据；不持有设备私钥；不能直接获得远控权限；信令服务器被攻破也不能签发被控端授权（[06](06-threat-model.md) T6/A3）。
 
-> 现状：项目无此云端；现有 "Relay" 是本地 Agent 编排（`docs/RELAY_INTEGRATION.md`），与本云端无关。云端为全新建，需独立威胁模型与运维方案（ADR-0007）。
+> P0 审计时项目无此云端；2026-11-19 实现进度更正：`services/personal-hub-control-plane/`
+> 已有服务实现，真实部署未验证。现有 "Relay" 是本地 Agent 编排（`docs/RELAY_INTEGRATION.md`），
+> 与本云端无关；运维仍遵循 ADR-0007。
+
+## 7. 2026-11-19 云端 WebSocket 连接与投递实现
+
+- `/v1/signaling` 路由在 WebSocket 插件安装后注册，避免升级请求按普通 HTTP 处理而返回 500。
+- 同一 `AppDeps` 服务实例共享已认证连接表，服务实例之间隔离；一台设备可以有多个连接。
+  `signal.forward` 将完整签名信封作为 `signal.deliver.payload` 投递到该实例中的目标设备连接，
+  密文与签名不变；发送者回执仍为 `{ id?, ok, data }`，**回执成功不代表目标在线或已确认收到**。
+- 首帧认证成功后，`signal.forward.fromDeviceId` 和其他操作的 `deviceId` 必须等于连接认证身份；
+  不符返回 `IDENTITY_MISMATCH`，不执行操作。并发首帧认证返回 `AUTH_IN_PROGRESS`，不切换身份。
+- `revocation.publish` 的既有自撤销语义不变，事件向同服务已认证连接广播；这不等于
+  PC 撤销任意已配对手机的跨端撤销链路已完成。
+- 关闭连接后从连接表移除；同设备仍有连接时不标离线；最后一个连接关闭才标离线。
+  认证等待期间关闭不得遗留连接或晚到成功回执；并发请求的错误回执关联各自 `id`。
+- Breaking Change: **No**。端点、请求/成功响应字段、签名算法与数据模型不变；新增错误码只用于
+  原本应拒绝的连接身份替换和并发认证请求。无数据库迁移；云端信令不授予任何远控权限。
+- 实测边界：内存仓储 + 模拟 socket / Fastify `injectWS`；未验证 TLS、真实 PG、跨进程路由、
+  STUN/TURN、跨网络或端侧 WebRTC。多服务进程间的投递尚无本轮验证依据。

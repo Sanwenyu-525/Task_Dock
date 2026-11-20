@@ -58,7 +58,18 @@ import { useNavStepRepeat } from "../../hooks/useNavStepRepeat";
 import { useNavDragSort } from "../../hooks/useNavDragSort";
 import { useLocale } from "../../hooks/useLocale";
 
-export default function NavigationVisibilitySection() {
+/**
+ * 可选回调：界面切换事务**成功落库并切换后**通知外部（2026-11-20 设置中心重构）。
+ * 唯一消费者是导航自定义页的 `NavigationPreview`——预览是当前界面的只读镜像，
+ * 事实源仍在组件内部的 `surface` 状态（镜像不是第二份配置）。
+ */
+export default function NavigationVisibilitySection({
+  onSurfaceSettled,
+}: {
+  onSurfaceSettled?: (surface: NavSurface) => void;
+} = {}) {
+  const onSurfaceSettledRef = useRef(onSurfaceSettled);
+  onSurfaceSettledRef.current = onSurfaceSettled;
   const { t } = useLocale();
   // `t` 每次渲染可能是新函数；播报/拖拽回调读取最新值但不进入 effect 依赖，
   // 避免语言切换时反复重置播报定时器。
@@ -372,6 +383,7 @@ export default function NavigationVisibilitySection() {
         return;
       }
       setSurface(next);
+      onSurfaceSettledRef.current?.(next);
       // 目标界面是另一份列表：清掉滚动残留（只动列表自身，不触碰设置页滚动位置）。
       if (listRef.current) listRef.current.scrollTop = 0;
     })();

@@ -1053,6 +1053,82 @@ fn write_error_code(error: &std::io::Error) -> &'static str {
     }
 }
 
+/// 原子替换：同目录临时文件写透后再替换目标。
+///
+/// - 临时文件与目标同目录 → 同卷，`MoveFileExW(REPLACE_EXISTING)` 才是原子替换；
+/// - 先 `sync_all`，磁盘满/写入中断只会留下临时文件，不会截断旧文件；
+/// - 替换失败保留原文件（绝不像旧实现那样先 `remove_file` 再 rename）；
+/// - 任何失败都清理临时文件，不留 `.tdpart-*` 残留。
+fn replace_with_temp(temp: &std::path::Path, target: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows::core::PCWSTR;
+        use windows::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_REPLACE_EXISTING};
+        let from: Vec<u16> = temp.as_os_str().encode_wide().chain([0]).collect();
+        let to: Vec<u16> = target.as_os_str().encode_wide().chain([0]).collect();
+        unsafe { MoveFileExW(PCWSTR(from.as_ptr()), PCWSTR(to.as_ptr()), MOVEFILE_REPLACE_EXISTING) }
+            .map_err(|e| std::io::Error::other(format!("替换目标文件失败: {e}")))
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::rename(temp, target)
+    }
+}
+
+/// 写文本 / 复制来源到目标路径：临时文件 → 写透 → 原子替换。
+fn write_atomic(
+    target: &std::path::Path,
+    text: Option<&str>,
+    copy_from: Option<&std::path::Path>,
+) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let parent = target
+        .parent()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "目标没有父目录"))?;
+    let base = target
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "write".into());
+    let temp = parent.join(format!(".{base}.tdpart-{}", uuid::Uuid::new_v4()));
+
+    let result = (|| -> std::io::Result<()> {
+        if let Some(body) = text {
+            let mut file = std::fs::File::create(&temp)?;
+            file.write_all(body.as_bytes())?;
+            file.sync_all()?;
+        } else if let Some(source) = copy_from {
+            std::fs::copy(source, &temp)?;
+            // FlushFileBuffers 需要写句柄：只读打开会返回 ERROR_ACCESS_DENIED。
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&temp)?
+                .sync_all()?;
+            // 拷贝完整性校验：大小不一致视为失败，绝不替换目标。
+            let expected = std::fs::metadata(source)?.len();
+            let actual = std::fs::metadata(&temp)?.len();
+            if expected != actual {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("临时文件大小不一致（{actual}/{expected}）"),
+                ));
+            }
+        } else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "没有可写入的内容",
+            ));
+        }
+        replace_with_temp(&temp, target)
+    })();
+
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    result
+}
+
 fn write_one(entry: &WriteEntry, cancelled: &dyn Fn() -> bool) -> crate::file_workspace::FsEntryReport {
     use crate::file_workspace::FsEntryReport;
     let mut report = FsEntryReport {
@@ -1108,43 +1184,17 @@ fn write_one(entry: &WriteEntry, cancelled: &dyn Fn() -> bool) -> crate::file_wo
         }
     }
     report.stage = Some("write".into());
-    let result = if let Some(text) = &entry.text {
-        std::fs::write(target, text.as_bytes())
-    } else if let Some(source) = &entry.copy_from {
-        let source = std::path::Path::new(source);
+    let source_path = entry.copy_from.as_deref().map(std::path::Path::new);
+    if let Some(source) = source_path {
         if !source.is_file() {
             report.reason = Some("来源文件不存在".into());
             report.code = Some("FS_OP_SOURCE_MISSING".into());
             return report;
         }
-        // 先写临时名再替换，避免半写文件被用户看到（同目录保证同卷）。
-        let temp = target.with_file_name(format!(
-            "{}.tdpart-{}",
-            target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "write".into()),
-            uuid::Uuid::new_v4()
-        ));
-        match std::fs::copy(source, &temp) {
-            Ok(_) => {
-                if target.exists() {
-                    let _ = std::fs::remove_file(target);
-                }
-                std::fs::rename(&temp, target)
-                    .map(|_| ())
-                    .map_err(|e| {
-                        let _ = std::fs::remove_file(&temp);
-                        e
-                    })
-            }
-            Err(e) => {
-                let _ = std::fs::remove_file(&temp);
-                Err(e)
-            }
-        }
-    } else {
-        report.reason = Some("没有可写入的内容".into());
-        report.code = Some("FS_OP_VALIDATION".into());
-        return report;
-    };
+    }
+    // 文本与图片复制都走「同目录临时文件 + 写透 + 原子替换」：
+    // 覆盖过程中不会出现截断的旧文件，替换失败也保留原文件。
+    let result = write_atomic(target, entry.text.as_deref(), source_path);
     match result {
         Ok(_) => {
             report.status = "ok";
@@ -1521,5 +1571,93 @@ mod tests {
         for pair in snapshots.windows(2) {
             assert!(pair[0].started_ms >= pair[1].started_ms);
         }
+    }
+}
+
+#[cfg(test)]
+mod atomic_write_tests {
+    use super::*;
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("taskdock-atomic-{tag}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn entry(target: &std::path::Path, text: Option<&str>, copy_from: Option<&str>, overwrite: bool) -> WriteEntry {
+        WriteEntry {
+            item_id: "i1".into(),
+            label: "x".into(),
+            target: target.to_string_lossy().to_string(),
+            text: text.map(|s| s.to_string()),
+            copy_from: copy_from.map(|s| s.to_string()),
+            overwrite,
+            merged: false,
+        }
+    }
+
+    #[test]
+    fn overwrite_replaces_content_and_leaves_no_temp_files() {
+        let dir = temp_dir("replace");
+        let target = dir.join("a.txt");
+        std::fs::write(&target, "旧内容").unwrap();
+        let report = write_one_for_test(&entry(&target, Some("新内容"), None, true));
+        assert_eq!(report.status, "ok", "{}", report.reason.unwrap_or_default());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "新内容");
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|name| name.contains("tdpart"))
+            .collect();
+        assert!(leftovers.is_empty(), "临时文件必须清理：{leftovers:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn failed_copy_keeps_original_file_untouched() {
+        let dir = temp_dir("keep");
+        let target = dir.join("a.txt");
+        std::fs::write(&target, "原始内容").unwrap();
+        // 来源不存在 + overwrite：必须失败并保留原文件（旧实现会先删再写）。
+        let report = write_one_for_test(&entry(
+            &target,
+            None,
+            Some(&dir.join("missing.png").to_string_lossy()),
+            true,
+        ));
+        assert_eq!(report.status, "failed");
+        assert_eq!(report.code.as_deref(), Some("FS_OP_SOURCE_MISSING"));
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "原始内容");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn skipped_when_target_exists_without_overwrite() {
+        let dir = temp_dir("skip");
+        let target = dir.join("a.txt");
+        std::fs::write(&target, "保留").unwrap();
+        let report = write_one_for_test(&entry(&target, Some("覆盖？"), None, false));
+        assert_eq!(report.status, "skipped");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "保留");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn copy_source_writes_identical_bytes() {
+        let dir = temp_dir("copy");
+        let source = dir.join("src.bin");
+        let payload: Vec<u8> = (0..2048u32).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&source, &payload).unwrap();
+        let target = dir.join("dst.bin");
+        let report = write_one_for_test(&entry(
+            &target,
+            None,
+            Some(&source.to_string_lossy()),
+            false,
+        ));
+        assert_eq!(report.status, "ok", "{}", report.reason.unwrap_or_default());
+        assert_eq!(std::fs::read(&target).unwrap(), payload);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

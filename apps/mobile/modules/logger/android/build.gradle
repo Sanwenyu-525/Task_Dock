@@ -1,0 +1,17 @@
+// 本地 Expo 模块：SafeLog / CrashHandler / FileLogSink（Android 本地日志）。
+// 写法与 modules/device-identity、modules/clipboard 一致；无第三方依赖。
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'dev.taskdock.modules.logger'
+version = '0.1.0'
+
+android {
+  namespace "dev.taskdock.modules.logger"
+  defaultConfig {
+    versionCode 1
+    versionName "0.1.0"
+  }
+}

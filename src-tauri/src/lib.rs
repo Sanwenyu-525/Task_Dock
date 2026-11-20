@@ -43,6 +43,7 @@ mod project_workspace_window;
 pub mod recycle;
 pub mod resource_cleanup;
 pub mod scheduler;
+pub mod security_audit;
 pub mod secure_vault;
 pub mod shelf;
 pub mod tab_hint;
@@ -636,6 +637,9 @@ pub fn run() {
             // 不需要逐个业务文件改埋点（字段白名单见 diagnostics::tracing_layer）。
             let diagnostics = diagnostics::Diagnostics::init(app.handle());
             diagnostics.install();
+            // panic 捕获：崩溃现场必须能进诊断日志。此前没有安装 panic hook，
+            // Rust panic 直接终止进程，诊断日志里看不到任何崩溃记录。
+            diagnostics::panic_hook::install(diagnostics.clone());
             // 动态日志级别：详细诊断模式必须真正改变 `tracing` 过滤，否则 DEBUG 会在
             // 进入诊断层之前被 EnvFilter 丢弃。RUST_LOG 显式设置时始终以开发者意图为准。
             let env_override = std::env::var("RUST_LOG").ok().filter(|v| !v.trim().is_empty());
@@ -1429,6 +1433,9 @@ pub fn run() {
             commands::diagnostics::diagnostics_export,
             commands::diagnostics::diagnostics_clear,
             commands::diagnostics::diagnostics_open_dir,
+            // 安全审计（security_audit_log，迁移 v82）：查询与用户显式清理
+            commands::security_audit::security_audit_query,
+            commands::security_audit::security_audit_prune,
             // 统一提示音 / 语音播报 / 本地语音缓存（v0.13）
             commands::audio::tts_list_voices,
             commands::audio::tts_synthesize,

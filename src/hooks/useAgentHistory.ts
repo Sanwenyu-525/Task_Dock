@@ -26,6 +26,7 @@ import {
   type AgentHistorySessionsQuery,
   type AgentRun,
 } from "../lib/bridge";
+import { logEvent } from "../lib/diagnostics";
 import { errorMessage } from "../lib/errors";
 import { createSubscriptionScope, type SubscriptionScope } from "../lib/subscriptions";
 import { useFullViewVisible } from "./useMainUiVisible";
@@ -192,7 +193,16 @@ function ensureHistoryListener() {
     if (historyScope !== scope || scope.closed || ok) return;
     historyListenFailed = true;
     // 诊断只含固定代码；不记录事件、搜索词或会话数据。
-    console.warn("[agent-history] event-listen-failed");
+    // listen 走事件 API（不经 invokeCommand），失败在此首次归属。
+    logEvent({
+      level: "WARN",
+      module: "agent",
+      action: "history_listen",
+      event: "failed",
+      status: "failed",
+      error_code: "AGENT_HISTORY_LISTEN_FAILED",
+      message: "Agent 历史事件监听订阅失败，历史列表无法自动刷新",
+    });
     for (const probe of historyProbes.values()) {
       for (const listener of probe.listeners) listener.error(HISTORY_LISTEN_ERROR);
     }

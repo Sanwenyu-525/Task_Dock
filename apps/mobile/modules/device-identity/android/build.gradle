@@ -23,6 +23,9 @@ android {
 }
 
 dependencies {
+  // SafeLog（modules/logger）：吞异常处记一行脱敏错误日志（二期日志规范）。
+  // 本地 Expo 模块的 Gradle 项目名 = modules/ 目录名。
+  implementation project(":logger")
   implementation "org.bouncycastle:bcprov-jdk18on:1.79"
   testImplementation "junit:junit:4.13.2"
 }

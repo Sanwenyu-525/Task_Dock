@@ -21,10 +21,12 @@ use crate::clipboard::{
 use crate::db::Settings;
 use crate::error::{AppError, AppResult};
 
-fn compact(mut item: ClipboardItem) -> ClipboardItem {
-    item.text = item.preview.clone();
-    item.html.clear();
-    item
+/// 列表/分组压缩：正文与 HTML 不随列表下发，完整内容走 `clipboard_item` 单条取。
+///
+/// 语义按内容类型分别处理（图片不生成假正文），实现在 `engine::compact_item`：
+/// 图片保留采集时真实存在的附带文本，`preview`（尺寸描述）独立保存。
+fn compact(item: &ClipboardItem) -> ClipboardItem {
+    engine::compact_item(item)
 }
 
 fn runtime<'a>(state: &'a State<'_, Arc<ClipboardRuntime>>) -> &'a Arc<ClipboardRuntime> {
@@ -41,7 +43,8 @@ pub fn clipboard_view(
     let filter = filter.unwrap_or_default();
     let mut view = store::view(&rt.db, &filter, &settings)?;
     for item in &mut view.items {
-        *item = compact(item.clone());
+        let compacted = compact(item);
+        *item = compacted;
     }
     Ok(view)
 }
@@ -70,7 +73,8 @@ pub fn clipboard_group(
     let rt = runtime(&state);
     let mut group = store::get_group(&rt.db, &group_id)?;
     for item in &mut group.items {
-        *item = compact(item.clone());
+        let compacted = compact(item);
+        *item = compacted;
     }
     Ok(group)
 }

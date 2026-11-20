@@ -5,7 +5,7 @@
 //! 行为」——尤其是 React.lazy 无法做到的「失败后真的能重试」。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import FeatureView from "./FeatureView";
 import {
@@ -78,6 +78,30 @@ describe("FeatureView", () => {
     await userEvent.click(screen.getByRole("button"));
     expect(await screen.findByText("PAGE_CONTENT")).toBeTruthy();
     expect(attempts).toBe(2);
+  });
+
+  it("加载途中切页不把旧页占位留在新页，再进入复用在途请求", async () => {
+    let resolve!: (module: { default: typeof Hello }) => void;
+    const load = vi.fn(() => new Promise<{ default: typeof Hello }>((done) => {
+      resolve = done;
+    }));
+    registerFeature({ id: "test:pending", label: "测试页", load });
+    const view = renderView({ id: "test:pending" });
+    expect(screen.getByRole("status")).toBeTruthy();
+    view.rerender(
+      <FeatureView id="test:pending" active={false} label="测试页">
+        {(Panel) => <Panel />}
+      </FeatureView>,
+    );
+    expect(screen.queryByRole("status")).toBeNull();
+    await act(async () => { resolve({ default: Hello }); });
+    view.rerender(
+      <FeatureView id="test:pending" active label="测试页">
+        {(Panel) => <Panel />}
+      </FeatureView>,
+    );
+    expect(await screen.findByText("PAGE_CONTENT")).toBeTruthy();
+    expect(load).toHaveBeenCalledTimes(1);
   });
 
   it("二次进入复用已加载代码：不再出现加载占位，也不重复 import", async () => {

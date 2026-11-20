@@ -8,6 +8,8 @@
 //! - 失败保留旧数据并置 error（面板显示重试入口），不拿空列表冒充现状。
 
 import { create } from "zustand";
+import { errorMessage } from "../lib/errors";
+import { logEvent } from "../lib/diagnostics";
 import { useNotesStore } from "./useNotesStore";
 import { useTasksStore } from "./useTasksStore";
 import {
@@ -586,6 +588,13 @@ export function ensurePlanningSync(): void {
   }).catch((e) => {
     // 注册失败（如非 Tauri 环境）：恢复未订阅状态，下次进入面板重试
     syncSubscribed = false;
-    console.warn("planning-changed 订阅失败", e);
+    logEvent({
+      level: "WARN",
+      module: "planning",
+      action: "changed_subscribe",
+      event: "failed",
+      status: "failed",
+      message: `planning-changed 订阅失败：${errorMessage(e)}`,
+    });
   });
 }

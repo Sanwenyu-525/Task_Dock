@@ -76,28 +76,14 @@ vi.mock("../../lib/bridge", () => ({
   ttsCacheClear: mocks.cacheClear,
 }));
 
-import AudioSettings from "./AudioSettings";
-import type { SettingsSectionOpenState } from "../../lib/settingsSections";
+import {
+  AudioSoundSettingsPage,
+  TtsCacheSettingsPage,
+  TtsSettingsPage,
+} from "./AudioSettings";
 
-const OPEN = {
-  appearance: false,
-  navigation: false,
-  "window-hotkeys": false,
-  features: false,
-  apps: false,
-  clipboard: false,
-  notifications: false,
-  "audio-sound": false,
-  tts: true,
-  "tts-cache": true,
-  "resource-cleanup": false,
-  help: false,
-  agent: false,
-  data: false,
-  diagnostics: false,
-  "diagnostics-logs": false,
-  developer: false,
-} as const;
+// 2026-11-20 设置中心重构：三个折叠分组升级为三个二级页面；行为断言不变，
+// 渲染入口改为直接挂载页面组件（数据读取时机从「分组展开」变为「页面挂载」）。
 
 beforeEach(() => {
   mocks.update.mockClear();
@@ -164,8 +150,14 @@ afterEach(() => {
   cleanup();
 });
 
-function renderPanel(openSections: SettingsSectionOpenState = OPEN) {
-  return render(<AudioSettings openSections={openSections} onToggle={() => {}} />);
+function renderPanel() {
+  return render(
+    <>
+      <AudioSoundSettingsPage />
+      <TtsSettingsPage />
+      <TtsCacheSettingsPage />
+    </>,
+  );
 }
 
 describe("AudioSettings", () => {
@@ -277,7 +269,7 @@ describe("AudioSettings", () => {
 
   it("试听音量 0 时显示单通道静音提示，不显示试听成功", async () => {
     mocks.previewSpeech.mockResolvedValueOnce({ ok: false, code: "silent_speech" });
-    renderPanel({ ...OPEN, "audio-sound": true });
+    renderPanel();
     await waitFor(() => expect(mocks.listVoices).toHaveBeenCalled());
     const speechButton = screen.getByRole("button", {
       name: 'settings.audio.previewVoiceAria|{"voice":"Huihui · settings.audio.gender.female"}',

@@ -488,6 +488,62 @@ describe("ClipboardItemCard 图片缩略图直达灯箱", () => {
   });
 });
 
+/**
+ * 图片没有「正文」：preview（「图片 W×H」）只是尺寸描述，
+ * 把它当正文渲染会凭空造出一条并不存在的文本。
+ */
+describe("ClipboardItemCard 图片标题与正文严格区分", () => {
+  it("图片不出现伪造的文本正文：尺寸描述不进正文行", () => {
+    const { card } = renderCard(
+      {
+        kind: "image",
+        title: "截图 1476×1198",
+        preview: "图片 1476×1198",
+        text: "",
+        has_thumb: true,
+        image_width: 1476,
+        image_height: 1198,
+      },
+      "comfort",
+    );
+    expect(card.textContent).not.toContain("图片 1476×1198");
+    expect(card.querySelector(".clip-preview-body")?.textContent).toBe("");
+    // 尺寸仍然如实展示在元数据行里
+    expect(card.querySelector(".clip-meta-facts")?.textContent).toContain("1476×1198");
+  });
+
+  it("图片采集时真实存在的附带文本才作为正文展示", () => {
+    const { card } = renderCard(
+      {
+        kind: "image",
+        title: "截图 1476×1198",
+        preview: "图片 1476×1198",
+        text: "来自截图工具的附带文本",
+        has_thumb: true,
+      },
+      "comfort",
+    );
+    const body = card.querySelector(".clip-preview-body");
+    expect(body?.textContent).toContain("来自截图工具的附带文本");
+    expect(card.textContent).not.toContain("图片 1476×1198");
+  });
+
+  it("手动命名的图片保留标题，尺寸描述仍不作为正文", () => {
+    const { card } = renderCard(
+      {
+        kind: "image",
+        title: "设计稿-首页",
+        preview: "图片 1476×1198",
+        text: "",
+        has_thumb: true,
+      },
+      "comfort",
+    );
+    expect(card.querySelector(".clip-title")?.textContent).toBe("设计稿-首页");
+    expect(card.textContent).not.toContain("图片 1476×1198");
+  });
+});
+
 describe("styles.css 预览截断契约", () => {
   it("正文行数由 --clip-text-lines 提供，且 line-clamp 自带 overflow:hidden", () => {
     const body = ruleBody(appCss, ".clip-preview-body > .clip-text");

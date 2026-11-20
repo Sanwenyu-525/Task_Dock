@@ -457,6 +457,29 @@ pub fn make_title(
     }
 }
 
+/// 列表/分组压缩：只下发预览，不下发正文与 HTML。
+///
+/// 文本类条目沿用既有协议（`text = preview`）：正文另走 `clipboard_item` 单条取，
+/// 列表因此不会把数百条大文本/网页一次塞进前端内存。
+///
+/// 图片是唯一的例外：图片没有「正文」可压缩，它的 `preview` 只是尺寸描述
+/// （如「图片 1476×1198」）。把尺寸描述写进 `text`，前端就会凭空多出一条
+/// 并不存在的文字正文（历史卡片里那行假的「图片 1476×1198」就是它）。
+/// 因此图片条目：
+/// - `kind` 保持 image；
+/// - `text` 保留采集时真实存在的附带文本，没有就保持空串；
+/// - `preview` 独立保存，绝不写进 `text`；
+/// - `html` 一律清空（HTML 不得混进图片正文）；
+/// - `has_image` / `has_thumb` / `image_width` / `image_height` 原样保留。
+pub fn compact_item(item: &ClipboardItem) -> ClipboardItem {
+    let mut out = item.clone();
+    out.html.clear();
+    if item.kind != KIND_IMAGE {
+        out.text = item.preview.clone();
+    }
+    out
+}
+
 fn base_name(p: &str) -> String {
     std::path::Path::new(p)
         .file_name()
@@ -1574,5 +1597,99 @@ mod tests {
             finalize_time_group_name("截图 · 11-04 14:32", 0, "张"),
             "截图 · 11-04 14:32"
         );
+    }
+
+    // ── 列表/分组压缩（compact）：图片不得被塞进一条伪造的文本正文 ──
+
+    /// 一条真实图片条目：preview 是尺寸描述，text 是采集时真实存在的附带文本。
+    fn image_item(text: &str, preview: &str) -> ClipboardItem {
+        let mut it = item(KIND_IMAGE, text, "");
+        it.preview = preview.into();
+        it.image_width = Some(1476);
+        it.image_height = Some(1198);
+        it.has_image = true;
+        it.has_thumb = true;
+        it
+    }
+
+    #[test]
+    fn compact_image_without_attached_text_keeps_text_empty() {
+        let out = compact_item(&image_item("", "图片 1476×1198"));
+        assert_eq!(out.text, "", "图片没有正文：压缩后不得塞进尺寸描述");
+        assert_eq!(out.preview, "图片 1476×1198", "尺寸描述留在 preview 字段");
+        assert_eq!(out.kind, KIND_IMAGE, "图片仍是图片");
+        assert!(out.has_image && out.has_thumb, "图片资产标记不变");
+        assert_eq!(out.image_width, Some(1476));
+        assert_eq!(out.image_height, Some(1198));
+    }
+
+    #[test]
+    fn compact_image_keeps_real_attached_text() {
+        let out = compact_item(&image_item("来自截图工具的附带文本", "图片 1476×1198"));
+        assert_eq!(
+            out.text, "来自截图工具的附带文本",
+            "真实附带文本不得被 preview 覆盖"
+        );
+        assert_eq!(out.preview, "图片 1476×1198");
+    }
+
+    #[test]
+    fn compact_image_clears_html_without_mixing_it_into_body() {
+        let mut it = image_item("", "图片 1476×1198");
+        it.html = "<b>富文本</b>".into();
+        let out = compact_item(&it);
+        assert_eq!(out.html, "", "图片不得混入 HTML");
+        assert_eq!(out.text, "", "HTML 也不得混进图片正文");
+    }
+
+    #[test]
+    fn compact_image_never_writes_dimensions_into_body_fields() {
+        // 尺寸只属于 preview 与图片元数据：任何正文字段都不得出现尺寸描述，
+        // 否则前端会把它当成图片的文字（甚至 OCR）正文展示。
+        let out = compact_item(&image_item("", "图片 1476×1198"));
+        assert!(!out.text.contains("1476"), "正文不得含尺寸");
+        assert!(!out.text.contains("图片"), "正文不得含尺寸描述前缀");
+        assert!(!out.html.contains("1476"), "HTML 不得含尺寸");
+        assert_eq!(out.preview, "图片 1476×1198");
+    }
+
+    #[test]
+    fn compact_text_url_html_files_behavior_unchanged() {
+        // 文本：text = preview，html 清空
+        let mut text = item(KIND_TEXT, "原始正文", "");
+        text.preview = "原始正文".into();
+        let out = compact_item(&text);
+        assert_eq!(out.text, "原始正文");
+        assert_eq!(out.html, "");
+
+        // URL：仍是链接，正文回填 preview
+        let mut url = item(KIND_URL, "https://example.com/a", "");
+        url.preview = "https://example.com/a".into();
+        let out = compact_item(&url);
+        assert_eq!(out.text, "https://example.com/a");
+        assert_eq!(out.kind, KIND_URL);
+
+        // HTML：正文被 preview 取代（列表协议），HTML 恒清空
+        let mut html = item(KIND_HTML, "正文", "<p>正文</p>");
+        html.preview = "正文".into();
+        let out = compact_item(&html);
+        assert_eq!(out.text, "正文");
+        assert_eq!(out.html, "");
+
+        // 文件：文件名清单照旧进正文
+        let mut files = item(KIND_FILES, "", "");
+        files.preview = "a.txt、b.pdf".into();
+        let out = compact_item(&files);
+        assert_eq!(out.text, "a.txt、b.pdf");
+        assert_eq!(out.kind, KIND_FILES);
+    }
+
+    #[test]
+    fn classify_treats_dimension_description_as_plain_text() {
+        // 「图片 1476×1198」作为普通文本复制时必须判为文本：
+        // 类型判定只依据真实内容（有没有图片位），绝不按预览字符串猜类型。
+        assert_eq!(classify("图片 1476×1198", "", false, &[]), Some(KIND_TEXT));
+        assert_eq!(classify("图片", "", false, &[]), Some(KIND_TEXT));
+        assert_eq!(classify("图片 1476×1198", "", true, &[]), Some(KIND_IMAGE));
     }
 }

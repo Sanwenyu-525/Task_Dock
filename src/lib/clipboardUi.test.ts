@@ -325,6 +325,28 @@ describe("groupExcerpt / linkSummary", () => {
     expect(out.length).toBeLessThanOrEqual(121);
   });
 
+  it("类型判定不靠字符串形状：没有图片的分组保留原文摘要", () => {
+    // 组里确实没有图片时，「图片 1476×1198」可能就是用户真的复制的内容，
+    // 不能凭字符串形状就断定它是图片预览。
+    expect(
+      groupExcerpt({
+        preview: "图片 1476×1198",
+        kind_counts: { image: 0, text: 1, html: 0, url: 0, files: 0 },
+        item_count: 1,
+        image_count: 0,
+      }),
+    ).toBe("图片 1476×1198");
+    // 组里有图片时，尺寸描述不作为文本摘要
+    expect(
+      groupExcerpt({
+        preview: "图片 1476×1198",
+        kind_counts: { image: 1, text: 0, html: 0, url: 0, files: 0 },
+        item_count: 1,
+        image_count: 1,
+      }),
+    ).toBe("");
+  });
+
   it("链接摘要优先域名，路径作为次要信息", () => {
     expect(linkSummary("https://www.example.com/a/b?x=1")).toEqual({
       domain: "example.com",

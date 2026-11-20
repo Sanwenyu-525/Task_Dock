@@ -10,6 +10,7 @@ import userEvent from "@testing-library/user-event";
 const bridge = vi.hoisted(() => ({
   clipboardGroup: vi.fn(),
   clipboardThumb: vi.fn(),
+  clipboardImage: vi.fn(),
   clipboardRemoveGroupItem: vi.fn(),
   clipboardMoveGroupItem: vi.fn(),
   clipboardRenameGroup: vi.fn(),
@@ -103,6 +104,7 @@ beforeEach(() => {
     ]),
   );
   bridge.clipboardThumb.mockResolvedValue("data:image/png;base64,AA==");
+  bridge.clipboardImage.mockResolvedValue("data:image/png;base64,BIG==");
   bridge.clipboardRemoveGroupItem.mockResolvedValue(makeGroup([]));
   bridge.workspaceList.mockResolvedValue([]);
   bridge.clipboardAgentTargets.mockResolvedValue([]);
@@ -306,6 +308,138 @@ describe("纯图片分组的紧凑双列布局", () => {
       ),
     );
     await waitFor(() => expect(rowIds()).toEqual(["ci-grid-s3"]));
+  });
+});
+
+/**
+ * 图片分组：真实缩略图 + 标题/正文严格区分。
+ *
+ * 后端压缩协议里图片的 preview（「图片 W×H」）只是尺寸描述，
+ * 前端绝不能把它当成图片的文字正文渲染出来。
+ */
+describe("图片分组的真实缩略图与正文区分", () => {
+  const rowIds = () =>
+    Array.from(document.querySelectorAll<HTMLElement>("[data-clip-row]")).map((r) => r.dataset.clipRow);
+
+  /** 一条真实图片条目：标题是自动标题，preview 是尺寸描述，text 为空（无附带文本）。 */
+  function shot(id: string, over: Partial<ClipboardItem> = {}): ClipboardItem {
+    return makeItem(0, {
+      id,
+      kind: "image",
+      has_thumb: true,
+      has_image: true,
+      title: "截图 1476×1198",
+      preview: "图片 1476×1198",
+      text: "",
+      image_width: 1476,
+      image_height: 1198,
+      byte_size: 2048,
+      ...over,
+    });
+  }
+
+  it("纯图片分组渲染真实缩略图，尺寸描述不冒充图片正文", async () => {
+    bridge.clipboardGroup.mockResolvedValue(makeGroup([shot("ci-shot-1"), shot("ci-shot-2")]));
+    render(<ClipboardGroupDetail groupId="g1" {...noProps} />);
+    await screen.findByText("截图集合");
+    await waitFor(() => expect(document.querySelector(".clip-group-shots")).toBeTruthy());
+
+    const imgs = Array.from(document.querySelectorAll<HTMLImageElement>("img.clip-shot-img"));
+    expect(imgs.length).toBe(2);
+    for (const img of imgs) {
+      expect(img.getAttribute("src")).toBe("data:image/png;base64,AA==");
+    }
+    // 尺寸描述没有变成任何一行文本
+    expect(screen.queryByText("图片 1476×1198")).toBeNull();
+    expect(document.body.textContent).not.toContain("图片 1476×1198");
+  });
+
+  it("图片标题是标题：网格卡片标题区显示自动标题，不回退到尺寸描述", async () => {
+    bridge.clipboardGroup.mockResolvedValue(makeGroup([shot("ci-shot-title")]));
+    render(<ClipboardGroupDetail groupId="g1" {...noProps} />);
+    await screen.findByText("截图集合");
+    await waitFor(() => expect(document.querySelector(".clip-group-shots")).toBeTruthy());
+
+    expect(document.querySelector(".clip-shot-title")?.textContent).toBe("截图 1476×1198");
+    expect(document.querySelector(".clip-shot-meta")?.textContent).toContain("第 1 张");
+    expect(document.querySelector(".clip-shot-meta")?.textContent).toContain("2.0 KB");
+  });
+
+  it("混合分组里图片仍是真实缩略图，文本保持真实文本且顺序不变", async () => {
+    bridge.clipboardGroup.mockResolvedValue(
+      makeGroup([
+        shot("ci-mix-img"),
+        makeItem(1, { id: "ci-mix-text", kind: "text", title: "会议纪要", preview: "会议纪要正文" }),
+      ]),
+    );
+    render(<ClipboardGroupDetail groupId="g1" {...noProps} />);
+    await screen.findByText("截图集合");
+
+    expect(document.querySelector(".clip-group-items")).toBeTruthy();
+    expect(document.querySelector(".clip-group-shots")).toBeNull();
+    // 图片行用真实缩略图
+    await waitFor(() => expect(bridge.clipboardThumb).toHaveBeenCalledWith("ci-mix-img"));
+    const thumb = document.querySelector<HTMLImageElement>("img.clip-thumb");
+    expect(thumb?.getAttribute("src")).toBe("data:image/png;base64,AA==");
+    // 文本行是真实文本；图片行只有标题，没有尺寸描述当正文
+    expect(screen.getByText("会议纪要")).toBeTruthy();
+    expect(screen.getByText("截图 1476×1198")).toBeTruthy();
+    expect(screen.queryByText("图片 1476×1198")).toBeNull();
+    // 图片与文本的相对顺序不变
+    expect(rowIds()).toEqual(["ci-mix-img", "ci-mix-text"]);
+  });
+
+  it("点缩略图打开灯箱，灯箱按分组内图片顺序支持前后切换", async () => {
+    bridge.clipboardGroup.mockResolvedValue(
+      makeGroup([shot("ci-lb-1"), shot("ci-lb-2"), shot("ci-lb-3")]),
+    );
+    render(<ClipboardGroupDetail groupId="g1" {...noProps} />);
+    await screen.findByText("截图集合");
+    await waitFor(() => expect(document.querySelector(".clip-group-shots")).toBeTruthy());
+
+    fireEvent.click(screen.getByRole("button", { name: "查看第 1 张图片大图" }));
+    await waitFor(() => expect(screen.getByRole("dialog", { name: "图片大图预览" })).toBeTruthy());
+    expect(document.querySelector(".clip-lightbox-counter")?.textContent).toContain("1 / 3");
+
+    fireEvent.click(screen.getByRole("button", { name: "下一张" }));
+    await waitFor(() =>
+      expect(document.querySelector(".clip-lightbox-counter")?.textContent).toContain("2 / 3"),
+    );
+    // 灯箱加载的是原图，不是缩略图
+    await waitFor(() => expect(bridge.clipboardImage).toHaveBeenCalledWith("ci-lb-1"));
+  });
+
+  it("没有缩略图时显示明确占位，不留空白，也仍可点开灯箱", async () => {
+    bridge.clipboardGroup.mockResolvedValue(makeGroup([shot("ci-nt", { has_thumb: false })]));
+    render(<ClipboardGroupDetail groupId="g1" {...noProps} />);
+    await screen.findByText("截图集合");
+    await waitFor(() => expect(document.querySelector(".clip-group-shots")).toBeTruthy());
+
+    expect(document.querySelector("img.clip-shot-img")).toBeNull();
+    expect(document.querySelector(".clip-shot-placeholder")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "查看第 1 张图片大图" }));
+    await waitFor(() => expect(screen.getByRole("dialog", { name: "图片大图预览" })).toBeTruthy());
+  });
+
+  it("移除一张图片后其余图片不受影响（缩略图与顺序都保持）", async () => {
+    const items = [shot("ci-rm-1"), shot("ci-rm-2"), shot("ci-rm-3")];
+    bridge.clipboardGroup.mockResolvedValue(makeGroup(items));
+    bridge.clipboardRemoveGroupItem.mockResolvedValue(makeGroup([items[0], items[2]]));
+    render(<ClipboardGroupDetail groupId="g1" {...noProps} />);
+    await screen.findByText("截图集合");
+    await waitFor(() => expect(document.querySelectorAll("img.clip-shot-img").length).toBe(3));
+
+    await flushClick(() =>
+      fireEvent.click(screen.getByRole("button", { name: "从分组移除第 2 项" })),
+    );
+    await waitFor(() => expect(document.querySelector('[data-clip-row="ci-rm-2"]')).toBeNull());
+    expect(rowIds()).toEqual(["ci-rm-1", "ci-rm-3"]);
+    // 剩下的两张仍是真实缩略图
+    const imgs = Array.from(document.querySelectorAll<HTMLImageElement>("img.clip-shot-img"));
+    expect(imgs.length).toBe(2);
+    for (const img of imgs) {
+      expect(img.getAttribute("src")).toBe("data:image/png;base64,AA==");
+    }
   });
 });
 

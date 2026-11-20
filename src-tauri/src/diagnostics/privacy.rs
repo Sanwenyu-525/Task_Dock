@@ -79,6 +79,7 @@ const ALLOWED_META_KEYS: &[&str] = &[
     "target",
     "task_count",
     "task_id",
+    "thread",
     "to",
     "trigger",
     "voice_id",
@@ -358,5 +359,25 @@ mod tests {
     fn message_redacts_secrets() {
         let text = sanitize_message("请求失败 Authorization: Bearer abcdef1234567890");
         assert!(!text.contains("abcdef1234567890"), "{text}");
+    }
+
+    #[test]
+    fn message_redacts_url_query_email_and_sk_key() {
+        let text = sanitize_message(
+            "GET https://api.example.com/v1?sig=abcdef123456&x=1 by bob@example.com, key sk-AbCdEf0123456789abcd",
+        );
+        assert!(!text.contains("abcdef123456"), "{text}");
+        assert!(!text.contains("bob@example.com"), "{text}");
+        assert!(!text.contains("sk-AbCdEf"), "{text}");
+        assert!(text.contains("<邮箱>"), "{text}");
+        assert!(text.contains("x=1"), "{text}"); // 普通参数保留
+    }
+
+    #[test]
+    fn message_keeps_error_code_and_reason() {
+        let text = sanitize_message("VALIDATION_ERROR: 标题不能为空 (HTTP 400)");
+        assert!(text.contains("VALIDATION_ERROR"), "{text}");
+        assert!(text.contains("标题不能为空"), "{text}");
+        assert!(text.contains("(HTTP 400)"), "{text}");
     }
 }

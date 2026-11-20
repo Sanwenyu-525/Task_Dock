@@ -151,11 +151,18 @@ IPC 查询参数使用 camelCase（项目参数规范）。
 - 活动文件：`diagnostics-active.jsonl`；归档：`diagnostics-<YYYYMMDD-HHMMSS>-<seq>.jsonl`。
 - 单文件上限 5 MB，**写入前**判断并轮转（一行不会跨文件）。
 - 归档最多 4 个（共 5 个文件，约 25 MB）；同时受目录总量 25 MB 上限约束，超限删最旧。
+- **保留期 14 天**（时间维度，`MAX_AGE_DAYS`）：归档修改时间超过保留期的在启动与轮转后
+  一并删除。三个上限互补——数量/容量防**空间**，时间防**长期堆积的过期现场**（低频使用时
+  目录可能几个月不动，容量上限永远碰不到）。`max_age_days = 0` 表示关闭时间淘汰。
 - 启动时执行一次轻量保留检查；轮转后立即检查。
 - 写入：`BufWriter`（64 KiB）+ 200 ms 批次 flush；**不对每条日志 `sync_all`**，只在退出时
   同步一次。
 - 失败降级：目录不可用/磁盘满/权限不足 → 只计数 + stderr 限流提示（30 s 一次）+ 60 s 退避，
   **不 panic、不向业务返回错误、不递归调用 `tracing`**。
+- **失败分类**（`WriteFailureKind`）：写失败按 `std::io::Error` 归类为 `disk_full` /
+  `permission_denied` / `file_locked` / `unknown`，经 `diagnostics_status` 的
+  `lastFailureKind` 暴露到设置页。三种可处置故障需要用户做不同的事（清盘 / 改目录权限 /
+  关掉占用进程），笼统的「写入失败」无法指导用户。
 
 ## 8. 查询与摘要
 
@@ -183,19 +190,24 @@ IPC 查询参数使用 camelCase（项目参数规范）。
 - 摘要（总/错误/警告/信息、分组、模块与错误码分布、`truncated`/`skipped`）；
 - 最近关键异常（≤5000 条，权重与阶段字段齐全）；
 - 日志系统自身状态（容量、写入/丢弃/队列满/聚合/轮转/失败计数、`degraded`、
-  `lastWriterError`、详细模式剩余时间）；
+  `lastWriterError`、`lastFailureKind`、详细模式剩余时间）；
 - `privacy` 说明：`localOnly: true` 与已脱敏字段列表。
 
 导出前会 `flush` 写线程（含聚合摘要），保证包含刚刚发生的异常；先写临时文件再 rename。
 
 ## 10. 生命周期与资源
 
-- 启动：`lib.rs` 的 `.setup()` 中**先**确定数据目录，随后初始化诊断日志、挂载
-  `tracing`（`EnvFilter` + `fmt` + `DiagnosticsLayer`），再创建窗口。
+- 启动：`lib.rs` 的 `.setup()` 中**先**确定数据目录，随后初始化诊断日志、安装 **panic hook**、
+  挂载 `tracing`（`EnvFilter` + `fmt` + `DiagnosticsLayer`），再创建窗口。
+- **panic 捕获**（`diagnostics/panic_hook.rs`）：`std::panic::set_hook` 把崩溃现场写进诊断日志，
+  错误码固定 `RUST_PANIC`，模块 `runtime`。只写**最小且脱敏**的信息：panic 消息（脱敏+限长
+  240 字符）、`文件名:行号`（**只取文件名**，绝不写绝对路径——绝对路径含用户名）、线程名。
+  **不写**栈回溯全文（可能含用户目录与业务对象）。hook 自身包在 `catch_unwind` 里——hook 里再
+  panic 会直接 abort，反而丢掉全部现场。写入走既有 `try_send` 背压路径，队列满则丢弃计数。
 - 退出：`request_exit` 在 `EXIT_READY` 前记录 `system/shutdown` 事件并 `shutdown()` 写线程
   （刷出队列尾部与聚合摘要 + 一次 `sync_all`），然后加入线程。
-- 资源上限：队列 1024 条、聚合表 256 条、单文件 5 MB、总量 25 MB、查询 20 万行/400 ms、
-  导出 5000 条。**内存不随运行时间增长**。
+- 资源上限：队列 1024 条、聚合表 256 条、单文件 5 MB、总量 25 MB、保留期 14 天、
+  查询 20 万行/400 ms、导出 5000 条。**内存不随运行时间增长**。
 - 前端：队列 128 条、每批 20 条、500 ms 间隔、最多 4 个在途批次；溢出优先丢
   DEBUG/INFO 并本地计数（`clientDiagnosticsStats()`）。
 
@@ -260,6 +272,12 @@ IPC 查询参数使用 camelCase（项目参数规范）。
 - 聚合会把"相同指纹的高频噪声"合并为计数；需要逐条排查时用 `operation_id` 或详细诊断模式。
 - 诊断日志能定位"哪个操作在哪个阶段失败"，**不能自动发现所有逻辑缺陷**；状态一致性
   校验只覆盖已接入的两条路径（设置持久化、导航布局）。
+- **panic 记录是最小化的**：只含脱敏消息、`文件名:行号` 与线程名，**不含栈回溯全文**
+  （栈里可能有用户目录与业务对象）。需要完整栈时用开发构建复现。
+- **panic hook 只覆盖桌面端 Rust 侧**；Android 端目前**没有**崩溃捕获，也没有本地日志落盘
+  （见 `docs/architecture/unified-observability-design.md` §5 的补齐计划）。
+- 日志保留期固定 14 天，**不可由用户配置**——保留期是「过期现场」的时间窗，调大只会让
+  过期现场堆积，调小会让跨天问题无法复现。
 
 ## 16. 复查修复记录（2026-11-06 第二轮）
 

@@ -87,7 +87,14 @@ DB ──export──▶ 文件（记录 exported_hash + exported_revision 到 a
 
 ## 6. 上下文装配（Context Engine）
 
-`build_agent_context(query|project|task|plan|agent, budget, kinds)`：
+> **记法更正（2026-11-20，第二轮架构审计）**：本节原记 `build_agent_context(query|project|task|plan|agent, budget, kinds)` 为设计稿伪签名，该名称在 Rust/TS 源码中**不存在**（全仓仅本文一处）。真实入口是
+> `agent_access::context::build(db, principal, req)`（`src-tauri/src/agent_access/context.rs:1022`），
+> 入参为结构体 `ContextRequest { task, task_id, project_id, agent_id, session_id, budget_tokens, kinds, format }`，
+> 预算常量 `DEFAULT_BUDGET=6000` / `MAX_BUDGET=24000`（clamp 1000–24000）。
+> 下列流水线描述仍为**目标态设计**：已实现的部分为 7 类来源检索、权限过滤、中文 2-gram 抽词、
+> 去重与预算裁剪；「打分/relevance 排序」等为未来扩展，引用时以下方真实签名为准。
+
+真实入口 `agent_access::context::build(db, principal, req)`：
 范围解析 → 多源检索（任务/规划/知识/决策/Skill/交接/近期变更）→ 打分 → 去重 → 预算裁剪
 → Markdown / JSON 输出。每条内容带 `source_id / source_kind / updated_at / relevance / summary /
 uri`，不把推测写成事实。详见 [context-engine.md](context-engine.md)。

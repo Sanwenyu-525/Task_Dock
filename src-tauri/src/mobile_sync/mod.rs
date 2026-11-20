@@ -36,6 +36,8 @@ pub mod files;
 pub mod server;
 pub mod sync;
 pub mod tls;
+// 安全审计写入路径（security_audit_log，v82）：5 类配对/鉴权事件的落点。
+pub(crate) mod audit_events;
 
 /// 协议版本：手机端据此拒绝不兼容的桌面端。
 ///
@@ -459,7 +461,17 @@ pub fn start_pairing(db: &Db, state: &MobileSyncState) -> AppResult<PairingOffer
             "未检测到局域网 IPv4 地址；请确认已连接 Wi-Fi/有线网络后重试".into(),
         )
     })?;
+    start_pairing_with_lan(db, state, &settings, &lan_ip)
+}
 
+/// 已通过开关校验、确定局域网地址后的配对会话创建（生产入口由 [`start_pairing`]
+/// 转入；独立成函数是为了测试可注入固定地址与设置，不依赖宿主机网卡）。
+fn start_pairing_with_lan(
+    db: &Db,
+    state: &MobileSyncState,
+    settings: &Settings,
+    lan_ip: &str,
+) -> AppResult<PairingOffer> {
     let (server_name, instance_id, port, code, tls) = {
         let mut inner = state.lock();
         let Some(bound_port) = inner.bound_port else {
@@ -500,7 +512,7 @@ pub fn start_pairing(db: &Db, state: &MobileSyncState) -> AppResult<PairingOffer
     let fingerprint = fingerprint_of(&instance_id);
     let tls_fingerprint = tls.fingerprint().to_string();
     let qr_payload = build_pairing_uri(
-        &lan_ip,
+        lan_ip,
         port,
         &code,
         &server_name,
@@ -509,10 +521,13 @@ pub fn start_pairing(db: &Db, state: &MobileSyncState) -> AppResult<PairingOffer
         &tls_fingerprint,
     );
 
+    // 审计：用户主动发起配对（不含配对码与二维码内容）。
+    audit_events::pairing_requested(db);
+
     Ok(PairingOffer {
         code,
         expires_in_secs: PAIRING_TTL_SECS,
-        lan_ip,
+        lan_ip: lan_ip.to_string(),
         port,
         server_name,
         instance_id,
@@ -551,21 +566,52 @@ pub fn revoke_device(db: &Db, device_id: &str) -> AppResult<bool> {
         return Err(AppError::Validation("设备 ID 不能为空".into()));
     }
     let now = now_iso();
-    db.with_conn(|conn| {
+    let revoked = db.with_conn(|conn| {
         let changed = conn.execute(
             "UPDATE mobile_devices SET revoked_at = ?1
              WHERE id = ?2 AND revoked_at IS NULL",
             rusqlite::params![now, device_id],
         )?;
         Ok(changed > 0)
-    })
+    })?;
+    // 审计：信任变更（高风险事件，写入失败可经诊断 ERROR 告警）。
+    if revoked {
+        audit_events::device_revoked(db, device_id);
+    }
+    Ok(revoked)
 }
 
 /// 完成配对：由 HTTP 层调用，返回一次性令牌。
 ///
+/// 审计包装：成功落库 → `PAIRING_SUCCEEDED`（高风险），失败 → `PAIRING_FAILED`
+/// （reason: invalid_code | too_many | closed）。审计写入失败不影响配对结果。
+pub fn complete_pairing(
+    db: &Db,
+    state: &MobileSyncState,
+    request: PairRequest,
+    peer_ip: Option<String>,
+) -> Result<PairOutcome, PairFailure> {
+    let result = complete_pairing_inner(db, state, request, peer_ip.clone());
+    match &result {
+        Ok(outcome) => audit_events::pairing_succeeded(db, &outcome.device_id),
+        Err(failure) => audit_events::pairing_failed(db, pair_failure_reason(failure), peer_ip.as_deref()),
+    }
+    result
+}
+
+fn pair_failure_reason(failure: &PairFailure) -> &'static str {
+    match failure {
+        PairFailure::InvalidCode => "invalid_code",
+        PairFailure::TooManyAttempts => "too_many",
+        PairFailure::Closed => "closed",
+    }
+}
+
+/// 配对主体逻辑（审计由 [`complete_pairing`] 包装）。
+///
 /// 分三段加锁：校验（不持锁做 DB IO）→ 落库 → 回填会话。第二段期间用户取消或
 /// 重新生成会话时，落库后的设备会补偿删除，避免出现「已取消但仍被授权」。
-pub fn complete_pairing(
+fn complete_pairing_inner(
     db: &Db,
     state: &MobileSyncState,
     request: PairRequest,
@@ -704,10 +750,14 @@ pub fn complete_pairing(
 }
 
 /// 校验设备令牌并刷新最近连接时间。令牌无效/已撤销返回 `None`。
+///
+/// 鉴权失败（格式非法或未知/已撤销令牌）写 `AUTH_FAILED` 审计事件；
+/// 成功鉴权是常态轮询路径，**不写**审计，避免事件表被心跳淹没。
 pub fn authenticate_device(db: &Db, token: &str, peer_ip: Option<&str>) -> AppResult<Option<MobileDevice>> {
     let token = token.trim();
     // 令牌固定 64 位十六进制；格式不符直接拒绝，避免无意义的哈希查询。
     if token.len() != 64 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
+        audit_events::auth_failed(db, peer_ip);
         return Ok(None);
     }
     let hash = hash_token(token);
@@ -739,6 +789,8 @@ pub fn authenticate_device(db: &Db, token: &str, peer_ip: Option<&str>) -> AppRe
             }
             Ok(())
         });
+    } else {
+        audit_events::auth_failed(db, peer_ip);
     }
     Ok(device)
 }
@@ -1683,5 +1735,182 @@ mod tests {
         assert_eq!(sanitize_device_name("  \u{0007}  "), "Android 设备");
         assert_eq!(sanitize_device_name("Pixel\n9"), "Pixel9");
         assert_eq!(sanitize_platform("ANDROID 16!"), "android16");
+    }
+
+    // ── 安全审计（security_audit_log v82）────────────────────────────
+
+    fn audit_rows(db: &Db) -> Vec<(String, Option<String>, Option<String>, String, Option<String>)> {
+        db.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT event_type, subject, reason_code, result, correlation_id
+                 FROM security_audit_log ORDER BY created_at, id",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+            })?;
+            let out: Vec<_> = rows
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(AppError::from)?;
+            Ok(out)
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn pairing_lifecycle_writes_audit_events() {
+        let db = Db::open_in_memory().unwrap();
+        let state = test_state(&db);
+
+        // 1. 发起配对（注入固定地址，不依赖宿主机网卡）
+        let offer = start_pairing_with_lan(&db, &state, &Settings::load(&db).unwrap_or_default(), "192.0.2.10").unwrap();
+        assert_eq!(audit_rows(&db)[0].0, audit_events::EVENT_PAIRING_REQUESTED);
+
+        // 2. 配对成功：subject 是库内新设备 UUID（高风险事件）
+        let outcome = complete_pairing(
+            &db,
+            &state,
+            PairRequest {
+                code: offer.code.clone(),
+                device_name: "Pixel 9".into(),
+                platform: "android".into(),
+                device_uid: String::new(),
+            },
+            Some("203.0.113.55".into()),
+        )
+        .unwrap();
+        let rows = audit_rows(&db);
+        let succeeded = rows.iter().find(|r| r.0 == audit_events::EVENT_PAIRING_SUCCEEDED).unwrap();
+        assert_eq!(succeeded.1.as_deref(), Some(outcome.device_id.as_str()));
+        assert_eq!(succeeded.3, audit_events::RESULT_OK);
+
+        // 3. 配对码错误 → invalid_code（subject 是 /24 网段，不是完整 IP）
+        let next_offer = start_pairing_with_lan(&db, &state, &Settings::load(&db).unwrap_or_default(), "192.0.2.10").unwrap();
+        let failure = complete_pairing(
+            &db,
+            &state,
+            PairRequest {
+                code: "000000".into(),
+                device_name: String::new(),
+                platform: String::new(),
+                device_uid: String::new(),
+            },
+            Some("203.0.113.55".into()),
+        );
+        assert_eq!(failure.unwrap_err(), PairFailure::InvalidCode);
+        let rows = audit_rows(&db);
+        let failed = rows
+            .iter()
+            .find(|r| r.0 == audit_events::EVENT_PAIRING_FAILED && r.2.as_deref() == Some("invalid_code"))
+            .unwrap();
+        assert_eq!(failed.1.as_deref(), Some("203.0.113.0/24"));
+
+        // 4. 尝试次数耗尽 → too_many
+        for _ in 1..MAX_PAIR_ATTEMPTS {
+            let _ = complete_pairing(
+                &db,
+                &state,
+                PairRequest {
+                    code: "000000".into(),
+                    device_name: String::new(),
+                    platform: String::new(),
+                    device_uid: String::new(),
+                },
+                Some("203.0.113.55".into()),
+            );
+        }
+        let rows = audit_rows(&db);
+        assert!(rows
+            .iter()
+            .any(|r| r.0 == audit_events::EVENT_PAIRING_FAILED
+                && r.2.as_deref() == Some("too_many")));
+
+        // 5. 会话已用尽/取消 → closed（作废旧码后重放旧码）
+        let _ = start_pairing_with_lan(&db, &state, &Settings::load(&db).unwrap_or_default(), "192.0.2.10");
+        state.clear_session();
+        let failure = complete_pairing(
+            &db,
+            &state,
+            PairRequest {
+                code: next_offer.code,
+                device_name: String::new(),
+                platform: String::new(),
+                device_uid: String::new(),
+            },
+            None,
+        );
+        assert_eq!(failure.unwrap_err(), PairFailure::Closed);
+        let rows = audit_rows(&db);
+        assert!(rows
+            .iter()
+            .any(|r| r.0 == audit_events::EVENT_PAIRING_FAILED
+                && r.2.as_deref() == Some("closed")
+                // 无来源地址时不编造 subject
+                && r.1.is_none()));
+
+        // 审计失败不影响业务结果：成功配对已在上游断言（outcome 正常返回）。
+        assert!(audit_rows(&db)
+            .iter()
+            .filter(|r| r.0 == audit_events::EVENT_PAIRING_SUCCEEDED)
+            .count()
+            == 1);
+    }
+
+    #[test]
+    fn revocation_and_auth_failures_write_audit_events() {
+        let db = Db::open_in_memory().unwrap();
+        let state = test_state(&db);
+        let offer = start_pairing_with_lan(&db, &state, &Settings::load(&db).unwrap_or_default(), "192.0.2.10").unwrap();
+        let outcome = complete_pairing(
+            &db,
+            &state,
+            PairRequest {
+                code: offer.code,
+                device_name: "Pixel 9".into(),
+                platform: "android".into(),
+                device_uid: String::new(),
+            },
+            Some("203.0.113.55".into()),
+        )
+        .unwrap();
+
+        // 成功鉴权（常态轮询）不写审计
+        assert!(authenticate_device(&db, &outcome.token, Some("203.0.113.55"))
+            .unwrap()
+            .is_some());
+        let before = audit_rows(&db).len();
+
+        // 未知令牌 → AUTH_FAILED，subject 是 /24 网段
+        assert!(authenticate_device(&db, &"b".repeat(64), Some("203.0.113.66"))
+            .unwrap()
+            .is_none());
+        let rows = audit_rows(&db);
+        assert_eq!(rows.len(), before + 1);
+        let auth = rows.last().unwrap();
+        assert_eq!(auth.0, audit_events::EVENT_AUTH_FAILED);
+        assert_eq!(auth.1.as_deref(), Some("203.0.113.0/24"));
+        assert_eq!(auth.2.as_deref(), Some("unauthorized"));
+        assert_eq!(auth.3, audit_events::RESULT_DENIED);
+
+        // 格式非法令牌同样 AUTH_FAILED
+        assert!(authenticate_device(&db, "not-a-token", Some("203.0.113.66"))
+            .unwrap()
+            .is_none());
+        assert_eq!(audit_rows(&db).len(), before + 2);
+
+        // 撤销命中 → DEVICE_REVOKED（subject=库内 UUID）
+        assert!(revoke_device(&db, &outcome.device_id).unwrap());
+        let rows = audit_rows(&db);
+        let revoked = rows.iter().find(|r| r.0 == audit_events::EVENT_DEVICE_REVOKED).unwrap();
+        assert_eq!(revoked.1.as_deref(), Some(outcome.device_id.as_str()));
+
+        // 撤销未命中（重复撤销）不重复写审计
+        assert!(!revoke_device(&db, &outcome.device_id).unwrap());
+        assert_eq!(
+            audit_rows(&db)
+                .iter()
+                .filter(|r| r.0 == audit_events::EVENT_DEVICE_REVOKED)
+                .count(),
+            1
+        );
     }
 }

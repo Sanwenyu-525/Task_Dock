@@ -15,7 +15,7 @@
 //!                                           [--allow-overlap] [--allow-extra-paths] [--note <文字>]
 //!   node scripts/taskdock-integration.mjs build --snapshot <id|latest> --platform desktop|web|android
 //!                                           [--mode batch|urgent|manual] [--dry-run] [--force] [--target-dir <绝对路径>]
-//!                                           [--priority P0..P3] [--command <实验用命令串>]
+//!                                           [--command <实验用命令串>]
 //!   node scripts/taskdock-integration.mjs accept --build <id> --task <id>
 //!                                           --status pass|fail|blocked|not-run
 //!                                           [--evidence <仓库内相对路径>] [--note <文字>] [--repro <复现步骤>]
@@ -46,7 +46,7 @@ import {
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cpus, freemem, totalmem } from "node:os";
-import { atomicWriteJson, readJson } from "./sched/state.mjs";
+import { atomicWriteJson, readJson } from "./integration-state.mjs";
 
 const SELF_PATH = fileURLToPath(import.meta.url);
 const BRANCH = "integration";
@@ -1158,13 +1158,13 @@ function dirtyEntries(wt) {
 }
 
 // 真实模块检查：task verify 不只记录退出码，它在干净的隔离工作区里 checkout 到指定提交、
-// 按该提交核对依赖、经构建调度器真实执行命令，并把日志/提交/退出码一起写回任务台账。
+// 按该提交核对依赖、直接真实执行命令，并把日志/提交/退出码一起写回任务台账。
 // 这是进入「待集成」的可信检查来源；task check 的手动登记只作外部证据。
 function cmdTaskVerify(args) {
   const id = str(args, "id");
   const cmdText = str(args, "cmd");
   if (!id || !cmdText) {
-    throw new Fail("用法：task verify --id <slug> --commit <提交> --cmd \"<真实命令>\" [--priority P0..P3] [--class light|medium|heavy] [--timeout <秒>]", EXIT.usage);
+    throw new Fail("用法：task verify --id <slug> --commit <提交> --cmd \"<真实命令>\" [--timeout <秒>]", EXIT.usage);
   }
   const ctx = repoContext();
   const paths = statePaths(ctx);
@@ -1201,11 +1201,6 @@ function cmdTaskVerify(args) {
 
   const ts = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "");
   const logPath = join(paths.logs, `verify-${id}-${ts}.log`);
-  const priority = str(args, "priority", "P1");
-  const schedClass = str(args, "class", "");
-  if (schedClass && !["light", "medium", "heavy", "dev"].includes(schedClass)) {
-    throw new Fail("--class 只接受 light|medium|heavy|dev（默认按命令自动分类）", EXIT.usage);
-  }
   const timeoutSec = Number.parseInt(str(args, "timeout", "0"), 10);
   if (!Number.isInteger(timeoutSec) || timeoutSec < 0) throw new Fail("--timeout 需要非负整数秒", EXIT.usage);
   const header = [
@@ -1222,11 +1217,9 @@ function cmdTaskVerify(args) {
 
   console.log(`task verify ${id}：在隔离工作区 ${wt} 执行「${cmdText}」（commit ${commit.slice(0, 7)}）`);
   const startedMs = Date.now();
-  const run = runScheduled(
-    ctx, wt, `verify-${id}-${ts}`,
-    ["cmd.exe", "/d", "/s", "/c", cmdText],
-    logPath, { ...process.env }, priority, timeoutSec > 0 ? timeoutSec * 1000 : 0, schedClass || null,
-  );
+  const run = runToLog(["cmd.exe", "/d", "/s", "/c", cmdText], {
+    cwd: wt, logPath, env: { ...process.env }, timeoutMs: timeoutSec > 0 ? timeoutSec * 1000 : 0,
+  });
   const durationMs = Date.now() - startedMs;
   const exitCode = Number.isInteger(run.status) ? run.status : -1;
 
@@ -1250,7 +1243,7 @@ function cmdTaskVerify(args) {
         logPath: rel(ctx.mainRoot, logPath),
         worktree: rel(ctx.mainRoot, wt),
         durationMs,
-        schedulerTaskId: schedulerTaskId(logPath),
+        schedulerTaskId: null,
         timedOut: Boolean(run.timedOut),
         dependenciesFingerprint: hasLock ? depsFingerprintFrom(wt) : null,
       });
@@ -1500,16 +1493,6 @@ function readlinkSafe(path) {
   try { return readlinkSync(path); } catch { return null; }
 }
 
-function runScheduled(ctx, wt, label, argvTokens, logPath, env, priority = "P1", timeoutMs = 0, schedClass = null) {
-  const sched = join(ctx.mainRoot, "scripts", "build-sched.mjs");
-  const useSched = existsSync(sched);
-  const command = useSched
-    ? ["node", sched, "run", "--priority", priority, "--label", label, ...(schedClass ? ["--class", schedClass] : []), "--cwd", wt, "--", ...argvTokens]
-    : argvTokens;
-  if (!useSched) console.log("  提示：未找到构建调度器，按直接执行处理（仅测试/实验环境允许）");
-  return runToLog(command, { cwd: wt, env, logPath, timeoutMs });
-}
-
 function runToLog(command, { cwd, env, logPath, timeoutMs = 0 }) {
   mkdirSync(dirname(logPath), { recursive: true });
   const fd = openSync(logPath, "a");
@@ -1533,14 +1516,6 @@ function logTail(logPath, lines = 30) {
     const all = text.split(/\r?\n/).filter((l) => l !== "");
     return all.slice(-lines).join("\n");
   } catch { return ""; }
-}
-
-function schedulerTaskId(logPath) {
-  try {
-    const text = readFileSync(logPath, "utf8");
-    const m = /\[sched\]\s+任务\s+([hmlx]-[a-z0-9]+-[0-9a-f]+)/.exec(text);
-    return m ? m[1] : null;
-  } catch { return null; }
 }
 
 function cmdSnapshotBootstrap(argv) {
@@ -1868,10 +1843,10 @@ function cmdSnapshotCreateInner(args, ctx, paths) {
       ensureNodeModulesLink(ctx, wt);
       // 集成阶段只做类型检查；Vite 打包交给正式构建的 beforeBuildCommand，避免重复生成同一 dist。
       const staticCheck = staticCheckCommand(wt);
-      console.log(`  执行集成静态检查：${staticCheck.label}（不生成 Vite dist；经构建调度器排队）`);
-      const r = runScheduled(ctx, wt, `integration-${snapId}-static`, staticCheck.args, checkLog, {
+      console.log(`  执行集成静态检查：${staticCheck.label}（直接执行，不生成 Vite dist）`);
+      const r = runToLog(staticCheck.args, { cwd: wt, logPath: checkLog, env: {
         ...process.env, CARGO_TARGET_DIR: join(ctx.mainRoot, "src-tauri", "target-integration"),
-      });
+      } });
       checkResult = { cmd: staticCheck.label, exitCode: r.status, at: nowIso(), logPath: rel(ctx.mainRoot, checkLog) };
       if (r.status !== 0) {
         throw new Fail(`集成静态检查失败（exit ${r.status}）：\n${logTail(checkLog)}\n日志：${checkLog}`, EXIT.buildFailed);
@@ -2355,13 +2330,12 @@ function cmdBuild(argv) {
     }
   }
 
-  const priority = str(args, "priority", "P0");
   const override = args.command === undefined ? null : str(args, "command");
   const command = override ? ["cmd.exe", "/d", "/s", "/c", override] : cfg.command;
   const experimental = Boolean(override);
   const inputsDigest = buildInputsDigest(ctx, snap, platform, cfg, command);
   const reuseKey = `${snap.commit}|${platform}|${cfg.config}|${process.arch}|${inputsDigest}`;
-  if (override) console.log("  提示：使用 --command 覆盖平台命令（仅测试/实验，绕过构建调度器）");
+  if (override) console.log("  提示：使用 --command 覆盖平台命令（仅测试/实验）");
 
   const buildIdPreview = nextBuildId(paths, snap.id, platform);
 
@@ -2376,7 +2350,7 @@ function cmdBuild(argv) {
     console.log(`  资源：可用内存 ${resourceSnapshot().freeMemMB} MB / ${resourceSnapshot().totalMemMB} MB`);
     if (cfg.needsTarget) console.log(`  Rust 并行：CARGO_BUILD_JOBS=${process.env.CARGO_BUILD_JOBS ?? "2（默认）"}`);
     console.log(`  命令：${command.join(" ")}`);
-    console.log(`  调度：${override ? "直接执行（覆盖命令）" : "经 scripts/build-sched.mjs 排队"}`);
+    console.log("  执行方式：直接执行");
     console.log("  产物：");
     for (const spec of cfg.artifacts) {
       console.log(`    - ${spec.kind === "glob" ? `${spec.base}/${spec.pattern}` : spec.path}`);
@@ -2522,9 +2496,7 @@ function cmdBuild(argv) {
     console.log(`构建 ${buildId}：快照 ${snap.id} / ${snap.commit.slice(0, 7)} / ${platform} / ${cfg.config}`);
     console.log(`  工作区：${wt}`);
     console.log(`  执行：${command.join(" ")}`);
-    const result = override
-      ? runToLog(command, { cwd: wt, env, logPath })
-      : runScheduled(ctx, wt, `integration-${buildId}`, command, logPath, env, priority);
+    const result = runToLog(command, { cwd: wt, env, logPath });
 
     const durationMs = Date.now() - startedMs;
     const dirtyAfter = worktreeHasRelevantChanges(wt);
@@ -2571,7 +2543,7 @@ function cmdBuild(argv) {
       cwd: wt,
       targetDir: cfg.needsTarget ? targetDir : null,
       logPath: rel(ctx.mainRoot, logPath),
-      schedulerTaskId: schedulerTaskId(logPath),
+      schedulerTaskId: null,
       artifacts,
       host: `${process.platform}-${process.arch}`,
       ...(reason ? { reason } : {}),
@@ -2631,7 +2603,7 @@ function cmdBuild(argv) {
         cwd: wt,
         targetDir: cfg.needsTarget ? targetDir : null,
         logPath: existsSync(logPath) ? rel(ctx.mainRoot, logPath) : null,
-        schedulerTaskId: schedulerTaskId(logPath),
+        schedulerTaskId: null,
         artifacts: [],
         host: `${process.platform}-${process.arch}`,
         reason: String(err.message ?? err).split("\n")[0],

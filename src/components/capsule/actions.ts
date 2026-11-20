@@ -18,6 +18,7 @@
 //! 不能先写一次性意图再导航：取消或拒绝时意图会滞留，之后突然弹层。
 
 import { applyMode, type Task } from "../../lib/bridge";
+import { logEvent } from "../../lib/diagnostics";
 import { openWorkbench, type WorkbenchNavOutcome } from "../../lib/workbenchNav";
 import type { WorkbenchRoute } from "../../lib/workbenchLayout";
 import { useEdgeSnapStore } from "../../store/useEdgeSnapStore";
@@ -39,15 +40,20 @@ export type OpenFullAppResult = TabSwitchResult | "workbench-rerouted";
  * 历史遗留的完整功能调用方（如诊断中心的 `after` 定位意图）传入非快捷页时：
  * 运行时自动改道 `openWorkbenchPage` 直达工作台对应页——宁可降级为页面级落点，
  * 也不回到「摘要交接页 → 再点一次」的二次跳转；`after` 里的主窗意图随迁移
- * 失效（其旧消费者面板已不在主窗渲染），用 console.warn 提醒调用方迁移。
+ * 失效（其旧消费者面板已不在主窗渲染），用诊断 WARN 提醒调用方迁移。
  * 改道分支**不谎报 switched**：返回 workbench-rerouted，失败经 toast 呈现
  * 真实原因（工作台导航事务自带失败上报）。
  */
 export function openFullApp(tab: Tab, after?: () => void): OpenFullAppResult {
   if (!QUICK_PANEL_TABS.has(tab)) {
-    console.warn(
-      `[capsule/actions] ${tab} 的完整界面已迁移到唯一工作台，openFullApp 自动改道 openWorkbenchPage（请迁移调用方）`,
-    );
+    logEvent({
+      level: "WARN",
+      module: "navigation",
+      action: "open_full_app",
+      event: "rerouted",
+      message: `${tab} 的完整界面已迁移到唯一工作台，openFullApp 自动改道 openWorkbenchPage（请迁移调用方）`,
+      metadata: { tab },
+    });
     void openWorkbenchPageWithToast(tab);
     return "workbench-rerouted";
   }

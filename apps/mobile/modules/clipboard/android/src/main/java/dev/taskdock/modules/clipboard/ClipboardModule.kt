@@ -60,8 +60,10 @@ class ClipboardModule : Module() {
       if (clip.itemCount == 0) return null
       val text = clip.getItemAt(0).coerceToText(context)?.toString()
       if (text.isNullOrEmpty()) null else text
-    } catch (_: Exception) {
+    } catch (error: Exception) {
       // 后台读取被系统拒绝 / ROM 限制：按「读不到」处理，由 UI 提示用户。
+      // 只记异常类名 + 脱敏原因（SafeLog 会截断并脱敏），绝不写剪贴板正文/路径。
+      SafeLog.e("clipboard", "读取剪贴板失败: ${error.javaClass.simpleName}: ${error.message ?: ""}")
       null
     }
   }

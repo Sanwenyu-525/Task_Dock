@@ -1243,10 +1243,10 @@ test("构建失败按日志分类为 resource-error，不自动重复执行", ()
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
-test("集成静态检查只执行 npm run typecheck，不再重复 Vite 打包", () => {
+test("集成验证、静态检查和构建直接执行，不调用遗留调度器", () => {
   const { home, repo } = makeRepo();
   try {
-    const pkg = JSON.stringify({ name: "demo", version: "1.0.0", scripts: { typecheck: "node check.mjs" } }, null, 2) + "\n";
+    const pkg = JSON.stringify({ name: "demo", version: "1.0.0", scripts: { typecheck: "node check.mjs", "build:raw": "node emit.mjs" } }, null, 2) + "\n";
     const lock = JSON.stringify({ name: "demo", version: "1.0.0", lockfileVersion: 3, requires: true, packages: {} }, null, 2) + "\n";
     const base = commitFile(repo, {
       "package.json": pkg,
@@ -1255,7 +1255,10 @@ test("集成静态检查只执行 npm run typecheck，不再重复 Vite 打包",
     }, "package fixture");
     mkdirSync(join(repo, "node_modules"), { recursive: true });
     const alpha = commitFile(repo, { "src/app.txt": "app v2\n" }, "alpha");
+    // 主工作区残留旧调度器也不能被新入口调用。
+    write(repo, "scripts/build-sched.mjs", 'throw new Error("legacy scheduler invoked");\n');
     addReadyTask(repo, "alpha", ["src/app.txt"], alpha);
+    assert.equal(JSON.parse(fsReadTask(repo, "alpha")).checks.at(-1).schedulerTaskId, null);
     const create = run(repo, ["snapshot", "create", "--tasks", "alpha", "--base", base, "--check", "static"]);
     assert.equal(create.status, 0, create.out);
     const snap = readSnapshot(repo, "snap-01");
@@ -1265,6 +1268,9 @@ test("集成静态检查只执行 npm run typecheck，不再重复 Vite 打包",
     const log = readFileSync(join(repo, snap.checks[0].logPath), "utf8");
     assert.match(log, /typecheck ok/);
     assert.doesNotMatch(log, /vite build/);
+    const build = run(repo, ["build", "--snapshot", "snap-01", "--platform", "web"]);
+    assert.equal(build.status, 0, build.out);
+    assert.equal(readBuild(repo, "b01-web-r1").schedulerTaskId, null);
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 

@@ -20,11 +20,34 @@ import {
   type DiagnosticsStatus,
 } from "../../lib/bridge";
 import { setClientVerboseMode } from "../../lib/diagnostics";
+import type { MessageKey } from "../../i18n/messages";
 
 /** 最近异常摘要固定看 24 小时；列表与时间范围由诊断中心提供。 */
 const RECENT_HOURS = 24;
 /** 设置页只保留最关键的聚合分组，更多内容去诊断中心。 */
 const MAX_GROUPS = 8;
+
+/**
+ * 写失败分类 → 可执行提示。
+ *
+ * 「磁盘满」「没权限」「文件被占用」的处置完全不同，笼统的「写入失败」无法指导用户，
+ * 因此后端给出稳定分类（`last_failure_kind`），这里只负责翻译成一句话。
+ * 返回 `null` 表示分类未知或尚未发生写失败——不显示任何提示。
+ */
+function failureKindKey(kind: string | null | undefined): MessageKey | null {
+  switch (kind) {
+    case "disk_full":
+      return "settings.diagnosticsLogs.status.failureKind.diskFull";
+    case "permission_denied":
+      return "settings.diagnosticsLogs.status.failureKind.permissionDenied";
+    case "file_locked":
+      return "settings.diagnosticsLogs.status.failureKind.fileLocked";
+    case "unknown":
+      return "settings.diagnosticsLogs.status.failureKind.unknown";
+    default:
+      return null;
+  }
+}
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -52,6 +75,9 @@ export default function DiagnosticsLogsSection() {
   const [summary, setSummary] = useState<DiagnosticSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+
+  /** 写失败分类对应的提示文案（无写失败时为 null，不显示）。 */
+  const failureHintKey = failureKindKey(status?.lastFailureKind);
 
   /** 请求序号：连续点刷新时丢弃过期响应（不做无上限排队）。 */
   const requestSeq = useRef(0);
@@ -170,6 +196,11 @@ export default function DiagnosticsLogsSection() {
         <div className="setting-note diag-warn">
           {t("settings.diagnosticsLogs.status.degraded")}
           {status.lastError ? `（${status.lastError}）` : ""}
+        </div>
+      )}
+      {failureHintKey && (
+        <div className="setting-note diag-warn">
+          {t("settings.diagnosticsLogs.status.writeFailure")}：{t(failureHintKey)}
         </div>
       )}
 

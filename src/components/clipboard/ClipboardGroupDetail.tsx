@@ -649,7 +649,9 @@ export default function ClipboardGroupDetail({
                         onClick={() => setItemDetailId(item.id)}
                         disabled={leaving !== undefined}
                       >
-                        <span className="clip-shot-title">{item.title || item.preview || "图片"}</span>
+                        {/* 网格卡片只展示标题：图片的 preview 是尺寸描述，
+                            不是文字正文，绝不拿来当标题或正文行 */}
+                        <span className="clip-shot-title">{item.title || "图片"}</span>
                         <span className="clip-shot-meta">第 {i + 1} 张 · {formatBytes(item.byte_size)}</span>
                       </button>
                     </>
@@ -690,7 +692,10 @@ export default function ClipboardGroupDetail({
                       >
                         <span className="clip-group-item-text">
                           <span className="clip-group-item-preview">
-                            {item.title || item.preview || "（无文本预览）"}
+                            {/* 图片只有标题：preview 是尺寸描述，不是文字正文 */}
+                            {item.kind === "image"
+                              ? item.title || "图片"
+                              : item.title || item.preview || "（无文本预览）"}
                           </span>
                           <span className="clip-group-item-meta">
                             {kindLabel(item.kind)} · {formatBytes(item.byte_size)}

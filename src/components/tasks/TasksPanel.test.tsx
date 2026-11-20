@@ -17,7 +17,7 @@ import { useNavigationStore } from "../../store/useNavigationStore";
 import { useUiStore } from "../../store/useUiStore";
 import TasksPanel from "./TasksPanel";
 import { WorkbenchDetailHostProvider } from "../../workbench/pageDetail";
-import { listTasks, toggleTask } from "../../lib/bridge";
+import { listTasks, toggleTask, undoTaskCompletion } from "../../lib/bridge";
 import type { Task, TaskFilter } from "../../lib/bridge";
 import { EXIT_MS } from "../../lib/motion";
 
@@ -67,6 +67,7 @@ vi.mock("../../lib/bridge", async (importOriginal) => {
     ...actual,
     listTasks: vi.fn(async (f: TaskFilter) => filterTasks(f)),
     toggleTask: vi.fn(),
+    undoTaskCompletion: vi.fn(),
     taskStats: vi.fn(async () => ({
       pending: 2,
       overdue: 0,
@@ -363,7 +364,8 @@ describe("任务离场与后台刷新", () => {
     const user = userEvent.setup();
     seedPending();
     const pendingA: Task = { ...ALL_TASKS[0], status: "pending" };
-    vi.mocked(toggleTask).mockResolvedValueOnce(doneA).mockResolvedValueOnce(pendingA);
+    vi.mocked(toggleTask).mockResolvedValueOnce(doneA);
+    vi.mocked(undoTaskCompletion).mockResolvedValueOnce(pendingA);
     // 完成后的真实列表：只剩 b
     vi.mocked(listTasks).mockResolvedValue([ALL_TASKS[1]]);
     const { container } = render(<TasksPanel />);
@@ -371,11 +373,13 @@ describe("任务离场与后台刷新", () => {
     await user.click(row(container, "a")!.querySelector(".task-check")!);
     await waitFor(() => expect(row(container, "a")!.classList.contains("leaving")).toBe(true));
 
-    // 撤销：真实后端 toggle 回未完成，并重查列表
+    // 撤销走带版本保护的专用命令，不能再次 toggle（重复任务会翻转错误实例）。
     vi.mocked(listTasks).mockResolvedValue([ALL_TASKS[0], ALL_TASKS[1]]);
     await act(async () => {
       await useUiStore.getState().toast!.action!.run();
     });
+    expect(undoTaskCompletion).toHaveBeenCalledWith(doneA);
+    expect(toggleTask).toHaveBeenCalledTimes(1);
     await waitFor(() =>
       expect(useTasksStore.getState().tasks.map((t) => t.id)).toEqual(["a", "b"]),
     );

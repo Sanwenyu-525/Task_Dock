@@ -39,6 +39,7 @@ pub mod resource_cleanup;
 pub mod restore;
 pub mod recycle;
 pub mod scenario;
+pub mod security_audit;
 pub mod settings;
 pub mod shelf;
 pub mod system;

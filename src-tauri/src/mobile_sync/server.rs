@@ -476,27 +476,31 @@ async fn handle_ops(
     let result =
         tokio::task::spawn_blocking(move || apply_push(&db, &device_id, &ops)).await;
     match result {
-        Ok(Ok(response)) => match serde_json::to_value(response) {
-            Ok(value) => match encrypt_envelope(&key, AAD_PUSH, &value) {
-                Ok(envelope) => json_response(StatusCode::OK, envelope),
+        Ok(Ok(mut response)) => {
+            // traceId 原样回传：不校验语义、不参与任何鉴权（认证路径不读该字段）。
+            response.trace_id = request.trace_id;
+            match serde_json::to_value(response) {
+                Ok(value) => match encrypt_envelope(&key, AAD_PUSH, &value) {
+                    Ok(envelope) => json_response(StatusCode::OK, envelope),
+                    Err(error) => {
+                        tracing::warn!("手机同步响应加密失败: {error}");
+                        api_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "internal_error",
+                            "同步处理失败，请重试",
+                        )
+                    }
+                },
                 Err(error) => {
-                    tracing::warn!("手机同步响应加密失败: {error}");
+                    tracing::warn!("手机同步响应序列化失败: {error}");
                     api_error(
                         StatusCode::INTERNAL_SERVER_ERROR,
                         "internal_error",
                         "同步处理失败，请重试",
                     )
                 }
-            },
-            Err(error) => {
-                tracing::warn!("手机同步响应序列化失败: {error}");
-                api_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal_error",
-                    "同步处理失败，请重试",
-                )
             }
-        },
+        }
         Ok(Err(error)) => {
             tracing::warn!("手机同步写入失败: {error}");
             api_error(

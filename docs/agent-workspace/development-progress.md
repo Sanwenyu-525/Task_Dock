@@ -156,7 +156,14 @@
 - **启动缺陷未修复**：正常 GUI 启动仍在主窗口 `WebviewWindowBuilder::build()` 处主线程栈溢出；
   headless 仅用于验收，不是产品能力。Phase 7 UI 真机、安装包、性能基线仍为未执行。
 
-证据与用例见 [test-plan.md](test-plan.md) §10–§11、[acceptance-report.md](acceptance-report.md) §11。
+> **状态更正（2026-11-20，第二轮架构审计）**：上条「启动缺陷未修复」已被
+> [acceptance-report.md](acceptance-report.md) §12（2026-11-18 20:25）推翻——完整正常 GUI 启动
+> （不设 headless、不跳过辅助窗口）已通过（PID 96464，20s 仍在运行、窗口标题 Task Dock、
+> stderr 为空），旧栈溢出未复现；同一节亦记录了多实例共用 WebView2 用户数据导致的隔离事故与
+> 环境阻塞项。另据同报告 v81 修订轮（2026-11-19）：端到端 A–F 场景 36/36 通过（Release 构建
+> `1e8817c`、独立数据目录；MCP 场景经 `--mcp-server` 模式），干净工作区 `npm run tauri build`
+> exit 0 产出 NSIS 安装包，但正式安装包验收（安装/升级/卸载）与集成快照路径仍 BLOCKED。
+> Phase 7 UI 真机走查（主题/窄窗/DPI）、`buildId` 正式验收、性能基线仍未执行。
 
 ## GUI / UI 状态更新（2026-11-18 20:25）
 

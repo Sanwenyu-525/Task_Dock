@@ -802,7 +802,14 @@ pub fn start(
     }
 
     let mut job_map: Vec<serde_json::Value> = Vec::new();
+    // 真正会执行的条目（被跳过的条目保持 ready，用户可改策略后重发）。
     let mut all_item_ids: Vec<String> = Vec::new();
+    for entry in &plan.written {
+        all_item_ids.extend(entry.item_ids.clone());
+    }
+    for entry in plan.copies.iter().chain(plan.moves.iter()) {
+        all_item_ids.push(entry.item_id.clone());
+    }
 
     // 撤销路径在规划阶段就能确定（新建/复制的目标文件名），不依赖任务提交结果：
     // 先算清楚再建批次，避免「批次已建但 undo_payload 为空」。

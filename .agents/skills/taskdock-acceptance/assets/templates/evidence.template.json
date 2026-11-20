@@ -6,9 +6,9 @@
       "goal": "写出可以观察的成功条件",
       "channels": ["A"],
       "status": "NOT_RUN",
-      "action": "本示例尚未执行任何验证",
+      "action": "本示例尚未执行任何验证（Dev 功能验收时写明：npm run tauri dev（Debug）、隔离数据目录、实际操作步骤）",
       "observation": "未执行",
-      "boundary": "未知项保持未验证",
+      "boundary": "未知项保持未验证；Dev 验收须另注：未覆盖安装/升级/卸载、生产资源加载、正式性能（需 Release 正式验收）",
       "evidence_paths": []
     }
   ]

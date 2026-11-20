@@ -56,7 +56,10 @@ internal object Ed25519Ops {
       signer.init(false, Ed25519PublicKeyParameters(publicKey, 0))
       signer.update(payload, 0, payload.size)
       signer.verifySignature(signature)
-    } catch (_: RuntimeException) {
+    } catch (error: RuntimeException) {
+      // 二期日志规范：吞异常前记一行 SafeLog（异常类名 + 原因）。
+      // BC 的异常消息不含密钥材料，且 SafeLog 会再脱敏/截断；保持原返回值 false。
+      SafeLog.e("device-identity", "Ed25519 验签失败: ${error.javaClass.simpleName}: ${error.message ?: ""}")
       false
     }
   }
@@ -75,7 +78,10 @@ internal object Ed25519Ops {
     if (value.isEmpty()) return null
     return try {
       Base64.decode(value)
-    } catch (_: RuntimeException) {
+    } catch (error: RuntimeException) {
+      // 二期日志规范：吞异常前记一行 SafeLog（异常类名 + 原因）。
+      // 绝不写 value 本身（可能是载荷/令牌片段）；保持原返回值 null。
+      SafeLog.e("device-identity", "base64 解码失败: ${error.javaClass.simpleName}: ${error.message ?: ""}")
       null
     }
   }

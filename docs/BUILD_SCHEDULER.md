@@ -1,3 +1,16 @@
+# 构建调度器已移除（2026-11-19）
+
+按用户要求，构建调度器实现、专属测试、仪表盘与 `sched*` npm 命令已删除。
+开发、测试、构建及集成检查直接执行，不再维护队列、槽位、优先级或调度 provenance。
+磁盘保护、Dev 实例复用、集成快照、构建记录及产物校验继续保留。
+
+当前用法见 [开发指南](DEVELOPMENT.md) §2、§7.8 和 [集成构建流程](INTEGRATION_BUILD.md)。
+历史状态目录与日志不自动清理，旧规则不再生效。
+
+---
+
+以下为移除前的历史文档，仅用于追溯，不作为当前操作规范。
+
 # 构建资源调度器（build-sched）使用与原理
 
 多会话/AI 并行开发时，真正会互相伤害的不是代码，而是**构建**：`cargo build`、`tauri build`、
@@ -56,10 +69,11 @@ npm run sched:config           # 有效配置（含来源）
 | `npm run dev` | `run --class dev --priority P2 --label desktop-vite -- vite` | dev（占 dev 槽位） |
 | `npm run preview` | `run --class dev --priority P2 --label desktop-preview -- vite preview` | dev（占 dev 槽位） |
 | `npm run build` | `run --priority P1 --label desktop-build -- npm run build:raw`（`tsc --noEmit && vite build`） | medium |
-| `npm run tauri` | `run --priority P0 --label tauri -- npm run tauri:raw`（`tauri`，含 `beforeBuildCommand: npm run build`） | heavy |
+| `npm run tauri` | `node scripts/dev-launch.mjs`（`dev` 子命令有专门处理，见 §3.8；其余子命令原样交给调度器） | 由子命令决定 |
 | `npm run test` | `run --priority P1 --label desktop-test -- npm run test:raw`（`vitest run`） | medium |
 | `npm run cargo` | `cargo` 子命令（cwd=`src-tauri/`） | 按子命令判定（`cargo build` heavy / `cargo check` medium） |
-| `npm run tauri -- dev`（桌面端开发调试，长驻） | `run --class dev --label tauri-dev -- npx tauri dev` | dev（占 dev 槽位） |
+| `npm run tauri build` | `run --priority P0 --label tauri -- npm run tauri:raw build` | heavy |
+| `npm run tauri dev` | `scripts/dev-launch.mjs`：已在运行 → 只唤醒并退出；否则 `run --priority P0 --label tauri -- npm run tauri:raw dev` | dev（占 dev 槽位） |
 
 `*-raw` 后缀是"绕过调度器直接执行"的逃生门，只在调度器自身故障排查时使用；
 `build-guard`、`worktree-guard`、`icons`、`help:check` 等既有轻量脚本保持原样。
@@ -190,6 +204,7 @@ node scripts/build-sched.mjs cargo -- --priority P0 build   # 有 -- 时前面�
 | `npm run preview` → `-- vite preview`（label `desktop-preview`） | dev | ✅ | 同上；`vite preview` 是常驻静态预览服务，分类表已修正为 dev（`rule vite-preview`） |
 | `npm run build` → `build:raw`（`tsc --noEmit && vite build`） | medium | ✅ | 单层包装，`--priority P1 --label desktop-build`，内层直通，不会双重排队 |
 | `npm run tauri -- build` → `tauri:raw` | heavy | ✅ | `--priority P0 --label tauri`；内层 `npm run build` 由 `TASKDOCK_SCHED_TASK_ID` 判定为嵌套直通 |
+| `npm run tauri dev` → `scripts/dev-launch.mjs` → `tauri:raw dev` | dev | ✅ | 经 `dev-launch.mjs` 走调度器（分类由命令链判定为 `tauri-dev`）；**已在运行时只唤醒并退出**，不重新编译。详见 §3.8 |
 | `npm run test` → `test:raw`（`vitest run`） | medium | ✅ | `--priority P1 --label desktop-test` |
 | `npm run cargo -- <子命令>` | 由 cargo 分类表决定 | ✅ | `build-sched cargo` 子命令，固定 `cwd=src-tauri` |
 | `apps/mobile`：`build:android`（gradlew assembleRelease） | heavy（P0） | ✅ | `--cwd android`，与桌面端共享同一份槽位/全局名额台账 |
@@ -209,12 +224,32 @@ vite-other`），会占轻量槽位并与另一条轻量任务同时拉起两个
 排队**——dev 槽位并发 2，第 3 个 dev 服务要等前一个退出；端口冲突仍是操作者责任（调度器不分配
 端口）。想跳过排队只在排障时用 `npm run dev:raw` / `npm run preview:raw`。
 
+**`npm run tauri dev` 的特殊链路**（2026-11-19 按 `scripts/dev-launch.mjs` 实码补正）：它**不直接**
+走调度器，而是先经过 `scripts/dev-launch.mjs`：
+
+1. 探测本仓库 `src-tauri/target/debug/task-dock.exe`（设了绝对 `CARGO_TARGET_DIR` 时以它为根）
+   是否正在运行——**只按绝对路径匹配**，正式安装版同名也不会被误判为开发实例；
+2. **在运行** → 只再启动一次该 exe 触发单实例回调（聚焦工作台）后退出：**不重新编译、不创建第二个
+   实例、不重复初始化业务服务**，也就**不会**占用调度器槽位；
+3. **未运行** → 原样交给调度器：`run --priority P0 --label tauri -- npm run tauri:raw dev`。
+   分类由命令链展开判定（`npm run tauri:raw dev` → `tauri dev` → 规则 `tauri-dev` → `dev`），
+   因此**只占 dev 槽位，不占全局构建并发名额**；排队与准入语义与其它任务一致。
+
+推论（写给操作者，不是代码行为）：**再次执行 `npm run tauri dev` 不一定会重新编译**——如果开发
+实例还在跑，它只会被唤醒。需要按新 Rust 代码重启时，先正常关闭自己那个实例再启动。
+仍在编译阶段（exe 尚未出现）的第二个 `npm run tauri dev` 会按调度器原语义附加到正在运行的构建，
+不会创建第二个实例。
+
 **`*:raw` 是排障逃生口，不是日常入口**：`dev:raw` / `preview:raw` / `build:raw` / `tauri:raw` /
 `test:raw` / `build:android:raw` / `android:raw` / `prebuild:raw` / `typecheck:raw` /
 `start:raw` 只在"调度器自身坏了、需要绕过它定位问题"时使用，用之前先 `sched:status` +
 `sched:doctor`；**任何文档与脚本都不得把它们作为推荐命令**（`scripts/build-sched-acceptance.test.mjs`
 的「补充C1/C2/C3/C5」用例会静态校验这条规则：根目录 `dev`/`preview`/`build`/`test`/`tauri`
 必须经调度器且各自有 `:raw`；新增高资源入口若既不接调度器、也不进豁免名单，套件会直接失败）。
+
+> 特别注意：`npm run tauri:raw dev` **绕过了 `dev-launch.mjs` 的唤醒/复用判断**，会真的再起一个
+> Vite 与一个 Tauri 实例，与 1420 端口上的既有实例冲突。`tauri:raw` 只作调度器排障逃生口，
+> 日常 Dev 实例必须走 `npm run tauri dev`。
 
 ## 4. 资源模型
 
@@ -267,8 +302,8 @@ vite-other`），会占轻量槽位并与另一条轻量任务同时拉起两个
   也不会出现"先占槽位再发现名额不够"（拿到名额前不写台账，拒绝时无需回滚）。
 - **dev 常驻服务不计入**：沿用第 8 节"dev 不占一次性构建锁"的契约，由 `devConcurrency` 单独限流。
   **dev 任务既不吃名额，也不被名额拒绝**（判定的 `applies=false`）——否则"3 个构建在跑"会顺带把
-  `npm run tauri dev` 堵住，不是这条锁的本意。未纳管的 `npm run dev` 不占名额也不受任何准入约束
-  （12 节限制 8）。
+   `npm run tauri dev` 堵住，不是这条锁的本意。绕过调度器的 `npm run dev:raw` / `npm run preview:raw`
+   不占名额也不受任何准入约束（12 节限制 10）。
 - 排队原因写进 `waitReason` / `queue` / `status`："全局构建并发已满（3/3）：正在运行 h-…(heavy)、…；
   任一构建结束会自动释放名额，按优先级排队即可"；`status` / `doctor` 有一行
   "全局构建并发 x/y 个构建在跑"（满额时 `status` 额外告警"已满，后续构建将排队"）。
@@ -288,8 +323,8 @@ vite-other`），会占轻量槽位并与另一条轻量任务同时拉起两个
 6. 名额与槽位在同一个临界区完成（5.7）：名额已满不会先占槽位卡住别人；槽位拿不到会回滚台账；
 7. `detached` 且没有 childPid 的残留**不自动回收**（无法证明脱离控制台的子进程已退出）；
 8. 释放台账校验 `(pid, 进程创建时间, nonce)`，PID 被系统复用也不会释放别人的名额；
-9. Dev 常驻服务占 dev 槽位、**不占**全局构建并发名额；未纳管的 `npm run dev` 既不占槽位也不占名额，
-   只能靠 `sched dev` 点名发现（12 节限制 8）。
+9. Dev 常驻服务占 dev 槽位、**不占**全局构建并发名额；绕过调度器的 `npm run dev:raw` /
+   `npm run preview:raw` 既不占槽位也不占名额，只能靠 `sched dev` 点名发现（12 节限制 10）。
 
 ### 4.3 排队与准入循环（每 `pollMs` 一轮）
 
@@ -489,10 +524,44 @@ Windows 会复用 PID。`PID 1234 存活`不能证明"还是原来那个会话"�
 
 ## 8. 开发服务器与缓存
 
+### 8.1 Dev 调度的四条规则
+
+1. **Dev 是独立的常驻服务类别**：`dev` 有自己的槽位（`devConcurrency`，默认 **2**），
+   与 heavy/medium/light 分开管理。
+2. **Dev 不占全局构建并发名额**：`globalConcurrency`（默认 3）只统计 heavy/medium/light；
+   dev 任务既**不消耗**名额，也**不被**该上限拒绝（判定里 `applies=false`）。
+   所以「3 个构建在跑」不会把 `npm run tauri dev` 堵住——这正是这条锁的本意。
+3. **Dev 仍受自己的并发槽位约束**：第 3 个 dev 服务会排队等前一个退出；同分类内按 P0–P3 +
+   老化排队（一个长驻 dev 不会把后来的低优先级 dev 永久饿死，见 §4.4）。
+4. **调度器分配槽位，不分配端口**：端口冲突始终是操作者责任。
+
+### 8.2 端口与实例冲突
+
+- 本仓库 Vite dev server 端口由 `vite.config.ts` 固定为 **1420**（`strictPort: true`），
+  与 `src-tauri/tauri.conf.json` 的 `build.devUrl`（`http://localhost:1420`）一致。
+  **端口占用时 Vite 直接失败，不会自动改端口。**
+- 因此：**调度器允许两个 dev 槽位，不代表允许两个 TaskDock 实例同时使用默认端口。**
+  同一仓库同一时刻只能有一个 Dev 实例；跨 Worktree 的 dev server 更不能共用端口
+  （`sched dev` 会把这种情况点名为「跨 Worktree 错误复用」）。
+- 需要第二个实例时，必须同时满足：改 Vite 端口（并同步改 `devUrl`）、独立数据目录
+  （`TASK_DOCK_DATA_DIR`）、独立 Worktree。
+- `sched dev` 只读盘点：重复 Vite、端口冲突、同工作区多实例、dev 与重型 cargo 并发。
+
+### 8.3 `npm run tauri dev` 与 `npm run dev` 的区别
+
+| | `npm run dev` | `npm run tauri dev` |
+|---|---|---|
+| 执行 | `run --class dev --priority P2 --label desktop-vite -- vite` | `scripts/dev-launch.mjs` →（必要时）`run --priority P0 --label tauri -- npm run tauri:raw dev` |
+| 跑出什么 | 只有 Vite 开发服务器（浏览器里打开） | **真实 Tauri Debug 桌面应用**：Vite + Rust 增量编译 + 真实窗口/WebView2/SQLite/IPC |
+| 分类 | dev（显式 `--class dev`） | dev（命令链判定 `tauri-dev`） |
+| 能否作为功能验收 | 否（没有原生层与 IPC） | **可以**（Dev 功能验收的默认环境，见 AGENTS.md §5.4.1） |
+| 端口 | 1420（`--port` 可透传覆盖） | 1420（与 `devUrl` 绑定） |
+| 重复执行 | 起新 Vite（端口冲突会失败） | **已有实例在跑时只唤醒**，不重编译、不起第二个实例 |
+
+### 8.4 缓存与其它
+
 - 常驻 dev 服务器**不占**一次性构建锁，也**不占**全局构建并发名额（`globalConcurrency` 只统计
   heavy/medium/light），只用 `dev` 槽位（并发 2）限流；
-- `sched dev` 只读盘点：重复 Vite、端口冲突、同工作区多实例、dev 与重型 cargo 并发；
-  **不同 Worktree 不允许共用同一 dev 端口**（那是"错误共享不兼容服务"，findings 会点名）；
 - Cargo target 目录策略不变：共享 target 靠文件锁串行（本来就安全），隔离时用绝对路径
   `CARGO_TARGET_DIR` 指向 `src-tauri/target-<task>` 并 `build-guard register`，**不要**
   为"让构建干净"随手 `cargo clean`（`build-guard` 的归属标记就是为防误删他人缓存）；
@@ -857,18 +926,26 @@ fail-closed 占名额，需要 `doctor --reap` 或等取证回收；`globalConcu
    要排队、或 dev 服务要等另一个 dev 退出，请读本文档第 4 节，而不是改回直接 `vitest run` /
    `vite`——绕过调度器正是本项目要解决的问题（排障时才有 `*:raw`）。
 7. **`dev`/`preview` 纳管后，端口仍是操作者责任**：调度器分配槽位不分配端口；两个会话各自的
-   `npm run dev` 会先后排队拿到 dev 槽位，但都默认 5173 端口时第二个仍会冲突。改端口用
-   `npm run dev -- --port 5180`（参数透传给脚本体）。
-7. **`scripts/perf/gate-run.sh` 已接入调度器，但"完整跑一遍门禁"仍未在真机验证**：2026-11-15 把
+   `npm run dev` 会先后排队拿到 dev 槽位，但都默认端口时第二个仍会冲突。本仓库 Vite dev server
+   端口固定 **1420**（`vite.config.ts` 的 `strictPort: true`，与 `tauri.conf.json` 的 `devUrl`
+   一致），端口被占时 Vite 直接失败、不会自动改端口。改端口用 `npm run dev -- --port 5180`
+   （参数透传给脚本体）；`npm run tauri dev` 的端口与 `devUrl` 绑定，改它必须两处一起改。
+8. **重复执行 `npm run tauri dev` 不等于重新编译**：`scripts/dev-launch.mjs` 探测到本仓库
+   `target/debug/task-dock.exe` 正在运行时只做**唤醒**（单实例回调聚焦工作台）并退出，不重新编译、
+   不创建第二个实例、也不占调度器槽位。需要按新 Rust 代码重启时，先关闭自己那个实例再启动。
+   用 `npm run tauri:raw dev` 绕过它会真的再起一个 Vite 与一个 Tauri 实例，与 1420 端口冲突。
+9. **`scripts/perf/gate-run.sh` 已接入调度器，但"完整跑一遍门禁"仍未在真机验证**：2026-11-15 把
    cargo/前端门禁全部改为经 `run` / `cargo` 子命令排队（`bash -n` 与 `GATE_DRY_RUN=1` 路由核对
    已通过，路由证据见 `tmp/acceptance/taskdock-full-acceptance-20261115/scheduler/`）。2026-11-16
    删除内存预算后，门禁不再有"预算不足"排队，但仍受全局并发 3 的约束；低内存下 `cargo clippy` /
    `cargo test --release` **可能 OOM**（exit 101），所以"改完之后整串门禁仍然通过"这一点仍是
    `NOT TESTED`。`GATE_NO_SCHED=1` 保留为调度器故障时的逃生门。
-8. **未纳管的 dev 服务器不在活动台账里**：`npm run dev`（直接 `vite`）不经调度器，不占槽位/名额，
-   只能靠 `sched dev` 点名发现。需要纳管时用
-   `node scripts/build-sched.mjs run --class dev -- npm run tauri dev`（占 dev 槽位）。
-9. **`apps/mobile` 的构建入口已接入调度器（2026-11-15 第二轮）**：`start` / `android` /
+10. **绕过调度器起的服务不在活动台账里**：任何不经 `scripts/build-sched.mjs run` 起的常驻
+    Vite/Tauri 进程（`npm run dev:raw` / `npm run preview:raw` / `npm run tauri:raw dev`）都不占槽位、
+    不占名额，只能靠 `sched dev` 点名发现。需要纳管时用
+    `node scripts/build-sched.mjs run --class dev --priority P0 --label tauri-dev -- npm run tauri:raw dev`
+    （占 dev 槽位；注意必须用 `tauri:raw` 才不会先被 `dev-launch.mjs` 的"唤醒已有实例"逻辑短路）。
+11. **`apps/mobile` 的构建入口已接入调度器（2026-11-15 第二轮）**：`start` / `android` /
    `prebuild` / `typecheck` / `test` / `build:android` 全部包了
    `node ../../scripts/build-sched.mjs run --label ... -- <原始命令>`，APK 发布包固定
    `--class heavy --priority P0 --label apk-release --cwd android`。`*:raw` 保留为排障逃生口。

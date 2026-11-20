@@ -949,6 +949,11 @@ export const enUS: Record<MessageKey, string> = {
   "settings.section.appearance": "Appearance & theme",
   "settings.section.navigation": "Customize navigation",
   "settings.section.navigationDesc": "Choose which entries stay visible; the rest live under \"More\". Hiding never deletes data.",
+  "settings.section.appearanceDesc": "Visual presets, light/dark theme, material and language",
+  "settings.section.windowHotkeysDesc": "Edge snapping, autostart and global hotkeys",
+  "settings.section.notificationsDesc": "Reminder switches, aggregation and rate limiting",
+  "settings.section.dataDesc": "Automatic backups, backup records, import/export and test data cleanup",
+  "settings.section.helpDesc": "Help center and onboarding",
   "settings.section.windowHotkeys": "Window & hotkeys",
   "settings.section.features": "Feature modules",
   "settings.section.featuresDesc": "Enable independently; turning off never deletes existing data and Agent core access always stays on",
@@ -1331,6 +1336,7 @@ export const enUS: Record<MessageKey, string> = {
   "settings.appearance.workbenchLayoutResetFailed": "Could not restore the default layout: {error}",
   "settings.appearance.workbenchLayoutNote": "Only resets the workbench nav width, detail pane width and detail pane visibility. Theme, colors, navigation order and business settings are untouched.",
   "settings.currentConfig.title": "Current configuration",
+  "settings.currentConfig.page": "Page",
   "settings.currentConfig.category": "Category",
   "settings.currentConfig.theme": "Theme",
   "settings.currentConfig.preset": "Visual preset",
@@ -1767,6 +1773,12 @@ export const enUS: Record<MessageKey, string> = {
   "settings.jump.placeholder": "Search groups or categories",
   "settings.jump.clear": "Clear search",
   "settings.jump.empty": "No matching settings group",
+
+  // ── Settings center tree navigation (2026-11-20 refactor) ──
+  "settings.nav.selectCategory": "Switch category",
+  "settings.preview.show": "Show preview",
+  "settings.preview.hide": "Hide preview",
+  "settings.preview.caption": "{count} entries",
 
   // ── Settings top-level categories (information architecture) ──
   "settings.category.aria": "Settings categories",

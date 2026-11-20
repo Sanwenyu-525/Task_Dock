@@ -14,6 +14,24 @@
 
 ## 二、常用命令
 
+### 2.1 命令用途对照表
+
+| 命令 | 实际用途 | 执行方式 | 什么时候用 |
+|---|---|---|---|
+| `npm run dev` | **仅**启动 Vite 前端开发服务器（固定端口 1420），没有 Tauri 外壳 | 直接执行 | 只调样式/纯前端逻辑、且不需要 IPC/原生能力时 |
+| `npm run tauri dev` | **Tauri 桌面 Debug 开发环境**（Vite + Rust 增量编译 + 真实窗口），**默认日常功能验收方式** | 直接执行 | 绝大多数功能开发与 Dev 功能验收 |
+| `npm run typecheck` | TypeScript 类型检查（`tsc --noEmit`） | 直接执行 | 提交前静态检查 |
+| `npm test` | 前端自动化测试（`vitest run`） | 直接执行 | 提交前与回归 |
+| `npm run build` | TypeScript 检查 + Vite 生产构建（产物 `dist/`） | 直接执行 | 需要产物或跑依赖 `dist/` 的 Rust 测试时 |
+| `npm run tauri build` | Tauri **Release** 安装包构建 | 直接执行 | 需要安装包/正式产物时（**不是**日常验收前置） |
+| `npm run integrate -- build --snapshot <快照> --platform <p>` | 正式集成快照构建（Release 正式验收的唯一来源） | 直接执行 | Release 正式验收、正式交付 |
+
+> `npm run tauri dev` 与 `npm run dev` 的区别：后者只有浏览器里的 Vite 页面，**没有** Tauri 外壳，
+> 因此拿不到真实 IPC、真实 SQLite、真实 Win32 窗口，也不能作为「真实桌面运行」的证据。
+> 日常功能验收用前者。
+
+### 2.2 其它常用命令
+
 ```bash
 # 安装前端依赖
 npm install
@@ -25,17 +43,16 @@ npm run tauri dev
 npm run build
 
 # 说明：Vite HMR 只更新前端资源，**不会**重新编译 Rust。
+# 而 `tauri dev` 自带 Rust 源码监听：改了 `src-tauri/` 会触发增量编译并重启应用进程。
 # 若前端新增了 IPC 命令（如 lifecycle_status / hide_tab_hint）而 Rust 进程仍是旧构建，
 # 会得到 `Command <name> not found`；这不是命令未注册，而是运行实例版本落后。
 # 核对运行实例路径/启动时间与源码修改时间，重启 `npm run tauri dev` 或重新构建后再验收。
 # 诊断日志中的 IPC failed 不应当作“注册缺失”直接改代码。
 
 # 单元测试（前端 vitest / 后端 cargo test）
-# 两个入口都经构建调度器（多会话并行时必须排队，见 7.8 与 docs/BUILD_SCHEDULER.md）
+# 两个入口直接执行；并行构建需协调输出目录与端口。
 npm test
 npm run cargo -- test
-# 不要用 `cd src-tauri && cargo test` 或 `npx vitest run` 绕过：那会绕开构建槽位与全局并发名额，
-# 和别人的重型构建撞在一起。排障时才用 `test:raw` / GATE_NO_SCHED 这类逃生门，且要写明原因。
 
 # 生成应用图标（scripts/gen-icons.mjs，零依赖 PNG/ICO 编码）
 npm run icons
@@ -76,6 +93,92 @@ powershell -ExecutionPolicy Bypass -NoProfile -File scripts/native-verify.ps1 `
 > 走查页面于是退化成 404（拿不到 Tauri IPC mock，画面全白而断言仍全绿）。
 > `serve-preview.mjs` 从 `.preview/` 提供 harness、从 `dist/` 提供产物，
 > 不受并发构建影响；三个走查脚本还加了「白屏守卫」，`#root` 为空即判失败。
+
+### 2.3 Dev 功能验收操作规范
+
+日常功能验收默认在 Dev 实例上做，**不需要安装包**。Dev 模式跑的是真实 Tauri Debug 桌面应用
+（真实 WebView2、真实 SQLite、真实 IPC、真实 Win32 窗口），不是 Mock，也不是浏览器预览。
+
+**标准流程**：
+
+```
+检查 Git 状态 → 确定任务修改范围 → 执行定向自动化测试 → 检查 Dev 实例是否运行
+→ 设置独立数据目录 → 启动或复用 npm run tauri dev → 检查是否运行最新代码
+→ 真实操作与业务链路验证 → 记录截图、日志和执行证据 → 输出 Dev 功能验收结论
+→ （必要时）进入 Release 正式验收
+```
+
+**逐步说明**：
+
+1. **检查 Git 状态**：`git status` 与 `git rev-parse HEAD`；本仓库多会话共享工作树，
+   未提交改动默认属于其他任务，不要还原、删除或覆盖。
+2. **确定任务修改范围**：列出本次改动的文件；与他人改动有交集时先协调。
+3. **执行定向自动化测试**：先跑受影响范围的测试（`npm test -- <路径>`、
+   `npm run cargo -- test --lib <模块>`），避免一上来就全量。
+4. **检查 Dev 实例是否运行**：
+   ```powershell
+   Get-Process task-dock -ErrorAction SilentlyContinue | Select-Object Id, Path
+   ```
+   `scripts/dev-launch.mjs` 会探测本仓库 `src-tauri/target/debug/task-dock.exe`（设置
+   `CARGO_TARGET_DIR` 时以它为根）是否正在运行。**在运行 → 只唤醒该实例并退出**，
+   不会重新编译、不会起第二个窗口；**未运行 → 直接执行 Tauri CLI**（首次启动 / 需要重编译）。
+   因此**不要以为再次执行 `npm run tauri dev` 一定会重新编译**。
+5. **设置独立数据目录**：每个 Dev 会话用各自的目录，避免读写用户数据或别的会话的数据。
+   ```powershell
+   $taskData = Join-Path (Get-Location) "tmp/debug/<task-name>"
+
+   New-Item -ItemType Directory -Force -Path $taskData | Out-Null
+
+   $env:TASK_DOCK_DATA_DIR = $taskData
+   $env:WEBVIEW2_USER_DATA_FOLDER = Join-Path $taskData "webview2"
+
+   npm run tauri dev
+   ```
+   - `TASK_DOCK_DATA_DIR`：**受支持**。应用会据此派生独立的应用标识
+     （`{identifier}.iso.{hash}`），单实例互斥锁与通知 AUMID 一并隔离（见 `src-tauri/src/lib.rs`
+     的 `instance_identifier_for`）。未设置时 Debug 构建自动使用
+     `%APPDATA%\com.taskdock.desktop\dev-instance`；**显式设置时以显式值为准**。
+   - `WEBVIEW2_USER_DATA_FOLDER`：WebView2 运行时读取的环境变量，把 WebView2 用户数据目录
+     指到任务目录，避免污染用户缓存。
+   - 目录约定：Dev 调试产物放 `tmp/debug/<task-name>/`，验收证据放 `tmp/acceptance/<task-name>/`
+     （`tmp/` 已被 `.gitignore` 忽略）。
+6. **启动或复用 `npm run tauri dev`**：由 `scripts/dev-launch.mjs` 直接执行 Tauri CLI。
+7. **检查是否运行最新代码**：
+   - 前端改动 → Vite HMR 自动生效（不必重启）；
+   - Rust 改动 → 看 Tauri 的实际增量编译与重启日志，确认新二进制已替换并重启；
+   - 如果运行实例没有加载最新 Rust 代码（常见于「上次只做了前端热更」或「实例是旧进程」），
+     **先正常关闭本会话自己的实例**，再重新执行 `npm run tauri dev`。
+   - 核对点：运行实例的 exe 路径与启动时间、源码最后修改时间、IPC 报错是否为
+     `Command <name> not found`（版本落后，不是命令未注册）。
+8. **真实操作与业务链路验证**：按功能入口 → 成功/失败/边界路径 → 持久化与状态同步走完整链路，
+   不以「UI 入口存在」「测试文件存在」代替功能结论。
+9. **记录证据**：见下条。
+10. **输出 Dev 功能验收结论**（通过 / 部分通过 / 不通过 / 证据不足），必要时再进入
+    Release 正式验收（`task ready → snapshot create → build → accept`）。
+
+**Dev 验收证据（每次至少记录）**：
+
+| 项 | 说明 |
+|---|---|
+| 完整命令 | 含参数与脚本路径，可复制执行 |
+| 工作目录 | 仓库根 / `src-tauri/` 等；`cargo` 必须在 `src-tauri/` 内 |
+| Git HEAD | `git rev-parse HEAD` |
+| Git dirty 状态与相关修改文件 | `git status --porcelain` + 本次改动清单 |
+| 运行模式 | Debug / Release（Dev 验收固定为 Debug） |
+| 实际运行的 exe 路径 | 必要时附 SHA256 |
+| 开始 / 结束时间 | 含时区 |
+| 隔离数据目录 | `TASK_DOCK_DATA_DIR` / `WEBVIEW2_USER_DATA_FOLDER` 的实际值 |
+| 实际操作步骤 | 可复现的步骤序列 |
+| 可观察结果 | 界面上看到什么、数据里存了什么 |
+| 截图或日志路径 | `tmp/acceptance/<task-name>/` 下的真实文件 |
+| 未覆盖的边界 | 明确写出没测到的部分 |
+
+不得伪造证据：未执行写「未执行」，环境阻塞写 `ENVIRONMENT BLOCKED」。
+
+**Dev 结论的边界**：Debug 构建未优化，**不能**给出性能、内存、动画流畅度、启动耗时等正式结论；
+也**不能**证明安装包生成、安装/升级/卸载、签名与更新、生产环境资源加载。这些必须走
+[INTEGRATION_BUILD.md](INTEGRATION_BUILD.md) 的 Release 正式验收。
+Dev 验收**不修改**集成任务状态机，也**不生成** `buildId`。
 
 ## 三、项目结构
 
@@ -244,8 +347,7 @@ task_dock/
 
 ### 性能测试（需手动运行，不进入 CI）
 
-所有性能测试都是重型任务，**必须经统一调度入口**（否则会和别人的构建抢内存、也会让
-"性能结论"失真）；`--release` 构建尤其如此：
+性能测试应在机器空闲且输出目录隔离时执行，避免并行构建影响采样；`--release` 构建尤其如此：
 
 ```bash
 npm run cargo -- test --release --test ingest_perf --no-run
@@ -255,9 +357,8 @@ npm run cargo -- test --release --test actions_perf -- --ignored --nocapture
 npm run cargo -- test --release --test clipboard_perf -- --ignored --nocapture
 ```
 
-`npm run cargo --` 会自动 `cwd=src-tauri/`（遵守 `rust-toolchain.toml`）并排队；一次跑多条时
-用 `node scripts/build-sched.mjs cargo -- --priority P2 test --release --test ingest_perf ...`
-显式声明优先级。门禁脚本 `scripts/perf/gate-run.sh` 同样已接入调度器。
+`npm run cargo --` 在 `src-tauri/` 直接执行（遵守 `rust-toolchain.toml`）。
+门禁脚本 `scripts/perf/gate-run.sh` 同样直接执行并记录日志。
 
 前端渲染采样（需先构建并生成预览 harness）：
 
@@ -470,59 +571,14 @@ CARGO_PROFILE_DEV_DEBUG=2 cargo build              # bash / Git Bash
 未跟踪文件不计，未提交内容本身不做哈希）。`dirty=true` 的构建不应视为干净快照。
 exe 路径只通过本机诊断 IPC 返回，不写入应用日志。
 
-### 7.8 构建资源调度（多会话并发构建闸门，2026-11-15）
+### 7.8 构建直接执行（2026-11-19）
 
-多个会话/子智能体/worktree 同时跑 `cargo build`、`npm run build`、`tauri build` 会争同一份
-Cargo target、同一个 `dist/` 和同一块内存。现在所有高资源构建统一经
-`node scripts/build-sched.mjs`（npm 入口 `npm run build` / `npm run tauri` / `npm run test` /
-`npm run cargo -- <子命令>`）：按分类槽位与全局构建并发排队、按 heavy/medium/light 分类隔离资源、
-槽位目录（`mkdir` 原子性）+ 心跳租约实现跨进程互斥，崩溃后靠身份取证安全回收。
+按用户要求移除构建调度器。根目录与移动端 npm 命令直接执行工具，不再维护队列、槽位、优先级、
+心跳与调度 provenance。`:raw` 命令保留为兼容别名。历史 `.git/taskdock-build-sched/` 日志保留，
+不自动删除、不终止仍在运行的其他会话进程。
 
-**准入约束（2026-11-15 晚起，2026-11-16 增补并删除内存维度）**：实时可用内存门槛已按用户要求删除
-（见 `BUILD_SCHEDULER.md` 10.5）；同日第二轮又把「按物理内存估算的全局预算」整体删除
-（见 10.7）。现在是 ① **全局构建并发上限**（`globalConcurrency=3`：heavy/medium/light 合计同时在跑
-不超过 3 个，第 4 个排队、构建收尾自动释放名额；dev 常驻服务不计入，见
-`BUILD_SCHEDULER.md` 4.2 / 10.6）；② 各分类槽位并发；③ 同分类内 P0–P3 + 老化排队。
-**内存不再是准入维度**：不读物理/可用内存、不按 `estimate*Mb` 记账、没有 `budgetEnabled` /
-`allowReserveBreach` / `--estimate-mb`；`status`/`history` 也不再展示内存。低内存下重型构建
-可能以 `exit 101`（OOM）失败，按运行期 OOM 处理（局部检查、降低 `cargoJobs`、等机器空闲）。
-
-**所有构建入口都经调度器**（2026-11-15 第二轮整改）：`apps/mobile/package.json` 的
-`start` / `android` / `prebuild` / `typecheck` / `test` / `build:android` 现在都包了一层
-`node ../../scripts/build-sched.mjs run --label ... --`，其中 APK 发布包固定走重型槽位：
-
-```powershell
-npm --prefix apps/mobile run build:android    # 等价于下面的显式写法（推荐）
-node scripts/build-sched.mjs run --priority P0 --label apk-release --cwd apps/mobile/android -- gradlew.bat assembleRelease
-```
-
-**根目录的常驻服务也已纳管**（2026-11-15 第二轮补授权整改）：
-
-| 入口 | 实际执行 | 分类 / 优先级 |
-|---|---|---|
-| `npm run dev` | `run --class dev --priority P2 --label desktop-vite -- vite` | dev / P2 |
-| `npm run preview` | `run --class dev --priority P2 --label desktop-preview -- vite preview` | dev / P2 |
-| `npm run build` | `run --priority P1 --label desktop-build -- npm run build:raw` | medium / P1 |
-| `npm run typecheck` | `tsc --noEmit`（集成快照检查通过调度器执行；不生成 Vite dist） | light / P1 |
-| `npm run test` | `run --priority P1 --label desktop-test -- npm run test:raw` | medium / P1 |
-| `npm run tauri -- build` | `run --priority P0 --label tauri -- npm run tauri:raw` | heavy / P0 |
-
-`--class dev` 是**显式声明**：`vite` / `vite preview` 都是"不 Ctrl+C 就不退出"的常驻服务，靠
-分类表推断时 `vite preview` 一度被判成 `light`（会占轻量槽位、可能与另一条轻量任务同时拉起两个
-预览服务抢端口），现在分类表与入口两处都写明 dev。dev 槽位并发 2：第 3 个 dev 服务会排队等前一个
-退出；**端口不归调度器分配**，同默认端口冲突时用 `npm run dev -- --port 5180` 透传参数。
-`dev:raw` / `preview:raw` 只作排障逃生口，**不写进日常命令**。
-
-`apps/mobile` 状态目录解析到同一个 `<git-common-dir>/taskdock-build-sched`（已用
-`git rev-parse --path-format=absolute --git-common-dir` 从 `apps/mobile/android` 实测确认），
-所以手机端构建与桌面端共享同一份槽位与活动台账。带 `:raw` 后缀的脚本（`dev:raw`、`preview:raw`、
-`build:raw`、`test:raw`、`tauri:raw`、`build:android:raw` 等）是**排障逃生口**：只用于调度器自身
-故障时定位，不得作为日常推荐命令（见 `docs/BUILD_SCHEDULER.md` §3.8 与 §12）。
-
-状态目录 `<git-common-dir>/taskdock-build-sched`（全 worktree 共享，不入库）；
-资源现状 `npm run sched:status|queue|history`，诊断 `npm run sched:doctor`，
-开发服务器盘点 `npm run sched:dev`。用法、配置、退出码（0/子进程码/3/4/5/6）、锁与回收原理见
-[docs/BUILD_SCHEDULER.md](BUILD_SCHEDULER.md)；行为规范见 `AGENTS.md` §5.1。
+并行构建需自行协调共享的 target、dist 和端口；优先局部验证。磁盘守卫、Dev 实例复用、集成快照、
+独立构建工作区与构建日志仍保留。正式构建继续走 `npm run integrate -- build`。
 
 ## 八、多 Agent 并行协作与 Worktree 隔离
 
@@ -599,8 +655,11 @@ node scripts/worktree-guard.mjs cleanup  --task <name> [--target main] \
    每个任务独立 target 目录可避免 Cargo 文件锁串行化；不要并发共享同一个 target（不同
    checkout 的源路径会让指纹反复失效，且锁竞争会串行构建）。共享 `node_modules` 的 junction
    在 `cleanup --execute` 前会先移除链接，不触碰主仓库依赖。
-5. 并行 `tauri dev` 共用 1420 端口会冲突：同一时刻只保留一个 dev 实例，其他 Agent 使用
-   `cargo test` / `vitest` / `npm run build`，或在各自任务中显式改端口。
+5. 并行 `tauri dev` 共用 1420 端口会冲突（`vite.config.ts` 的 `strictPort: true`）：同一时刻只保留
+   一个 dev 实例，其他 Agent 使用 `cargo test` / `vitest` / `npm run build`，或在各自任务中显式改端口。
+   **默认由主 Agent 或指定集成 Agent 管理共享的 Dev 实例**，不允许所有子 Agent 各自启动 Dev 实例。
+   必须独立运行时，同时满足：独立 Worktree、独立 `TASK_DOCK_DATA_DIR`、不冲突的端口
+   （含 `tauri.conf.json` 的 `devUrl`）、并隔离构建输出目录（见 §7.8）。
 
 ### 8.4 状态解读
 
@@ -722,8 +781,7 @@ node scripts/build-guard.mjs precheck            # 现有构建守卫保持兼�
   各自验收）、`status`（汇总）。
 - 集成快照工作区固定为 `<仓库父目录>/<仓库名>-integration`（分支 `integration`），构建工作区为
   `<仓库父目录>/<仓库名>-integration-build`（detached HEAD），两者独立锁、可并行，与 Agent 任务
-  Worktree 分开；桌面构建缓存 `src-tauri/target-integration`，全部经构建调度器排队（label
-  `integration-<构建ID>`）。
+  Worktree 分开；桌面构建缓存 `src-tauri/target-integration`，直接执行并记录构建日志。
 - 记录在 `tmp/integration/{tasks,snapshots,builds,logs}`（不入库）；任务关联同时写进快照提交信息
   （`TaskDock-Snapshot` / `TaskDock-Tasks`），因此只凭 commit 也能查到这个版本包含哪些任务。
 - 状态机、拒绝条件、退出码、记录字段、清理方式见 [INTEGRATION_BUILD.md](INTEGRATION_BUILD.md)；

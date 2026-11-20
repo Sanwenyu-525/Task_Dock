@@ -2744,16 +2744,6 @@ code {
   justify-content: space-between;
 }
 
-/* 设置页内嵌的应用管理块自带 .panel-block 的 10px 内边距，会让其中的
-   设置行比其他分组短一截（右边缘错位 10px）。这里抵消这一层内边距与
-   1px 边框，让同页所有设置行共用同一条右边界，不改变通用 .panel-block。 */
-.settings-collapsible .collapsible-body .app-management .panel-block > .setting-row {
-  margin-left: -10px;
-  margin-right: -11px;
-  padding-left: 10px;
-  padding-right: 0;
-}
-
 .setting-row > span {
   color: var(--text-secondary);
   min-width: 0;
@@ -3391,173 +3381,10 @@ code {
 
 /* ══════════ 资源管理（资源概览 / 缓存清理 / 进程诊断） ══════════
    全部走语义 Token：明暗主题与两套视觉预设共用同一结构；
-   窄窗优先单列，不产生横向溢出；指标数字统一 tabular-nums。 */
-
-.settings-jump {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  min-width: 0;
-  padding: 0 0 4px;
-}
-
-/* 320px 窄窗下不能让标签被搜索框挤成「查找设 / 置」：标签不收缩，
-   剩余宽度交给可收缩的搜索框（它的 min-width: 0 允许让位）。 */
-.settings-jump-label {
-  flex: 0 0 auto;
-  white-space: nowrap;
-  color: var(--text-tertiary);
-  font-size: 11px;
-}
-
-/* 「查找设置」：可搜索下拉占满剩余宽度但有上限，窄窗不挤压左侧标签 */
-.settings-search {
-  flex: 1 1 auto;
-  min-width: 0;
-  max-width: 240px;
-}
-
-/* ══ 设置页一级分类（信息架构重整，2026-11-06）═══════════════════
-   六个分类按钮使用自适应网格：内容区够宽时 3 列 × 2 行，缩窄自动降为
-   2 列 / 1 列，不写死设备像素；标签允许换行而不是截断，分类名始终完整可读。
-   选中态只用边框 + 浅色底 + 文字对比度表达，不加阴影/装饰。 */
-
-.settings-categories {
-  display: grid;
-  /* 分类网格吸顶：展开分组后仍能直接切分类，不必滚回顶部（验收 UI-10）。
-     surface-overlay 近不透明，滚动内容不会从卡片缝隙透出；吸顶占位由
-     sticky 自身承担，不改变初始布局。
-     top 取负值抵消 .tab-content 的 padding-top：top: 0 会钉在可视顶端
-     下方 10px，滚上去的分组卡片从这条缝里露出（WebView2 实测口径，同
-     .history-day-label / .clip-detail-head 的既有修复）。 */
-  position: sticky;
-  top: -10px;
-  z-index: var(--z-sticky);
-  background: var(--surface-overlay);
-  padding: 4px 0;
-  margin: -4px 0;
-  /* 默认 3 列 × 2 行（约 500px 窗口正是这个档位）；窗口再窄逐级降列，
-     分类名允许换行，因此不会出现截断或横向溢出。 */
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 6px;
-  min-width: 0;
-}
-
-/* 内容区随窗口收窄：侧栏图标化后内容区约 = 视口 - 82px */
-@media (max-width: 390px) {
-  .settings-categories {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-/* 极窄：单列，避免卡片宽度不足以完整显示分类名 */
-@media (max-width: 300px) {
-  .settings-categories {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
-
-.settings-category {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  min-height: 40px;
-  padding: 6px 8px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-control);
-  background: var(--surface-raised);
-  color: var(--text-secondary);
-  font-size: 11px;
-  line-height: 1.25;
-  text-align: left;
-  cursor: pointer;
-  transition:
-    border-color 0.14s var(--ease-out),
-    background 0.14s var(--ease-out),
-    color 0.14s var(--ease-out);
-}
-
-.settings-category:hover {
-  background: var(--surface-hover);
-  color: var(--text-primary);
-}
-
-.settings-category:focus-visible {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: var(--control-shadow-focus);
-}
-
-.settings-category.is-active {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-  color: var(--text-primary);
-  font-weight: 600;
-}
-
-.settings-category-icon {
-  flex-shrink: 0;
-  opacity: 0.85;
-}
-
-.settings-category-label {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-/* 分类内容区：标题行 + 说明 + 该分类的分组（不渲染未选中分类的内容） */
-.settings-category-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  min-width: 0;
-}
-
-.settings-category-head {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  padding: 0 2px 6px;
-  border-bottom: 1px solid var(--border-subtle);
-  min-width: 0;
-}
-
-.settings-category-title-row {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-  min-width: 0;
-}
-
-.settings-category-title {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin: 0;
-  min-width: 0;
-  font-size: 12.5px;
-  font-weight: 650;
-  color: var(--text-primary);
-}
-
-.settings-category-count {
-  flex-shrink: 0;
-  font-size: 11px;
-  color: var(--text-tertiary);
-  font-variant-numeric: tabular-nums;
-}
-
-.settings-category-desc {
-  margin: 0;
-  font-size: 10.5px;
-  line-height: 1.5;
-  color: var(--text-tertiary);
-  overflow-wrap: anywhere;
-}
-
+   窄窗优先单列，不产生横向溢出；指标数字统一 tabular-nums。
+   2026-11-20 设置中心重构：旧「查找设置跳转行 + 一级分类网格磁贴」样式
+   （.settings-jump / .settings-categories / .settings-category*）随旧导航
+   组件一并移除；新树形导航样式在 settings-page.css。 */
 
 /* ══════════ 统一音色选择器（语音播报分组） ══════════
    紧凑可滚动列表 + 行内试听。所有颜色/圆角/边框走语义 Token，
@@ -17382,7 +17209,9 @@ span.wf-step-main {
   flex-direction: column;
   gap: 2px;
   position: relative;
-  max-height: clamp(200px, 42vh, 360px);
+  /* 2026-11-20：max-height clamp 限高已取消——列表升级为「导航自定义」独立
+     页面的弹性主体，高度由 .settings-page--split 的 flex 上下文给足
+     （settings-page.css），内部滚动语义不变；列表区域外（裸组件）为自然高度。 */
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;

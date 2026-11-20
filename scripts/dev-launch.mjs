@@ -1,20 +1,6 @@
 /**
- * `npm run tauri` 的入口包装（只对 `dev` 做特判，其它子命令原样交给调度器）。
- *
- * 为什么需要它：`npm run tauri dev` 是**常驻**任务，调度器对等价任务的合并语义
- * （附加等待、共享结果）会让第二次启动永远停在「等待等价任务…」——因为第一个
- * dev 会话在应用运行期间一直不结束。实测症状：第二次执行既不唤醒工作台，也不退出。
- *
- * 开发版已经有单实例保护：再次运行同一个调试程序会走单实例回调唤醒工作台并立即退出。
- * 因此这里先探测「本仓库 target/debug 的调试程序是否正在运行」：
- * - 在运行 → 只启动一次该程序触发唤醒，打印结果并退出（不创建第二个实例、不重复初始化）；
- * - 未运行 → 按原样走调度器（首次启动、重新编译都不改变原有排队与准入语义）。
- *
- * 只匹配**本仓库 target/debug/task-dock.exe** 的绝对路径：正式安装版同名，
- * 不能因为同名就把开发版请求转给正式版（那正是「启动成功但跑的是别的版本」）。
- *
- * 仍在编译阶段（exe 尚未出现）的第二个 `npm run tauri dev` 会按调度器原语义附加
- * 到正在运行的构建；这是「共享同一次构建」的合理行为，不会创建第二个实例。
+ * `npm run tauri` 入口：dev 请求先复用本仓库已运行的调试实例，其他情况直接执行 Tauri CLI。
+ * 仅匹配本仓库的调试程序路径，避免误唤醒正式安装版；不会终止已有进程。
  */
 
 import { spawn, spawnSync } from "node:child_process";
@@ -24,7 +10,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, "..");
-const SCHED = path.join(SCRIPT_DIR, "build-sched.mjs");
+const TAURI_CLI = path.join(REPO_ROOT, "node_modules", "@tauri-apps", "cli", "tauri.js");
 /** 调试程序的默认位置；设置绝对 `CARGO_TARGET_DIR` 时以它为根（与 cargo 一致）。 */
 const DEFAULT_TARGET_DIR = path.join(REPO_ROOT, "src-tauri", "target");
 const DEBUG_EXE_NAME = "task-dock.exe";
@@ -112,33 +98,17 @@ function wakeRunningInstance(running) {
   return 0;
 }
 
-/** 原样交给调度器（与 package.json 之前的写法完全一致）。 */
-function runThroughScheduler(tailArgs) {
+/** 直接执行本地 Tauri CLI，参数按数组原样传递。 */
+function runTauri(tailArgs) {
   return new Promise((resolve) => {
-    const child = spawn(
-      process.execPath,
-      [
-        SCHED,
-        "run",
-        "--priority",
-        "P0",
-        "--label",
-        "tauri",
-        "--",
-        "npm",
-        "run",
-        "tauri:raw",
-        ...tailArgs,
-      ],
-      { stdio: "inherit", cwd: REPO_ROOT, windowsHide: false },
-    );
+    const child = spawn(process.execPath, [TAURI_CLI, ...tailArgs], {
+      stdio: "inherit", cwd: REPO_ROOT, windowsHide: false,
+    });
     child.on("error", (error) => {
-      console.error(`[dev-launch] 无法启动调度器：${error.message}`);
+      console.error(`[dev-launch] 无法启动 Tauri CLI：${error.message}`);
       resolve(1);
     });
-    child.on("exit", (code, signal) => {
-      resolve(signal ? 1 : (code ?? 1));
-    });
+    child.on("exit", (code, signal) => resolve(signal ? 1 : (code ?? 1)));
   });
 }
 
@@ -150,7 +120,7 @@ async function main(argv) {
       process.exit(wakeRunningInstance(running));
     }
   }
-  const code = await runThroughScheduler(argv);
+  const code = await runTauri(argv);
   process.exit(code);
 }
 

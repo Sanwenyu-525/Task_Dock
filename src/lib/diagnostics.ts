@@ -22,6 +22,11 @@ export interface DiagnosticInput {
   status?: DiagStatus;
   stage?: string;
   operation_id?: string;
+  /**
+   * 跨端链路追踪标识（16 位小写 hex，与 Rust `diagnostics::trace` 契约一致）。
+   * 只用于诊断关联，不参与认证/授权；非法值入队前被丢弃（见 `isValidTraceId`）。
+   */
+  trace_id?: string;
   window_id?: string;
   component?: string;
   error_code?: string;
@@ -349,6 +354,8 @@ export function logEvent(input: DiagnosticInput): void {
       event: input.event || input.status || "log",
       window_id: input.window_id ?? currentWindowId(),
     };
+    // trace_id 统一校验：非法直接丢弃该字段（不报错、不透传）。
+    if (!isValidTraceId(event.trace_id)) event.trace_id = undefined;
     if (queue.length >= MAX_QUEUE) {
       // 优先丢最早的 DEBUG/INFO；没有则丢本条（可能是重复的高频 WARN）。
       const index = queue.findIndex((item) => item.level === "DEBUG" || item.level === "INFO");
@@ -446,6 +453,43 @@ export function isQuietCommand(command: string): boolean {
   return QUIET_COMMANDS.has(command);
 }
 
+// ── Trace 上下文（跨端/跨进程链路关联）───────────────────────
+//
+// trace_id 标记一次跨端业务链路（前端 → IPC → Rust → 移动通信 → Android），
+// 形态复用 OpenTelemetry 的 16 位小写 hex，不引入任何追踪 SDK。
+// 约束：只用于诊断事件关联，**绝不参与认证/授权**；显式传参，不引入隐式全局上下文。
+
+/** trace_id 合法形态：16 位小写 hex（长度硬上限 16）。 */
+const TRACE_ID_PATTERN = /^[0-9a-f]{16}$/;
+
+/**
+ * trace_id 统一校验：仅接受 16 位小写 hex。
+ * 非法值调用方直接丢弃该字段（不报错、不透传），与 Rust `trace::validate_external_id` 同契约。
+ */
+export function isValidTraceId(raw: unknown): boolean {
+  return typeof raw === "string" && TRACE_ID_PATTERN.test(raw);
+}
+
+/**
+ * 创建一次跨端链路的追踪上下文：16 位小写 hex（与 Rust `trace::new_trace_id` 同形态）。
+ * 优先 `crypto.getRandomValues`；无 crypto 环境回退为时间戳 + 随机数拼接（格式仍合法）。
+ */
+export function createTraceContext(): { traceId: string } {
+  try {
+    if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+      const bytes = crypto.getRandomValues(new Uint8Array(8));
+      let traceId = "";
+      for (const byte of bytes) traceId += byte.toString(16).padStart(2, "0");
+      return { traceId };
+    }
+  } catch {
+    // 无 crypto 环境：走回退路径。
+  }
+  const head = (Date.now() % 0x100000000).toString(16).padStart(8, "0");
+  const tail = Math.floor(Math.random() * 0x100000000).toString(16).padStart(8, "0");
+  return { traceId: head + tail };
+}
+
 // ── 操作生命周期 ────────────────────────────────────────────
 
 export interface OperationOptions {
@@ -453,6 +497,8 @@ export interface OperationOptions {
   component?: string;
   /** 不记录 `started` 事件（用于极高频、只关心失败的路径）。 */
   quietStart?: boolean;
+  /** 跨端链路追踪标识（16 位小写 hex）。非法值入队前被丢弃；终态事件自动携带同一值。 */
+  traceId?: string;
   metadata?: Record<string, string | number | boolean>;
 }
 
@@ -513,6 +559,8 @@ export function startOperation(
 ): DiagnosticOperation {
   const id = operationId();
   const windowId = options.window ?? currentWindowId();
+  // traceId 在创建时捕获并随事件显式传递（不依赖全局上下文）；非法值在 logEvent 入队前丢弃。
+  const traceId = isValidTraceId(options.traceId) ? options.traceId : undefined;
   const startedAt = typeof performance !== "undefined" ? performance.now() : Date.now();
   const base: DiagnosticInput = {
     level: "INFO",
@@ -521,6 +569,7 @@ export function startOperation(
     event: "started",
     status: "started",
     operation_id: id,
+    trace_id: traceId,
     window_id: windowId,
     component: options.component,
     metadata: options.metadata,
@@ -579,6 +628,8 @@ export function startOperation(
         event: "stage",
         status: undefined,
         stage: name,
+        // stage 事件不携带 trace_id（设计文档 §4.4.2：避免高频事件产生海量追踪记录）。
+        trace_id: undefined,
         metadata: { ...options.metadata, ...metadata },
       });
     },

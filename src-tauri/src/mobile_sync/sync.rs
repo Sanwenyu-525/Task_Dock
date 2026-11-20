@@ -136,12 +136,22 @@ pub struct SyncChange {
 pub struct PullPage {
     pub cursor: String,
     pub changes: Vec<SyncChange>,
+    /// 跨端链路 ID（JSON 字段名 `traceId`）：桌面端发出时若当前链路有 trace_id
+    /// 则带上。trace 契约（`diagnostics::trace::new_trace_id`，批次 C）就绪前恒为
+    /// `None` 且序列化时省略；注入点在 server.rs `handle_changes`，接线由主智能体完成。
+    #[serde(skip_serializing_if = "Option::is_none", rename = "traceId")]
+    pub trace_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct PushRequest {
     pub device_id: String,
     pub ops: Vec<SyncOp>,
+    /// 手机端原样携带的可选链路 ID（`traceId`）：桌面端只透传回包，不校验语义、
+    /// **绝不参与任何鉴权**（`authenticate_device` 不读该字段）；16 位 hex 形态由
+    /// 桌面诊断层统一兜底校验（C 契约 `validate_external_id`），mobile_sync 侧不校验。
+    #[serde(default, rename = "traceId")]
+    pub trace_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -169,6 +179,9 @@ pub struct SyncConflict {
 pub struct PushResponse {
     pub ack: Vec<String>,
     pub conflicts: Vec<SyncConflict>,
+    /// 原样回传请求里的 `traceId`（不校验语义）；无值时省略字段，旧客户端不受影响。
+    #[serde(skip_serializing_if = "Option::is_none", rename = "traceId")]
+    pub trace_id: Option<String>,
 }
 
 /// 拉取 `since` 之后的变更。游标就是 seq，不透明字符串由调用方原样保存。
@@ -216,6 +229,7 @@ pub fn pull(db: &Db, since: i64, limit: usize) -> AppResult<PullPage> {
         Ok(PullPage {
             cursor: cursor.to_string(),
             changes,
+            trace_id: None,
         })
     })
 }
@@ -283,7 +297,11 @@ pub fn apply_push(db: &Db, device_id: &str, ops: &[SyncOp]) -> AppResult<PushRes
         }
 
         tx.commit()?;
-        Ok(PushResponse { ack, conflicts })
+        Ok(PushResponse {
+            ack,
+            conflicts,
+            trace_id: None,
+        })
     })
 }
 
@@ -1219,6 +1237,58 @@ mod tests {
             hex,
             "282257e1912be9b743d7cb7eeab3056560492ab079a14bf613468fa30f0a5164"
         );
+    }
+
+    #[test]
+    fn push_request_trace_id_is_optional_and_not_required_for_old_clients() {
+        // 旧客户端不传 traceId：反序列化必须照常成功（向后兼容）。
+        let legacy: PushRequest = serde_json::from_str(r#"{"device_id":"d1","ops":[]}"#).unwrap();
+        assert!(legacy.trace_id.is_none());
+        let carried: PushRequest = serde_json::from_value(json!({
+            "device_id": "d1",
+            "ops": [],
+            "traceId": "abcdef0123456789"
+        }))
+        .unwrap();
+        assert_eq!(carried.trace_id.as_deref(), Some("abcdef0123456789"));
+        // 手机端只回传不生成；桌面侧不做格式校验（由诊断层统一兜底），
+        // 因此任意字符串都按不透明值透传。
+        let opaque: PushRequest = serde_json::from_value(json!({
+            "device_id": "d1",
+            "ops": [],
+            "traceId": "not-hex-at-all"
+        }))
+        .unwrap();
+        assert_eq!(opaque.trace_id.as_deref(), Some("not-hex-at-all"));
+    }
+
+    #[test]
+    fn push_response_echoes_trace_id_field_name_and_omits_when_absent() {
+        let response = PushResponse {
+            ack: vec!["op-1".into()],
+            conflicts: vec![],
+            trace_id: Some("abcdef0123456789".into()),
+        };
+        let value = serde_json::to_value(&response).unwrap();
+        assert_eq!(value["traceId"], "abcdef0123456789");
+
+        let response = PushResponse {
+            ack: vec![],
+            conflicts: vec![],
+            trace_id: None,
+        };
+        let value = serde_json::to_value(&response).unwrap();
+        assert!(value.get("traceId").is_none(), "无 trace 时必须省略字段");
+    }
+
+    #[test]
+    fn pull_page_has_no_trace_id_until_link_context_exists() {
+        // 桌面发出侧留空 Option（trace 生成在批次 C）；序列化时字段省略。
+        let db = test_db();
+        let page = pull(&db, 0, 500).unwrap();
+        assert!(page.trace_id.is_none());
+        let value = serde_json::to_value(&page).unwrap();
+        assert!(value.get("traceId").is_none());
     }
 
     #[test]

@@ -369,9 +369,17 @@ vi.mock("../lib/bridge", () => ({
 }));
 
 const overlayMock = vi.hoisted(() => ({ blocking: false }));
+const diagMock = vi.hoisted(() => ({ logEvent: vi.fn() }));
 
 vi.mock("../lib/overlayStack", () => ({
   hasAutoHideBlockingOverlay: () => overlayMock.blocking,
+}));
+
+// console.warn 已收敛到诊断通道：断言改为检查 logEvent（见各失败路径用例）。
+// 保留其余真实导出（errors.ts 依赖 logIpcFailure/markLogged 等）。
+vi.mock("../lib/diagnostics", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/diagnostics")>()),
+  logEvent: diagMock.logEvent,
 }));
 
 import { useEdgeSnap } from "./useEdgeSnap";
@@ -714,14 +722,14 @@ describe("重启恢复与唤回", () => {
   it("显示器持续不可用：重启恢复有界停止，不无限重发 IPC，窗口保持完整", async () => {
     world.snapState = { edge: "left", hidden: true, center: 516 };
     world.monitorNullCalls = 99;
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     mount();
     await advance(5000);
 
     expect(phase()).toBe("free");
     expect(world.regionCalls).toHaveLength(0); // 从未提交胶囊区域
-    expect(warn).toHaveBeenCalled();
-    warn.mockRestore();
+    expect(diagMock.logEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ module: "window", level: "WARN" }),
+    );
   });
 
   it("托盘/快捷键唤回（snap-recall）→ 展开功能面板", async () => {
@@ -839,7 +847,6 @@ describe("解除吸附", () => {
   });
 
   it("解除后模式尺寸恢复失败：仍解除，但不把容器尺寸持久化", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     mount();
     await advance(50);
     await dockLeft();
@@ -849,10 +856,11 @@ describe("解除吸附", () => {
 
     expect(phase()).toBe("free");
     expect(world.modeCalls).toContain("full");
-    expect(warn).toHaveBeenCalled();
+    expect(diagMock.logEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ module: "window", level: "WARN" }),
+    );
     // 回滚/重试窗口内 saveVisibleRect 不得写入胶囊容器几何
     expect(world.rectWrites).toHaveLength(0);
-    warn.mockRestore();
   });
 
   it("解除后模式尺寸被原生拖拽循环吞掉：回读验证后有界重试直到恢复", async () => {
@@ -873,7 +881,6 @@ describe("解除吸附", () => {
   });
 
   it("重试用尽仍被吞掉：有界停止并把容器尺寸挡在 window_rect 之外", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     mount();
     await advance(50);
     await dockLeft();
@@ -885,8 +892,9 @@ describe("解除吸附", () => {
     expect(world.modeCalls.filter((m) => m === "full")).toHaveLength(4);
     expect(world.size).toEqual({ width: 544, height: 476 });
     expect(world.rectWrites).toHaveLength(0);
-    expect(warn).toHaveBeenCalled();
-    warn.mockRestore();
+    expect(diagMock.logEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ module: "window", level: "WARN" }),
+    );
   });
 
   it("程序移动失败：不提交停靠、不写幻影基准、不裁区域", async () => {
@@ -1158,7 +1166,6 @@ describe("停靠失败后的窗口几何回滚", () => {
     world.size = { width: 280, height: 140 };
     world.setSizeFailAt = 2; // 第 1 次撑容器成功，第 2 次回滚失败
     world.regionFailMode = "rail";
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     mount();
     await advance(50);
     await dragTo(20, 300);
@@ -1167,9 +1174,10 @@ describe("停靠失败后的窗口几何回滚", () => {
 
     expect(phase()).toBe("candidate");
     expect(world.setPositionCalls.at(-1)).toEqual({ x: 20, y: 300 });
-    expect(warn).toHaveBeenCalled();
+    expect(diagMock.logEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ module: "window", level: "WARN" }),
+    );
     expect(snapMoveGuard.isPersistenceSuppressed()).toBe(true);
-    warn.mockRestore();
   });
 });
 

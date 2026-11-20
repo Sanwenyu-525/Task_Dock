@@ -50,6 +50,9 @@ pub struct DiagnosticsStatus {
     /// true = 日志目录不可用，当前只降级计数（业务不受影响）。
     pub degraded: bool,
     pub last_error: Option<String>,
+    /// 最近一次写失败的分类：`disk_full` / `permission_denied` / `file_locked` / `unknown`。
+    /// 三种可处置故障需要用户做不同的事，笼统的「写入失败」无法指导。
+    pub last_failure_kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -88,6 +91,7 @@ fn status_of(diag: &Diagnostics) -> DiagnosticsStatus {
         skipped_lines: counters[6],
         degraded: diag.is_disabled(),
         last_error: diag.last_writer_error(),
+        last_failure_kind: diag.last_failure_kind().map(|kind| kind.as_str().to_string()),
     }
 }
 

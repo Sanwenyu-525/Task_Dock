@@ -18,7 +18,9 @@
 | **Copilot / Antigravity / Kiro / Aider / OpenHands / OpenClaw** | 各自官方站点 | CLI/安装目录 + tasklist | 仅安装/运行发现；事件走 bridge | — | 无自动事件通道 | ✅（仅发现） | ❌ | 官方事件接口未核实，不写配置 |
 | 通用桥接（任意 Agent） | — | — | HTTP `POST 127.0.0.1:47821/api/v1/events`（Bearer 令牌）/ 文件投递 agent-inbox | — | 任意状态事件 | ✅ | ✅（bridge 来源已收真实事件） | 需 Agent 侧自行上报 |
 
-**真实联调通过计数：5 / 7**（Codex、WorkBuddy、Qoder、DSH、OpenCode；ZCode 待验证不计入）。
+**真实联调通过计数：5 / 10**（Codex、WorkBuddy、Qoder、DSH、OpenCode；Trae / ZCode / Claude Code / Cursor / Gemini CLI 待验证不计入）。
+
+> **口径更正（2026-11-20，第二轮架构审计）**：本行原写「5 / 7」，分母 7 是 Claude Code / Cursor / Gemini CLI 三个适配器落地前的全功能适配器数（历史统计）；当前注册表为 10 个全功能适配器（`managed.rs` `all_adapters()`），分子不变，故现为 **5 / 10**。仅发现型适配器 11 个不计入分母。历史「5/7」记录保留于本文与 `docs/AGENT_ERA_STRATEGY_FACTCHECK.md`（2026-11-19 版）作演变追溯，不再作为当前计数。
 **更正（2026-11-04，ZCode）**：ZCode 由「仅发现 + 通用桥接」升级为官方配置式 Hooks
 （`~/.zcode/cli/config.json` 的 `hooks.events`，安装时启用 `hooks.enabled`）。配置层已实现并有
 自动化测试，但尚未在新开的真实 ZCode 会话中观察到宿主事件，故「已真实联调」仍为 ❌。
