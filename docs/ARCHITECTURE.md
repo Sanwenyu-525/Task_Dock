@@ -2340,6 +2340,46 @@ notification / autostart / global-shortcut / 窗口几何/拖拽权限。业务 
   保留并报部分完成。取消是协作式的，系统调用阻塞期间仍可能等待。当前进度按条目统计，
   文件任务仅在本进程内保留。
 
+### 2026-11-20 回收站统一入口、墓碑对账与 Shell 生命周期（P1-A/B/C/D）
+
+- **统一清空入口**：`resource_cleanup::user_junk` 不再调用 `SHEmptyRecycleBinW`。回收站类别
+  一律提交 `fsops::start_empty`（全卷），等待任务终态后再生成类别结果；超时返回
+  `partial/EMPTY_TIMEOUT` 并注明任务仍在后台，绝不伪装完成。其他清理类别（临时文件、崩溃
+  转储）的根目录白名单、身份/大小/年龄复核保持不变。
+- **同一统计口径与新鲜度**：资源面板回收站预览优先读 `RecycleService::stats()`（索引已建立、
+  状态 `ready|partial`、10 分钟内同步）；否则回退有界文件系统遍历。预览类别新增
+  `source`（index/filesystem/live）与 `dataAsOfMs`，界面可区分「缓存值」与「实时值」。
+  索引读取失败只降级，不阻断预览。
+- **逐项反馈与占用声明**：`recycle_restore/purge` 的 ID 解析返回可执行项与**全部**不可执行项
+  （`INVALID_ID/NOT_FOUND/AMBIGUOUS/DUPLICATE`）；任务总数始终等于请求条数，个别无效 ID
+  不会悄悄缩小范围。进程内 `RecycleClaims` 以 `(bin_root, record_key)` 和卷名为键，恢复、
+  永久删除、清空互斥；冲突条目/卷逐项返回 `RECYCLE_ENTRY_BUSY` / `RECYCLE_VOLUME_BUSY`。
+- **墓碑对账**：系统操作成功后统一调用 `index::mark_removed`，把 `(bin_root, record_key)` 的
+  `$I` 指纹写入原 `recycle_restored_metadata` 表（现作为恢复/删除共用墓碑）并移除索引行。
+  扫描写入前按指纹比对墓碑：旧快照无法复活已完成的真实操作；键被系统复用时指纹变化使墓碑
+  失效。清空在 `reconcile_empty` 中先为全部索引行写墓碑，再清空索引并刷新卷状态。
+- **系统结果与缓存结果分开记录**：索引写入失败不再被忽略——该条记为 `partial` +
+  `INDEX_UPDATE_FAILED`、任务计 `indexPending`，并把卷标记为 `stale`（统计呈现为 partial）。
+  下一次同步检测到 `stale` 绕过 8 秒节流，按真实 `$I/$R` 重建；进程异常退出后的缓存失效
+  同样由这一机制恢复。不引入分布式锁或消息队列，仍使用固定 worker 池与有界队列。
+- **Shell 生命周期（ops.rs）**：COM 按线程初始化——首个成功的 `CoInitializeEx(STA)`
+  （含 `S_FALSE`）登记 thread_local 守卫，线程退出时恰好 `CoUninitialize` 一次；
+  `RPC_E_CHANGED_MODE`/初始化失败对整批返回 `RECYCLE_COM_UNAVAILABLE`，不在 MTA 线程继续
+  使用 STA Shell 接口。PIDL 由 `CoTaskMemFree` 恰好释放一次；`IShellItem` 自持副本。
+- **项目定位与逐项结果**：优先用 `IShellFolder::ParseDisplayName($R 路径)` 定位回收站项目，
+  失败时枚举一次回收站命名空间，以 `SIGDN_DESKTOPABSOLUTEPARSING` 建立 `$R` 路径映射
+  （仅本次批量调用内有效）。每项都挂 `IFileOperationProgressSink`：成功必须同时满足
+  「`PostMoveItem`/`PostDeleteItem` HRESULT 成功」与「文件系统复核成立」（恢复看目标出现，
+  永久删除看 `$R` 消失），否则失败（`RECYCLE_VERIFY_FAILED`）。`GetAnyOperationsAborted`
+  对恢复、逐项永久删除、批量清空都生效；无系统结果的条目按中止返回 `RECYCLE_CANCELLED`。
+  清空仍用 `DeleteItems(IShellItemArray)` 批量入队（PIDL 批次内释放），由共享 sink 按
+  系统回调的项目身份回填逐项 HRESULT，不按名称猜测归属；任一批次有失败项即返回 Err。
+- **普通删除批量化（P1-D）**：`file_workspace::delete_paths` 对同一批的非永久删除路径构造
+  双 NUL 结尾的多路径 `pFrom`，一次 `SHFileOperationW` 完成整批（原实现逐文件一次）；
+  逐项结果以「原路径已不存在」复核，Shell 返回码映射到稳定错误码。卷根/UNC 根保护、
+  重解析点只删链接不跟随、受保护目录拒绝、缺失路径逐项失败、批次间取消语义均保持不变。
+
+
 ## 安全保险箱（Secure Vault，P1 本地实现，2026-11-18）
 
 - **定位**：保存不常用但不能忘的敏感凭据（账号密码、API Key、软件许可证、恢复码、设备凭据、

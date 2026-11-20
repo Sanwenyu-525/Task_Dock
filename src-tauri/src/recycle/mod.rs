@@ -158,7 +158,14 @@ impl RecycleService {
     /// 扫描进行中由 `running` 拦截，因此 `max(start, finish)` 即最近一次活动时间。
     pub fn start_sync(self: &Arc<Self>, app: &AppHandle, force: bool) -> SyncStatus {
         let now = chrono::Utc::now().timestamp_millis();
-        if !self.reserve_sync(force, now) {
+        // 存在「索引写入失败/清空未核实」的卷时绕过节流：缓存已知不可信，
+        // 必须尽快按真实 `$I`/`$R` 重新对账，而不是继续展示旧结果。
+        let reconcile_pending = self
+            .db
+            .with_read(index::pending_reconcile)
+            .map(|volumes| !volumes.is_empty())
+            .unwrap_or(false);
+        if !self.reserve_sync(force || reconcile_pending, now) {
             return self.sync_status();
         }
         let volumes = match volume::bin_volumes() {

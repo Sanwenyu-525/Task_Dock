@@ -10,8 +10,9 @@
 //! - 临时类文件必须超过 7 天未被修改；更年轻的文件计为受保护，不出现在候选里；
 //! - 执行只接受服务端预览 ID（5 分钟 TTL、一次性消费），并对每个候选重新校验
 //!   根目录归属、文件身份、大小、修改时间与年龄；
-//! - 回收站预览按文件系统口径统计当前用户在各卷的 `$Recycle.Bin\<SID>`（Shell 枚举
-//!   在万级项目时需要数十秒，不适合作为预览）；清空走 `SHEmptyRecycleBinW`，
+//! - 回收站预览优先复用 `recycle::RecycleService` 的索引统计（毫秒级，10 分钟内新鲜），
+//!   索引缺失、陈旧或读取失败时回退到有界文件系统遍历，并如实标注数据来源与采集时间；
+//!   清空不再直通 `SHEmptyRecycleBinW`，而是提交统一的 `fsops` 清空任务并等待终态，
 //!   实际释放量按清空前后的同一文件系统口径差测量，不声称逐文件身份复核；
 //! - 有界：每个类别最多检查 24,000 个条目、6 秒预算、递归深度 4；超限标记不完整，
 //!   结果只代表已检查子集。
@@ -26,10 +27,16 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
+use crate::recycle::index::RecycleStats;
+use crate::recycle::RecycleService;
 
 use super::classify;
 
 const PREVIEW_TTL: Duration = Duration::from_secs(5 * 60);
+/// 回收站索引可用于预览的最大陈旧度：超过后回退文件系统遍历，避免展示过期数字。
+const RECYCLE_INDEX_MAX_AGE_MS: i64 = 10 * 60 * 1000;
+/// 清空任务的同步等待上限：超时不伪装完成，任务仍在后台继续。
+const EMPTY_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 /// 用户垃圾的预览记录最多 8 条：单条可能持有上万个路径，避免常驻内存无界。
 const MAX_PREVIEWS: usize = 8;
 const MAX_ENTRIES: usize = 24_000;
@@ -76,6 +83,10 @@ pub struct JunkCategoryPreview {
     pub estimated_bytes: u64,
     pub protected_files: u64,
     pub skipped_files: u64,
+    /// 数据来源：`index`（回收站索引） / `filesystem`（有界遍历） / `live`（本次实时扫描）。
+    pub source: String,
+    /// 数据采集或索引同步时间（epoch 毫秒）；界面据此说明统计的新鲜度。
+    pub data_as_of_ms: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -145,6 +156,10 @@ struct PlannedJunk {
     incomplete: bool,
     /// 扫描结论：`ready` / `partial`（不完整）/ `unavailable`（根或 Shell 不可用）。
     status: &'static str,
+    /// 数据来源：`live`（文件类实时扫描）/ `index`（回收站索引）/ `filesystem`（回退遍历）。
+    source: &'static str,
+    /// 数据采集或索引同步时间（epoch 毫秒）；0 表示由预览层补当前时间。
+    data_as_of_ms: i64,
     error_code: Option<String>,
     error_message: Option<String>,
 }
@@ -159,6 +174,8 @@ impl Default for PlannedJunk {
             skipped_files: 0,
             incomplete: false,
             status: "ready",
+            source: "live",
+            data_as_of_ms: 0,
             error_code: None,
             error_message: None,
         }
@@ -189,7 +206,14 @@ pub struct UserJunkState {
 
 impl UserJunkState {
     /// 扫描固定类别的用户级垃圾。只读；不删除、不写入。
-    pub fn preview(&self, categories: Vec<JunkCategory>) -> AppResult<JunkPreview> {
+    ///
+    /// `recycle` 为回收站索引服务：可用且新鲜时回收站类别直接复用索引统计，
+    /// 否则回退有界文件系统遍历；索引读取失败不影响整次预览。
+    pub fn preview(
+        &self,
+        categories: Vec<JunkCategory>,
+        recycle: Option<&RecycleService>,
+    ) -> AppResult<JunkPreview> {
         let _job = self.try_begin_job()?;
         validate_categories(&categories)?;
 
@@ -209,7 +233,7 @@ impl UserJunkState {
                     },
                 }
             } else {
-                scan_recycle_bin()
+                preview_recycle_bin(recycle)
             };
             previews.push(JunkCategoryPreview {
                 category,
@@ -218,6 +242,12 @@ impl UserJunkState {
                 estimated_bytes: planned.estimated_bytes,
                 protected_files: planned.protected_files,
                 skipped_files: planned.skipped_files,
+                source: planned.source.to_string(),
+                data_as_of_ms: if planned.data_as_of_ms > 0 {
+                    planned.data_as_of_ms
+                } else {
+                    now_ms()
+                },
                 error_code: planned.error_code.clone(),
                 error_message: planned.error_message.clone(),
             });
@@ -264,10 +294,15 @@ impl UserJunkState {
     }
 
     /// 执行预览中已勾选的类别。预览一次性消费；每个文件在删除前重新验证身份。
+    ///
+    /// 回收站清空复用统一 `fsops` 任务调度与对账：提交清空任务后等待终态，
+    /// 超时不伪装完成；`recycle` 由 `fsops` 任务结束后自行对账索引。
     pub fn execute(
         &self,
         preview_id: String,
         categories: Vec<JunkCategory>,
+        app: &tauri::AppHandle,
+        recycle: &std::sync::Arc<RecycleService>,
     ) -> AppResult<JunkExecutionReport> {
         let started = chrono::Utc::now();
         let _job = self.try_begin_job()?;
@@ -279,7 +314,7 @@ impl UserJunkState {
         for category in categories {
             let planned = plan.categories.get(&category).expect("validated category");
             results.push(if category == JunkCategory::RecycleBin {
-                execute_recycle_bin(planned)
+                execute_recycle_bin(planned, app, recycle)
             } else {
                 execute_files(category, planned)
             });
@@ -714,18 +749,81 @@ fn modified_ns(metadata: &fs::Metadata) -> Option<u128> {
         .map(|duration| duration.as_nanos())
 }
 
+fn now_ms() -> i64 {
+    chrono::Utc::now().timestamp_millis()
+}
+
+/// 索引口径的回收站预览计划。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RecycleIndexPlan {
+    items: u64,
+    known_bytes: u64,
+    unknown_size: u64,
+    data_as_of_ms: i64,
+}
+
+/// 索引是否可用于预览：必须已建立（`indexed_at_ms > 0`）、状态可用
+/// （`ready` / `partial`）且 10 分钟内同步过。`stats` 为 `None` 表示索引读取失败，
+/// 一并回退文件系统口径。纯函数，便于单测。
+fn recycle_plan_from_stats(stats: Option<&RecycleStats>, now_ms: i64) -> Option<RecycleIndexPlan> {
+    let stats = stats?;
+    if stats.indexed_at_ms <= 0 || stats.last_sync_ms <= 0 {
+        return None;
+    }
+    if !matches!(stats.state.as_str(), "ready" | "partial") {
+        return None;
+    }
+    if now_ms.saturating_sub(stats.last_sync_ms) > RECYCLE_INDEX_MAX_AGE_MS {
+        return None;
+    }
+    Some(RecycleIndexPlan {
+        items: u64::try_from(stats.items).unwrap_or(0),
+        known_bytes: u64::try_from(stats.known_bytes).unwrap_or(0),
+        unknown_size: u64::try_from(stats.unknown_size).unwrap_or(0),
+        data_as_of_ms: stats.last_sync_ms,
+    })
+}
+
+/// 回收站预览：索引可用且新鲜时复用索引统计，否则回退有界文件系统遍历。
+/// 索引读取失败不向上抛错，保证任何情况下都能给出可用的降级结果。
+fn preview_recycle_bin(recycle: Option<&RecycleService>) -> PlannedJunk {
+    let stats = recycle.and_then(|service| service.stats().ok());
+    if let Some(plan) = recycle_plan_from_stats(stats.as_ref(), now_ms()) {
+        let mut planned = PlannedJunk {
+            recycle_items: plan.items,
+            estimated_bytes: plan.known_bytes,
+            source: "index",
+            data_as_of_ms: plan.data_as_of_ms,
+            ..PlannedJunk::default()
+        };
+        if plan.unknown_size > 0 {
+            planned.status = "partial";
+            planned.error_code = Some("SIZE_UNKNOWN".into());
+            planned.error_message = Some("部分回收站项目大小未知，估算未包含这些项目".into());
+        }
+        return planned;
+    }
+    scan_recycle_bin()
+}
+
 /// 回收站：只读统计。使用文件系统口径（各卷 `$Recycle.Bin\<当前用户 SID>`），
 /// 不调用 `SHQueryRecycleBinW`：实测 1.8 万项时 Shell 枚举需要约 80 秒，
-/// 会拖死整次预览。清空仍走 Shell，释放量按清空前后的同一文件系统口径差测量。
+/// 会拖死整次预览。清空复用统一 `fsops` 任务，释放量按清空前后的同一文件系统口径差测量。
 fn scan_recycle_bin() -> PlannedJunk {
     match recycle_bin_roots() {
-        Ok(roots) if roots.is_empty() => PlannedJunk::default(),
+        Ok(roots) if roots.is_empty() => PlannedJunk {
+            source: "filesystem",
+            data_as_of_ms: now_ms(),
+            ..PlannedJunk::default()
+        },
         Ok(roots) => {
             let totals = recycle_totals_for(&roots);
             let mut planned = PlannedJunk {
                 recycle_items: totals.items,
                 estimated_bytes: totals.bytes,
                 skipped_files: totals.skipped,
+                source: "filesystem",
+                data_as_of_ms: now_ms(),
                 ..PlannedJunk::default()
             };
             if totals.incomplete {
@@ -744,6 +842,8 @@ fn scan_recycle_bin() -> PlannedJunk {
             skipped_files: 1,
             incomplete: true,
             status: "unavailable",
+            source: "filesystem",
+            data_as_of_ms: now_ms(),
             error_code: Some(code),
             error_message: Some(message),
             ..PlannedJunk::default()
@@ -751,9 +851,13 @@ fn scan_recycle_bin() -> PlannedJunk {
     }
 }
 
-fn execute_recycle_bin(planned: &PlannedJunk) -> JunkCategoryResult {
-    let candidates = planned.recycle_items;
-    let estimated_bytes = planned.estimated_bytes;
+/// 回收站清空：提交统一 `fsops` 清空任务（卷占用声明由任务侧保证），等待终态后
+/// 按同一文件系统口径测量差值。超时不伪装完成，任务仍在后台继续。
+fn execute_recycle_bin(
+    planned: &PlannedJunk,
+    app: &tauri::AppHandle,
+    recycle: &std::sync::Arc<RecycleService>,
+) -> JunkCategoryResult {
     if planned.status == "unavailable" {
         return JunkCategoryResult {
             category: JunkCategory::RecycleBin,
@@ -768,48 +872,200 @@ fn execute_recycle_bin(planned: &PlannedJunk) -> JunkCategoryResult {
             error_message: planned.error_message.clone(),
         };
     }
-    // 清空前后各测量一次：释放量以同一口径的差值为准，测量失败时不虚报数字。
-    let before = recycle_bin_roots()
-        .ok()
-        .map(|roots| recycle_totals_for(&roots));
-    match empty_recycle_bin() {
-        Ok(()) => {
-            let after = recycle_bin_roots()
-                .ok()
-                .map(|roots| recycle_totals_for(&roots));
-            let (deleted, freed, measured) = match (before, after) {
-                (Some(before), Some(after)) => (
-                    before.items.saturating_sub(after.items),
-                    before.bytes.saturating_sub(after.bytes),
-                    true,
-                ),
-                _ => (0, 0, false),
-            };
-            JunkCategoryResult {
+    // 清空前后使用**同一口径**：预览命中索引时用索引统计（任务完成时已对账），
+    // 回退遍历时用文件系统口径。前后不混用两套来源，避免差值失真。
+    let before = RecycleTotals {
+        items: planned.recycle_items,
+        bytes: planned.estimated_bytes,
+        skipped: planned.skipped_files,
+        incomplete: planned.incomplete,
+    };
+    let submitted = match crate::fsops::start_empty(
+        app,
+        crate::fsops::EmptyRequest { volumes: None },
+        None,
+    ) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            tracing::warn!(error_code = %error.code(), "回收站清空任务提交失败");
+            return JunkCategoryResult {
                 category: JunkCategory::RecycleBin,
-                status: if measured { "success" } else { "partial" }.into(),
-                candidates,
-                estimated_bytes,
-                freed_bytes: freed,
-                deleted_files: deleted,
+                status: "failed".into(),
+                candidates: planned.recycle_items,
+                estimated_bytes: planned.estimated_bytes,
+                freed_bytes: 0,
+                deleted_files: 0,
                 skipped_files: 0,
-                failed_files: 0,
-                error_code: (!measured).then(|| "MEASURE_UNAVAILABLE".into()),
-                error_message: (!measured)
-                    .then(|| "回收站已清空，但无法复核释放量".to_string()),
+                failed_files: 1,
+                error_code: Some("SHELL_FAILED".into()),
+                error_message: Some(format!("无法启动清空回收站任务：{}", error.user_message())),
+            };
+        }
+    };
+    use tauri::Manager;
+    let handle = app
+        .state::<std::sync::Arc<crate::fsops::JobRegistry>>()
+        .get(&submitted.id);
+    let Some(handle) = handle else {
+        // 任务已提交但无法跟踪终态：不伪装完成。
+        tracing::warn!(job_id = %submitted.id, "无法获取回收站清空任务句柄");
+        return recycle_timeout_result(planned);
+    };
+    if !handle.wait_terminal(EMPTY_TIMEOUT) {
+        tracing::warn!(job_id = %submitted.id, "回收站清空任务超时未结束，仍在后台执行");
+        return recycle_timeout_result(planned);
+    }
+    let after = match planned.source {
+        "index" => recycle
+            .stats()
+            .ok()
+            .map(|stats| RecycleTotals {
+                items: stats.items.max(0) as u64,
+                bytes: stats.known_bytes.max(0) as u64,
+                ..RecycleTotals::default()
+            }),
+        _ => recycle_bin_roots()
+            .ok()
+            .map(|roots| recycle_totals_for(&roots)),
+    };
+    recycle_result_from_snapshot(&handle.snapshot(), planned, Some(before), after)
+}
+
+/// 等待终态超时：说明任务仍在后台执行，本次不确认完成。
+fn recycle_timeout_result(planned: &PlannedJunk) -> JunkCategoryResult {
+    JunkCategoryResult {
+        category: JunkCategory::RecycleBin,
+        status: "partial".into(),
+        candidates: planned.recycle_items,
+        estimated_bytes: planned.estimated_bytes,
+        freed_bytes: 0,
+        deleted_files: 0,
+        skipped_files: 0,
+        failed_files: 0,
+        error_code: Some("EMPTY_TIMEOUT".into()),
+        error_message: Some(
+            "未在 15 分钟内确认清空完成，任务可能仍在后台执行；请在回收站视图核对结果".into(),
+        ),
+    }
+}
+
+/// 稳定错误码：全大写字母/数字/下划线，长度有界。用于从任务快照中提取可判定码，
+/// 不把自由文本或路径当作码。
+fn is_stable_code(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
+}
+
+/// 从任务快照的失败明细或消息里取第一个稳定错误码。
+fn stable_snapshot_code(snapshot: &crate::fsops::JobSnapshot) -> Option<String> {
+    if let Some(entry) = snapshot
+        .failures
+        .iter()
+        .find(|entry| entry.status != "ok" && is_stable_code(&entry.code))
+    {
+        return Some(entry.code.clone());
+    }
+    snapshot
+        .message
+        .as_deref()?
+        .split(|ch: char| {
+            !(ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_')
+        })
+        .find(|token| token.len() >= 4 && is_stable_code(token))
+        .map(str::to_string)
+}
+
+fn snapshot_failure_message(snapshot: &crate::fsops::JobSnapshot) -> String {
+    if let Some(entry) = snapshot.failures.iter().find(|entry| entry.status != "ok") {
+        if let Some(message) = entry.message.as_deref().filter(|value| !value.is_empty()) {
+            return message.to_string();
+        }
+        return format!("清空回收站失败（{}）", entry.code);
+    }
+    snapshot
+        .message
+        .clone()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "清空回收站未完成".to_string())
+}
+
+/// 清空任务终态 → 类别结果。释放量/删除数按清空前后同一口径差值给出；
+/// 测量失败时保持 0 并显式标注 `MEASURE_UNAVAILABLE`，绝不虚报。
+fn recycle_result_from_snapshot(
+    snapshot: &crate::fsops::JobSnapshot,
+    planned: &PlannedJunk,
+    before: Option<RecycleTotals>,
+    after: Option<RecycleTotals>,
+) -> JunkCategoryResult {
+    let measured = match (before, after) {
+        (Some(before), Some(after)) => Some((
+            before.items.saturating_sub(after.items),
+            before.bytes.saturating_sub(after.bytes),
+        )),
+        _ => None,
+    };
+    let base = JunkCategoryResult {
+        category: JunkCategory::RecycleBin,
+        status: "partial".into(),
+        candidates: planned.recycle_items,
+        estimated_bytes: planned.estimated_bytes,
+        freed_bytes: measured.map_or(0, |(_, bytes)| bytes),
+        deleted_files: measured.map_or(0, |(items, _)| items),
+        skipped_files: snapshot.skipped as u64,
+        failed_files: snapshot.failed as u64,
+        error_code: None,
+        error_message: None,
+    };
+    match snapshot.status.as_str() {
+        "completed" => match measured {
+            Some(_) => JunkCategoryResult {
+                status: "success".into(),
+                ..base
+            },
+            None => JunkCategoryResult {
+                status: "partial".into(),
+                error_code: Some("MEASURE_UNAVAILABLE".into()),
+                error_message: Some("回收站已清空，但无法复核释放量".into()),
+                ..base
+            },
+        },
+        "partial" => {
+            let code = stable_snapshot_code(snapshot).unwrap_or_else(|| {
+                if measured.is_none() {
+                    "MEASURE_UNAVAILABLE".into()
+                } else {
+                    "PARTIAL_FAILURE".into()
+                }
+            });
+            JunkCategoryResult {
+                status: "partial".into(),
+                error_code: Some(code),
+                error_message: Some(snapshot_failure_message(snapshot)),
+                ..base
             }
         }
-        Err((code, message)) => JunkCategoryResult {
-            category: JunkCategory::RecycleBin,
+        "failed" => JunkCategoryResult {
             status: "failed".into(),
-            candidates,
-            estimated_bytes,
             freed_bytes: 0,
             deleted_files: 0,
-            skipped_files: 0,
-            failed_files: candidates,
-            error_code: Some(code),
-            error_message: Some(message),
+            error_code: Some("SHELL_FAILED".into()),
+            error_message: Some(snapshot_failure_message(snapshot)),
+            ..base
+        },
+        "cancelled" => JunkCategoryResult {
+            status: "partial".into(),
+            error_code: Some("CANCELLED".into()),
+            error_message: Some("清空任务已取消，已完成部分不可恢复".into()),
+            ..base
+        },
+        other => JunkCategoryResult {
+            status: "partial".into(),
+            error_code: Some("PARTIAL_FAILURE".into()),
+            error_message: Some(format!("清空任务未确认完成（状态 {other}）")),
+            ..base
         },
     }
 }
@@ -1075,33 +1331,6 @@ fn sid_bytes_to_string(bytes: &[u8]) -> Option<String> {
     Some(text)
 }
 
-#[cfg(windows)]
-fn empty_recycle_bin() -> Result<(), (String, String)> {
-    use windows_sys::Win32::UI::Shell::{
-        SHEmptyRecycleBinW, SHERB_NOCONFIRMATION, SHERB_NOPROGRESSUI, SHERB_NOSOUND,
-    };
-
-    // 无确认框、无进度条、无提示音：调用前用户已在应用内确认过。
-    let flags = SHERB_NOCONFIRMATION | SHERB_NOPROGRESSUI | SHERB_NOSOUND;
-    let hwnd: *mut core::ffi::c_void = std::ptr::null_mut();
-    let result = unsafe { SHEmptyRecycleBinW(hwnd, std::ptr::null(), flags) };
-    if result < 0 {
-        return Err((
-            "SHELL_FAILED".into(),
-            format!("清空回收站失败（Shell 返回 0x{result:08X}）"),
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(not(windows))]
-fn empty_recycle_bin() -> Result<(), (String, String)> {
-    Err((
-        "UNSUPPORTED".into(),
-        "当前平台不支持回收站清理".into(),
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1364,5 +1593,231 @@ mod tests {
         let root = std::env::temp_dir();
         let normalized = normalize_root(&root).expect("临时目录必须是合法扫描根");
         assert!(is_local_drive_path(&normalized));
+    }
+
+    fn stats(
+        state: &str,
+        items: i64,
+        known_bytes: i64,
+        unknown_size: i64,
+        last_sync_ms: i64,
+        indexed_at_ms: i64,
+    ) -> RecycleStats {
+        RecycleStats {
+            items,
+            files: 0,
+            folders: 0,
+            known_bytes,
+            unknown_size,
+            volumes: Vec::new(),
+            last_sync_ms,
+            state: state.into(),
+            source: "index".into(),
+            indexed_at_ms,
+            syncing: 0,
+        }
+    }
+
+    fn totals(items: u64, bytes: u64) -> RecycleTotals {
+        RecycleTotals {
+            items,
+            bytes,
+            skipped: 0,
+            incomplete: false,
+        }
+    }
+
+    fn job_snapshot(status: &str) -> crate::fsops::JobSnapshot {
+        crate::fsops::JobSnapshot {
+            id: "job-empty".into(),
+            kind: "empty".into(),
+            status: status.into(),
+            total: 2,
+            done: 2,
+            ok: 1,
+            failed: 0,
+            partial: 0,
+            skipped: 0,
+            phase: "done".into(),
+            cancelable: false,
+            cancel_requested: false,
+            started_ms: 1,
+            finished_ms: 2,
+            failures: Vec::new(),
+            message: None,
+            index_pending: 0,
+        }
+    }
+
+    fn planned_for_recycle(items: u64, bytes: u64) -> PlannedJunk {
+        PlannedJunk {
+            recycle_items: items,
+            estimated_bytes: bytes,
+            ..PlannedJunk::default()
+        }
+    }
+
+    #[test]
+    fn fresh_recycle_index_is_used_for_preview() {
+        let now = 1_000_000;
+        let fresh = stats("ready", 12, 4096, 0, now - 60_000, now - 60_000);
+        let plan = recycle_plan_from_stats(Some(&fresh), now).expect("新鲜索引必须命中");
+        assert_eq!(plan.items, 12);
+        assert_eq!(plan.known_bytes, 4096);
+        assert_eq!(plan.unknown_size, 0);
+        assert_eq!(plan.data_as_of_ms, now - 60_000);
+
+        // partial 状态同样可用，未知大小也要如实带出。
+        let partial = stats("partial", 3, 10, 2, now, now);
+        let plan = recycle_plan_from_stats(Some(&partial), now).expect("partial 索引可用");
+        assert_eq!(plan.unknown_size, 2);
+    }
+
+    #[test]
+    fn stale_or_unusable_recycle_index_falls_back() {
+        let now = 10 * RECYCLE_INDEX_MAX_AGE_MS;
+        let stale = stats("ready", 5, 1, 0, now - RECYCLE_INDEX_MAX_AGE_MS - 1, 1);
+        assert!(recycle_plan_from_stats(Some(&stale), now).is_none(), "过期索引必须回退");
+
+        // 恰好 10 分钟仍可用，超过即回退。
+        let boundary = stats("ready", 5, 1, 0, now - RECYCLE_INDEX_MAX_AGE_MS, 1);
+        assert!(recycle_plan_from_stats(Some(&boundary), now).is_some());
+        let never_synced = stats("ready", 5, 1, 0, 0, 1);
+        assert!(recycle_plan_from_stats(Some(&never_synced), now).is_none());
+
+        for state in ["offline", "error", "empty", "scanning"] {
+            let unusable = stats(state, 5, 1, 0, now, now);
+            assert!(
+                recycle_plan_from_stats(Some(&unusable), now).is_none(),
+                "状态 {state} 不得用于预览"
+            );
+        }
+        let never_indexed = stats("ready", 5, 1, 0, now, 0);
+        assert!(recycle_plan_from_stats(Some(&never_indexed), now).is_none());
+    }
+
+    #[test]
+    fn recycle_index_read_failure_falls_back_without_error() {
+        // 索引读取失败 → `stats().ok()` 为 None：预览必须回退而不是整体失败。
+        assert!(recycle_plan_from_stats(None, 1_000).is_none());
+
+        let db = std::sync::Arc::new(crate::db::Db::open_in_memory().unwrap());
+        db.with_conn(|conn| {
+            conn.execute_batch("DROP TABLE recycle_index;")?;
+            Ok(())
+        })
+        .unwrap();
+        let service = RecycleService::new(db);
+        assert!(service.stats().is_err(), "缺表时索引统计必须报错");
+        assert!(recycle_plan_from_stats(service.stats().ok().as_ref(), 1_000).is_none());
+    }
+
+    #[test]
+    fn completed_empty_task_maps_to_success_with_measured_delta() {
+        let snapshot = job_snapshot("completed");
+        let planned = planned_for_recycle(10, 5000);
+        let result = recycle_result_from_snapshot(
+            &snapshot,
+            &planned,
+            Some(totals(10, 5000)),
+            Some(totals(2, 1000)),
+        );
+        assert_eq!(result.status, "success");
+        assert_eq!(result.deleted_files, 8);
+        assert_eq!(result.freed_bytes, 4000);
+        assert!(result.error_code.is_none());
+        assert_eq!(result.candidates, 10);
+        assert_eq!(result.estimated_bytes, 5000);
+    }
+
+    #[test]
+    fn completed_empty_task_without_measurement_is_not_success() {
+        let snapshot = job_snapshot("completed");
+        let planned = planned_for_recycle(10, 5000);
+        let result = recycle_result_from_snapshot(&snapshot, &planned, None, Some(totals(0, 0)));
+        assert_eq!(result.status, "partial");
+        assert_eq!(result.freed_bytes, 0);
+        assert_eq!(result.deleted_files, 0);
+        assert_eq!(result.error_code.as_deref(), Some("MEASURE_UNAVAILABLE"));
+    }
+
+    #[test]
+    fn partial_empty_task_keeps_stable_failure_code() {
+        let mut snapshot = job_snapshot("partial");
+        snapshot.failed = 1;
+        snapshot.skipped = 1;
+        snapshot.failures.push(crate::fsops::JobEntryResult {
+            label: "D:".into(),
+            status: "failed".into(),
+            code: "RECYCLE_VOLUME_BUSY".into(),
+            message: Some("该磁盘正在被其他任务清空".into()),
+        });
+        let planned = planned_for_recycle(10, 5000);
+        let result = recycle_result_from_snapshot(
+            &snapshot,
+            &planned,
+            Some(totals(10, 5000)),
+            Some(totals(4, 2000)),
+        );
+        assert_eq!(result.status, "partial");
+        assert_eq!(result.error_code.as_deref(), Some("RECYCLE_VOLUME_BUSY"));
+        assert_eq!(result.failed_files, 1);
+        assert_eq!(result.skipped_files, 1);
+        assert_eq!(result.freed_bytes, 3000);
+        assert_eq!(result.deleted_files, 6);
+    }
+
+    #[test]
+    fn partial_empty_task_without_failure_detail_uses_partial_failure() {
+        let snapshot = job_snapshot("partial");
+        let planned = planned_for_recycle(3, 30);
+        let result = recycle_result_from_snapshot(
+            &snapshot,
+            &planned,
+            Some(totals(3, 30)),
+            Some(totals(1, 10)),
+        );
+        assert_eq!(result.status, "partial");
+        assert_eq!(result.error_code.as_deref(), Some("PARTIAL_FAILURE"));
+    }
+
+    #[test]
+    fn failed_and_cancelled_empty_tasks_are_reported_honestly() {
+        let planned = planned_for_recycle(5, 50);
+        let failed = recycle_result_from_snapshot(
+            &job_snapshot("failed"),
+            &planned,
+            Some(totals(5, 50)),
+            Some(totals(5, 50)),
+        );
+        assert_eq!(failed.status, "failed");
+        assert_eq!(failed.error_code.as_deref(), Some("SHELL_FAILED"));
+        assert_eq!(failed.freed_bytes, 0);
+        assert_eq!(failed.deleted_files, 0);
+
+        let cancelled = recycle_result_from_snapshot(
+            &job_snapshot("cancelled"),
+            &planned,
+            Some(totals(5, 50)),
+            Some(totals(2, 20)),
+        );
+        assert_eq!(cancelled.status, "partial");
+        assert_eq!(cancelled.error_code.as_deref(), Some("CANCELLED"));
+        assert_eq!(cancelled.deleted_files, 3);
+        assert_eq!(cancelled.freed_bytes, 30);
+    }
+
+    #[test]
+    fn empty_timeout_is_partial_and_never_claims_completion() {
+        let result = recycle_timeout_result(&planned_for_recycle(7, 700));
+        assert_eq!(result.status, "partial");
+        assert_eq!(result.error_code.as_deref(), Some("EMPTY_TIMEOUT"));
+        assert_eq!(result.freed_bytes, 0);
+        assert_eq!(result.deleted_files, 0);
+        assert_eq!(result.candidates, 7);
+        assert!(result
+            .error_message
+            .as_deref()
+            .is_some_and(|message| message.contains("后台")));
     }
 }

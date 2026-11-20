@@ -94,6 +94,8 @@ pub struct JobSnapshot {
     /// 失败/跳过明细（有界）。
     pub failures: Vec<JobEntryResult>,
     pub message: Option<String>,
+    /// 系统操作成功但索引写入失败的条数（已标记该卷需要重新对账）。
+    pub index_pending: usize,
 }
 
 struct JobInner {
@@ -102,6 +104,9 @@ struct JobInner {
     report: Mutex<Option<crate::file_workspace::FsOpReport>>,
     cancel: AtomicBool,
     executing_cancelable: bool,
+    /// 终态通知：让同步等待方（资源清理面板）不必轮询。
+    finished: Mutex<bool>,
+    finished_signal: Condvar,
 }
 
 #[derive(Clone)]
@@ -128,7 +133,35 @@ impl JobHandle {
 
     fn update(&self, f: impl FnOnce(&mut JobSnapshot)) {
         let mut guard = self.inner.snapshot.lock().unwrap_or_else(|e| e.into_inner());
+        let was_terminal = is_terminal(&guard.status);
         f(&mut guard);
+        if !was_terminal && is_terminal(&guard.status) {
+            // 终态只通知一次；等待方（资源清理）由此与任务状态严格同步。
+            let mut finished = self.inner.finished.lock().unwrap_or_else(|e| e.into_inner());
+            *finished = true;
+            self.inner.finished_signal.notify_all();
+        }
+    }
+
+    /// 等待任务到达终态；超时返回 false（任务可能仍在执行，绝不伪装完成）。
+    pub fn wait_terminal(&self, timeout: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        let mut finished = self.inner.finished.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            if *finished {
+                return true;
+            }
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            let (guard, _) = self
+                .inner
+                .finished_signal
+                .wait_timeout(finished, deadline - now)
+                .unwrap_or_else(|e| e.into_inner());
+            finished = guard;
+        }
     }
 
     /// 请求取消。返回是否发生了变化（已终态、或执行期不可安全取消时返回 false）。
@@ -344,6 +377,108 @@ impl Scheduler {
     }
 }
 
+/// 回收站条目/卷的操作占用声明：同一条目不得同时被恢复与永久删除，
+/// 同一卷不得同时执行两次清空。进程内生效；崩溃后任务本身也不存在，
+/// 真实状态由下一次同步按 `$I`/`$R` 重新对账。
+#[derive(Default)]
+pub struct RecycleClaims {
+    inner: Mutex<HashMap<String, ClaimEntry>>,
+}
+
+#[derive(Clone)]
+struct ClaimEntry {
+    job_id: String,
+    kind: &'static str,
+}
+
+impl RecycleClaims {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 返回 `None` 表示占用成功；`Some(占用方任务类型)` 表示冲突。
+    fn try_claim(&self, key: &str, job_id: &str, kind: &'static str) -> Option<&'static str> {
+        let mut map = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(existing) = map.get(key) {
+            if existing.job_id != job_id {
+                return Some(existing.kind);
+            }
+            return None;
+        }
+        map.insert(
+            key.to_string(),
+            ClaimEntry { job_id: job_id.to_string(), kind },
+        );
+        None
+    }
+
+    fn release_job(&self, job_id: &str) {
+        let mut map = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        map.retain(|_, entry| entry.job_id != job_id);
+    }
+
+    #[cfg(test)]
+    fn active(&self) -> usize {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).len()
+    }
+}
+
+/// 进程级占用声明表：恢复、永久删除、清空在进程生命周期内互斥。
+/// 用 `OnceLock` 而不是 App State，避免把共享枢纽文件（`lib.rs`）纳入本模块写入范围；
+/// 声明本身不持有任务数据，任务注册表仍由 App State 管理。
+fn recycle_claims() -> &'static RecycleClaims {
+    static CLAIMS: std::sync::OnceLock<RecycleClaims> = std::sync::OnceLock::new();
+    CLAIMS.get_or_init(RecycleClaims::new)
+}
+
+/// 任务结束时释放自己持有的全部声明（含取消、失败与提前返回路径）。
+struct ClaimsGuard {
+    claims: &'static RecycleClaims,
+    job_id: String,
+}
+
+impl Drop for ClaimsGuard {
+    fn drop(&mut self) {
+        self.claims.release_job(&self.job_id);
+    }
+}
+
+fn entry_claim_key(bin_root: &str, record_key: &str) -> String {
+    format!("entry\u{0}{bin_root}\u{0}{record_key}")
+}
+
+fn volume_claim_key(volume: &str) -> String {
+    format!("volume\u{0}{volume}")
+}
+
+/// 成功操作后的索引写入失败：主结果不伪装成功，逐条记 `partial` 并标记对账。
+fn record_index_failure(
+    worker: &JobHandle,
+    db: &Arc<Db>,
+    bin_root: &str,
+    volume: &str,
+    label: String,
+    error: String,
+) {
+    let marked = db
+        .with_conn(|conn| recycle_index::mark_reconcile_required(conn, bin_root, volume, "INDEX_UPDATE_FAILED"))
+        .is_ok();
+    worker.update(|s| s.index_pending += 1);
+    record_result(
+        worker,
+        JobEntryResult {
+            label,
+            status: "partial".into(),
+            code: "INDEX_UPDATE_FAILED".into(),
+            message: Some(if marked {
+                format!("系统操作已完成，但回收站索引更新失败，已标记重新对账：{error}")
+            } else {
+                format!("系统操作已完成，但回收站索引更新与对账标记均失败：{error}")
+            }),
+        },
+    );
+}
+
 /// 任务构造参数。
 struct JobSpec {
     kind: &'static str,
@@ -374,9 +509,12 @@ fn new_handle(spec: JobSpec) -> JobHandle {
                 finished_ms: 0,
                 failures: Vec::new(),
                 message: spec.message,
+                index_pending: 0,
             }),
             cancel: AtomicBool::new(false),
             executing_cancelable: spec.cancelable,
+            finished: Mutex::new(false),
+            finished_signal: Condvar::new(),
         }),
     }
 }
@@ -790,7 +928,47 @@ pub fn start_rename(
         })
 }
 
-/// 恢复任务：从回收站恢复到原位置。成功后同步移除索引记录。
+/// 全部条目都在入队前被拒绝：仍返回可查询的任务快照，逐项如实反馈，
+/// 而不是抛一个把范围缩小的错误让调用方误以为整批成功。
+fn immediate_job(
+    app: &AppHandle,
+    kind: &'static str,
+    total: usize,
+    message: Option<String>,
+    failures: Vec<JobEntryResult>,
+) -> JobSnapshot {
+    let handle = new_handle(JobSpec {
+        kind,
+        total,
+        message,
+        cancelable: true,
+    });
+    for entry in failures {
+        record_result(&handle, entry);
+    }
+    finish(&handle, false);
+    let registry = app.state::<Arc<JobRegistry>>().inner().clone();
+    registry.insert(handle.clone());
+    handle.snapshot()
+}
+
+fn unresolved_entry(item: &recycle_index::UnresolvedItem) -> JobEntryResult {
+    JobEntryResult {
+        label: item
+            .id
+            .split_once('|')
+            .map(|(volume, key)| format!("{volume}|{key}"))
+            .unwrap_or_else(|| item.id.clone()),
+        status: "failed".into(),
+        code: item.code.to_string(),
+        message: Some(item.message.to_string()),
+    }
+}
+
+/// 恢复任务：从回收站恢复到原位置。成功后写墓碑并移除索引记录。
+///
+/// 逐项反馈：无效/已消失/状态不可恢复/目标受保护/条目被其他任务占用
+/// 都各自产生一条失败结果，任务总数始终等于请求条数，不缩小操作范围。
 pub fn start_restore(
     app: &AppHandle,
     ids: Vec<String>,
@@ -802,22 +980,53 @@ pub fn start_restore(
     }
     let db = app.state::<Arc<Db>>().inner().clone();
     let resolved = db.with_read(|conn| recycle_index::resolve(conn, &ids))?;
-    if resolved.is_empty() {
-        return Err(AppError::NotFound("回收站索引中没有这些项目，请先同步".into()));
+    let protected = protected_dirs(app);
+    let mut failures: Vec<JobEntryResult> = resolved.unresolved.iter().map(unresolved_entry).collect();
+    let mut runnable = Vec::with_capacity(resolved.items.len());
+    for item in resolved.items {
+        if item.state != recycle_index::STATE_PRESENT {
+            failures.push(JobEntryResult {
+                label: item.name.clone(),
+                status: "failed".into(),
+                code: "RECYCLE_STATE_NOT_RESTORABLE".into(),
+                message: Some("该项目缺少数据或元数据损坏，只能永久删除".into()),
+            });
+            continue;
+        }
+        let target = match crate::file_workspace::validate_abs_path(&item.original_path) {
+            Ok(target) => target,
+            Err(error) => {
+                failures.push(JobEntryResult {
+                    label: item.name.clone(),
+                    status: "failed".into(),
+                    code: error.code().to_string(),
+                    message: Some(error.to_string()),
+                });
+                continue;
+            }
+        };
+        if let Err(error) = crate::file_workspace::ensure_not_protected(&target, &protected) {
+            failures.push(JobEntryResult {
+                label: item.name.clone(),
+                status: "failed".into(),
+                code: error.code().to_string(),
+                message: Some(error.to_string()),
+            });
+            continue;
+        }
+        runnable.push(item);
     }
-    // 恢复只允许完整存在的项目；缺数据/损坏/孤儿由服务端再兜底拒绝，
-    // 不能只依赖前端过滤（IPC 可被直接调用）。
-    if resolved.iter().any(|item| item.state != "present") {
-        return Err(AppError::Validation(
-            "所选项目包含缺少数据或损坏的条目，请刷新回收站列表后重试".into(),
+    let total = ids.len();
+    if runnable.is_empty() {
+        return Ok(immediate_job(
+            app,
+            "restore",
+            total,
+            Some("没有可恢复的项目，详见失败明细".into()),
+            failures,
         ));
     }
-    let protected = protected_dirs(app);
-    for item in &resolved {
-        let target = crate::file_workspace::validate_abs_path(&item.original_path)?;
-        crate::file_workspace::ensure_not_protected(&target, &protected)?;
-    }
-    let total = resolved.len();
+    let pre_failures = failures.clone();
     submit(
         app,
         JobSpec {
@@ -828,8 +1037,28 @@ pub fn start_restore(
         },
         move |app, worker| {
             let started = std::time::Instant::now();
+            let claims = recycle_claims();
+            let job_id = worker.snapshot().id;
+            let _guard = ClaimsGuard { claims, job_id: job_id.clone() };
+            for entry in pre_failures {
+                record_result(worker, entry);
+            }
+            let mut claimed_items: Vec<recycle_index::ResolvedItem> = Vec::with_capacity(runnable.len());
+            for item in runnable.into_iter() {
+                let key = entry_claim_key(&item.bin_root, &item.record_key);
+                if let Some(holder) = claims.try_claim(&key, &job_id, "restore") {
+                    record_result(worker, JobEntryResult {
+                        label: item.name.clone(),
+                        status: "failed".into(),
+                        code: "RECYCLE_ENTRY_BUSY".into(),
+                        message: Some(format!("该项目正在被其他任务（{holder}）处理，本次未执行")),
+                    });
+                    continue;
+                }
+                claimed_items.push(item);
+            }
             let mut cancelled = false;
-            for chunk in resolved.chunks(NATIVE_BATCH) {
+            for chunk in claimed_items.chunks(NATIVE_BATCH) {
                 if worker.cancel_requested() {
                     cancelled = true;
                     break;
@@ -838,7 +1067,8 @@ pub fn start_restore(
                     .iter()
                     .map(|item| NativeTarget {
                         name: item.name.clone(),
-                        data_path: format!("{}\\$R{}", item.bin_root, item.record_key),
+                        bin_root: item.bin_root.clone(),
+                        data_name: item.data_name.clone(),
                         original_path: item.original_path.clone(),
                     })
                     .collect();
@@ -859,25 +1089,56 @@ pub fn start_restore(
                     emit_progress(app, worker);
                     continue;
                 }
+                let mut index_ok: Vec<(&recycle_index::ResolvedItem, ops::NativeOutcome)> =
+                    Vec::with_capacity(chunk.len());
                 for (item, outcome) in chunk.iter().zip(outcomes) {
                     if outcome.status == "ok" {
-                        let _ = db.with_conn(|conn| {
-                            recycle_index::mark_restored(
-                                conn,
-                                &item.bin_root,
-                                &item.record_key,
-                            )
-                        });
+                        index_ok.push((item, outcome));
+                    } else {
+                        record_result(
+                            worker,
+                            JobEntryResult {
+                                label: outcome.target.clone(),
+                                status: outcome.status.clone(),
+                                code: outcome.code.clone(),
+                                message: outcome.message.clone(),
+                            },
+                        );
                     }
-                    record_result(
-                        worker,
-                        JobEntryResult {
-                            label: outcome.target.clone(),
-                            status: outcome.status.clone(),
-                            code: outcome.code.clone(),
-                            message: outcome.message.clone(),
-                        },
-                    );
+                }
+                if !index_ok.is_empty() {
+                    let keys: Vec<(String, String)> = index_ok
+                        .iter()
+                        .map(|(item, _)| (item.bin_root.clone(), item.record_key.clone()))
+                        .collect();
+                    match db.with_conn(|conn| recycle_index::mark_removed_batch(conn, &keys)) {
+                        Ok(_) => {
+                            for (_, outcome) in index_ok {
+                                record_result(
+                                    worker,
+                                    JobEntryResult {
+                                        label: outcome.target.clone(),
+                                        status: outcome.status.clone(),
+                                        code: outcome.code.clone(),
+                                        message: outcome.message.clone(),
+                                    },
+                                );
+                            }
+                        }
+                        Err(error) => {
+                            // 整批索引写入失败：逐项如实记 partial，并标记该卷对账。
+                            for (item, outcome) in index_ok {
+                                record_index_failure(
+                                    worker,
+                                    &db,
+                                    &item.bin_root,
+                                    &item.volume,
+                                    outcome.target.clone(),
+                                    error.to_string(),
+                                );
+                            }
+                        }
+                    }
                 }
                 if worker.cancel_requested() {
                     cancelled = true;
@@ -892,7 +1153,8 @@ pub fn start_restore(
     )
 }
 
-/// 永久删除回收站项目。成功后同步移除索引记录。
+/// 永久删除回收站项目。成功后写墓碑并移除索引记录。
+/// 逐项反馈规则同 [`start_restore`]；条目被占用时该条失败，不影响其余条目。
 pub fn start_purge(
     app: &AppHandle,
     ids: Vec<String>,
@@ -903,10 +1165,19 @@ pub fn start_purge(
     }
     let db = app.state::<Arc<Db>>().inner().clone();
     let resolved = db.with_read(|conn| recycle_index::resolve(conn, &ids))?;
-    if resolved.is_empty() {
-        return Err(AppError::NotFound("回收站索引中没有这些项目，请先同步".into()));
+    let failures: Vec<JobEntryResult> = resolved.unresolved.iter().map(unresolved_entry).collect();
+    let runnable = resolved.items;
+    let total = ids.len();
+    if runnable.is_empty() {
+        return Ok(immediate_job(
+            app,
+            "purge",
+            total,
+            Some("没有可删除的项目，详见失败明细".into()),
+            failures,
+        ));
     }
-    let total = resolved.len();
+    let pre_failures = failures.clone();
     submit(
         app,
         JobSpec {
@@ -917,8 +1188,28 @@ pub fn start_purge(
         },
         move |app, worker| {
             let started = std::time::Instant::now();
+            let claims = recycle_claims();
+            let job_id = worker.snapshot().id;
+            let _guard = ClaimsGuard { claims, job_id: job_id.clone() };
+            for entry in pre_failures {
+                record_result(worker, entry);
+            }
+            let mut claimed_items: Vec<recycle_index::ResolvedItem> = Vec::with_capacity(runnable.len());
+            for item in runnable.into_iter() {
+                let key = entry_claim_key(&item.bin_root, &item.record_key);
+                if let Some(holder) = claims.try_claim(&key, &job_id, "purge") {
+                    record_result(worker, JobEntryResult {
+                        label: item.name.clone(),
+                        status: "failed".into(),
+                        code: "RECYCLE_ENTRY_BUSY".into(),
+                        message: Some(format!("该项目正在被其他任务（{holder}）处理，本次未执行")),
+                    });
+                    continue;
+                }
+                claimed_items.push(item);
+            }
             let mut cancelled = false;
-            for chunk in resolved.chunks(NATIVE_BATCH) {
+            for chunk in claimed_items.chunks(NATIVE_BATCH) {
                 if worker.cancel_requested() {
                     cancelled = true;
                     break;
@@ -927,7 +1218,8 @@ pub fn start_purge(
                     .iter()
                     .map(|item| NativeTarget {
                         name: item.name.clone(),
-                        data_path: format!("{}\\$R{}", item.bin_root, item.record_key),
+                        bin_root: item.bin_root.clone(),
+                        data_name: item.data_name.clone(),
                         original_path: item.original_path.clone(),
                     })
                     .collect();
@@ -947,26 +1239,56 @@ pub fn start_purge(
                     emit_progress(app, worker);
                     continue;
                 }
+                let mut index_ok: Vec<(&recycle_index::ResolvedItem, ops::NativeOutcome)> =
+                    Vec::with_capacity(chunk.len());
                 for (item, outcome) in chunk.iter().zip(outcomes) {
                     if outcome.status == "ok" {
-                        let _ = db.with_conn(|conn| {
-                            recycle_index::delete_records(
-                                conn,
-                                &item.bin_root,
-                                std::slice::from_ref(&item.record_key),
-                            )
-                            .map(|_| ())
-                        });
+                        index_ok.push((item, outcome));
+                    } else {
+                        record_result(
+                            worker,
+                            JobEntryResult {
+                                label: outcome.target.clone(),
+                                status: outcome.status.clone(),
+                                code: outcome.code.clone(),
+                                message: outcome.message.clone(),
+                            },
+                        );
                     }
-                    record_result(
-                        worker,
-                        JobEntryResult {
-                            label: outcome.target.clone(),
-                            status: outcome.status.clone(),
-                            code: outcome.code.clone(),
-                            message: outcome.message.clone(),
-                        },
-                    );
+                }
+                if !index_ok.is_empty() {
+                    let keys: Vec<(String, String)> = index_ok
+                        .iter()
+                        .map(|(item, _)| (item.bin_root.clone(), item.record_key.clone()))
+                        .collect();
+                    match db.with_conn(|conn| recycle_index::mark_removed_batch(conn, &keys)) {
+                        Ok(_) => {
+                            for (_, outcome) in index_ok {
+                                record_result(
+                                    worker,
+                                    JobEntryResult {
+                                        label: outcome.target.clone(),
+                                        status: outcome.status.clone(),
+                                        code: outcome.code.clone(),
+                                        message: outcome.message.clone(),
+                                    },
+                                );
+                            }
+                        }
+                        Err(error) => {
+                            // 整批索引写入失败：逐项如实记 partial，并标记该卷对账。
+                            for (item, outcome) in index_ok {
+                                record_index_failure(
+                                    worker,
+                                    &db,
+                                    &item.bin_root,
+                                    &item.volume,
+                                    outcome.target.clone(),
+                                    error.to_string(),
+                                );
+                            }
+                        }
+                    }
                 }
                 if worker.cancel_requested() {
                     cancelled = true;
@@ -1020,12 +1342,29 @@ pub fn start_empty(
         },
         move |app, worker| {
             let started = std::time::Instant::now();
+            let claims = recycle_claims();
+            let job_id = worker.snapshot().id;
+            let _guard = ClaimsGuard { claims, job_id: job_id.clone() };
+            let db = app.state::<Arc<Db>>().inner().clone();
             let mut cancelled = false;
             for volume in selected {
                 if worker.cancel_requested() {
                     cancelled = true;
                     break;
                 }
+                if let Some(holder) = claims.try_claim(&volume_claim_key(&volume.volume), &job_id, "empty") {
+                    record_result(
+                        worker,
+                        JobEntryResult {
+                            label: volume.volume.clone(),
+                            status: "failed".into(),
+                            code: "RECYCLE_VOLUME_BUSY".into(),
+                            message: Some(format!("该磁盘正在被其他任务（{holder}）清空，本次未执行")),
+                        },
+                    );
+                    continue;
+                }
+                let bin_root = volume.root.to_string_lossy().into_owned();
                 let Some(outcome) = crate::recycle::volume::empty_recycle_bin(&volume, || worker.cancel_requested()) else {
                     cancelled = true;
                     break;
@@ -1045,6 +1384,21 @@ pub fn start_empty(
                         );
                     }
                     Err((code, message)) => {
+                        // 清空结果未核实或索引未同步：标记该卷需要重新对账，
+                        // 下一次同步按真实 `$I`/`$R` 重建，不把未知伪装成成功。
+                        if db
+                            .with_conn(|conn| {
+                                recycle_index::mark_reconcile_required(
+                                    conn,
+                                    &bin_root,
+                                    &volume.volume,
+                                    &code,
+                                )
+                            })
+                            .is_ok()
+                        {
+                            worker.update(|snapshot| snapshot.index_pending += 1);
+                        }
                         worker.update(|snapshot| snapshot.message = Some(message.clone()));
                         record_result(worker, JobEntryResult {
                             label: volume.volume.clone(),
@@ -1405,6 +1759,59 @@ mod tests {
             message: None,
             cancelable: true,
         })
+    }
+
+    #[test]
+    fn recycle_claims_block_concurrent_entry_operations_until_released() {
+        let claims: &'static RecycleClaims = Box::leak(Box::new(RecycleClaims::new()));
+        let key = entry_claim_key(r"D:\$Recycle.Bin\S-1", "A");
+        assert!(claims.try_claim(&key, "job-1", "restore").is_none());
+        // 同一任务重复声明是幂等的（同一批里不自我冲突）。
+        assert!(claims.try_claim(&key, "job-1", "restore").is_none());
+        // 另一任务的恢复/永久删除都必须被拒绝。
+        assert_eq!(claims.try_claim(&key, "job-2", "purge"), Some("restore"));
+        assert_eq!(claims.try_claim(&key, "job-3", "restore"), Some("restore"));
+        let volume_key = volume_claim_key("D:");
+        assert!(claims.try_claim(&volume_key, "job-1", "empty").is_none());
+        assert_eq!(claims.try_claim(&volume_key, "job-2", "empty"), Some("empty"));
+        {
+            let _guard = ClaimsGuard { claims, job_id: "job-1".into() };
+        }
+        assert_eq!(claims.active(), 0);
+        assert!(claims.try_claim(&key, "job-2", "purge").is_none());
+        claims.release_job("job-2");
+        assert_eq!(claims.active(), 0);
+    }
+
+    #[test]
+    fn wait_terminal_wakes_on_finish_and_times_out_otherwise() {
+        let handle = make_handle("purge", 1);
+        assert!(!handle.wait_terminal(std::time::Duration::from_millis(20)));
+        let waiter = handle.clone();
+        let thread = std::thread::spawn(move || {
+            waiter.wait_terminal(std::time::Duration::from_secs(2))
+        });
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        finish(&handle, false);
+        assert!(thread.join().unwrap());
+        assert!(handle.is_terminal());
+    }
+
+    #[test]
+    fn index_write_failure_is_reported_as_partial_not_success() {
+        let handle = make_handle("purge", 1);
+        record_result(&handle, JobEntryResult {
+            label: "a.txt".into(),
+            status: "partial".into(),
+            code: "INDEX_UPDATE_FAILED".into(),
+            message: Some("索引更新失败".into()),
+        });
+        handle.update(|snapshot| snapshot.index_pending += 1);
+        finish(&handle, false);
+        let snapshot = handle.snapshot();
+        assert_eq!(snapshot.status, "partial");
+        assert_eq!(snapshot.index_pending, 1);
+        assert_eq!(snapshot.ok, 0);
     }
 
     #[test]

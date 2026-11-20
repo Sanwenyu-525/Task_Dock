@@ -26,6 +26,7 @@ vi.mock("../../hooks/useLocale", () => ({
 }));
 
 import UserJunkSection from "./UserJunkSection";
+import { useUiStore } from "../../store/useUiStore";
 
 const PREVIEW = {
   previewId: "junk-preview-1",
@@ -283,6 +284,22 @@ describe("UserJunkSection", () => {
     );
     // 预览已作废：清空按钮保持禁用，必须重新扫描
     expect(cleanButton().disabled).toBe(true);
+  });
+
+  it("打开回收站：切到文件页并派发打开回收站事件", async () => {
+    const openRecycle = vi.fn();
+    const previousTab = useUiStore.getState().tab;
+    window.addEventListener("taskdock-fw-open-recycle", openRecycle);
+    try {
+      render(<UserJunkSection />);
+      fireEvent.click(await screen.findByRole("button", { name: "resource.junk.openRecycle" }));
+
+      await waitFor(() => expect(openRecycle).toHaveBeenCalledTimes(1));
+      expect(useUiStore.getState().tab).toBe("files");
+    } finally {
+      window.removeEventListener("taskdock-fw-open-recycle", openRecycle);
+      useUiStore.getState().setTab(previousTab);
+    }
   });
 
   it("预览 TTL 到期后禁用清理并要求重新扫描", async () => {

@@ -1316,6 +1316,10 @@ export interface ResourceJunkCategoryPreview {
   /** 未满保留年龄、被保护的文件数（仅文件类）。 */
   protectedFiles: number;
   skippedFiles: number;
+  /** 数据来源：index（本地回收站索引缓存）/ filesystem（有界实时遍历）/ live（本次实时扫描）。 */
+  source?: "index" | "filesystem" | "live";
+  /** 数据对应时间（毫秒）；0 表示未知。回收站索引命中时为该卷最后同步时间。 */
+  dataAsOfMs?: number;
   errorCode?: string;
   errorMessage?: string;
 }
@@ -4280,6 +4284,8 @@ export interface FileJobSnapshot {
   finishedMs: number;
   failures: FileJobEntry[];
   message: string | null;
+  /** 系统操作成功但回收站索引写入失败的条数（已标记该卷需要重新对账）。 */
+  indexPending?: number;
 }
 
 // ── 知识与 AI 能力中心（v72）────────────────────────────────────────

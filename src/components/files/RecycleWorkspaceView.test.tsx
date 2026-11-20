@@ -1,13 +1,23 @@
 /**
  * @vitest-environment jsdom
  */
-//! 回收站任务交互：清空范围与勾选一致、空选择禁止提交、pending 可取消且
-//! cancelling 后不重复显示取消入口。只 mock IPC，不触碰真实回收站。
+//! 回收站视图交互回归：缓存打开与首次同步、后台同步事件、磁盘筛选与分页、
+//! 虚拟滚动与并发去重、跨页选择、缓存淘汰后的部分选择、恢复/永久删除、部分
+//! 失败与对账失败、取消未生效、重开刷新、清空范围。只 mock IPC，不触碰真实回收站。
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { FileJobSnapshot, RecycleItem, RecycleStats, RecycleSyncStatus } from "../../lib/bridge";
+import type {
+  FileJobSnapshot,
+  RecycleItem,
+  RecyclePage,
+  RecycleQuery,
+  RecycleScanProgress,
+  RecycleStats,
+  RecycleSyncStatus,
+  RecycleSyncSummary,
+} from "../../lib/bridge";
 
 const bridge = vi.hoisted(() => ({
   recycleEmpty: vi.fn(),
@@ -31,6 +41,7 @@ vi.mock("../../lib/bridge", async () => {
 });
 
 import RecycleWorkspaceView from "./RecycleWorkspaceView";
+import { useUiStore } from "../../store/useUiStore";
 
 afterEach(() => {
   cleanup();
@@ -38,6 +49,8 @@ afterEach(() => {
 });
 
 let jobListener: ((snapshot: FileJobSnapshot) => void) | null = null;
+let syncProgressListener: ((progress: RecycleScanProgress) => void) | null = null;
+let syncDoneListener: ((summary: RecycleSyncSummary) => void) | null = null;
 
 const stats = (over: Partial<RecycleStats> = {}): RecycleStats => ({
   items: 5,
@@ -105,6 +118,9 @@ const item = (id: string): RecycleItem => ({
   anomaly: null,
 });
 
+const pageItems = (prefix: string, count = 4): RecycleItem[] =>
+  Array.from({ length: count }, (_, index) => item(`${prefix}${index}`));
+
 const job = (over: Partial<FileJobSnapshot> = {}): FileJobSnapshot => ({
   id: "job-1",
   kind: "empty",
@@ -125,20 +141,283 @@ const job = (over: Partial<FileJobSnapshot> = {}): FileJobSnapshot => ({
   ...over,
 });
 
+/** 虚拟列表滚动：直接定义 scrollTop，避免 jsdom 未实现布局导致读回 0。 */
+function scrollTo(top: number) {
+  const scroller = screen.getByRole("listbox", { name: "回收站项目" });
+  Object.defineProperty(scroller, "scrollTop", { value: top, configurable: true, writable: true });
+  fireEvent.scroll(scroller);
+}
+
+const listQueries = (): RecycleQuery[] =>
+  bridge.recycleList.mock.calls.map((call) => call[0] as RecycleQuery);
+
 beforeEach(() => {
   jobListener = null;
+  syncProgressListener = null;
+  syncDoneListener = null;
+  useUiStore.setState({ toast: null, toasts: [] });
   bridge.recycleStats.mockResolvedValue(stats());
   bridge.recycleSyncStatus.mockResolvedValue(syncStatus);
   bridge.recycleSync.mockResolvedValue(syncStatus);
   bridge.recycleList.mockResolvedValue({ items: [item("a")], total: 1, offset: 0, limit: 400, stats: null, queryMs: 3 });
   bridge.recycleEmpty.mockResolvedValue(job());
+  bridge.recycleRestore.mockResolvedValue(job({ kind: "restore" }));
+  bridge.recyclePurge.mockResolvedValue(job({ kind: "purge" }));
   bridge.fsJobCancel.mockResolvedValue(true);
   bridge.fsJobStatus.mockResolvedValue(job());
-  bridge.onRecycleSyncProgress.mockImplementation(async () => () => {});
-  bridge.onRecycleSyncDone.mockImplementation(async () => () => {});
+  bridge.onRecycleSyncProgress.mockImplementation(async (cb: (progress: RecycleScanProgress) => void) => {
+    syncProgressListener = cb;
+    return () => {};
+  });
+  bridge.onRecycleSyncDone.mockImplementation(async (cb: (summary: RecycleSyncSummary) => void) => {
+    syncDoneListener = cb;
+    return () => {};
+  });
   bridge.onRecycleJobProgress.mockImplementation(async (cb: (s: FileJobSnapshot) => void) => {
     jobListener = cb;
     return () => {};
+  });
+});
+
+describe("RecycleWorkspaceView 打开与同步", () => {
+  it("已有索引：先读缓存统计与列表，再以 force=false 触发节流同步", async () => {
+    render(<RecycleWorkspaceView />);
+    await waitFor(() => expect(bridge.recycleSync).toHaveBeenCalledTimes(1));
+
+    expect(bridge.recycleSync).toHaveBeenCalledWith(false);
+    expect(bridge.recycleStats).toHaveBeenCalled();
+    expect(bridge.recycleList).toHaveBeenCalled();
+    expect(bridge.recycleStats.mock.invocationCallOrder[0]).toBeLessThan(
+      bridge.recycleSync.mock.invocationCallOrder[0],
+    );
+    expect(bridge.recycleList.mock.invocationCallOrder[0]).toBeLessThan(
+      bridge.recycleSync.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("首次没有索引（indexedAtMs=0）时以 force=true 建立索引，并提示先同步", async () => {
+    bridge.recycleStats.mockResolvedValue(
+      stats({ indexedAtMs: 0, items: 0, files: 0, folders: 0, knownBytes: 0, volumes: [], state: "empty" }),
+    );
+    bridge.recycleList.mockResolvedValue({ items: [], total: 0, offset: 0, limit: 400, stats: null, queryMs: 1 });
+
+    render(<RecycleWorkspaceView />);
+    await waitFor(() => expect(bridge.recycleSync).toHaveBeenCalledWith(true));
+    expect(
+      await screen.findByText("索引尚未建立；点「立即同步」读取回收站（不扫描文件大小）。"),
+    ).toBeTruthy();
+  });
+
+  it("后台同步：进度事件更新进度条，完成事件刷新统计与首页并提示完成", async () => {
+    bridge.recycleSync.mockResolvedValue({
+      ...syncStatus,
+      running: true,
+      volumesTotal: 2,
+      volumesDone: 0,
+    });
+    render(<RecycleWorkspaceView />);
+    await waitFor(() => expect(syncProgressListener).not.toBeNull());
+    expect(await screen.findByText("同步中 0/2")).toBeTruthy();
+
+    act(() =>
+      syncProgressListener?.({
+        volume: "C:",
+        phase: "reading",
+        done: 3,
+        total: 10,
+        added: 1,
+        updated: 0,
+        removed: 0,
+      }),
+    );
+    expect(screen.getByText("同步 C:：3/10")).toBeTruthy();
+
+    bridge.recycleStats.mockClear();
+    bridge.recycleList.mockClear();
+    act(() =>
+      syncDoneListener?.({
+        startedMs: 1,
+        finishedMs: 2,
+        durationMs: 1,
+        cancelled: false,
+        volumes: [
+          {
+            volume: "C:",
+            state: "ok",
+            items: 3,
+            added: 1,
+            updated: 0,
+            removed: 0,
+            durationMs: 1,
+            errorCode: null,
+          },
+        ],
+        error: null,
+      }),
+    );
+
+    await waitFor(() => expect(bridge.recycleStats).toHaveBeenCalled());
+    await waitFor(() => expect(bridge.recycleList).toHaveBeenCalled());
+    expect(screen.queryByText("同步 C:：3/10")).toBeNull();
+    expect(screen.getByText(/\+1 ~0 -0/)).toBeTruthy();
+    expect(useUiStore.getState().toasts.some((toast) => toast.message === "同步完成（1 个卷）")).toBe(true);
+  });
+});
+
+describe("RecycleWorkspaceView 筛选与分页", () => {
+  it("切换磁盘后列表请求带 volume，统计只在首页拉取", async () => {
+    render(<RecycleWorkspaceView />);
+    await screen.findByRole("button", { name: "清空回收站" });
+    await waitFor(() => expect(bridge.recycleList).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole("combobox", { name: "磁盘" }));
+    const volumeList = await screen.findByRole("listbox", { name: "磁盘" });
+    fireEvent.click(within(volumeList).getByRole("option", { name: /D: \(0\)/ }));
+
+    await waitFor(() =>
+      expect(listQueries().some((query) => query.volume === "D:" && query.offset === 0)).toBe(true),
+    );
+    const queries = listQueries();
+    // 首次进入 + 切换磁盘各一次全量统计；翻页/预取一律不带统计。
+    expect(queries.filter((query) => query.includeStats).length).toBe(2);
+    expect(queries.filter((query) => query.offset !== 0).every((query) => query.includeStats === false)).toBe(
+      true,
+    );
+  });
+
+  it("滚动到未缓存页按 400 分页补齐，同一 offset 不重复并发", async () => {
+    const total = 2000;
+    let release400: (() => void) | null = null;
+    bridge.recycleList.mockImplementation((query: RecycleQuery) => {
+      const offset = query.offset ?? 0;
+      if (offset === 400) {
+        return new Promise<RecyclePage>((resolve) => {
+          release400 = () =>
+            resolve({ items: pageItems("p1"), total, offset, limit: 400, stats: null, queryMs: 2 });
+        });
+      }
+      return Promise.resolve({
+        items: offset === 0 ? pageItems("p0") : pageItems(`p${offset}`),
+        total,
+        offset,
+        limit: 400,
+        stats: null,
+        queryMs: 2,
+      });
+    });
+
+    render(<RecycleWorkspaceView />);
+    await screen.findByText("p00.txt");
+
+    const callsAt400 = () => listQueries().filter((query) => query.offset === 400);
+    scrollTo(12200);
+    await waitFor(() => expect(callsAt400()).toHaveLength(1));
+    expect(callsAt400()[0]).toMatchObject({ offset: 400, limit: 400, includeStats: false });
+
+    // 回顶再滚回同一页：该页请求仍在途，不能重复发起。
+    scrollTo(0);
+    scrollTo(12200);
+    expect(callsAt400()).toHaveLength(1);
+
+    await act(async () => {
+      release400?.();
+    });
+    expect(await screen.findByText("p10.txt")).toBeTruthy();
+    expect(callsAt400()).toHaveLength(1);
+  });
+});
+
+describe("RecycleWorkspaceView 选择", () => {
+  it("跨页勾选保留已选，Shift 区间选中当前可见范围，Ctrl+A 只选当前页", async () => {
+    const total = 800;
+    bridge.recycleList.mockImplementation((query: RecycleQuery) => {
+      const offset = query.offset ?? 0;
+      return Promise.resolve({
+        items: pageItems(offset === 0 ? "p0" : "p1"),
+        total,
+        offset,
+        limit: 400,
+        stats: null,
+        queryMs: 2,
+      });
+    });
+
+    const { container } = render(<RecycleWorkspaceView />);
+    fireEvent.click(await screen.findByRole("option", { name: /p00\.txt/ }));
+    expect(screen.getByText("已选择 1 项")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("option", { name: /p02\.txt/ }), { shiftKey: true });
+    expect(screen.getByText("已选择 3 项")).toBeTruthy();
+
+    scrollTo(12200);
+    fireEvent.click(await screen.findByRole("option", { name: /p10\.txt/ }), { ctrlKey: true });
+    expect(screen.getByText("已选择 4 项")).toBeTruthy();
+
+    fireEvent.keyDown(container.querySelector(".rc-view") as HTMLElement, { key: "a", ctrlKey: true });
+    // 当前页 4 项全部加入（跨页已选的 3 项保留），而不是把另外 4 项也一并选中。
+    expect(screen.getByText("已选择 7 项")).toBeTruthy();
+  });
+
+  it("缓存页被淘汰后，不在当前缓存的选中项给出部分选择提示", async () => {
+    const total = 3200;
+    bridge.recycleList.mockImplementation((query: RecycleQuery) => {
+      const offset = query.offset ?? 0;
+      return Promise.resolve({
+        items: pageItems(`p${offset / 400}`),
+        total,
+        offset,
+        limit: 400,
+        stats: null,
+        queryMs: 2,
+      });
+    });
+
+    render(<RecycleWorkspaceView />);
+    fireEvent.click(await screen.findByRole("option", { name: /p00\.txt/ }));
+    scrollTo(12200);
+    fireEvent.click(await screen.findByRole("option", { name: /p10\.txt/ }), { ctrlKey: true });
+    expect(screen.getByText("已选择 2 项")).toBeTruthy();
+    expect(screen.queryByText("部分选中项尚未加载，操作只作用于已加载项")).toBeNull();
+
+    // 逐页滚动把最早的第 1 页挤出 6 页缓存窗口，第 2 页仍在缓存内。
+    scrollTo(24200);
+    await screen.findByRole("option", { name: /p20\.txt/ });
+    scrollTo(36200);
+    await screen.findByRole("option", { name: /p30\.txt/ });
+    scrollTo(48200);
+    await screen.findByRole("option", { name: /p40\.txt/ });
+    scrollTo(60200);
+    await screen.findByRole("option", { name: /p50\.txt/ });
+
+    expect(await screen.findByText("部分选中项尚未加载，操作只作用于已加载项")).toBeTruthy();
+    expect(screen.getByText("已选择 2 项")).toBeTruthy();
+  });
+});
+
+describe("RecycleWorkspaceView 批量操作", () => {
+  it("恢复确认选择 rename 后，recycleRestore 收到 ids、rename 与 operationId", async () => {
+    render(<RecycleWorkspaceView />);
+    fireEvent.click(await screen.findByRole("option", { name: /a\.txt/ }));
+
+    fireEvent.click(screen.getAllByRole("button", { name: "恢复" })[0]);
+    const dialog = await screen.findByRole("dialog", { name: "恢复 1 项" });
+    fireEvent.click(within(dialog).getByRole("radio", { name: /保留两者/ }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "开始恢复" }));
+
+    await waitFor(() =>
+      expect(bridge.recycleRestore).toHaveBeenCalledWith(["a"], "rename", expect.any(String)),
+    );
+  });
+
+  it("永久删除确认后，recyclePurge 收到选中 ids", async () => {
+    render(<RecycleWorkspaceView />);
+    fireEvent.click(await screen.findByRole("option", { name: /a\.txt/ }));
+
+    fireEvent.click(screen.getAllByRole("button", { name: "永久删除" })[0]);
+    const dialog = await screen.findByRole("dialog", { name: "永久删除 1 项？" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "永久删除" }));
+
+    await waitFor(() => expect(bridge.recyclePurge).toHaveBeenCalledWith(["a"], expect.any(String)));
   });
 });
 
@@ -182,7 +461,7 @@ describe("RecycleWorkspaceView 清空范围", () => {
   });
 });
 
-describe("RecycleWorkspaceView 任务取消", () => {
+describe("RecycleWorkspaceView 任务状态", () => {
   it("pending 可取消；取消受理后进入 cancelling 不再显示取消按钮", async () => {
     render(<RecycleWorkspaceView />);
     await screen.findByRole("button", { name: "清空回收站" });
@@ -199,6 +478,65 @@ describe("RecycleWorkspaceView 任务取消", () => {
     expect(screen.getByText(/正在取消/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "取消任务" })).toBeNull();
     expect(screen.queryByRole("button", { name: "取消排队任务" })).toBeNull();
+  });
+
+  it("取消未生效时提示原因，且状态不进入 cancelling", async () => {
+    bridge.fsJobCancel.mockResolvedValue(false);
+    bridge.fsJobStatus.mockResolvedValue(job({ status: "running", total: 2, done: 0 }));
+    render(<RecycleWorkspaceView />);
+    await screen.findByRole("button", { name: "清空回收站" });
+    await waitFor(() => expect(jobListener).not.toBeNull());
+
+    act(() => jobListener?.(job({ status: "running", total: 2, done: 0 })));
+    fireEvent.click(await screen.findByRole("button", { name: "取消任务" }));
+
+    await waitFor(() =>
+      expect(
+        useUiStore.getState().toasts.some((toast) => toast.message.includes("取消未生效")),
+      ).toBe(true),
+    );
+    expect(screen.queryByText(/正在取消/)).toBeNull();
+    expect(screen.getByText(/已处理 0\/2 · 成功 0 · 失败 0/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "取消任务" })).toBeTruthy();
+  });
+
+  it("部分失败显示部分完成结果，不冒充成功也不弹成功提示", async () => {
+    render(<RecycleWorkspaceView />);
+    await screen.findByRole("button", { name: "清空回收站" });
+    await waitFor(() => expect(jobListener).not.toBeNull());
+
+    act(() =>
+      jobListener?.(job({ status: "partial", total: 2, done: 2, ok: 1, failed: 1, skipped: 0 })),
+    );
+
+    expect(await screen.findByText(/部分完成：成功 1 · 失败 1 · 跳过 0/)).toBeTruthy();
+    expect(screen.queryByText("清空任务 · 成功 1 · 失败 1 · 跳过 0")).toBeNull();
+    expect(useUiStore.getState().toasts).toHaveLength(0);
+  });
+
+  it("数据库对账失败（INDEX_UPDATE_FAILED）可见且不显示为完成", async () => {
+    render(<RecycleWorkspaceView />);
+    await screen.findByRole("button", { name: "清空回收站" });
+    await waitFor(() => expect(jobListener).not.toBeNull());
+
+    act(() =>
+      jobListener?.(
+        job({
+          status: "partial",
+          total: 2,
+          done: 2,
+          ok: 1,
+          failed: 1,
+          skipped: 0,
+          failures: [{ label: "D:", status: "failed", code: "INDEX_UPDATE_FAILED", message: null }],
+        }),
+      ),
+    );
+
+    const failures = await screen.findByText("1 项失败");
+    expect(failures.getAttribute("data-tip")).toContain("INDEX_UPDATE_FAILED");
+    expect(screen.getByText(/部分完成：成功 1 · 失败 1/)).toBeTruthy();
+    expect(screen.queryByText("清空任务 · 成功 1 · 失败 1 · 跳过 0")).toBeNull();
   });
 
   it("终态停止轮询并刷新首页统计与列表", async () => {
@@ -230,5 +568,29 @@ describe("RecycleWorkspaceView 任务取消", () => {
 
     act(() => jobListener?.(job({ status: "completed", done: 2, ok: 2, finishedMs: Date.now() })));
     await waitFor(() => expect(screen.getByText(/成功 2/)).toBeTruthy());
+  });
+});
+
+describe("RecycleWorkspaceView 重开刷新", () => {
+  it("重新打开视图时重新读取索引并展示最新数据", async () => {
+    const first = render(<RecycleWorkspaceView />);
+    expect(await screen.findByText(/5 项/)).toBeTruthy();
+    expect(await screen.findByText("a.txt")).toBeTruthy();
+    first.unmount();
+
+    bridge.recycleStats.mockResolvedValue(stats({ items: 9, files: 8, folders: 1 }));
+    bridge.recycleList.mockResolvedValue({
+      items: [item("z")],
+      total: 1,
+      offset: 0,
+      limit: 400,
+      stats: null,
+      queryMs: 2,
+    });
+
+    render(<RecycleWorkspaceView />);
+    expect(await screen.findByText(/9 项/)).toBeTruthy();
+    expect(await screen.findByText("z.txt")).toBeTruthy();
+    expect(bridge.recycleStats).toHaveBeenCalledTimes(2);
   });
 });

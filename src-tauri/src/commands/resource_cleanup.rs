@@ -128,31 +128,49 @@ pub async fn resource_disk_analyze(path: String) -> AppResult<DiskScanReport> {
 }
 
 /// 扫描用户级磁盘垃圾（回收站 / 临时文件 / 崩溃转储）：只读，不删除。
+/// 回收站统计优先读 `RecycleService` 索引缓存；无索引时后端自动降级。
 #[tauri::command]
 pub async fn resource_junk_preview(
+    app: tauri::AppHandle,
     state: State<'_, Arc<ResourceCleanupState>>,
     categories: Vec<JunkCategory>,
 ) -> AppResult<JunkPreview> {
+    use tauri::Manager;
     let state = Arc::clone(&state);
+    let recycle = app
+        .state::<Arc<crate::recycle::RecycleService>>()
+        .inner()
+        .clone();
     let started = std::time::Instant::now();
-    let result = tauri::async_runtime::spawn_blocking(move || state.preview_user_junk(categories))
-        .await
-        .map_err(|error| AppError::Unavailable(format!("垃圾扫描线程异常: {error}")))
-        .and_then(std::convert::identity);
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        state.preview_user_junk(categories, Some(recycle.as_ref()))
+    })
+    .await
+    .map_err(|error| AppError::Unavailable(format!("垃圾扫描线程异常: {error}")))
+    .and_then(std::convert::identity);
     observe_scan("junk_scan", started, result)
 }
 
 /// 执行用户级磁盘垃圾清理：只接受服务端预览 ID，预览一次性消费。
+/// 回收站类别由统一 `fsops` 清空任务执行并完成索引对账。
 #[tauri::command]
 pub async fn resource_junk_execute(
+    app: tauri::AppHandle,
     state: State<'_, Arc<ResourceCleanupState>>,
     preview_id: String,
     categories: Vec<JunkCategory>,
 ) -> AppResult<JunkExecutionReport> {
+    use tauri::Manager;
     let state = Arc::clone(&state);
-    tauri::async_runtime::spawn_blocking(move || state.execute_user_junk(preview_id, categories))
-        .await
-        .map_err(|error| AppError::Unavailable(format!("垃圾清理线程异常: {error}")))?
+    let recycle = app
+        .state::<Arc<crate::recycle::RecycleService>>()
+        .inner()
+        .clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state.execute_user_junk(preview_id, categories, &app, &recycle)
+    })
+    .await
+    .map_err(|error| AppError::Unavailable(format!("垃圾清理线程异常: {error}")))?
 }
 
 /// 应用自身可回收内存缓存目录（只读）。

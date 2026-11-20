@@ -17,6 +17,34 @@
 
 ## 一、自动化测试结果
 
+### 回收站 P1 修复与架构收敛（2026-11-20）
+
+报告：`tmp/acceptance/recycle-p1/report.md`。改动集中在 `recycle::`、`fsops::`、
+`file_workspace::delete_paths`、`resource_cleanup::user_junk` 与回收站前端测试。
+
+| 命令（工作目录） | 结果 |
+|---|---|
+| `cargo check --lib`（`src-tauri`，HEAD a3309ae + 本轮改动） | **PASS**，exit 0 |
+| `cargo test --lib recycle:: -- --test-threads=4`（隔离工作树） | **PASS 56 / 0 failed / 3 ignored**（3.08s） |
+| `cargo test --lib fsops::`（隔离工作树） | **PASS 38 / 0 failed**（1.93s） |
+| `cargo test --lib resource_cleanup::user_junk`（隔离工作树） | **PASS 23 / 0 failed**（0.39s） |
+| `file_workspace::tests::recycle*` | **PASS 2 / 0 failed / 1 ignored** |
+| `native_restore_and_purge_roundtrip --ignored --nocapture`（`TD_RECYCLE_NATIVE_TESTS=1`） | **PASS 1/1**（0.65s，真实回收站，文件/文件夹/中文/冲突 skip·rename/父目录缺失/purge） |
+| `recycle_batch_native_bench --ignored --nocapture`（`TD_RECYCLE_BATCH_BENCH=1`） | **PASS 1/1**，60 项一次 Shell 调用 534ms |
+| `synthetic_scale_measurement --ignored --nocapture`（`TD_RECYCLE_SCALE_MEASURE=1`） | **PASS 1/1**（168.76s，10k/40k 真实文件 + 100k 索引模拟） |
+| `npx vitest run RecycleWorkspaceView.test.tsx UserJunkSection.test.tsx` | **PASS 27/27** |
+| `npm run typecheck` | **PASS**，exit 0 |
+| 全量 `cargo test --lib`（隔离工作树） | 2571 passed / **55 failed** / 14 ignored；55 项全部在本轮未修改的 backup/restore 等模块，代表错误为备份夹具缺少 `transfer_contents` 表（基线问题），本轮模块 0 失败 |
+
+关键修复证据：普通删除 25 项对照测试中，逐项策略 25 次 `SHFileOperationW`，`delete_paths`
+整批 **1 次**；旧 `resolve` 逐 ID 查询在 10 万索引/2 万 ID 时实测 617s，按卷 `IN` 批查后 9.19s；
+墓碑逐条事务约 20ms/条，40 项/事务后 5 千项约 2s。
+
+**环境注意**：本机 cargo 生成的 `task_dock_lib-*.exe` 测试二进制静态引用了
+`comctl32.dll!TaskDialogIndirect`，但没有 Common Controls v6 清单，直接运行报
+`0xc0000139 STATUS_ENTRYPOINT_NOT_FOUND`。用 Windows SDK `mt.exe` 将 v6 manifest 嵌入测试
+exe 后可正常运行；主程序 exe 自带清单不受影响。该问题与业务代码无关。
+
 ### 启动器型应用运行态识别修复（2026-11-11）
 
 现象：胶囊「应用」面板中 Qoder CN 已运行却无绿点。目标配置的是

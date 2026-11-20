@@ -65,7 +65,12 @@ CREATE INDEX recycle_idx_volume_deleted ON recycle_index(volume, deleted_ms, rec
 CREATE INDEX recycle_idx_volume_stats ON recycle_index(volume, is_dir, size_known, size);
 "#);
 
-/// A Shell move may leave its metadata behind. Track only entries this app restored.
+/// 本应用成功移动/删除过的条目的墓碑（原「恢复后残留元数据」表）。
+///
+/// 键 + `$I` 指纹唯一确定一条记录：扫描拿到的是**旧快照**时，若该键已在本应用
+/// 的操作中恢复或永久删除（指纹一致），必须抑制回写，不能让旧快照把刚完成的
+/// 真实操作结果覆盖回去。指纹变化说明键被系统复用，墓碑随即失效
+/// （见 `forget_tombstones`）。因此不新增迁移，直接把这张表用作统一墓碑。
 pub const MIGRATION_71: (i64, &str) = (71, r#"
 CREATE TABLE IF NOT EXISTS recycle_restored_metadata (
     bin_root TEXT NOT NULL,
@@ -469,6 +474,9 @@ pub fn stats(conn: &Connection) -> AppResult<RecycleStats> {
         "offline"
     } else if volumes.iter().any(|v| v.state == "partial") {
         "partial"
+    } else if volumes.iter().any(|v| v.state == "stale") {
+        // 缓存仍在，但已知与真实回收站不一致：如实呈现为不完整，不冒充最新。
+        "partial"
     } else {
         "ready"
     };
@@ -528,7 +536,11 @@ pub fn existing_fingerprints(
     Ok(out)
 }
 
-/// 批量写入（单事务）。返回写入条数。
+/// 批量写入（单事务）。返回实际写入条数。
+///
+/// 墓碑抑制：只要 `(bin_root, record_key)` 与墓碑指纹一致，任何状态的回写都被
+/// 丢弃（不仅是 `missing_data`）。这样「扫描快照早于操作、写入晚于操作」时，
+/// 旧快照不会把刚恢复/刚永久删除的条目重新写回索引。
 pub fn upsert_items(
     conn: &Connection,
     bin_root: &str,
@@ -545,7 +557,7 @@ pub fn upsert_items(
              (bin_root, record_key, volume, data_name, original_path, file_name, is_dir, size, \
               size_known, deleted_ms, state, anomaly, meta_len, meta_mtime_ms, scanned_ms) \
              SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15 \
-             WHERE ?11 <> 'missing_data' OR NOT EXISTS (SELECT 1 FROM recycle_restored_metadata \
+             WHERE NOT EXISTS (SELECT 1 FROM recycle_restored_metadata \
                WHERE bin_root = ?1 AND record_key = ?2 AND meta_len = ?13 AND meta_mtime_ms = ?14) \
              ON CONFLICT(bin_root, record_key) DO UPDATE SET \
               volume = excluded.volume, data_name = excluded.data_name, \
@@ -601,21 +613,45 @@ pub fn delete_records(conn: &Connection, bin_root: &str, keys: &[String]) -> App
     Ok(removed)
 }
 
-/// Record the exact fingerprint before hiding a successfully restored entry.
-pub fn mark_restored(conn: &Connection, bin_root: &str, key: &str) -> AppResult<()> {
-    let tx = conn.unchecked_transaction()?;
-    tx.execute(
-        "INSERT OR REPLACE INTO recycle_restored_metadata
-         SELECT bin_root, record_key, meta_len, meta_mtime_ms FROM recycle_index
-         WHERE bin_root = ?1 AND record_key = ?2",
-        params![bin_root, key],
-    )?;
-    tx.execute("DELETE FROM recycle_index WHERE bin_root = ?1 AND record_key = ?2", params![bin_root, key])?;
-    tx.commit()?;
-    Ok(())
+/// 记录墓碑并移除索引行：系统操作**已成功**后才调用。
+///
+/// 墓碑在系统结果与缓存结果之间建立对账锚点：一旦索引写入失败，下一次同步
+/// 仍能从 `$I`/`$R` 的真实状态重建，且旧扫描快照无法把该条写回。
+/// 表中原有「恢复」语义由所有移动/删除操作共享。
+pub fn mark_removed(conn: &Connection, bin_root: &str, key: &str) -> AppResult<()> {
+    mark_removed_batch(conn, &[(bin_root.to_string(), key.to_string())]).map(|_| ())
 }
 
-pub fn restored_fingerprints(conn: &Connection, bin_root: &str) -> AppResult<std::collections::HashMap<String, (i64, i64)>> {
+/// 同一批次内一次性写墓碑并删除索引行：单事务提交，避免逐项 fsync。
+///
+/// 生产库使用 WAL + 默认 synchronous，逐条事务在本机实测约 20ms/条；
+/// 恢复/永久删除按 40 项一批处理，批量写入把提交次数降到 1/40。
+pub fn mark_removed_batch(conn: &Connection, entries: &[(String, String)]) -> AppResult<usize> {
+    if entries.is_empty() {
+        return Ok(0);
+    }
+    let tx = conn.unchecked_transaction()?;
+    let mut removed = 0usize;
+    {
+        let mut insert = tx.prepare_cached(
+            "INSERT OR REPLACE INTO recycle_restored_metadata
+             SELECT bin_root, record_key, meta_len, meta_mtime_ms FROM recycle_index
+             WHERE bin_root = ?1 AND record_key = ?2",
+        )?;
+        let mut delete = tx.prepare_cached(
+            "DELETE FROM recycle_index WHERE bin_root = ?1 AND record_key = ?2",
+        )?;
+        for (bin_root, key) in entries {
+            insert.execute(params![bin_root, key])?;
+            removed += delete.execute(params![bin_root, key])?;
+        }
+    }
+    tx.commit()?;
+    Ok(removed)
+}
+
+/// 某卷全部墓碑指纹（键 → `$I` 指纹）。
+pub fn tombstone_fingerprints(conn: &Connection, bin_root: &str) -> AppResult<std::collections::HashMap<String, (i64, i64)>> {
     let mut stmt = conn.prepare(
         "SELECT record_key, meta_len, meta_mtime_ms FROM recycle_restored_metadata WHERE bin_root = ?1",
     )?;
@@ -623,7 +659,8 @@ pub fn restored_fingerprints(conn: &Connection, bin_root: &str) -> AppResult<std
     Ok(rows.collect::<Result<_, _>>()?)
 }
 
-pub fn forget_restored(
+/// 丢弃指纹已变化的墓碑：同一键被系统复用为新条目时，旧墓碑必须失效。
+pub fn forget_tombstones(
     conn: &Connection,
     bin_root: &str,
     fingerprints: Vec<(&String, &(i64, i64))>,
@@ -735,6 +772,8 @@ pub struct ResolvedItem {
     pub id: String,
     pub bin_root: String,
     pub record_key: String,
+    /// `$R` 数据文件名（扫描时实际观察到的名称，用于定位 Shell 项目）。
+    pub data_name: String,
     pub volume: String,
     pub original_path: String,
     pub name: String,
@@ -743,36 +782,154 @@ pub struct ResolvedItem {
     pub state: String,
 }
 
-pub fn resolve(conn: &Connection, ids: &[String]) -> AppResult<Vec<ResolvedItem>> {
-    let mut out = Vec::with_capacity(ids.len());
-    let mut stmt = conn.prepare_cached(
-        "SELECT bin_root, record_key, volume, original_path, file_name, is_dir, size, size_known, state \
-         FROM recycle_index WHERE volume = ?1 AND record_key = ?2",
-    )?;
+/// 无法执行的一条请求：必须逐项反馈，不能悄悄缩小操作范围。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnresolvedItem {
+    pub id: String,
+    /// INVALID_ID | NOT_FOUND | AMBIGUOUS | DUPLICATE
+    pub code: &'static str,
+    pub message: &'static str,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ResolveOutcome {
+    pub items: Vec<ResolvedItem>,
+    pub unresolved: Vec<UnresolvedItem>,
+}
+
+/// 逐项解析 ID：返回可执行条目与**全部**不可执行条目（含重复 ID）。
+/// 调用方必须把 `unresolved` 作为失败结果逐项反馈给用户。
+///
+/// 性能：`volume` 不是主键列，逐条 `WHERE volume = ? AND record_key = ?`
+/// 会在每个 ID 上扫描该卷全部行（10 万条 × 2 万 ID 实测 617 秒）。这里按卷
+/// 分组、每 400 个键一次 `IN` 查询，只依赖现有 `(volume, ...)` 索引前缀，
+/// 不需新增迁移，耗时降到秒级。
+pub fn resolve(conn: &Connection, ids: &[String]) -> AppResult<ResolveOutcome> {
+    use std::collections::HashMap;
+
+    let mut outcome = ResolveOutcome::default();
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    // (原始 id, volume, record_key)
+    let mut wanted: Vec<(&str, &str, &str)> = Vec::with_capacity(ids.len());
     for id in ids {
+        if !seen.insert(id.as_str()) {
+            outcome.unresolved.push(UnresolvedItem {
+                id: id.clone(),
+                code: "DUPLICATE",
+                message: "同一请求中重复出现，已跳过重复项",
+            });
+            continue;
+        }
         let Some((volume, record_key)) = id.split_once('|') else {
+            outcome.unresolved.push(UnresolvedItem {
+                id: id.clone(),
+                code: "INVALID_ID",
+                message: "项目 ID 格式无效",
+            });
             continue;
         };
-        let found = stmt.query_row(params![volume, record_key], |row| {
-            let size: i64 = row.get(6)?;
-            let known: i64 = row.get(7)?;
-            Ok(ResolvedItem {
-                id: id.clone(),
-                bin_root: row.get(0)?,
-                record_key: row.get(1)?,
-                volume: row.get(2)?,
-                original_path: row.get(3)?,
-                name: row.get(4)?,
-                is_dir: row.get::<_, i64>(5)? != 0,
-                size: (known != 0).then_some(size),
-                state: row.get(8)?,
-            })
-        });
-        if let Ok(item) = found {
-            out.push(item);
+        wanted.push((id.as_str(), volume, record_key));
+    }
+
+    let mut by_volume: HashMap<&str, Vec<&str>> = HashMap::new();
+    for (_, volume, key) in &wanted {
+        by_volume.entry(volume).or_default().push(key);
+    }
+    let mut found: HashMap<(String, String), Vec<ResolvedItem>> = HashMap::new();
+    for (volume, keys) in by_volume {
+        for chunk in keys.chunks(400) {
+            let placeholders = (0..chunk.len())
+                .map(|index| format!("?{}", index + 2))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let sql = format!(
+                "SELECT bin_root, record_key, data_name, volume, original_path, file_name, is_dir, \
+                 size, size_known, state FROM recycle_index \
+                 WHERE volume = ?1 AND record_key IN ({placeholders})"
+            );
+            let mut stmt = conn.prepare_cached(&sql)?;
+            let mut values: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(chunk.len() + 1);
+            values.push(&volume);
+            for key in chunk {
+                values.push(key);
+            }
+            let rows = stmt.query_map(values.as_slice(), |row| {
+                let size: i64 = row.get(7)?;
+                let known: i64 = row.get(8)?;
+                let volume: String = row.get(3)?;
+                let record_key: String = row.get(1)?;
+                Ok((
+                    (volume, record_key),
+                    ResolvedItem {
+                        id: String::new(),
+                        bin_root: row.get(0)?,
+                        record_key: row.get(1)?,
+                        data_name: row.get(2)?,
+                        volume: row.get(3)?,
+                        original_path: row.get(4)?,
+                        name: row.get(5)?,
+                        is_dir: row.get::<_, i64>(6)? != 0,
+                        size: (known != 0).then_some(size),
+                        state: row.get(9)?,
+                    },
+                ))
+            })?;
+            for row in rows {
+                let (key, mut item) = row?;
+                item.id = format!("{}|{}", key.0, key.1);
+                found.entry(key).or_default().push(item);
+            }
         }
     }
-    Ok(out)
+
+    for (id, volume, record_key) in wanted {
+        match found.remove(&(volume.to_string(), record_key.to_string())) {
+            None => outcome.unresolved.push(UnresolvedItem {
+                id: id.to_string(),
+                code: "NOT_FOUND",
+                message: "索引中不存在该项目，请先同步回收站",
+            }),
+            Some(items) if items.len() > 1 => outcome.unresolved.push(UnresolvedItem {
+                id: id.to_string(),
+                code: "AMBIGUOUS",
+                message: "该项目在索引中不唯一，请先同步回收站",
+            }),
+            Some(mut items) => {
+                let mut item = items.pop().expect("非空");
+                item.id = id.to_string();
+                outcome.items.push(item);
+            }
+        }
+    }
+    Ok(outcome)
+}
+
+/// 把某卷标记为「缓存不可信，需要重新对账」。
+///
+/// 不是删除缓存：离线/损坏时仍要可浏览；只是让下一次同步优先重建该卷，
+/// 并在统计中如实呈现为 `stale`（不伪装成最新）。
+pub fn mark_reconcile_required(
+    conn: &Connection,
+    bin_root: &str,
+    volume: &str,
+    reason: &str,
+) -> AppResult<()> {
+    conn.execute(
+        "INSERT INTO recycle_volume_state \
+         (bin_root, volume, last_sync_ms, last_attempt_ms, state, item_count, known_bytes, \
+          unknown_size, error_code) VALUES (?1, ?2, 0, ?3, 'stale', 0, 0, 0, ?4) \
+         ON CONFLICT(bin_root) DO UPDATE SET state = 'stale', error_code = excluded.error_code",
+        params![bin_root, volume, chrono::Utc::now().timestamp_millis(), reason],
+    )?;
+    Ok(())
+}
+
+/// 需要重新对账的卷（`bin_root` 列表）。
+pub fn pending_reconcile(conn: &Connection) -> AppResult<Vec<String>> {
+    let mut stmt = conn.prepare("SELECT bin_root FROM recycle_volume_state WHERE state = 'stale'")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    Ok(rows.collect::<Result<_, _>>()?)
 }
 
 /// 索引中是否存在某条目（用于操作后即时校验）。
@@ -853,27 +1010,63 @@ mod tests {
     }
 
     #[test]
-    fn restored_metadata_only_suppresses_matching_missing_data() {
+    fn tombstone_suppresses_stale_present_snapshot_after_operation() {
         let db = Db::open_in_memory().unwrap();
         db.with_conn(|conn| {
             let bin_root = r"D:\$Recycle.Bin\S-1";
             insert(conn, "A", "D:", "A", Some(10));
-            mark_restored(conn, bin_root, "A")?;
+            // 系统操作成功后才写墓碑（恢复/永久删除共用）。
+            mark_removed(conn, bin_root, "A")?;
             assert_eq!(page(conn, &RecycleQuery::default())?.total, 0);
+            // 旧扫描快照（同一 `$I` 指纹、present）不得把记录写回。
+            let stale = IndexItem {
+                record_key: "A".into(), data_name: "$RA".into(), volume: "D:".into(),
+                original_path: r"D:\dir\A".into(), file_name: "A".into(), is_dir: false,
+                size: 10, size_known: true, deleted_ms: 1, state: STATE_PRESENT.into(),
+                anomaly: None, meta_len: 100, meta_mtime_ms: 10,
+            };
+            assert_eq!(upsert_items(conn, bin_root, std::slice::from_ref(&stale))?, 0);
+            assert_eq!(page(conn, &RecycleQuery::default())?.total, 0);
+            // 键被系统复用（指纹变化）：墓碑失效，新记录正常入库。
+            let reused = IndexItem { meta_len: 101, meta_mtime_ms: 11, ..stale };
+            assert_eq!(upsert_items(conn, bin_root, std::slice::from_ref(&reused))?, 1);
+            assert_eq!(page(conn, &RecycleQuery::default())?.total, 1);
+            Ok(())
+        }).unwrap();
+    }
 
-            let mut item = IndexItem {
+    #[test]
+    fn tombstone_suppresses_matching_missing_data_too() {
+        let db = Db::open_in_memory().unwrap();
+        db.with_conn(|conn| {
+            let bin_root = r"D:\$Recycle.Bin\S-1";
+            insert(conn, "A", "D:", "A", Some(10));
+            mark_removed(conn, bin_root, "A")?;
+            let orphan = IndexItem {
                 record_key: "A".into(), data_name: "$RA".into(), volume: "D:".into(),
                 original_path: r"D:\dir\A".into(), file_name: "A".into(), is_dir: false,
                 size: 10, size_known: true, deleted_ms: 1, state: STATE_MISSING_DATA.into(),
                 anomaly: None, meta_len: 100, meta_mtime_ms: 10,
             };
-            assert_eq!(upsert_items(conn, bin_root, std::slice::from_ref(&item))?, 0);
-            item.state = STATE_PRESENT.into();
-            assert_eq!(upsert_items(conn, bin_root, std::slice::from_ref(&item))?, 1);
-            item.state = STATE_MISSING_DATA.into();
-            item.meta_mtime_ms += 1;
-            assert_eq!(upsert_items(conn, bin_root, &[item])?, 1);
-            assert_eq!(page(conn, &RecycleQuery::default())?.total, 1);
+            assert_eq!(upsert_items(conn, bin_root, &[orphan])?, 0);
+            assert_eq!(page(conn, &RecycleQuery::default())?.total, 0);
+            Ok(())
+        }).unwrap();
+    }
+
+    #[test]
+    fn stale_volume_is_reported_as_partial_and_reconcile_is_pending() {
+        let db = Db::open_in_memory().unwrap();
+        db.with_conn(|conn| {
+            let bin_root = r"D:\$Recycle.Bin\S-1";
+            mark_reconcile_required(conn, bin_root, "D:", "INDEX_UPDATE_FAILED")?;
+            assert_eq!(pending_reconcile(conn)?, vec![bin_root.to_string()]);
+            let stats = super::stats(conn)?;
+            assert_eq!(stats.state, "partial");
+            assert_eq!(stats.volumes[0].state, "stale");
+            assert_eq!(stats.volumes[0].error_code.as_deref(), Some("INDEX_UPDATE_FAILED"));
+            set_state(conn, bin_root, "D:", "ok", 0, 0, 0, None, 123)?;
+            assert!(pending_reconcile(conn)?.is_empty());
             Ok(())
         }).unwrap();
     }
@@ -931,13 +1124,22 @@ mod tests {
     }
 
     #[test]
-    fn resolve_and_contains() {
+    fn resolve_reports_each_failure_instead_of_shrinking_scope() {
         let db = Db::open_in_memory().unwrap();
         db.with_conn(|conn| {
             insert(conn, "A", "D:", "a.txt", Some(1));
-            let resolved = resolve(conn, &["D:|A".to_string()]).unwrap();
-            assert_eq!(resolved.len(), 1);
-            assert_eq!(resolved[0].bin_root, r"D:\$Recycle.Bin\S-1");
+            let ids = vec![
+                "D:|A".to_string(),
+                "D:|A".to_string(),   // 重复
+                "no-separator".to_string(), // 非法
+                "D:|MISSING".to_string(),   // 已消失
+            ];
+            let outcome = resolve(conn, &ids).unwrap();
+            assert_eq!(outcome.items.len(), 1);
+            assert_eq!(outcome.items[0].data_name, "$RA");
+            assert_eq!(outcome.items[0].bin_root, r"D:\$Recycle.Bin\S-1");
+            let codes: Vec<_> = outcome.unresolved.iter().map(|item| item.code).collect();
+            assert_eq!(codes, vec!["DUPLICATE", "INVALID_ID", "NOT_FOUND"]);
             assert!(contains(conn, r"D:\$Recycle.Bin\S-1", "A").unwrap());
             assert!(!contains(conn, r"D:\$Recycle.Bin\S-1", "Z").unwrap());
             Ok(())

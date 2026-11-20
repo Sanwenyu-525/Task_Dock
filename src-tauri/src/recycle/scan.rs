@@ -171,6 +171,14 @@ pub fn reconcile_empty(conn: &Connection, volume: &BinVolume) -> AppResult<()> {
     let bin_root = volume.root.to_string_lossy();
     let tx = conn.unchecked_transaction()?;
     {
+        // 先为索引中已有的每条记录写墓碑：清空时这些 `$I`/`$R` 已被 Shell 删除，
+        // 清空前启动的旧扫描快照仍可能带着它们回来，墓碑会阻止写回。
+        tx.execute(
+            "INSERT OR REPLACE INTO recycle_restored_metadata
+             SELECT bin_root, record_key, meta_len, meta_mtime_ms FROM recycle_index
+             WHERE bin_root = ?1",
+            [bin_root.as_ref()],
+        )?;
         let mut insert = tx.prepare(
             "INSERT OR REPLACE INTO recycle_restored_metadata
              (bin_root, record_key, meta_len, meta_mtime_ms) VALUES (?1, ?2, ?3, ?4)",
@@ -226,7 +234,7 @@ pub fn scan_volume(
 
     index::mark_scanning(conn, &bin_root, &label)?;
 
-    let restored = index::restored_fingerprints(conn, &bin_root)?;
+    let tombstones = index::tombstone_fingerprints(conn, &bin_root)?;
     let snapshot = match snapshot_dir(&volume.root, cancel, &|done| progress(ScanProgress {
         volume: label.clone(), phase: ScanPhase::Enumerating, done, total: 0,
         added: 0, updated: 0, removed: 0,
@@ -285,7 +293,9 @@ pub fn scan_volume(
             break;
         }
         let has_data = snapshot.data_entries.contains_key(key);
-        if !has_data && restored.get(key) == Some(&(*meta_len, *meta_mtime)) {
+        // 墓碑命中（指纹一致）说明该条已被本应用成功恢复/永久删除，而当前快照
+        // 可能早于那次操作：整条跳过，不写回索引也不产生孤儿记录。
+        if tombstones.get(key) == Some(&(*meta_len, *meta_mtime)) {
             processed += 1;
             continue;
         }
@@ -508,10 +518,10 @@ pub fn scan_volume(
             .cloned()
             .collect();
         removed = index::delete_records(conn, &bin_root, &stale)?;
-        let expired = restored.iter()
+        let expired = tombstones.iter()
             .filter(|(key, fingerprint)| snapshot.meta_files.get(*key) != Some(*fingerprint))
             .collect();
-        index::forget_restored(conn, &bin_root, expired)?;
+        index::forget_tombstones(conn, &bin_root, expired)?;
     }
 
     let (items, known_bytes, unknown_size, unreadable_count, missing_count): (i64, i64, i64, i64, i64) = conn.query_row(
@@ -613,10 +623,10 @@ mod perf_tests {
         index::init_schema(&conn).unwrap();
         let bin_root = root.to_str().unwrap();
         assert!(reconcile_empty(&conn, &volume).is_err());
-        assert!(index::restored_fingerprints(&conn, bin_root).unwrap().is_empty());
+        assert!(index::tombstone_fingerprints(&conn, bin_root).unwrap().is_empty());
         fs::remove_file(root.join("$Rtest")).unwrap();
         reconcile_empty(&conn, &volume).unwrap();
-        assert!(index::restored_fingerprints(&conn, bin_root).unwrap().contains_key("test"));
+        assert!(index::tombstone_fingerprints(&conn, bin_root).unwrap().contains_key("test"));
         let outcome = scan_volume(&conn, &volume, &AtomicBool::new(false), &|_| {}).unwrap();
         assert_eq!(outcome.items, 0);
         fs::remove_file(root.join("$Itest")).unwrap();
@@ -658,7 +668,7 @@ mod perf_tests {
         started.elapsed().as_secs_f64() * 1000.0
     }
 
-    fn measure_pages(conn: &Connection, tag: &str) {
+    fn measure_pages(conn: &Connection, tag: &str, total: i64) {
         let mut first = RecycleQuery::default();
         first.limit = 100;
         first.include_stats = true;
@@ -673,24 +683,26 @@ mod perf_tests {
 
         let mut deep = RecycleQuery::default();
         deep.limit = 100;
-        deep.offset = 100_000;
+        // 深分页取总量中点，避免固定 offset 在小于 10 万时直接为空。
+        deep.offset = (total.max(0) as usize) / 2;
         deep.include_stats = false;
         let started = Instant::now();
         let page = index::page(conn, &deep).expect("page deep");
         println!(
-            "MEASURE page[{tag}] offset=100000 items={} ms={:.1}",
+            "MEASURE page[{tag}] offset={} items={} ms={:.1}",
+            deep.offset,
             page.items.len(),
             ms(started)
         );
 
         let mut search = RecycleQuery::default();
-        search.search = "2026".into();
+        search.search = "文件1".into();
         search.limit = 100;
         search.include_stats = false;
         let started = Instant::now();
         let page = index::page(conn, &search).expect("page search");
         println!(
-            "MEASURE page[{tag}] search=2026 hits={} items={} ms={:.1}",
+            "MEASURE page[{tag}] search=文件1 hits={} items={} ms={:.1}",
             page.total,
             page.items.len(),
             ms(started)
@@ -755,7 +767,7 @@ mod perf_tests {
                 outcome.duration_ms,
                 ms(started)
             );
-            measure_pages(&conn, "first");
+            measure_pages(&conn, "first", outcome.items);
 
             let started = Instant::now();
             let again = scan_volume(&conn, &volume, &cancel, &|_p| {}).expect("scan again");
@@ -769,7 +781,7 @@ mod perf_tests {
                 again.duration_ms,
                 ms(started)
             );
-            measure_pages(&conn, "cached");
+            measure_pages(&conn, "cached", again.items);
         }
 
         let db_bytes = fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
@@ -778,5 +790,306 @@ mod perf_tests {
         let _ = fs::remove_file(&db_path);
         let _ = fs::remove_file(db_path.with_extension("db-wal"));
         let _ = fs::remove_file(db_path.with_extension("db-shm"));
+    }
+
+    // ── 合成规模测量（1 万 / 4 万 / 10 万）─────────────────────────────
+    //
+    // 约束：不为 10 万条创建真实 80GB 数据。1 万 / 4 万用真实 `$I`/`$R`
+    // 小文件覆盖完整扫描链路；10 万走索引模拟（只写 SQLite），用于验证
+    // 缓存加载、分页、搜索、排序、库体积与批处理吞吐。
+
+    #[cfg(windows)]
+    fn process_peak_working_set() -> u64 {
+        use windows_sys::Win32::System::ProcessStatus::{
+            GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+        };
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+        let mut counters: PROCESS_MEMORY_COUNTERS = unsafe { std::mem::zeroed() };
+        counters.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+        let ok = unsafe {
+            GetProcessMemoryInfo(
+                GetCurrentProcess(),
+                &mut counters,
+                counters.cb,
+            )
+        };
+        if ok == 0 {
+            0
+        } else {
+            counters.PeakWorkingSetSize as u64
+        }
+    }
+
+    #[cfg(not(windows))]
+    fn process_peak_working_set() -> u64 {
+        0
+    }
+
+    /// 生成一条合法 v2 `$I` 头（version/size/FILETIME/path）。
+    fn meta_bytes(original: &str, size: u64, deleted_ms: i64) -> Vec<u8> {
+        let mut path: Vec<u16> = original.encode_utf16().collect();
+        path.push(0);
+        let filetime = ((deleted_ms + 11_644_473_600_000) * 10_000) as u64;
+        let mut out = Vec::with_capacity(28 + path.len() * 2);
+        out.extend_from_slice(&2u64.to_le_bytes());
+        out.extend_from_slice(&size.to_le_bytes());
+        out.extend_from_slice(&filetime.to_le_bytes());
+        out.extend_from_slice(&(path.len() as u32).to_le_bytes());
+        for unit in path {
+            out.extend_from_slice(&unit.to_le_bytes());
+        }
+        out
+    }
+
+    fn synthetic_bin(count: usize) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("taskdock-scale-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        for index in 0..count {
+            let key = format!("S{index:07}");
+            let original = format!(r"D:\scale\目录{index}\文件{index}.bin");
+            fs::write(root.join(format!("$I{key}")), meta_bytes(&original, 4096, now_ms - index as i64 * 1000)).unwrap();
+            fs::write(root.join(format!("$R{key}")), []).unwrap();
+        }
+        root
+    }
+
+    fn simulated_index(db_path: &Path, count: usize) {
+        let conn = Connection::open(db_path).expect("open scale db");
+        index::init_schema(&conn).expect("schema");
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        for chunk_start in (0..count).step_by(2_000) {
+            let batch: Vec<IndexItem> = (chunk_start..(chunk_start + 2_000).min(count))
+                .map(|index| IndexItem {
+                    record_key: format!("S{index:07}"),
+                    data_name: format!("$RS{index:07}"),
+                    volume: "D:".into(),
+                    original_path: format!(r"D:\scale\目录{index}\文件{index}.bin"),
+                    file_name: format!("文件{index}.bin"),
+                    is_dir: index % 7 == 0,
+                    size: (index as i64 % 1_000_000) + 1,
+                    size_known: index % 7 != 0,
+                    deleted_ms: now_ms - index as i64 * 1000,
+                    state: STATE_PRESENT.into(),
+                    anomaly: None,
+                    meta_len: 90,
+                    meta_mtime_ms: 10,
+                })
+                .collect();
+            index::upsert_items(&conn, r"D:\$Recycle.Bin\S-1", &batch).expect("upsert");
+        }
+    }
+
+    fn measure_scales(tag: &str, db_path: &Path, volume: &str) {
+        let started = Instant::now();
+        // 库表已在写入阶段建立；这里只模拟「冷启动」重新打开连接。
+        let conn = Connection::open(db_path).expect("open cold");
+        let stats = index::stats(&conn).expect("stats");
+        let first = index::page(&conn, &index::RecycleQuery::default()).expect("first page");
+        println!(
+            "MEASURE cache[{tag}] cold_open+stats+first_page items={} page_items={} ms={:.1}",
+            stats.items,
+            first.items.len(),
+            ms(started)
+        );
+        measure_pages(&conn, tag, stats.items);
+        let db_bytes = fs::metadata(db_path).map(|m| m.len()).unwrap_or(0);
+        println!("MEASURE db_bytes[{tag}] bytes={db_bytes}");
+        println!(
+            "MEASURE memory[{tag}] peak_working_set_bytes={}",
+            process_peak_working_set()
+        );
+        // 批量操作吞吐：解析 + 墓碑写入（每项独立事务，与真实任务一致）。
+        let total = stats.items.max(0) as usize;
+        if total > 0 {
+            let ids: Vec<String> = (0..total.min(20_000))
+                .map(|index| format!("{volume}|S{index:07}"))
+                .collect();
+            let started = Instant::now();
+            let resolved = index::resolve(&conn, &ids).expect("resolve");
+            let elapsed = started.elapsed().as_secs_f64();
+            println!(
+                "MEASURE batch[{tag}] resolve_requested={} resolved={} ms={:.1} per_sec={:.0}",
+                ids.len(),
+                resolved.items.len(),
+                elapsed * 1000.0,
+                ids.len() as f64 / elapsed.max(0.000_001)
+            );
+            let started = Instant::now();
+            let mut removed = 0usize;
+            // 与生产任务一致的 40 项/批单事务写入。
+            let keys: Vec<(String, String)> = resolved
+                .items
+                .iter()
+                .take(5_000)
+                .map(|item| (item.bin_root.clone(), item.record_key.clone()))
+                .collect();
+            for chunk in keys.chunks(40) {
+                removed += index::mark_removed_batch(&conn, chunk).expect("tombstone batch");
+            }
+            let elapsed = started.elapsed().as_secs_f64();
+            println!(
+                "MEASURE batch[{tag}] tombstone_writes={} ms={:.1} per_sec={:.0}",
+                removed,
+                elapsed * 1000.0,
+                removed as f64 / elapsed.max(0.000_001)
+            );
+        }
+    }
+
+    /// 对账：系统侧删除成功但索引写入失败（进程异常退出）后，
+    /// 下一次扫描按真实 `$I`/`$R` 状态移除陈旧记录。
+    #[test]
+    fn scan_reconciles_stale_index_after_missing_cache_write() {
+        let root = std::env::temp_dir().join(format!("td-reconcile-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("$Ikeep"), meta_bytes(r"D:\keep\a.txt", 5, 1_700_000_000_000)).unwrap();
+        fs::write(root.join("$Rkeep"), b"hello").unwrap();
+        let volume = BinVolume { volume: "T:".into(), root: root.clone(), drive_root: "T:\\".into() };
+        let conn = Connection::open_in_memory().unwrap();
+        index::init_schema(&conn).unwrap();
+        let first = scan_volume(&conn, &volume, &AtomicBool::new(false), &|_| {}).unwrap();
+        assert_eq!(first.items, 1);
+        // 模拟「系统已删除 $I/$R，但索引删除没有落库」。
+        fs::remove_file(root.join("$Ikeep")).unwrap();
+        fs::remove_file(root.join("$Rkeep")).unwrap();
+        let second = scan_volume(&conn, &volume, &AtomicBool::new(false), &|_| {}).unwrap();
+        assert_eq!(second.items, 0);
+        assert_eq!(second.removed, 1);
+        let stats = index::stats(&conn).unwrap();
+        assert_eq!(stats.items, 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// 旧扫描快照不得复活已被本应用恢复/永久删除的条目。
+    #[test]
+    fn scan_ignores_stale_snapshot_for_tombstoned_entry() {
+        let root = std::env::temp_dir().join(format!("td-stale-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("$Igone"), meta_bytes(r"D:\gone\a.txt", 5, 1_700_000_000_000)).unwrap();
+        fs::write(root.join("$Rgone"), b"hello").unwrap();
+        let volume = BinVolume { volume: "T:".into(), root: root.clone(), drive_root: "T:\\".into() };
+        let conn = Connection::open_in_memory().unwrap();
+        index::init_schema(&conn).unwrap();
+        scan_volume(&conn, &volume, &AtomicBool::new(false), &|_| {}).unwrap();
+        let bin_root = root.to_string_lossy().into_owned();
+        // 系统操作成功：写墓碑 + 删除索引行。
+        index::mark_removed(&conn, &bin_root, "gone").unwrap();
+        // 旧快照仍带着同一个 `$I` 指纹（模拟扫描先于操作开始、写入晚于操作）。
+        let again = scan_volume(&conn, &volume, &AtomicBool::new(false), &|_| {}).unwrap();
+        assert_eq!(again.items, 0, "墓碑命中的旧快照不得写回索引");
+        assert_eq!(index::page(&conn, &index::RecycleQuery::default()).unwrap().total, 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// 进程异常退出导致索引整表丢失：下一次扫描按 `$I` 元数据完整重建。
+    #[test]
+    fn scan_rebuilds_index_from_real_meta_after_cache_loss() {
+        let root = std::env::temp_dir().join(format!("td-rebuild-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("$Iabc"), meta_bytes(r"D:\dir\季度 报告.docx", 128, 1_700_000_000_000)).unwrap();
+        fs::write(root.join("$Rabc"), []).unwrap();
+        let volume = BinVolume { volume: "T:".into(), root: root.clone(), drive_root: "T:\\".into() };
+        let conn = Connection::open_in_memory().unwrap();
+        index::init_schema(&conn).unwrap();
+        scan_volume(&conn, &volume, &AtomicBool::new(false), &|_| {}).unwrap();
+        // 模拟缓存整表丢失（例如旧进程写入未落盘）。
+        index::clear_volume(&conn, &root.to_string_lossy()).unwrap();
+        assert_eq!(index::stats(&conn).unwrap().items, 0);
+        let rebuilt = scan_volume(&conn, &volume, &AtomicBool::new(false), &|_| {}).unwrap();
+        assert_eq!(rebuilt.items, 1);
+        let page = index::page(&conn, &index::RecycleQuery::default()).unwrap();
+        assert_eq!(page.items[0].original_path, r"D:\dir\季度 报告.docx");
+        assert_eq!(page.items[0].size, Some(128));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// 1 万 / 4 万 / 10 万规模测量（需显式开启）。
+    /// 运行示例：
+    /// `$env:TD_RECYCLE_SCALE_MEASURE="1"; cargo test --lib synthetic_scale_measurement -- --ignored --nocapture`
+    #[test]
+    #[ignore = "回收站 1万/4万/10万规模测量，需 TD_RECYCLE_SCALE_MEASURE=1"]
+    fn synthetic_scale_measurement() {
+        if std::env::var("TD_RECYCLE_SCALE_MEASURE").as_deref() != Ok("1") {
+            println!("MEASURE skipped: TD_RECYCLE_SCALE_MEASURE!=1");
+            return;
+        }
+        for count in [10_000usize, 40_000usize, 100_000usize] {
+            let tag = format!("{count}");
+            let db_path = std::env::temp_dir().join(format!(
+                "taskdock-scale-{count}-{}.db",
+                std::process::id()
+            ));
+            let _ = fs::remove_file(&db_path);
+            let _ = fs::remove_file(db_path.with_extension("db-wal"));
+            let _ = fs::remove_file(db_path.with_extension("db-shm"));
+            if count > 40_000 {
+                // 10 万只写索引，不创建 20 万个真实文件。
+                simulated_index(&db_path, count);
+                measure_scales(&tag, &db_path, "D:");
+                println!("MEASURE scan[{tag}] skipped=simulated_index_only");
+            } else {
+                let root = synthetic_bin(count);
+                let volume = BinVolume {
+                    volume: "T:".into(),
+                    root: root.clone(),
+                    drive_root: "T:\\".into(),
+                };
+                let conn = Connection::open(&db_path).expect("open db");
+                index::init_schema(&conn).expect("schema");
+                let cancel = AtomicBool::new(false);
+                let started = Instant::now();
+                let first = scan_volume(&conn, &volume, &cancel, &|_| {}).expect("scan");
+                println!(
+                    "MEASURE scan[{tag}] first items={} added={} updated={} removed={} internal_ms={} wall_ms={:.1}",
+                    first.items, first.added, first.updated, first.removed, first.duration_ms, ms(started)
+                );
+                let started = Instant::now();
+                let second = scan_volume(&conn, &volume, &cancel, &|_| {}).expect("scan again");
+                println!(
+                    "MEASURE scan[{tag}] second items={} added={} updated={} removed={} internal_ms={} wall_ms={:.1}",
+                    second.items, second.added, second.updated, second.removed, second.duration_ms, ms(started)
+                );
+                // 取消响应：在枚举进度到达 200 条时请求取消，记录到扫描返回的时间。
+                let cancel = AtomicBool::new(false);
+                let requested_at: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+                let started = Instant::now();
+                let outcome = scan_volume(&conn, &volume, &cancel, &|progress| {
+                    let mut slot = requested_at.lock().unwrap_or_else(|e| e.into_inner());
+                    if slot.is_none()
+                        && progress.phase == ScanPhase::Enumerating
+                        && progress.done >= 200
+                    {
+                        cancel.store(true, Ordering::SeqCst);
+                        *slot = Some(Instant::now());
+                    }
+                })
+                .expect("cancel scan");
+                let response = requested_at
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .as_ref()
+                    .map(|at| at.elapsed().as_secs_f64() * 1000.0)
+                    .unwrap_or(0.0);
+                println!(
+                    "MEASURE cancel[{tag}] state={} response_ms={:.1} total_ms={:.1}",
+                    outcome.state,
+                    response,
+                    ms(started)
+                );
+                drop(conn);
+                measure_scales(&tag, &db_path, "T:");
+                fs::remove_dir_all(&root).ok();
+            }
+            let _ = fs::remove_file(&db_path);
+            let _ = fs::remove_file(db_path.with_extension("db-wal"));
+            let _ = fs::remove_file(db_path.with_extension("db-shm"));
+        }
     }
 }

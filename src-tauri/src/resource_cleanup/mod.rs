@@ -27,7 +27,7 @@ pub use user_junk::{
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rusqlite::Connection;
@@ -228,17 +228,26 @@ impl ResourceCleanupState {
     }
 
     /// 扫描用户级磁盘垃圾（回收站 / 临时文件 / 崩溃转储）。只读，不删除。
-    pub fn preview_user_junk(&self, categories: Vec<JunkCategory>) -> AppResult<JunkPreview> {
-        self.user_junk.preview(categories)
+    /// 回收站统计优先复用 `RecycleService` 的索引缓存（同一数据源 + 新鲜度），
+    /// 无索引/索引过期时回退到有界文件系统遍历。
+    pub fn preview_user_junk(
+        &self,
+        categories: Vec<JunkCategory>,
+        recycle: Option<&crate::recycle::RecycleService>,
+    ) -> AppResult<JunkPreview> {
+        self.user_junk.preview(categories, recycle)
     }
 
     /// 执行用户级垃圾清理；只接受服务端预览 ID，预览一次性消费。
+    /// 回收站清空走统一 `fsops` 任务（统一调度、状态与索引对账）。
     pub fn execute_user_junk(
         &self,
         preview_id: String,
         categories: Vec<JunkCategory>,
+        app: &tauri::AppHandle,
+        recycle: &Arc<crate::recycle::RecycleService>,
     ) -> AppResult<JunkExecutionReport> {
-        self.user_junk.execute(preview_id, categories)
+        self.user_junk.execute(preview_id, categories, app, recycle)
     }
 }
 

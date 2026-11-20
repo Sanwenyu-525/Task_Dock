@@ -214,24 +214,15 @@ pub fn fs_jobs(registry: State<'_, Arc<JobRegistry>>) -> Vec<JobSnapshot> {
 }
 
 /// 从回收站恢复。`conflict`: skip（默认，不覆盖）/ rename（自动加序号）。
+/// 逐项校验与占用声明都在任务内完成：无效/已消失/受保护的条目各自产生失败结果。
 #[tauri::command]
 pub fn recycle_restore(
     app: AppHandle,
-    service: State<'_, Arc<RecycleService>>,
     ids: Vec<String>,
     conflict: String,
     operation_id: Option<String>,
 ) -> AppResult<JobSnapshot> {
     let policy = parse_restore_conflict(&conflict)?;
-    let protected = protected_dirs(&app);
-    // 恢复到应用数据目录属于危险写入：直接拒绝（用户可在资源管理器中手动恢复）。
-    for item in service
-        .db()
-        .with_read(|conn| crate::recycle::index::resolve(conn, &ids))?
-    {
-        let target = crate::file_workspace::validate_abs_path(&item.original_path)?;
-        crate::file_workspace::ensure_not_protected(&target, &protected)?;
-    }
     fsops::start_restore(&app, ids, policy, operation_id)
 }
 
