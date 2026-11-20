@@ -37,32 +37,31 @@ mod imp {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         CS_HREDRAW, CS_VREDRAW, CallWindowProcW, CreateWindowExW, DefWindowProcW, DestroyWindow,
         GWL_EXSTYLE, GWLP_WNDPROC, GetWindowLongPtrW, GetWindowRect, HWND_NOTOPMOST, HWND_TOPMOST,
-        IsIconic, IsWindowVisible, IsZoomed, RegisterClassW, SWP_HIDEWINDOW, SWP_NOACTIVATE,
+        IsIconic, IsWindow, IsWindowVisible, IsZoomed, RegisterClassW, SWP_HIDEWINDOW, SWP_NOACTIVATE,
         SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSENDCHANGING, SWP_NOSIZE, SWP_NOZORDER,
         SWP_SHOWWINDOW, SetWindowLongPtrW, SetWindowPos, ULW_ALPHA, UpdateLayeredWindow,
-        WM_ACTIVATE, WM_DPICHANGED,
-        WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_MOVE, WM_NCDESTROY, WM_SHOWWINDOW, WM_SIZE,
-        WM_WINDOWPOSCHANGED, WNDCLASSW, WNDPROC, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+        WM_ACTIVATE, WM_CAPTURECHANGED, WM_DPICHANGED,
+        WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_MOVE, WM_MOVING, WM_NCDESTROY, WM_SHOWWINDOW,
+        WM_SIZING, WM_SIZE, WM_WINDOWPOSCHANGED, WNDCLASSW, WNDPROC, WS_EX_LAYERED,
+        WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
         WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
     };
 
     /// 阴影外扩（CSS px）：阴影窗口每边比宿主大这么多。
     ///
     /// 取值必须 ≥ 环境层模糊的 3σ，否则位图边界会把"还没衰减完"的 alpha 截断成
-    /// 一条硬边（这正是上一版阴影看起来"生硬且不够明显"的原因之一：margin 22
-    /// 小于 blur 15 的扩散半径）。
-    /// 2026-11-16 阴影终调（真机 A/B/C 对比后取 C「悬浮明显」）：
-    /// 白底实测扩散 左/右 31px、上 25px、下 37px（125% DPI 物理像素），
-    /// 较旧版 18/18/12/24 明显更宽；位图边缘 alpha 已衰减到 ≤2/255。
-    const MARGIN_CSS: f64 = 56.0;
+    /// 一条硬边。2026-11-20 克制化调整：旧版 margin 56 / ambient blur 28 / 两层
+    /// 峰值 ≈0.34，白底右侧与底部出现明显灰带；收紧扩散半径与峰值后 margin 同步
+    /// 下调到 40，仍覆盖环境层衰减范围，位图边缘不产生硬边。
+    const MARGIN_CSS: f64 = 40.0;
     /// 环境层：大范围、低峰值，负责整体悬浮感。
-    const AMBIENT_BLUR_CSS: f64 = 28.0;
-    const AMBIENT_ALPHA: f32 = 0.22;
+    const AMBIENT_BLUR_CSS: f64 = 18.0;
+    const AMBIENT_ALPHA: f32 = 0.14;
     /// 接触层：贴近边缘、模糊小，负责窗口与桌面的接触感（不是黑色描边）。
-    const CONTACT_BLUR_CSS: f64 = 6.0;
-    const CONTACT_ALPHA: f32 = 0.12;
+    const CONTACT_BLUR_CSS: f64 = 5.0;
+    const CONTACT_ALPHA: f32 = 0.08;
     /// 阴影垂直偏移（CSS px）：光源在上，投影略向下。
-    const OFFSET_Y_CSS: f64 = 5.0;
+    const OFFSET_Y_CSS: f64 = 3.0;
     /// 阴影颜色（冷灰蓝，与浅蓝主题协调）。
     const SHADOW_R: f32 = 17.0;
     const SHADOW_G: f32 = 26.0;
@@ -132,9 +131,100 @@ mod imp {
         }
     }
 
+    /// 已提交位图 / 定位的状态快照（与真实 HWND 解耦，便于单测）。
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct ShadowSnapshot {
+        cached_w: i32,
+        cached_h: i32,
+        cached_x: i32,
+        cached_y: i32,
+        cached_margin: i32,
+        cached_hash: u64,
+        in_gesture: bool,
+        gesture_start_w: i32,
+        gesture_start_h: i32,
+    }
+
+    /// 宿主窗口当前几何 / 外形快照（由 Win32 读取后填入）。
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct WindowSnapshot {
+        visible: bool,
+        iconic: bool,
+        zoomed: bool,
+        x: i32,
+        y: i32,
+        win_w: i32,
+        win_h: i32,
+        margin: i32,
+        hash: u64,
+    }
+
+    impl WindowSnapshot {
+        fn bmp_w(&self) -> i32 {
+            self.win_w + self.margin * 2
+        }
+        fn bmp_h(&self) -> i32 {
+            self.win_h + self.margin * 2
+        }
+    }
+
+    /// 一次同步请求的决策结果（纯决策，不触碰 HWND / GDI）。
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Decision {
+        /// 隐藏（不可见 / 最小化 / 最大化 / 尺寸非法）。
+        Hide,
+        /// 位置变化、尺寸与外形未变：只移动阴影窗口，不重提交位图、不重建。
+        MoveOnly,
+        /// 非手势期间尺寸 / 外形 / margin 变化：重建位图后再提交。
+        RebuildAndSubmit,
+        /// 手势期间尺寸已变：旧位图禁止以新尺寸提交，先挂起（隐藏），结束手势后重建。
+        SuspendDuringGesture,
+        /// 几何、外形、位置均无变化：不做任何 Win32 操作。
+        NoChange,
+    }
+
+    /// 位图目标尺寸：窗口外扩两侧 margin。纯函数，一致性断言复用。
+    fn bitmap_size(win_w: i32, win_h: i32, margin: i32) -> (i32, i32) {
+        (win_w + margin * 2, win_h + margin * 2)
+    }
+
+    /// 纯决策：不触碰 HWND / GDI，单测直接覆盖移动 vs 缩放、旧位图禁提交等分支。
+    fn decide(snap: &ShadowSnapshot, win: &WindowSnapshot) -> Decision {
+        if !win.visible || win.iconic || win.zoomed || win.win_w <= 0 || win.win_h <= 0 {
+            return Decision::Hide;
+        }
+        // 手势内以「起始外框宽高」为基准比较；手势外以已提交位图尺寸为基准。
+        let size_or_shape_changed = if snap.in_gesture {
+            snap.gesture_start_w != win.win_w
+                || snap.gesture_start_h != win.win_h
+                || snap.cached_hash != win.hash
+                || snap.cached_margin != win.margin
+        } else {
+            snap.cached_w != win.bmp_w()
+                || snap.cached_h != win.bmp_h()
+                || snap.cached_hash != win.hash
+                || snap.cached_margin != win.margin
+        };
+        let moved = snap.cached_x != win.x || snap.cached_y != win.y;
+
+        if snap.in_gesture {
+            if size_or_shape_changed {
+                return Decision::SuspendDuringGesture;
+            }
+            return if moved { Decision::MoveOnly } else { Decision::NoChange };
+        }
+        if size_or_shape_changed {
+            return Decision::RebuildAndSubmit;
+        }
+        if moved {
+            Decision::MoveOnly
+        } else {
+            Decision::NoChange
+        }
+    }
+
     struct State {
         shadow: isize,
-        old_proc: isize,
         hdc_mem: isize,
         dib: isize,
         bits: *mut u8,
@@ -145,7 +235,20 @@ mod imp {
         scale: f64,
         shape_hash: u64,
         topmost: bool,
+        /// 是否处于系统模态移动/缩放循环（WM_ENTERSIZEMOVE…WM_EXITSIZEMOVE）。
         defer_rebuild: bool,
+        /// 手势起始外框宽高：手势内据此判断宽高是否真的变化。
+        gesture_start_w: i32,
+        gesture_start_h: i32,
+        /// 手势内因尺寸变化挂起旧位图：阴影已隐藏，旧 DIB 禁止以新尺寸提交。
+        suspended: bool,
+        /// 阴影当前是否处于隐藏态（由同步决策维护）。
+        hidden: bool,
+        /// 上次定位的阴影窗口左上角（物理 px），用于纯移动判定。
+        cached_x: i32,
+        cached_y: i32,
+        /// 上次位图使用的 margin（DPI / 参数变化时触发重建）。
+        cached_margin: i32,
         mask: Vec<f32>,
         tmp: Vec<f32>,
         /// 环境层（大模糊）与接触层（小模糊）的模糊结果，合成时才乘峰值 alpha。
@@ -156,9 +259,36 @@ mod imp {
     // 句柄与位图指针只在 UI 线程内使用（attach/sync 均来自主线程与窗口过程）。
     unsafe impl Send for State {}
 
-    fn registry() -> &'static Mutex<HashMap<isize, State>> {
-        static REG: OnceLock<Mutex<HashMap<isize, State>>> = OnceLock::new();
+    struct Entry {
+        old_proc: isize,
+        shadow: isize,
+        // 同步期间暂时取出状态；重入仍能找到原窗口过程，但不重复更新阴影。
+        state: Option<State>,
+    }
+
+    fn registry() -> &'static Mutex<HashMap<isize, Entry>> {
+        static REG: OnceLock<Mutex<HashMap<isize, Entry>>> = OnceLock::new();
         REG.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    fn with_state(owner: isize, update: impl FnOnce(&mut State)) {
+        let state = {
+            let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+            reg.get_mut(&owner).and_then(|entry| entry.state.take())
+        };
+        let Some(mut state) = state else { return };
+        // SetWindowPos / UpdateLayeredWindow 会同步重入 owner_proc，绝不能持注册表锁。
+        update(&mut state);
+        let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(entry) = reg.get_mut(&owner) {
+            if entry.shadow == state.shadow {
+                entry.state = Some(state);
+                return;
+            }
+        }
+        // 宿主在回调中销毁（或 HWND 已复用）：不把旧状态重新插回注册表。
+        drop(reg);
+        release_state(state);
     }
 
     fn enabled() -> bool {
@@ -225,14 +355,16 @@ mod imp {
             return true;
         }
         unsafe {
+            // 释放顺序必须是「先 DC、后 DIB」：位图仍被选入内存 DC 时 DeleteObject
+            // 会被 GDI 拒绝，尺寸每变一次就漏一张位图（重复缩放最容易被放大）。
+            if state.hdc_mem != 0 {
+                DeleteDC(state.hdc_mem as _);
+                state.hdc_mem = 0;
+            }
             if state.dib != 0 {
                 DeleteObject(state.dib as _);
                 state.dib = 0;
                 state.bits = std::ptr::null_mut();
-            }
-            if state.hdc_mem != 0 {
-                DeleteDC(state.hdc_mem as _);
-                state.hdc_mem = 0;
             }
             let hdc_screen = GetDC(std::ptr::null_mut());
             let hdc = CreateCompatibleDC(hdc_screen);
@@ -448,136 +580,211 @@ mod imp {
         }
     }
 
-    fn sync_state(state: &mut State, owner: isize) {
-        unsafe {
-            let owner_hwnd = owner as HWND;
-            // 隐藏 / 最小化 / 最大化：不绘制阴影（最大化与系统原生一致，不留缝隙）
-            if IsWindowVisible(owner_hwnd) == 0
-                || IsIconic(owner_hwnd) != 0
-                || IsZoomed(owner_hwnd) != 0
-            {
-                hide_shadow(state);
-                return;
-            }
+    /// 从宿主窗口读取当前几何 / 外形快照；同步更新 DPI、margin。读取失败返回 None。
+    unsafe fn read_window_snapshot(state: &mut State, owner_hwnd: HWND) -> Option<WindowSnapshot> {
+        let mut rect: RECT = std::mem::zeroed();
+        if GetWindowRect(owner_hwnd, &mut rect) == 0 {
+            return None;
+        }
+        let win_w = rect.right - rect.left;
+        let win_h = rect.bottom - rect.top;
 
-            let mut rect: RECT = std::mem::zeroed();
-            if GetWindowRect(owner_hwnd, &mut rect) == 0 {
-                hide_shadow(state);
-                return;
-            }
-            let win_w = rect.right - rect.left;
-            let win_h = rect.bottom - rect.top;
-            if win_w <= 0 || win_h <= 0 {
-                hide_shadow(state);
-                return;
-            }
+        let dpi = GetDpiForWindow(owner_hwnd);
+        state.scale = if dpi > 0 { f64::from(dpi) / 96.0 } else { 1.0 };
+        state.margin = (params().margin * state.scale).round() as i32;
 
-            let dpi = GetDpiForWindow(owner_hwnd);
-            state.scale = if dpi > 0 { f64::from(dpi) / 96.0 } else { 1.0 };
-            state.margin = (params().margin * state.scale).round() as i32;
+        // 当前窗口区域；未设置区域（或读取失败）时按整窗矩形
+        let probe = CreateRectRgn(0, 0, 0, 0);
+        let rgn_type = if probe.is_null() {
+            0
+        } else {
+            GetWindowRgn(owner_hwnd, probe)
+        };
+        let hash = if rgn_type > 0 { region_hash(probe as isize) } else { 0 };
+        if !probe.is_null() {
+            DeleteObject(probe as _);
+        }
 
-            // 当前窗口区域；未设置区域（或读取失败）时按整窗矩形
-            let probe = CreateRectRgn(0, 0, 0, 0);
-            let rgn_type = if probe.is_null() {
-                0
-            } else {
-                GetWindowRgn(owner_hwnd, probe)
-            };
-            let hash = if rgn_type > 0 { region_hash(probe as isize) } else { 0 };
-            if !probe.is_null() {
-                DeleteObject(probe as _);
-            }
+        let x = rect.left - state.margin;
+        // 光源在窗口上方：整张阴影位图整体下移 offset，上边缘因此更"贴身"、下边缘更"落空"。
+        let y = rect.top - state.margin + (params().offset_y * state.scale).round() as i32;
 
-            let bmp_w = win_w + state.margin * 2;
-            let bmp_h = win_h + state.margin * 2;
-            let need_rebuild =
-                state.shape_hash != hash || state.bmp_w != bmp_w || state.bmp_h != bmp_h;
-            if need_rebuild && !state.defer_rebuild {
-                let rgn = CreateRectRgn(0, 0, 0, 0);
-                let applied = if rgn.is_null() {
-                    build_bitmap(state, win_w, win_h, None)
-                } else {
-                    let t = GetWindowRgn(owner_hwnd, rgn);
-                    let ok = build_bitmap(
-                        state,
-                        win_w,
-                        win_h,
-                        if t > 0 { Some(rgn as isize) } else { None },
-                    );
-                    DeleteObject(rgn as _);
-                    ok
-                };
-                if applied {
-                    state.shape_hash = hash;
-                }
-            }
-            // 没有可用位图（DIB 创建失败）时不显示阴影，避免留下整块纯色矩形
-            if state.hdc_mem == 0 {
-                hide_shadow(state);
-                return;
-            }
+        Some(WindowSnapshot {
+            visible: IsWindowVisible(owner_hwnd) != 0,
+            iconic: IsIconic(owner_hwnd) != 0,
+            zoomed: IsZoomed(owner_hwnd) != 0,
+            x,
+            y,
+            win_w,
+            win_h,
+            margin: state.margin,
+            hash,
+        })
+    }
 
-            let x = rect.left - state.margin;
-            // 光源在窗口上方：整张阴影位图整体下移 offset，上边缘因此更"贴身"、下边缘更"落空"。
-            let y = rect.top - state.margin + (params().offset_y * state.scale).round() as i32;
-            let w = win_w + state.margin * 2;
-            let h = win_h + state.margin * 2;
-
-            let blend = BLENDFUNCTION {
-                BlendOp: 0, // AC_SRC_OVER
-                BlendFlags: 0,
-                SourceConstantAlpha: 255,
-                AlphaFormat: 1, // AC_SRC_ALPHA
-            };
-            let dst_pt = POINT { x, y };
-            let src_pt = POINT { x: 0, y: 0 };
-            let size = SIZE { cx: w, cy: h };
-            let layered = UpdateLayeredWindow(
-                state.shadow as _,
-                std::ptr::null_mut(),
-                &dst_pt,
-                &size,
-                state.hdc_mem as _,
-                &src_pt,
-                0,
-                &blend,
-                ULW_ALPHA,
-            );
-            if debug_on() {
-                eprintln!(
-                    "[shadow] UpdateLayeredWindow={} pos={},{} size={}x{} host={},{} {}x{} margin={} topmost_owner={}",
-                    layered, x, y, w, h, rect.left, rect.top, win_w, win_h, state.margin, (GetWindowLongPtrW(owner_hwnd, GWL_EXSTYLE) as u32 & WS_EX_TOPMOST) != 0
-                );
-            }
-
-            // 置顶状态跟随宿主，并保证阴影紧贴宿主下方（不抢焦点、不拦输入）
-            let owner_ex = GetWindowLongPtrW(owner_hwnd, GWL_EXSTYLE) as u32;
-            let want_topmost = (owner_ex & WS_EX_TOPMOST) != 0;
-            if state.topmost != want_topmost {
-                SetWindowPos(
-                    state.shadow as _,
-                    if want_topmost {
-                        HWND_TOPMOST
-                    } else {
-                        HWND_NOTOPMOST
-                    },
-                    0,
-                    0,
-                    0,
-                    0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-                );
-                state.topmost = want_topmost;
-            }
+    /// 置顶状态跟随宿主，与几何同步解耦（不抢焦点、不拦输入）。
+    unsafe fn follow_topmost(state: &mut State, owner_hwnd: HWND) {
+        let owner_ex = GetWindowLongPtrW(owner_hwnd, GWL_EXSTYLE) as u32;
+        let want_topmost = (owner_ex & WS_EX_TOPMOST) != 0;
+        if state.topmost != want_topmost {
             SetWindowPos(
                 state.shadow as _,
-                owner_hwnd,
-                x,
-                y,
-                w,
-                h,
-                SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOSENDCHANGING | SWP_SHOWWINDOW,
+                if want_topmost { HWND_TOPMOST } else { HWND_NOTOPMOST },
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
             );
+            state.topmost = want_topmost;
+        }
+    }
+
+    /// 纯移动分支：只把阴影窗口跟随到新位置，不 ULW 重提交、不重建、不重模糊。
+    unsafe fn move_shadow(state: &mut State, x: i32, y: i32) {
+        SetWindowPos(
+            state.shadow as _,
+            std::ptr::null_mut(),
+            x,
+            y,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW,
+        );
+    }
+
+    /// 重建成功后提交位图：ULW 写入内容，并把阴影置于宿主窗口下方。
+    unsafe fn submit_layered(state: &mut State, owner_hwnd: HWND, win: &WindowSnapshot) {
+        let blend = BLENDFUNCTION {
+            BlendOp: 0, // AC_SRC_OVER
+            BlendFlags: 0,
+            SourceConstantAlpha: 255,
+            AlphaFormat: 1, // AC_SRC_ALPHA
+        };
+        let dst_pt = POINT { x: win.x, y: win.y };
+        let src_pt = POINT { x: 0, y: 0 };
+        let size = SIZE { cx: win.bmp_w(), cy: win.bmp_h() };
+        let layered = UpdateLayeredWindow(
+            state.shadow as _,
+            std::ptr::null_mut(),
+            &dst_pt,
+            &size,
+            state.hdc_mem as _,
+            &src_pt,
+            0,
+            &blend,
+            ULW_ALPHA,
+        );
+        if debug_on() {
+            eprintln!(
+                "[shadow] UpdateLayeredWindow={} pos={},{} size={}x{} host={}x{} margin={} topmost_owner={}",
+                layered,
+                win.x,
+                win.y,
+                win.bmp_w(),
+                win.bmp_h(),
+                win.win_w,
+                win.win_h,
+                win.margin,
+                (GetWindowLongPtrW(owner_hwnd, GWL_EXSTYLE) as u32 & WS_EX_TOPMOST) != 0
+            );
+        }
+        SetWindowPos(
+            state.shadow as _,
+            owner_hwnd,
+            win.x,
+            win.y,
+            win.bmp_w(),
+            win.bmp_h(),
+            SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOSENDCHANGING | SWP_SHOWWINDOW,
+        );
+    }
+
+    fn sync_state(state: &mut State, owner: isize) {
+        unsafe {
+            // 伴随窗口失效（被外部销毁）时不在死句柄上提交 ULW；下一次消息会先重建。
+            if state.shadow == 0 || IsWindow(state.shadow as _) == 0 {
+                state.hidden = true;
+                return;
+            }
+            let owner_hwnd = owner as HWND;
+            let Some(win) = read_window_snapshot(state, owner_hwnd) else {
+                hide_shadow(state);
+                state.hidden = true;
+                return;
+            };
+
+            let snap = ShadowSnapshot {
+                cached_w: state.bmp_w,
+                cached_h: state.bmp_h,
+                cached_x: state.cached_x,
+                cached_y: state.cached_y,
+                cached_margin: state.cached_margin,
+                cached_hash: state.shape_hash,
+                in_gesture: state.defer_rebuild,
+                gesture_start_w: state.gesture_start_w,
+                gesture_start_h: state.gesture_start_h,
+            };
+
+            match decide(&snap, &win) {
+                Decision::Hide => {
+                    hide_shadow(state);
+                    state.hidden = true;
+                }
+                Decision::NoChange => {}
+                Decision::MoveOnly => {
+                    move_shadow(state, win.x, win.y);
+                    state.cached_x = win.x;
+                    state.cached_y = win.y;
+                    state.hidden = false;
+                }
+                Decision::SuspendDuringGesture => {
+                    // 尺寸已变：旧位图绝不能按新尺寸提交；隐藏挂起，待手势结束重建。
+                    // 旧 DIB 保留在内存（不 DeleteObject），结束后按新尺寸复用 / 替换。
+                    if !state.suspended {
+                        hide_shadow(state);
+                        state.suspended = true;
+                        state.hidden = true;
+                    }
+                }
+                Decision::RebuildAndSubmit => {
+                    let rgn = CreateRectRgn(0, 0, 0, 0);
+                    let applied = if rgn.is_null() {
+                        build_bitmap(state, win.win_w, win.win_h, None)
+                    } else {
+                        let t = GetWindowRgn(owner_hwnd, rgn);
+                        let ok = build_bitmap(
+                            state,
+                            win.win_w,
+                            win.win_h,
+                            if t > 0 { Some(rgn as isize) } else { None },
+                        );
+                        DeleteObject(rgn as _);
+                        ok
+                    };
+                    let (exp_w, exp_h) = bitmap_size(win.win_w, win.win_h, win.margin);
+                    // 重建后必须校验位图尺寸 == 窗口尺寸 + 2*margin；DIB 失败或尺寸不符
+                    // 都不提交，避免留下整块纯色矩形或错位拉伸。
+                    if applied
+                        && state.hdc_mem != 0
+                        && state.bmp_w == exp_w
+                        && state.bmp_h == exp_h
+                    {
+                        state.shape_hash = win.hash;
+                        state.cached_margin = win.margin;
+                        submit_layered(state, owner_hwnd, &win);
+                        state.suspended = false;
+                        state.hidden = false;
+                        state.cached_x = win.x;
+                        state.cached_y = win.y;
+                    } else {
+                        hide_shadow(state);
+                        state.hidden = true;
+                    }
+                }
+            }
+
+            follow_topmost(state, owner_hwnd);
         }
     }
 
@@ -590,7 +797,7 @@ mod imp {
         let owner = hwnd as isize;
         let old = {
             let reg = registry().lock().unwrap_or_else(|e| e.into_inner());
-            reg.get(&owner).map(|s| s.old_proc)
+            reg.get(&owner).map(|entry| entry.old_proc)
         };
         let Some(old) = old else {
             return DefWindowProcW(hwnd, msg, wparam, lparam);
@@ -600,28 +807,58 @@ mod imp {
         let prev: WNDPROC = std::mem::transmute(old);
         let result = CallWindowProcW(prev, hwnd, msg, wparam, lparam);
 
+        // 阴影伴随窗口被外部销毁时先重建（不在同步取走状态的期间换句柄）。
+        if msg != WM_NCDESTROY {
+            recreate_shadow_if_invalid(owner);
+        }
+
         match msg {
-            WM_WINDOWPOSCHANGED | WM_SIZE | WM_MOVE | WM_SHOWWINDOW | WM_ACTIVATE
-            | WM_DPICHANGED => {
-                let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(state) = reg.get_mut(&owner) {
+            WM_WINDOWPOSCHANGED | WM_SIZE | WM_MOVE | WM_SIZING | WM_MOVING
+            | WM_SHOWWINDOW | WM_ACTIVATE | WM_DPICHANGED => {
+                with_state(owner, |state| {
                     sync_state(state, owner);
-                }
+                });
             }
             WM_ENTERSIZEMOVE => {
-                // 缩放中不重建位图（逐帧模糊会让拖动掉帧），松手后再校准
-                let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(state) = reg.get_mut(&owner) {
+                // 进入系统模态移动 / 缩放循环：记录起始外框宽高；手势内是否真的改尺寸
+                // 由 decide 对比。移动只跟随位置，缩放挂起旧位图，松手后再校准。
+                with_state(owner, |state| {
                     state.defer_rebuild = true;
-                }
+                    let mut rect: RECT = std::mem::zeroed();
+                    if GetWindowRect(owner as _, &mut rect) != 0 {
+                        state.gesture_start_w = rect.right - rect.left;
+                        state.gesture_start_h = rect.bottom - rect.top;
+                    }
+                });
             }
             WM_EXITSIZEMOVE => {
-                let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(state) = reg.get_mut(&owner) {
+                with_state(owner, |state| {
+                    // 只有「手势内真的改过尺寸并挂起过」才需要强制校准；纯移动手势
+                    // 的几何未变，直接按现有位图继续跟随，避免松手瞬间重建导致闪烁。
+                    let was_suspended = state.suspended;
                     state.defer_rebuild = false;
-                    state.shape_hash = u64::MAX; // 强制按最终尺寸重建
+                    state.suspended = false;
+                    if was_suspended {
+                        state.shape_hash = u64::MAX;
+                    }
                     sync_state(state, owner);
-                }
+                });
+            }
+            WM_CAPTURECHANGED => {
+                // 兜底：少数退出路径可能不投递 WM_EXITSIZEMOVE（取消手势、程序化改尺寸等）。
+                // 捕获释放后若仍停留在手势态，按结束手势幂等复位并重新校准；
+                // 真实重入与消息到达顺序需原生运行验证（见验收报告）。
+                with_state(owner, |state| {
+                    if state.defer_rebuild {
+                        let was_suspended = state.suspended;
+                        state.defer_rebuild = false;
+                        state.suspended = false;
+                        if was_suspended {
+                            state.shape_hash = u64::MAX;
+                        }
+                        sync_state(state, owner);
+                    }
+                });
             }
             WM_NCDESTROY => destroy_now(owner),
             _ => {}
@@ -629,28 +866,114 @@ mod imp {
         result
     }
 
+    /// 从注册表摘除入口（仅簿记；GDI / 句柄释放见 `release_state`，需原生运行验证）。
+    fn registry_take(owner: isize) -> Option<Entry> {
+        registry().lock().unwrap_or_else(|e| e.into_inner()).remove(&owner)
+    }
+
     fn destroy_now(owner: isize) {
-        let state = {
-            let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
-            reg.remove(&owner)
-        };
-        if let Some(state) = state {
-            unsafe {
-                if state.shadow != 0 {
-                    DestroyWindow(state.shadow as _);
-                }
-                if state.dib != 0 {
-                    DeleteObject(state.dib as _);
-                }
-                if state.hdc_mem != 0 {
-                    DeleteDC(state.hdc_mem as _);
-                }
-                // 还原窗口过程，避免句柄复用时把旧过程带过去
-                if state.old_proc != 0 {
-                    SetWindowLongPtrW(owner as _, GWLP_WNDPROC, state.old_proc);
-                }
+        let Some(entry) = registry_take(owner) else { return };
+        // 先还原宿主过程；正在同步的状态由 with_state 返回后统一释放。
+        if entry.old_proc != 0 {
+            unsafe { SetWindowLongPtrW(owner as _, GWLP_WNDPROC, entry.old_proc); }
+        }
+        if let Some(state) = entry.state {
+            release_state(state);
+        }
+    }
+
+    fn release_state(state: State) {
+        unsafe {
+            if state.shadow != 0 {
+                DestroyWindow(state.shadow as _);
+            }
+            // 与 ensure_dib 同一顺序：DC 先于 DIB，避免删除仍被选中的位图。
+            if state.hdc_mem != 0 {
+                DeleteDC(state.hdc_mem as _);
+            }
+            if state.dib != 0 {
+                DeleteObject(state.dib as _);
             }
         }
+    }
+
+    /// 创建阴影伴随窗口（分层、点击穿透、不抢焦点）。失败返回 0。
+    unsafe fn create_shadow_window() -> isize {
+        let name = wide(CLASS_NAME);
+        let shadow = CreateWindowExW(
+            WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+            name.as_ptr(),
+            std::ptr::null(),
+            WS_POPUP,
+            -20000,
+            -20000,
+            1,
+            1,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null(),
+        );
+        if shadow.is_null() {
+            0
+        } else {
+            shadow as isize
+        }
+    }
+
+    /// 阴影窗口被外部销毁 / HWND 失效时重建，并把 Entry 与 State 的句柄保持一致。
+    ///
+    /// 只在「状态未被同步取出」时交换：同步期间（`state.is_none()`）直接放弃，
+    /// 由下一次同步再补，避免 `with_state` 把新句柄当成「宿主已销毁」而误释放。
+    fn recreate_shadow_if_invalid(owner: isize) {
+        let invalid = {
+            let reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+            match reg.get(&owner) {
+                Some(entry) => {
+                    entry.shadow == 0 || unsafe { IsWindow(entry.shadow as _) } == 0
+                }
+                None => return,
+            }
+        };
+        if !invalid {
+            return;
+        }
+        let fresh = unsafe { create_shadow_window() };
+        if fresh == 0 {
+            return;
+        }
+        let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+        let Some(entry) = reg.get_mut(&owner) else {
+            drop(reg);
+            unsafe { DestroyWindow(fresh as _) };
+            return;
+        };
+        let Some(state) = entry.state.as_mut() else {
+            // 同步进行中：不在此处换句柄，下一次同步再重建。
+            drop(reg);
+            unsafe { DestroyWindow(fresh as _) };
+            return;
+        };
+        if entry.shadow != 0 && unsafe { IsWindow(entry.shadow as _) } != 0 {
+            // 竞态下别人已重建：保留现有，丢弃本次。
+            drop(reg);
+            unsafe { DestroyWindow(fresh as _) };
+            return;
+        }
+        if entry.shadow != 0 {
+            unsafe { DestroyWindow(entry.shadow as _) };
+        }
+        entry.shadow = fresh;
+        state.shadow = fresh;
+        // 新窗口没有位图内容：几何缓存全部作废，下一次同步按当前窗口重建。
+        state.bmp_w = 0;
+        state.bmp_h = 0;
+        state.cached_x = 0;
+        state.cached_y = 0;
+        state.cached_margin = 0;
+        state.shape_hash = u64::MAX;
+        state.hidden = true;
+        state.suspended = false;
     }
 
     fn attach_now(owner: isize) {
@@ -664,22 +987,8 @@ mod imp {
             }
         }
         unsafe {
-            let name = wide(CLASS_NAME);
-            let shadow = CreateWindowExW(
-                WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
-                name.as_ptr(),
-                std::ptr::null(),
-                WS_POPUP,
-                -20000,
-                -20000,
-                1,
-                1,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                std::ptr::null(),
-            );
-            if shadow.is_null() {
+            let shadow = create_shadow_window();
+            if shadow == 0 {
                 return;
             }
             let old = SetWindowLongPtrW(
@@ -688,12 +997,11 @@ mod imp {
                 owner_proc as *const () as isize,
             );
             if old == 0 {
-                DestroyWindow(shadow);
+                DestroyWindow(shadow as _);
                 return;
             }
-            let mut state = State {
-                shadow: shadow as isize,
-                old_proc: old,
+            let state = State {
+                shadow,
                 hdc_mem: 0,
                 dib: 0,
                 bits: std::ptr::null_mut(),
@@ -704,16 +1012,23 @@ mod imp {
                 shape_hash: u64::MAX,
                 topmost: false,
                 defer_rebuild: false,
+                gesture_start_w: 0,
+                gesture_start_h: 0,
+                suspended: false,
+                hidden: true,
+                cached_x: 0,
+                cached_y: 0,
+                cached_margin: 0,
                 mask: Vec::new(),
                 tmp: Vec::new(),
                 ambient: Vec::new(),
                 contact: Vec::new(),
             };
-            sync_state(&mut state, owner);
             registry()
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .insert(owner, state);
+                .insert(owner, Entry { old_proc: old, shadow, state: Some(state) });
+            with_state(owner, |state| sync_state(state, owner));
         }
     }
 
@@ -731,11 +1046,10 @@ mod imp {
         if hwnd == 0 {
             return;
         }
-        let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(state) = reg.get_mut(&hwnd) {
+        with_state(hwnd, |state| {
             state.shape_hash = u64::MAX;
             sync_state(state, hwnd);
-        }
+        });
     }
 
     pub fn detach(hwnd: isize) {
@@ -746,15 +1060,57 @@ mod imp {
     mod tests {
         use super::*;
 
+        fn insert_test_state(owner: isize) {
+            let state = State {
+                shadow: 0, hdc_mem: 0, dib: 0, bits: std::ptr::null_mut(),
+                bmp_w: 0, bmp_h: 0, margin: 0, scale: 1.0, shape_hash: 0,
+                topmost: false, defer_rebuild: false,
+                gesture_start_w: 0, gesture_start_h: 0,
+                suspended: false, hidden: true,
+                cached_x: 0, cached_y: 0, cached_margin: 0,
+                mask: Vec::new(), tmp: Vec::new(), ambient: Vec::new(), contact: Vec::new(),
+            };
+            registry().lock().unwrap().insert(owner, Entry {
+                old_proc: 123, shadow: 0, state: Some(state),
+            });
+        }
+
+        #[test]
+        fn sync_reentry_keeps_window_proc_without_locking_or_double_update() {
+            let owner = -101;
+            insert_test_state(owner);
+            with_state(owner, |state| {
+                // 对应 SetWindowPos 同步回调：不能持锁，原过程必须仍可查询。
+                let reg = registry().try_lock().expect("原生调用期间不能持注册表锁");
+                assert_eq!(reg.get(&owner).unwrap().old_proc, 123);
+                drop(reg);
+                with_state(owner, |_| panic!("同一阴影的重入更新必须合并"));
+                state.defer_rebuild = true;
+            });
+            let entry = registry().lock().unwrap().remove(&owner).unwrap();
+            assert!(entry.state.unwrap().defer_rebuild);
+        }
+
+        #[test]
+        fn destroy_during_sync_does_not_resurrect_shadow_state() {
+            let owner = -102;
+            insert_test_state(owner);
+            with_state(owner, |_| {
+                // WM_NCDESTROY 在同步回调中摘除入口；外层不得插回已销毁的状态。
+                registry().lock().unwrap().remove(&owner);
+            });
+            assert!(!registry().lock().unwrap().contains_key(&owner));
+        }
+
         #[test]
         fn defaults_are_the_shipping_values() {
             let p = parse_params(|_| None);
-            assert_eq!(p.margin, 56.0);
-            assert_eq!(p.ambient_blur, 28.0);
-            assert!((p.ambient_alpha - 0.22).abs() < 1e-6);
-            assert_eq!(p.contact_blur, 6.0);
-            assert!((p.contact_alpha - 0.12).abs() < 1e-6);
-            assert_eq!(p.offset_y, 5.0);
+            assert_eq!(p.margin, 40.0);
+            assert_eq!(p.ambient_blur, 18.0);
+            assert!((p.ambient_alpha - 0.14).abs() < 1e-6);
+            assert_eq!(p.contact_blur, 5.0);
+            assert!((p.contact_alpha - 0.08).abs() < 1e-6);
+            assert_eq!(p.offset_y, 3.0);
             assert_eq!(p.color, (17.0, 26.0, 44.0));
         }
 
@@ -765,7 +1121,7 @@ mod imp {
                 "TASK_DOCK_SHADOW_AMBIENT_BLUR" => Some("25".into()),
                 "TASK_DOCK_SHADOW_AMBIENT_ALPHA" => Some("0.20".into()),
                 "TASK_DOCK_SHADOW_CONTACT_ALPHA" => Some("9".into()), // 超界 → 0.6
-                "TASK_DOCK_SHADOW_OFFSET_Y" => Some("bad".into()),    // 非法 → 默认 5
+                "TASK_DOCK_SHADOW_OFFSET_Y" => Some("bad".into()),    // 非法 → 默认 3
                 _ => None,
             };
             let p = parse_params(lookup);
@@ -773,8 +1129,134 @@ mod imp {
             assert_eq!(p.ambient_blur, 25.0);
             assert!((p.ambient_alpha - 0.20).abs() < 1e-6);
             assert_eq!(p.contact_alpha, 0.6);
-            assert_eq!(p.contact_blur, 6.0);
-            assert_eq!(p.offset_y, 5.0);
+            assert_eq!(p.contact_blur, 5.0);
+            assert_eq!(p.offset_y, 3.0);
+        }
+
+        fn visible_win(win_w: i32, win_h: i32, margin: i32, hash: u64, x: i32, y: i32) -> WindowSnapshot {
+            WindowSnapshot {
+                visible: true,
+                iconic: false,
+                zoomed: false,
+                x,
+                y,
+                win_w,
+                win_h,
+                margin,
+                hash,
+            }
+        }
+
+        fn base_snap() -> ShadowSnapshot {
+            ShadowSnapshot {
+                cached_w: 480,
+                cached_h: 640,
+                cached_x: 100,
+                cached_y: 120,
+                cached_margin: 40,
+                cached_hash: 7,
+                in_gesture: false,
+                gesture_start_w: 400,
+                gesture_start_h: 560,
+            }
+        }
+
+        #[test]
+        fn bitmap_dimensions_match_window_size() {
+            assert_eq!(bitmap_size(400, 560, 40), (480, 640));
+            assert_eq!(bitmap_size(1, 1, 16), (33, 33));
+            assert_eq!(bitmap_size(640, 360, 32), (704, 424));
+        }
+
+        #[test]
+        fn pure_move_does_not_trigger_rebuild() {
+            let snap = base_snap();
+            let win = visible_win(400, 560, 40, 7, 140, 160);
+            assert_eq!(decide(&snap, &win), Decision::MoveOnly);
+            // 手势内纯移动同样不得重建 / 重提交。
+            let mut snap_g = snap;
+            snap_g.in_gesture = true;
+            assert_eq!(decide(&snap_g, &win), Decision::MoveOnly);
+        }
+
+        #[test]
+        fn unchanged_geometry_is_no_change() {
+            let snap = base_snap();
+            let win = visible_win(400, 560, 40, 7, 100, 120);
+            assert_eq!(decide(&snap, &win), Decision::NoChange);
+        }
+
+        #[test]
+        fn size_change_in_gesture_withholds_old_bitmap() {
+            let mut snap = base_snap();
+            snap.in_gesture = true;
+            // 拖宽到 460：新位图应为 540 宽，但旧 DIB 仍是 480。
+            let win = visible_win(460, 560, 40, 7, 100, 120);
+            assert_eq!(decide(&snap, &win), Decision::SuspendDuringGesture);
+            // 挂起决策绝不携带重建或提交动作。
+            assert!(!matches!(
+                decide(&snap, &win),
+                Decision::RebuildAndSubmit | Decision::MoveOnly
+            ));
+        }
+
+        #[test]
+        fn size_change_outside_gesture_rebuilds_and_submits() {
+            let snap = base_snap();
+            let win = visible_win(460, 560, 40, 7, 100, 120);
+            assert_eq!(decide(&snap, &win), Decision::RebuildAndSubmit);
+        }
+
+        #[test]
+        fn resize_end_can_restore_shadow() {
+            // 手势结束后（in_gesture=false）、位图仍为旧尺寸：必须走重建提交。
+            let snap = base_snap();
+            let win = visible_win(460, 560, 40, 7, 100, 120);
+            assert_eq!(decide(&snap, &win), Decision::RebuildAndSubmit);
+        }
+
+        #[test]
+        fn consecutive_resizes_do_not_resubmit_stale_bitmap() {
+            // 手势 1：400→460 挂起；结束重建到 460（缓存 540x640）；手势 2：460→500 再次挂起。
+            let g1 = visible_win(460, 560, 40, 7, 0, 0);
+            let snap1 = ShadowSnapshot { in_gesture: true, ..base_snap() };
+            assert_eq!(decide(&snap1, &g1), Decision::SuspendDuringGesture);
+
+            let after_rebuild = ShadowSnapshot {
+                cached_w: 540,
+                cached_h: 640,
+                gesture_start_w: 460,
+                gesture_start_h: 560,
+                ..base_snap()
+            };
+            let g2 = visible_win(500, 560, 40, 7, 0, 0);
+            let snap2 = ShadowSnapshot { in_gesture: true, ..after_rebuild };
+            assert_eq!(decide(&snap2, &g2), Decision::SuspendDuringGesture);
+        }
+
+        #[test]
+        fn hidden_minimized_zoomed_windows_hide_shadow() {
+            let snap = base_snap();
+            let mut win = visible_win(400, 560, 40, 7, 100, 120);
+            win.iconic = true;
+            assert_eq!(decide(&snap, &win), Decision::Hide);
+            let mut win2 = visible_win(400, 560, 40, 7, 100, 120);
+            win2.zoomed = true;
+            assert_eq!(decide(&snap, &win2), Decision::Hide);
+            let mut win3 = visible_win(400, 560, 40, 7, 100, 120);
+            win3.visible = false;
+            assert_eq!(decide(&snap, &win3), Decision::Hide);
+        }
+
+        #[test]
+        fn detach_registry_bookkeeping_leaves_no_entry() {
+            for owner in [-301isize, -302] {
+                insert_test_state(owner);
+                // 与 destroy_now 同一注册表摘除路径；GDI / 句柄释放需原生运行验证。
+                assert!(registry_take(owner).is_some());
+                assert!(!registry().lock().unwrap().contains_key(&owner));
+            }
+            assert!(registry().lock().unwrap().is_empty());
         }
     }
 }
