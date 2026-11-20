@@ -28,15 +28,15 @@ mod imp {
     use tauri::{Runtime, WebviewWindow};
     use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
     use windows_sys::Win32::Graphics::Gdi::{
-        BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLACKNESS, BLENDFUNCTION, CombineRgn,
+        BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLACKNESS, BLENDFUNCTION, COLORONCOLOR, CombineRgn,
         CreateCompatibleDC, CreateDIBSection, CreateRectRgn, CreateSolidBrush, DIB_RGB_COLORS,
         DeleteDC, DeleteObject, FillRgn, GetDC, GetRegionData, GetWindowRgn, OffsetRgn, PatBlt,
-        RGN_COPY, ReleaseDC, SelectObject, WHITENESS,
+        RGN_COPY, ReleaseDC, SelectObject, SRCCOPY, SetStretchBltMode, StretchBlt, WHITENESS,
     };
     use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         CS_HREDRAW, CS_VREDRAW, CallWindowProcW, CreateWindowExW, DefWindowProcW, DestroyWindow,
-        GWL_EXSTYLE, GWLP_WNDPROC, GetWindowLongPtrW, GetWindowRect, HWND_NOTOPMOST, HWND_TOPMOST,
+        GWL_EXSTYLE, GWLP_WNDPROC, GetWindowLongPtrW, GetWindowRect,
         IsIconic, IsWindow, IsWindowVisible, IsZoomed, RegisterClassW, SWP_HIDEWINDOW, SWP_NOACTIVATE,
         SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSENDCHANGING, SWP_NOSIZE, SWP_NOZORDER,
         SWP_SHOWWINDOW, SetWindowLongPtrW, SetWindowPos, ULW_ALPHA, UpdateLayeredWindow,
@@ -177,8 +177,9 @@ mod imp {
         MoveOnly,
         /// 非手势期间尺寸 / 外形 / margin 变化：重建位图后再提交。
         RebuildAndSubmit,
-        /// 手势期间尺寸已变：旧位图禁止以新尺寸提交，先挂起（隐藏），结束手势后重建。
-        SuspendDuringGesture,
+        /// 手势期间尺寸已变：把最近一次完整质量的位图**缩放**成应急位图提交，
+        /// 保持阴影全程可见；旧 DIB 本身绝不以新尺寸直接提交，松手后按最终尺寸重建。
+        ScaleDuringGesture,
         /// 几何、外形、位置均无变化：不做任何 Win32 操作。
         NoChange,
     }
@@ -209,7 +210,7 @@ mod imp {
 
         if snap.in_gesture {
             if size_or_shape_changed {
-                return Decision::SuspendDuringGesture;
+                return Decision::ScaleDuringGesture;
             }
             return if moved { Decision::MoveOnly } else { Decision::NoChange };
         }
@@ -240,8 +241,14 @@ mod imp {
         /// 手势起始外框宽高：手势内据此判断宽高是否真的变化。
         gesture_start_w: i32,
         gesture_start_h: i32,
-        /// 手势内因尺寸变化挂起旧位图：阴影已隐藏，旧 DIB 禁止以新尺寸提交。
+        /// 手势内尺寸变化：阴影不再隐藏，而是把完整位图缩放成应急位图提交。
         suspended: bool,
+        /// 应急位图（手势内缩放用）：与完整质量位图分开，避免连续缩放累积模糊。
+        gesture_hdc: isize,
+        gesture_dib: isize,
+        gesture_bits: *mut u8,
+        gesture_w: i32,
+        gesture_h: i32,
         /// 阴影当前是否处于隐藏态（由同步决策维护）。
         hidden: bool,
         /// 上次定位的阴影窗口左上角（物理 px），用于纯移动判定。
@@ -350,6 +357,39 @@ mod imp {
         hash
     }
 
+    /// 新建一张与屏幕兼容的 32bpp 预乘 BGRA DIB（自上而下）+ 内存 DC。
+    /// 返回 `(hdc, dib, bits)`；任一步失败返回 None 并自行回收已分配资源。
+    unsafe fn create_surface(w: i32, h: i32) -> Option<(isize, isize, *mut u8)> {
+        let hdc_screen = GetDC(std::ptr::null_mut());
+        let hdc = CreateCompatibleDC(hdc_screen);
+        ReleaseDC(std::ptr::null_mut(), hdc_screen);
+        if hdc.is_null() {
+            return None;
+        }
+        let mut bmi: BITMAPINFO = std::mem::zeroed();
+        bmi.bmiHeader = BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: w,
+            biHeight: -h, // 自上而下
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB,
+            biSizeImage: 0,
+            biXPelsPerMeter: 0,
+            biYPelsPerMeter: 0,
+            biClrUsed: 0,
+            biClrImportant: 0,
+        };
+        let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
+        let dib = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &mut bits, std::ptr::null_mut(), 0);
+        if dib.is_null() || bits.is_null() {
+            DeleteDC(hdc);
+            return None;
+        }
+        SelectObject(hdc, dib);
+        Some((hdc as isize, dib as isize, bits as *mut u8))
+    }
+
     fn ensure_dib(state: &mut State, w: i32, h: i32) -> bool {
         if state.dib != 0 && state.bmp_w == w && state.bmp_h == h {
             return true;
@@ -366,38 +406,41 @@ mod imp {
                 state.dib = 0;
                 state.bits = std::ptr::null_mut();
             }
-            let hdc_screen = GetDC(std::ptr::null_mut());
-            let hdc = CreateCompatibleDC(hdc_screen);
-            ReleaseDC(std::ptr::null_mut(), hdc_screen);
-            if hdc.is_null() {
+            let Some((hdc, dib, bits)) = create_surface(w, h) else {
                 return false;
-            }
-            let mut bmi: BITMAPINFO = std::mem::zeroed();
-            bmi.bmiHeader = BITMAPINFOHEADER {
-                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth: w,
-                biHeight: -h, // 自上而下
-                biPlanes: 1,
-                biBitCount: 32,
-                biCompression: BI_RGB,
-                biSizeImage: 0,
-                biXPelsPerMeter: 0,
-                biYPelsPerMeter: 0,
-                biClrUsed: 0,
-                biClrImportant: 0,
             };
-            let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
-            let dib = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &mut bits, std::ptr::null_mut(), 0);
-            if dib.is_null() || bits.is_null() {
-                DeleteDC(hdc);
-                return false;
-            }
-            SelectObject(hdc, dib);
-            state.hdc_mem = hdc as isize;
-            state.dib = dib as isize;
-            state.bits = bits as *mut u8;
+            state.hdc_mem = hdc;
+            state.dib = dib;
+            state.bits = bits;
             state.bmp_w = w;
             state.bmp_h = h;
+            true
+        }
+    }
+
+    /// 应急位图的 DIB（手势内缩放提交用），与完整质量位图分开管理。
+    fn ensure_gesture_dib(state: &mut State, w: i32, h: i32) -> bool {
+        if state.gesture_dib != 0 && state.gesture_w == w && state.gesture_h == h {
+            return true;
+        }
+        unsafe {
+            if state.gesture_hdc != 0 {
+                DeleteDC(state.gesture_hdc as _);
+                state.gesture_hdc = 0;
+            }
+            if state.gesture_dib != 0 {
+                DeleteObject(state.gesture_dib as _);
+                state.gesture_dib = 0;
+                state.gesture_bits = std::ptr::null_mut();
+            }
+            let Some((hdc, dib, bits)) = create_surface(w, h) else {
+                return false;
+            };
+            state.gesture_hdc = hdc;
+            state.gesture_dib = dib;
+            state.gesture_bits = bits;
+            state.gesture_w = w;
+            state.gesture_h = h;
             true
         }
     }
@@ -458,6 +501,14 @@ mod imp {
         })
     }
 
+
+    /// 单像素合成 alpha：模糊值加权后乘 `1 - inside`，窗口轮廓内部强制为 0。
+    ///
+    /// 纯函数，单测直接覆盖「轮廓内必须为 0 / 轮廓外保持原衰减」。
+    fn pixel_alpha(ambient: f32, contact: f32, inside: f32, pr: &ShadowParams) -> f32 {
+        let a = ambient * pr.ambient_alpha + contact * pr.contact_alpha;
+        (a * (1.0 - inside)).clamp(0.0, 1.0)
+    }
 
     fn build_bitmap(state: &mut State, win_w: i32, win_h: i32, hrgn: Option<isize>) -> bool {
         let t0 = std::time::Instant::now();
@@ -532,17 +583,29 @@ mod imp {
             con_pass,
         );
 
-        // 4) 合成并写预乘 alpha 的 BGRA（垂直偏移在窗口定位时施加，见 sync_state）
+        // 4) 合成并写预乘 alpha 的 BGRA（垂直偏移在窗口定位时施加，见 sync_state）。
+        //    窗口轮廓**内部**的 alpha 一律归零：位图里的掩码是整块窗口填充，
+        //    模糊后内部也会保留峰值 alpha；一旦阴影窗口被抬到宿主之上（置顶切换、
+        //    z-order 抖动），这层 alpha 会整片盖在窗口内容上——「置顶时阴影透出来」
+        //    就是它的直接表现；玻璃材质下也会把背后的阴影透进窗口。
+        let off = (pr.offset_y * state.scale).round() as usize;
+        let wu = w as usize;
+        let hu = h as usize;
         unsafe {
             let out = std::slice::from_raw_parts_mut(state.bits, total * 4);
-            for i in 0..total {
-                let a = (state.ambient[i] * pr.ambient_alpha + state.contact[i] * pr.contact_alpha)
-                    .clamp(0.0, 1.0);
-                let p = i * 4;
-                out[p] = (pr.color.2 * a) as u8;
-                out[p + 1] = (pr.color.1 * a) as u8;
-                out[p + 2] = (pr.color.0 * a) as u8;
-                out[p + 3] = (a * 255.0) as u8;
+            for y in 0..hu {
+                // 位图定位时整体下移 offset，窗口在位图里的顶边是 margin-offset；
+                // 取 mask[y+offset] 正好对齐窗口真实轮廓（窗口行 → 归零，窗口上方一行 → 保留）。
+                let inside_row = (y + off).min(hu - 1) * wu;
+                for x in 0..wu {
+                    let i = y * wu + x;
+                    let a = pixel_alpha(state.ambient[i], state.contact[i], state.mask[inside_row + x], &pr);
+                    let p = i * 4;
+                    out[p] = (pr.color.2 * a) as u8;
+                    out[p + 1] = (pr.color.1 * a) as u8;
+                    out[p + 2] = (pr.color.0 * a) as u8;
+                    out[p + 3] = (a * 255.0) as u8;
+                }
             }
         }
 
@@ -558,9 +621,19 @@ mod imp {
                     + state.contact[cy * w as usize + x] * pr.contact_alpha;
                 samples.push_str(&format!("{d}px:{:.3} ", a));
             }
+            // 窗口中心点：合成阶段应被掩码归零，用来证明「阴影不再盖在窗口上」。
+            let mid_x = (inside_x + (win_w as usize) / 2).min(w as usize - 1);
+            let mid_y = ((margin as usize).saturating_sub(off) + (win_h as usize) / 2).min(h as usize - 1);
+            let mid_row = (mid_y + off).min(h as usize - 1) * w as usize;
+            let center = pixel_alpha(
+                state.ambient[mid_y * w as usize + mid_x],
+                state.contact[mid_y * w as usize + mid_x],
+                state.mask[mid_row + mid_x],
+                &pr,
+            );
             eprintln!(
-                "[shadow] bitmap {}x{} margin={}px amb_pass={} con_pass={} edge_alpha(outside) {} elapsed_ms={:.2}",
-                w, h, margin, amb_pass, con_pass, samples, t0.elapsed().as_secs_f64() * 1000.0
+                "[shadow] bitmap {}x{} margin={}px amb_pass={} con_pass={} edge_alpha(outside) {} center_alpha(inside):{:.3} elapsed_ms={:.2}",
+                w, h, margin, amb_pass, con_pass, samples, center, t0.elapsed().as_secs_f64() * 1000.0
             );
         }
         true
@@ -623,13 +696,19 @@ mod imp {
     }
 
     /// 置顶状态跟随宿主，与几何同步解耦（不抢焦点、不拦输入）。
+    ///
+    /// 必须以宿主为 insert-after 把阴影钉在宿主**正下方**：旧实现用
+    /// `HWND_TOPMOST` / `HWND_NOTOPMOST`，会把阴影抬到所在 z 带的最顶（即宿主之上），
+    /// 位图在窗口轮廓内的 alpha 会整片盖在窗口内容上，表现为「置顶时整窗发灰、阴影透出来」。
     unsafe fn follow_topmost(state: &mut State, owner_hwnd: HWND) {
         let owner_ex = GetWindowLongPtrW(owner_hwnd, GWL_EXSTYLE) as u32;
         let want_topmost = (owner_ex & WS_EX_TOPMOST) != 0;
         if state.topmost != want_topmost {
+            // 插入到宿主之后：宿主是 topmost 时阴影随之进入 topmost 带，但仍位于宿主之下；
+            // 宿主退出 topmost 时阴影同样回到普通带，不会残留在最顶层遮住别的窗口。
             SetWindowPos(
                 state.shadow as _,
-                if want_topmost { HWND_TOPMOST } else { HWND_NOTOPMOST },
+                owner_hwnd,
                 0,
                 0,
                 0,
@@ -700,6 +779,75 @@ mod imp {
         );
     }
 
+    /// 手势内尺寸变化的应急提交：把最近一次**完整质量**位图缩放成当前尺寸再 ULW。
+    ///
+    /// 不直接拿旧 DIB 按新尺寸提交（那会把边缘拉伸成灰块），也不隐藏阴影（那会让
+    /// 缩放过程中阴影整个消失）。缩放源始终是最新的完整位图，连续缩放不会累积模糊；
+    /// 手势结束后照常按最终尺寸重建，恢复原始柔和度。
+    unsafe fn submit_scaled(state: &mut State, owner_hwnd: HWND, win: &WindowSnapshot) -> bool {
+        let (src_w, src_h) = (state.bmp_w, state.bmp_h);
+        if state.hdc_mem == 0 || state.dib == 0 || src_w <= 0 || src_h <= 0 {
+            return false;
+        }
+        let (dst_w, dst_h) = (win.bmp_w(), win.bmp_h());
+        if !ensure_gesture_dib(state, dst_w, dst_h) {
+            return false;
+        }
+        // 应急位图只在一帧内使用，取最近邻缩放换取速度；渐变阴影看不出插值差异。
+        SetStretchBltMode(state.gesture_hdc as _, COLORONCOLOR);
+        let scaled = StretchBlt(
+            state.gesture_hdc as _,
+            0,
+            0,
+            dst_w,
+            dst_h,
+            state.hdc_mem as _,
+            0,
+            0,
+            src_w,
+            src_h,
+            SRCCOPY,
+        );
+        if scaled == 0 {
+            return false;
+        }
+        let blend = BLENDFUNCTION {
+            BlendOp: 0,
+            BlendFlags: 0,
+            SourceConstantAlpha: 255,
+            AlphaFormat: 1,
+        };
+        let dst_pt = POINT { x: win.x, y: win.y };
+        let src_pt = POINT { x: 0, y: 0 };
+        let size = SIZE { cx: dst_w, cy: dst_h };
+        let layered = UpdateLayeredWindow(
+            state.shadow as _,
+            std::ptr::null_mut(),
+            &dst_pt,
+            &size,
+            state.gesture_hdc as _,
+            &src_pt,
+            0,
+            &blend,
+            ULW_ALPHA,
+        );
+        if layered == 0 {
+            return false;
+        }
+        SetWindowPos(
+            state.shadow as _,
+            owner_hwnd,
+            win.x,
+            win.y,
+            dst_w,
+            dst_h,
+            SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOSENDCHANGING | SWP_SHOWWINDOW,
+        );
+        state.cached_x = win.x;
+        state.cached_y = win.y;
+        true
+    }
+
     fn sync_state(state: &mut State, owner: isize) {
         unsafe {
             // 伴随窗口失效（被外部销毁）时不在死句柄上提交 ULW；下一次消息会先重建。
@@ -738,10 +886,13 @@ mod imp {
                     state.cached_y = win.y;
                     state.hidden = false;
                 }
-                Decision::SuspendDuringGesture => {
-                    // 尺寸已变：旧位图绝不能按新尺寸提交；隐藏挂起，待手势结束重建。
-                    // 旧 DIB 保留在内存（不 DeleteObject），结束后按新尺寸复用 / 替换。
-                    if !state.suspended {
+                Decision::ScaleDuringGesture => {
+                    // 尺寸已变：旧 DIB 不能按新尺寸直接提交；用完整位图缩放出的应急
+                    // 位图提交，阴影在缩放全程可见。旧 DIB 保留，松手后按最终尺寸重建。
+                    if submit_scaled(state, owner_hwnd, &win) {
+                        state.suspended = true;
+                        state.hidden = false;
+                    } else {
                         hide_shadow(state);
                         state.suspended = true;
                         state.hidden = true;
@@ -821,7 +972,8 @@ mod imp {
             }
             WM_ENTERSIZEMOVE => {
                 // 进入系统模态移动 / 缩放循环：记录起始外框宽高；手势内是否真的改尺寸
-                // 由 decide 对比。移动只跟随位置，缩放挂起旧位图，松手后再校准。
+                // 由 decide 对比。移动只跟随位置；缩放会把完整位图缩放成应急位图提交，
+                // 保证手势全程有阴影，松手后再按最终尺寸重建恢复柔和度。
                 with_state(owner, |state| {
                     state.defer_rebuild = true;
                     let mut rect: RECT = std::mem::zeroed();
@@ -833,8 +985,8 @@ mod imp {
             }
             WM_EXITSIZEMOVE => {
                 with_state(owner, |state| {
-                    // 只有「手势内真的改过尺寸并挂起过」才需要强制校准；纯移动手势
-                    // 的几何未变，直接按现有位图继续跟随，避免松手瞬间重建导致闪烁。
+                    // 只有「手势内真的改过尺寸、用过应急缩放位图」才需要强制校准；
+                    // 纯移动手势的几何未变，直接按现有位图继续跟随，避免松手瞬间重建闪烁。
                     let was_suspended = state.suspended;
                     state.defer_rebuild = false;
                     state.suspended = false;
@@ -893,6 +1045,13 @@ mod imp {
             }
             if state.dib != 0 {
                 DeleteObject(state.dib as _);
+            }
+            // 应急位图与完整位图同样按「先 DC、后 DIB」释放。
+            if state.gesture_hdc != 0 {
+                DeleteDC(state.gesture_hdc as _);
+            }
+            if state.gesture_dib != 0 {
+                DeleteObject(state.gesture_dib as _);
             }
         }
     }
@@ -1015,6 +1174,11 @@ mod imp {
                 gesture_start_w: 0,
                 gesture_start_h: 0,
                 suspended: false,
+                gesture_hdc: 0,
+                gesture_dib: 0,
+                gesture_bits: std::ptr::null_mut(),
+                gesture_w: 0,
+                gesture_h: 0,
                 hidden: true,
                 cached_x: 0,
                 cached_y: 0,
@@ -1067,6 +1231,8 @@ mod imp {
                 topmost: false, defer_rebuild: false,
                 gesture_start_w: 0, gesture_start_h: 0,
                 suspended: false, hidden: true,
+                gesture_hdc: 0, gesture_dib: 0, gesture_bits: std::ptr::null_mut(),
+                gesture_w: 0, gesture_h: 0,
                 cached_x: 0, cached_y: 0, cached_margin: 0,
                 mask: Vec::new(), tmp: Vec::new(), ambient: Vec::new(), contact: Vec::new(),
             };
@@ -1100,6 +1266,18 @@ mod imp {
                 registry().lock().unwrap().remove(&owner);
             });
             assert!(!registry().lock().unwrap().contains_key(&owner));
+        }
+
+        #[test]
+        fn interior_alpha_is_zero_and_exterior_keeps_decay() {
+            let p = ShadowParams::defaults();
+            // 窗口轮廓内（inside=1）：即使两层模糊都处于峰值，合成 alpha 也必须为 0，
+            // 否则阴影窗口一旦被抬到宿主之上就会整片压暗窗口内容。
+            assert_eq!(pixel_alpha(1.0, 1.0, 1.0, &p), 0.0);
+            // 轮廓外（inside=0）：峰值仍是 0.14 + 0.08。
+            assert!((pixel_alpha(1.0, 1.0, 0.0, &p) - 0.22).abs() < 1e-6);
+            // 边界过渡（inside=0.5）：只保留一半，避免整窗归零后出现硬边。
+            assert!((pixel_alpha(1.0, 1.0, 0.5, &p) - 0.11).abs() < 1e-6);
         }
 
         #[test]
@@ -1187,16 +1365,17 @@ mod imp {
         }
 
         #[test]
-        fn size_change_in_gesture_withholds_old_bitmap() {
+        fn size_change_in_gesture_scales_instead_of_hiding() {
             let mut snap = base_snap();
             snap.in_gesture = true;
-            // 拖宽到 460：新位图应为 540 宽，但旧 DIB 仍是 480。
+            // 拖宽到 460：新位图应为 540 宽，但旧完整位图仍是 480。
             let win = visible_win(460, 560, 40, 7, 100, 120);
-            assert_eq!(decide(&snap, &win), Decision::SuspendDuringGesture);
-            // 挂起决策绝不携带重建或提交动作。
+            // 手势内尺寸变化 → 缩放应急位图，阴影全程可见（不再隐藏挂起）。
+            assert_eq!(decide(&snap, &win), Decision::ScaleDuringGesture);
+            // 该决策不得退化成「直接重建」或「只移动」，否则要么卡顿要么丢失阴影。
             assert!(!matches!(
                 decide(&snap, &win),
-                Decision::RebuildAndSubmit | Decision::MoveOnly
+                Decision::RebuildAndSubmit | Decision::MoveOnly | Decision::Hide
             ));
         }
 
@@ -1216,11 +1395,11 @@ mod imp {
         }
 
         #[test]
-        fn consecutive_resizes_do_not_resubmit_stale_bitmap() {
-            // 手势 1：400→460 挂起；结束重建到 460（缓存 540x640）；手势 2：460→500 再次挂起。
+        fn consecutive_resizes_use_scale_then_rebuild() {
+            // 手势 1：400→460 缩放应急位图；结束重建到 460（缓存 540x640）；手势 2：460→500 再缩放。
             let g1 = visible_win(460, 560, 40, 7, 0, 0);
             let snap1 = ShadowSnapshot { in_gesture: true, ..base_snap() };
-            assert_eq!(decide(&snap1, &g1), Decision::SuspendDuringGesture);
+            assert_eq!(decide(&snap1, &g1), Decision::ScaleDuringGesture);
 
             let after_rebuild = ShadowSnapshot {
                 cached_w: 540,
@@ -1231,7 +1410,8 @@ mod imp {
             };
             let g2 = visible_win(500, 560, 40, 7, 0, 0);
             let snap2 = ShadowSnapshot { in_gesture: true, ..after_rebuild };
-            assert_eq!(decide(&snap2, &g2), Decision::SuspendDuringGesture);
+            // 第二次手势的缩放源必须是刚重建的 540x640 完整位图，而不是第一次的应急位图。
+            assert_eq!(decide(&snap2, &g2), Decision::ScaleDuringGesture);
         }
 
         #[test]
