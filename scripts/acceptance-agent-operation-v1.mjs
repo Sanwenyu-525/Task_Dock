@@ -175,6 +175,27 @@ function freePort(start) {
   });
 }
 
+function waitPortClosed(port, ms) {
+  return (async () => {
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+      const open = await new Promise((resolve) => {
+        const sock = net.connect({ port, host: "127.0.0.1" });
+        const done = (v) => {
+          sock.destroy();
+          resolve(v);
+        };
+        sock.once("connect", () => done(true));
+        sock.once("error", () => done(false));
+        setTimeout(() => done(false), 400);
+      });
+      if (!open) return true;
+      await sleep(250);
+    }
+    return false;
+  })();
+}
+
 function waitFile(p, ms) {
   const end = Date.now() + ms;
   return (async () => {
@@ -315,6 +336,11 @@ function toolPayload(msg) {
 // ── GUI / CDP ────────────────────────────────────────────────────
 async function launchGui() {
   fs.mkdirSync(DATA, { recursive: true });
+  // 重启场景：旧 WebView2 的 CDP 端点可能短暂残留，直接复用会连到正在退出的旧目标。
+  if (!(await waitPortClosed(CDP_PORT, 8000))) {
+    CDP_PORT = await freePort(CDP_PORT + 1);
+    log(`旧 CDP 端口未释放，改用 ${CDP_PORT}`);
+  }
   const out = fs.openSync(path.join(ROOT, "gui.log"), "a");
   const err = fs.openSync(path.join(ROOT, "gui.err"), "a");
   gui = spawn(EXE, [], {
@@ -477,12 +503,19 @@ async function chipSnapshot(selector) {
 
 async function storeSnapshot() {
   return page.evaluate(async () => {
-    const m = await import("/src/store/useAgentOperationsStore.ts");
-    const s = m.useAgentOperationsStore.getState();
+    // 优先用应用自身的实例（DEV 句柄）；动态 import 在 HMR 后可能是第二个实例。
+    const handle = window.__AGENT_OP_STORE__;
+    const s = handle
+      ? handle.getState()
+      : (await import("/src/store/useAgentOperationsStore.ts")).useAgentOperationsStore.getState();
     return {
       active: s.active.map((o) => ({ id: o.id, agent: o.agentId, status: o.status, resource: o.resourceId })),
-      recent: s.recent.map((o) => ({ id: o.id, agent: o.agentId, status: o.status, error: o.errorCode })),
+      recent: s.recent.map((o) => ({ id: o.id, agent: o.agentId, status: o.status, error: o.errorCode, resource: o.resourceId })),
       activeCount: s.activeCount,
+      subscribed: s.subscribed,
+      lastSyncAt: s.lastSyncAt,
+      cursor: s.cursor,
+      error: s.error,
     };
   });
 }
@@ -712,7 +745,35 @@ async function scenarioE(taskId) {
   const text = await page.locator(`[data-task-id="${taskId}"] .task-title`).innerText();
   assert(text.includes("E · UI 关闭时写入"), `恢复后标题=${text}`);
 
-  const snap = await storeSnapshot();
+  // 启动恢复是异步的（首轮游标同步）：等历史真正到达，而不是立刻取样。
+  const snap = await waitFor(async () => {
+    const s = await storeSnapshot();
+    return s.recent.some((o) => o.resource === taskId && o.status === "committed") ? s : null;
+  }, 12000, 300);
+  if (!snap) {
+    const diag = await storeSnapshot();
+    log(`E diag: ${JSON.stringify(diag)}`);
+    const raw = await page.evaluate(async () => {
+      try {
+        const r = await window.__TAURI_INTERNALS__.invoke("agent_operations_sync", { cursor: null, limit: 50 });
+        return { ok: true, count: r?.operations?.length ?? -1, cursor: r?.cursor ?? null, active: r?.activeCount ?? -1 };
+      } catch (err) {
+        return { ok: false, error: String(err && err.message ? err.message : err) };
+      }
+    });
+    log(`E invoke diag: ${JSON.stringify(raw)}`);
+    const manual = await page.evaluate(async () => {
+      const m = await import("/src/store/useAgentOperationsStore.ts");
+      m.ensureAgentOperationSync();
+      await new Promise((r) => setTimeout(r, 2500));
+      const s = m.useAgentOperationsStore.getState();
+      return { subscribed: s.subscribed, error: s.error, recent: s.recent.length, lastSyncAt: s.lastSyncAt, cursor: s.cursor };
+    });
+    log(`E manual diag: ${JSON.stringify(manual)}`);
+    const boot = await page.evaluate(() => (window).__AGENT_OP_BOOT__ ?? null);
+    log(`E boot marker: ${JSON.stringify(boot)}`);
+  }
+  assert(snap, "启动恢复后最近操作仍未包含该任务");
   const op = dbGet(
     `SELECT status FROM agent_operations WHERE resource_kind='task' AND resource_id=?
       ORDER BY started_at DESC LIMIT 1`,
@@ -720,8 +781,10 @@ async function scenarioE(taskId) {
   );
   assert(op.status === "committed", `离线操作状态=${op.status}`);
   assert(!snap.active.some((o) => o.resource === taskId), `已结束操作仍显示为运行中: ${JSON.stringify(snap.active)}`);
+  const history = snap.recent.find((o) => o.resource === taskId && o.status === "committed");
+  assert(history, `最近操作未包含该任务: ${JSON.stringify(snap.recent)}`);
   await shot("E-reopen");
-  return `title=${text} active=${snap.activeCount} status=${op.status}`;
+  return `title=${text} active=${snap.activeCount} status=${op.status} history=${history.agent}`;
 }
 
 async function scenarioF(taskId) {
@@ -897,6 +960,9 @@ async function main() {
     await launchGui();
     await attachPage();
     await skipOnboarding();
+    await sleep(1500);
+    const boot = await page.evaluate(() => (window).__AGENT_OP_BOOT__ ?? null);
+    log(`boot marker after launch: ${JSON.stringify(boot)}`);
     const restReady = await waitHttp(REST_PORT, 30000);
     const mcpReady = await waitFile(path.join(DATA, "mcp-transport.json"), 30000);
     assert(restReady, "REST 未就绪");

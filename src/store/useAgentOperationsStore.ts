@@ -264,6 +264,12 @@ export const useAgentOperationsStore = create<AgentOperationsState>((set, get) =
   },
 }));
 
+// Dev 专用只读句柄：验收脚本据此读取**应用真实实例**。
+// 不能靠动态 import：Vite 在 HMR 后会给依赖加 `?t=`，再 import 会得到第二个实例。
+if (import.meta.env.DEV && typeof window !== "undefined") {
+  (window as unknown as Record<string, unknown>).__AGENT_OP_STORE__ = useAgentOperationsStore;
+}
+
 // ── 单例同步（事件 + 低频游标）──────────────────────────────────
 
 let inflightSync: Promise<void> | null = null;
@@ -294,6 +300,14 @@ function schedulePoll(delay: number): void {
  * 应用根部调用一次；页面组件不得自行调用 listen 或轮询。
  */
 export function ensureAgentOperationSync(): void {
+  // Dev 专用只读标记：定位启动时序；生产构建中不存在。
+  if (import.meta.env.DEV && typeof window !== "undefined") {
+    (window as unknown as Record<string, unknown>).__AGENT_OP_BOOT__ = {
+      at: Date.now(),
+      tauri: isTauri(),
+      href: location.href,
+    };
+  }
   // 浏览器预览 / 单元测试没有 Tauri IPC：不注册监听、不轮询，页面照常渲染。
   if (!isTauri()) return;
   const state = useAgentOperationsStore.getState();

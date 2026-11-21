@@ -299,12 +299,19 @@ npm run typecheck → 通过
 MCP 走 stdio 子进程、CLI 走独立进程、数据库用 `node:sqlite` 直读断言：
 
 ```
-12 passed / 0 failed    tmp/acceptance/agent-operation-visualization/run-20261121-110541/
+12 passed / 0 failed    tmp/acceptance/agent-operation-visualization/run-20261121-111925/
 ```
 
 覆盖：A 规划功能新建（工作台窗口高亮 + 真实 ID）、B MCP 改任务、C 双 Agent 一成功一冲突、
 D CLI 写入 4s 内被 UI 感知且标题自动刷新、E 关闭期间写入后重开、F 编辑中并发（不覆盖 +
 冲突 + 重载）、G 租约过期 → interrupted。截图与 `summary.md` 同目录。
+
+脚本注意事项（写给后续运行者）：
+
+- Vite 在 HMR 后会给依赖 URL 加 `?t=`，脚本里的动态 `import()` 可能拿到**第二个 store 实例**；
+  读应用真实实例请用 DEV 专用的 `window.__AGENT_OP_STORE__`（生产构建不存在）。
+- 「关闭 → 重新打开」场景必须等旧 WebView2 的 CDP 端口释放；占用则换端口，否则会连到
+  正在退出的旧目标（表现为 store 未初始化）。
 
 验收过程中发现并修复的问题：
 
