@@ -556,6 +556,41 @@
   padding: 8px 2px;
 }
 
+/* 集合为空时的首次创建引导：纯文本，不重复放创建按钮（入口只在 toolbar）。 */
+.novel-empty-guide {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 2px;
+}
+
+.novel-empty-guide-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.novel-empty-guide-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-tertiary);
+}
+
+/* 右侧详情区的紧凑状态说明（加载失败 / 集合为空 / 筛选无结果）。 */
+.novel-empty-note {
+  margin: 0;
+  padding: 12px 2px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-tertiary);
+}
+
+.novel-empty-note.is-error {
+  color: var(--status-error);
+}
+
 .novel-empty-panel .empty-title {
   font-size: 13px;
 }
@@ -589,6 +624,19 @@
 
   .novel-form-section {
     padding: 10px;
+  }
+
+  /* 上下分区时侧栏只剩 42% 高，纵向叠「设定 / 人物 / N 人」会把列表压到一行半。
+     这里只把标题块压成一行并隐去重复的眉题（上方二级导航已经标明是人物还是世界观），
+     列表本身的滚动与结构不变。 */
+  .novel-sidebar-head {
+    flex-direction: row;
+    align-items: baseline;
+    gap: 6px;
+  }
+
+  .novel-sidebar-head .novel-eyebrow {
+    display: none;
   }
 }
 

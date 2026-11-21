@@ -106,8 +106,22 @@ export function WorldviewPanel({ projectId, archived, onNotice }: CreativeModule
     resetDetail(true);
   }
 
-  const selected = entries.find((entry) => entry.id === selectedId) ?? null;
-  const editorOpen = creating || selected !== null;
+  // 已选中/正在新建时不依赖列表里是否还能找到该条：筛选掉当前编辑项不应关闭表单。
+  const editorOpen = creating || selectedId !== null;
+
+  // 列表五态：过滤（搜索或类型）生效时的空结果不能判定为「整个集合为空」。
+  // 已有数据时保持列表可见（保存后刷新不闪回空态），失败提示由上方 LoadError 承担。
+  const filtering = search.trim() !== "" || kindFilter !== "";
+  const listState: "loading" | "error" | "empty" | "filtered" | "ready" =
+    entries.length > 0
+      ? "ready"
+      : loading
+        ? "loading"
+        : loadError !== null
+          ? "error"
+          : filtering
+            ? "filtered"
+            : "empty";
 
   async function saveEntry() {
     if (archived || saving) return;
@@ -183,13 +197,12 @@ export function WorldviewPanel({ projectId, archived, onNotice }: CreativeModule
                 新建设定
               </button>
             </div>
-            <div className="novel-kind-filters" role="tablist" aria-label="按类型筛选">
+            <div className="novel-kind-filters" role="group" aria-label="按类型筛选">
               {KIND_FILTERS.map((filter) => (
                 <button
                   key={filter.value || "all"}
                   type="button"
-                  role="tab"
-                  aria-selected={kindFilter === filter.value}
+                  aria-pressed={kindFilter === filter.value}
                   className={`novel-kind-chip${kindFilter === filter.value ? " is-active" : ""}`}
                   onClick={() => setKindFilter(filter.value)}
                 >
@@ -199,9 +212,9 @@ export function WorldviewPanel({ projectId, archived, onNotice }: CreativeModule
             </div>
 
             {loadError && <LoadError message={loadError} onRetry={() => void loadEntries()} />}
-            {loading && !loadError && <p className="novel-muted">加载中…</p>}
+            {listState === "loading" && <p className="novel-muted">加载中…</p>}
 
-            {entries.length > 0 && (
+            {listState === "ready" && (
             <ul className="novel-list">
           {entries.map((entry) => (
             <li key={entry.id}>
@@ -220,33 +233,31 @@ export function WorldviewPanel({ projectId, archived, onNotice }: CreativeModule
           ))}
             </ul>
             )}
-            {!loading && !loadError && entries.length === 0 && (
+            {listState === "empty" && (
+              <div className="novel-empty-guide">
+                <p className="novel-empty-guide-title">还没有世界观设定</p>
+                <p className="novel-empty-guide-hint">
+                  用上方「新建设定」创建第一条设定，集中记录地点、势力、事件、物品与规则。
+                </p>
+              </div>
+            )}
+            {listState === "filtered" && (
               <EmptyState
                 className="novel-empty-panel"
                 framed
-                title={search.trim() || kindFilter ? "没有匹配的设定" : "还没有世界观设定"}
-                hint={
-                  search.trim() || kindFilter
-                    ? "换个关键词或切换类型；也会同时应用搜索与类型筛选。"
-                    : "设定库用于集中记录地点、势力、历史事件、物品与规则；创建后可关联到具体章节。"
-                }
+                title="没有匹配的设定"
+                hint="换个关键词或切换类型；搜索与类型筛选会同时生效。"
                 action={
-                  search.trim() || kindFilter ? (
-                    <button
-                      type="button"
-                      className="novel-btn-ghost"
-                      onClick={() => {
-                        setSearch("");
-                        setKindFilter("");
-                      }}
-                    >
-                      清空筛选
-                    </button>
-                  ) : (
-                    <button type="button" className="novel-btn" disabled={archived} onClick={startNew}>
-                      创建第一条设定
-                    </button>
-                  )
+                  <button
+                    type="button"
+                    className="novel-btn-ghost"
+                    onClick={() => {
+                      setSearch("");
+                      setKindFilter("");
+                    }}
+                  >
+                    清空筛选
+                  </button>
                 }
               />
             )}
@@ -256,17 +267,26 @@ export function WorldviewPanel({ projectId, archived, onNotice }: CreativeModule
         <div className="novel-detail" ref={detailRef}>
         {archived && <ArchivedBanner />}
 
-        {!editorOpen && !loading && (
+        {!editorOpen && listState === "error" && (
+          <p className="novel-empty-note is-error">设定列表读取失败，请在左侧重试。</p>
+        )}
+
+        {!editorOpen && listState === "empty" && (
+          <p className="novel-empty-note">
+            还没有世界观设定。创建后会在这里显示完整描述与关联章节。
+          </p>
+        )}
+
+        {!editorOpen && listState === "filtered" && (
+          <p className="novel-empty-note">当前筛选没有匹配的设定，清空筛选后可从左侧选择查看。</p>
+        )}
+
+        {!editorOpen && listState === "ready" && (
           <EmptyState
             className="novel-empty-detail"
             framed
             title="选择一条设定"
-            hint="从左侧选择地点、势力或规则条目查看详情；也可以新建一条设定并关联章节。"
-            action={
-              <button type="button" className="novel-btn" disabled={archived} onClick={startNew}>
-                新建设定条目
-              </button>
-            }
+            hint="从左侧选择地点、势力或规则条目查看详情。"
           />
         )}
 

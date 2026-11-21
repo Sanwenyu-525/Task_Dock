@@ -1,7 +1,7 @@
 /**
  * @vitest-environment jsdom
  */
-//! 小说人物模块（B2）前端测试：列表渲染、归档只读、保存失败可见。
+//! 小说人物模块（B2）前端测试：列表渲染、空状态五态、归档只读、保存失败可见。
 //! 只 mock 本目录 IPC 包装层，不 mock React/DOM。
 
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -89,6 +89,13 @@ const ref = {
   createdAt: "2026-11-16T09:00:00+00:00",
 };
 
+/** 页面上的「创建类入口」：空态下必须只剩 toolbar 那一个。 */
+function createEntries() {
+  return screen.queryAllByRole("button", {
+    name: /新建人物|创建第一个人物|新建人物档案/,
+  });
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   api.novelCharacterList.mockResolvedValue({ characters: [charA, charB] });
@@ -119,6 +126,17 @@ describe("CharactersPanel", () => {
     expect(await screen.findByText("第一章")).toBeTruthy();
   });
 
+  it("集合为空时只有 toolbar 一个创建入口，右侧不放大卡片", async () => {
+    api.novelCharacterList.mockResolvedValue({ characters: [] });
+    render(<CharactersPanel {...base} archived={false} onNotice={vi.fn()} />);
+
+    expect(await screen.findByText("还没有人物")).toBeTruthy();
+    expect(createEntries()).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "新建人物" })).toBeTruthy();
+    // 空集合不是「筛选无结果」，不应出现清空搜索。
+    expect(screen.queryByRole("button", { name: "清空搜索" })).toBeNull();
+  });
+
   it("空列表点击新建人物即可填写并保存首条人物", async () => {
     const newChar = { ...charA, id: "cnew", name: "新人物" };
     api.novelCharacterList
@@ -129,7 +147,7 @@ describe("CharactersPanel", () => {
     render(<CharactersPanel {...base} archived={false} onNotice={onNotice} />);
 
     await waitFor(() => {
-      expect(screen.getByText(/还没有人物/)).toBeTruthy();
+      expect(screen.getByText("还没有人物")).toBeTruthy();
     });
     screen.getByRole("button", { name: "新建人物" }).click();
 
@@ -149,6 +167,56 @@ describe("CharactersPanel", () => {
     });
   });
 
+  it("有数据但未选择时右侧展示选择提示且不带创建按钮", async () => {
+    render(<CharactersPanel {...base} archived={false} onNotice={vi.fn()} />);
+
+    await screen.findByText("林雷");
+    expect(screen.getByText("选择一个人物")).toBeTruthy();
+    expect(createEntries()).toHaveLength(1);
+  });
+
+  it("搜索无结果时展示清空搜索，点击后清空并重新加载全量", async () => {
+    render(<CharactersPanel {...base} archived={false} onNotice={vi.fn()} />);
+    await screen.findByText("林雷");
+
+    api.novelCharacterList.mockResolvedValue({ characters: [] });
+    fireEvent.change(screen.getByLabelText("搜索人物"), { target: { value: "无此人物" } });
+
+    await waitFor(() => {
+      expect(api.novelCharacterList).toHaveBeenCalledWith("p1", "无此人物");
+    });
+    expect(await screen.findByText("没有匹配的人物")).toBeTruthy();
+    // 筛选无结果不能退化成首次创建引导。
+    expect(screen.queryByText("还没有人物")).toBeNull();
+
+    api.novelCharacterList.mockClear();
+    screen.getByRole("button", { name: "清空搜索" }).click();
+
+    await waitFor(() => {
+      expect(api.novelCharacterList).toHaveBeenCalledWith("p1", null);
+    });
+    expect((screen.getByLabelText("搜索人物") as HTMLInputElement).value).toBe("");
+  });
+
+  it("加载失败时左侧可重试，右侧不误判为未选择", async () => {
+    api.novelCharacterList
+      .mockRejectedValueOnce(new Error("读取失败"))
+      .mockResolvedValue({ characters: [charA] });
+    render(<CharactersPanel {...base} archived={false} onNotice={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert").textContent).toContain("读取失败");
+    });
+    // 右栏只给紧凑提示，不出现第二个 alert/重试按钮，也不出现「选择一个人物」。
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+    expect(screen.getByText("人物列表读取失败，请在左侧重试。")).toBeTruthy();
+    expect(screen.queryByText("选择一个人物")).toBeNull();
+
+    screen.getByRole("button", { name: "重试" }).click();
+    expect(await screen.findByText("林雷")).toBeTruthy();
+    expect(screen.getByText("选择一个人物")).toBeTruthy();
+  });
+
   it("归档项目：新建/保存/删除入口全部置灰并展示只读原因", async () => {
     render(<CharactersPanel {...base} archived onNotice={vi.fn()} />);
     await screen.findByText("林雷");
@@ -157,6 +225,17 @@ describe("CharactersPanel", () => {
       (screen.getByRole("button", { name: "新建人物" }) as HTMLButtonElement).disabled,
     ).toBe(true);
     expect(screen.getByText(/项目已归档/)).toBeTruthy();
+  });
+
+  it("归档且集合为空时不存在可点击的创建入口", async () => {
+    api.novelCharacterList.mockResolvedValue({ characters: [] });
+    render(<CharactersPanel {...base} archived onNotice={vi.fn()} />);
+
+    expect(await screen.findByText("还没有人物")).toBeTruthy();
+    expect(screen.getByText(/项目已归档/)).toBeTruthy();
+    const entries = createEntries();
+    expect(entries).toHaveLength(1);
+    expect(entries.filter((entry) => !(entry as HTMLButtonElement).disabled)).toHaveLength(0);
   });
 
   it("保存失败时可见错误提示，不静默吞错", async () => {

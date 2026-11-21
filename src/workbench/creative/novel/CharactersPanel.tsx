@@ -148,8 +148,22 @@ export function CharactersPanel({ projectId, archived, onNotice }: CreativeModul
     resetDetail(true);
   }
 
-  const selected = characters.find((character) => character.id === selectedId) ?? null;
-  const editorOpen = creating || selected !== null;
+  // 已选中/正在新建时不依赖列表里是否还能找到该条：搜索过滤掉当前编辑项不应关闭表单。
+  const editorOpen = creating || selectedId !== null;
+
+  // 列表五态：过滤生效时的空结果与「整个集合为空」必须区分开。
+  // 已有数据时保持列表可见（保存后刷新不闪回空态），失败提示由上方 LoadError 承担。
+  const filtering = search.trim() !== "";
+  const listState: "loading" | "error" | "empty" | "filtered" | "ready" =
+    characters.length > 0
+      ? "ready"
+      : loading
+        ? "loading"
+        : loadError !== null
+          ? "error"
+          : filtering
+            ? "filtered"
+            : "empty";
 
   async function saveCharacter() {
     if (archived || saving) return;
@@ -275,9 +289,9 @@ export function CharactersPanel({ projectId, archived, onNotice }: CreativeModul
             </div>
 
             {loadError && <LoadError message={loadError} onRetry={() => void loadCharacters()} />}
-            {loading && !loadError && <p className="novel-muted">加载中…</p>}
+            {listState === "loading" && <p className="novel-muted">加载中…</p>}
 
-            {characters.length > 0 && (
+            {listState === "ready" && (
             <ul className="novel-list">
           {characters.map((character) => (
             <li key={character.id}>
@@ -296,26 +310,24 @@ export function CharactersPanel({ projectId, archived, onNotice }: CreativeModul
           ))}
             </ul>
             )}
-            {!loading && !loadError && characters.length === 0 && (
+            {listState === "empty" && (
+              <div className="novel-empty-guide">
+                <p className="novel-empty-guide-title">还没有人物</p>
+                <p className="novel-empty-guide-hint">
+                  用上方「新建人物」创建第一条档案，记录姓名、阵营、动机与人物关系。
+                </p>
+              </div>
+            )}
+            {listState === "filtered" && (
               <EmptyState
                 className="novel-empty-panel"
                 framed
-                title={search.trim() ? "没有匹配的人物" : "还没有人物"}
-                hint={
-                  search.trim()
-                    ? "换个关键词，或清空搜索查看全部人物。"
-                    : "人物档案用于记录姓名、阵营、动机与人物关系；创建后可关联章节与关系，写作时随时查阅。"
-                }
+                title="没有匹配的人物"
+                hint="换个关键词，或清空搜索查看全部人物。"
                 action={
-                  search.trim() ? (
-                    <button type="button" className="novel-btn-ghost" onClick={() => setSearch("")}>
-                      清空搜索
-                    </button>
-                  ) : (
-                    <button type="button" className="novel-btn" disabled={archived} onClick={startNew}>
-                      创建第一个人物
-                    </button>
-                  )
+                  <button type="button" className="novel-btn-ghost" onClick={() => setSearch("")}>
+                    清空搜索
+                  </button>
                 }
               />
             )}
@@ -325,17 +337,26 @@ export function CharactersPanel({ projectId, archived, onNotice }: CreativeModul
         <div className="novel-detail" ref={detailRef}>
         {archived && <ArchivedBanner />}
 
-        {!editorOpen && !loading && (
+        {!editorOpen && listState === "error" && (
+          <p className="novel-empty-note is-error">人物列表读取失败，请在左侧重试。</p>
+        )}
+
+        {!editorOpen && listState === "empty" && (
+          <p className="novel-empty-note">
+            还没有人物档案。创建后会在这里显示完整资料、人物关系与出场章节。
+          </p>
+        )}
+
+        {!editorOpen && listState === "filtered" && (
+          <p className="novel-empty-note">当前搜索没有匹配的人物，清空搜索后可从左侧选择查看。</p>
+        )}
+
+        {!editorOpen && listState === "ready" && (
           <EmptyState
             className="novel-empty-detail"
             framed
             title="选择一个人物"
-            hint="从左侧选择人物查看档案、关系与出场章节；也可以新建一条人物档案。"
-            action={
-              <button type="button" className="novel-btn" disabled={archived} onClick={startNew}>
-                新建人物档案
-              </button>
-            }
+            hint="从左侧选择人物查看档案、关系与出场章节。"
           />
         )}
 
