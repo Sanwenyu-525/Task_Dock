@@ -43,7 +43,7 @@ baseline 提交（人工选定，snap-01）
 | 状态 | 含义 | 谁推进 | 判据 |
 |---|---|---|---|
 | `developing` 开发中 | 正在改代码 | 任务负责人（`task add` / `task update`） | — |
-| `integration-ready` 待集成 | 代码完成且模块级检查通过 | 负责人 `task ready` | 已登记交付提交 + 至少 1 条在**该交付提交上真实执行**（`source=executed`）通过的检查记录；带证据的外部检查可作补充 |
+| `integration-ready` 待集成 | 代码完成且模块级检查通过 | 负责人 `task ready` | 已登记交付提交，并有至少 1 条绑定**同一提交**的通过记录（真实执行，或带证据的外部检查） |
 | `integrated` 已集成 | 改动进入快照提交 | 工具（`snapshot create` 成功） | 快照提交生成、改动全部落在声明范围 |
 | `verifying` 待验收 | 代码已包含在可用产物中 | 工具（`build` 成功） | 构建成功、有平台可用产物、产物校验值已记录、`dirty=false` |
 | `accept-passed` 验收通过 | 在指定构建版本上验收通过 | 验收 Agent（`accept --status pass`） | 有构建版本 + 验收记录（建议附证据路径） |

@@ -46,6 +46,7 @@ Get-Content docs/ARCHITECTURE.md | Select-Object -Skip <起始行减一> -First 
 | 剪贴板 | `docs/clipboard/` 下按安全、架构、测试专题检索；总览在 ARCHITECTURE「智能剪贴板」 |
 | Agent 接入与导航 | [适配器](AGENT_ADAPTERS.md)、[覆盖矩阵](../AGENT_COVERAGE_MATRIX.md)、[导航矩阵](../APP_NAVIGATION_MATRIX.md) |
 | Agent 工作空间 | [模块索引](agent-workspace/README.md)；设计与已实现状态分别核对 |
+| Personal Hub | [模块索引](personal-hub/README.md)与[架构基线](personal-hub/ARCHITECTURE_BASELINE_v1.0.md) |
 | Android 配对/同步/文件互传 | [移动端索引](mobile/README.md) + [移动端规范](../apps/mobile/AGENTS.md) |
 | 安全保险箱 | [专题索引](features/secure-vault/README.md) |
 | 诊断与资源清理 | [DIAGNOSTICS](DIAGNOSTICS.md)、[RESOURCE_CLEANUP](RESOURCE_CLEANUP.md) 对应章节 |
@@ -59,7 +60,8 @@ Get-Content docs/ARCHITECTURE.md | Select-Object -Skip <起始行减一> -First 
 - **当前规范**：维护约束、接口、行为和兼容边界；改实现时更新原归属章节，不追加一串任务日记。
 - **方案/规划**：标明 Proposed、待确认、planned 等状态；是否实施要看代码、迁移与真实验证。
 - **历史证据**：TESTING、带日期验收报告、旧版本整改记录只证明当时的范围；撤回/更正保留。
-- [BUILD_SCHEDULER](BUILD_SCHEDULER.md) 已标为移除前历史，禁止据此恢复 `sched*` 操作。
+- 构建调度器已退役，决策见 [ADR-0007](adr/0007-remove-build-scheduler.md)。旧手册和其中的验收记录可用
+  `git show 58d2d1e:docs/BUILD_SCHEDULER.md` 追溯。当前操作见 [DEVELOPMENT §7.8](DEVELOPMENT.md)。
 - 当前状态不靠全仓搜索某个旧的「PASS」推断；未确认的偏差记录待确认，不伪造历史。
 
 ## 维护与文档影响检查
@@ -67,7 +69,3 @@ Get-Content docs/ARCHITECTURE.md | Select-Object -Skip <起始行减一> -First 
 同一规则只在归属文档展开，其他入口写摘要 + 链接。新增文档仅在已有文档无合适归属时创建；
 需求、架构、ADR、API、数据库、开发记录、测试、README、ROADMAP、CHANGELOG、已知问题逐项判断影响，
 只更新实际受影响且存在的载体，不为了清单齐全创建空目录/空文档。本仓库决策目录为 `docs/adr/`。
-
-本次入口调整（2026-11-21）：压缩 AGENTS 重复的流程说明，前端检索表迁至现有 Skill 路由；
-保留原章节编号、架构红线和历史证据。大文档采用章节检索，避免搬迁历史内容导致旧引用失效。
-该调整不改变产品行为、API、数据库或 Release 状态机，也不宣称已测得实际 token 数或执行耗时改善。

@@ -29,7 +29,7 @@ Release 操作以 [INTEGRATION_BUILD](INTEGRATION_BUILD.md) 为准；规则归�
 | `npm run typecheck` | TypeScript 类型检查（`tsc --noEmit`） | 直接执行 | 提交前静态检查 |
 | `npm test` | 前端自动化测试（`vitest run`） | 直接执行 | 提交前与回归 |
 | `npm run build` | TypeScript 检查 + Vite 生产构建（产物 `dist/`） | 直接执行 | 需要产物或跑依赖 `dist/` 的 Rust 测试时 |
-| `npm run tauri build` | Tauri **Release** 安装包构建 | 直接执行 | 需要安装包/正式产物时（**不是**日常验收前置） |
+| `npm run tauri build` | 直接运行 Tauri 打包 | 直接执行 | 本地打包诊断，记录为临时工作树包 |
 | `npm run integrate -- build --snapshot <快照> --platform <p>` | 正式集成快照构建（Release 正式验收的唯一来源） | 直接执行 | Release 正式验收、正式交付 |
 
 > `npm run tauri dev` 与 `npm run dev` 的区别：后者只有浏览器里的 Vite 页面，**没有** Tauri 外壳，
@@ -67,7 +67,7 @@ npm run icons
 # 用法：node scripts/on-demand-audit.mjs dist [--json] [--entry workspace]
 node scripts/on-demand-audit.mjs dist
 
-# 构建 Windows 安装包（NSIS + MSI）
+# 本地打包诊断（NSIS + MSI），正式安装包走集成快照构建
 npm run tauri build
 # 产物：src-tauri/target/release/bundle/nsis/Task Dock_0.5.0_x64-setup.exe
 
@@ -583,6 +583,8 @@ exe 路径只通过本机诊断 IPC 返回，不写入应用日志。
 心跳与调度 provenance。`:raw` 命令保留为兼容别名。历史 `.git/taskdock-build-sched/` 日志保留，
 不自动删除、不终止仍在运行的其他会话进程。
 
+调度器移除原因见 [ADR-0007](adr/0007-remove-build-scheduler.md)。
+
 并行构建需自行协调共享的 target、dist 和端口；优先局部验证。磁盘守卫、Dev 实例复用、集成快照、
 独立构建工作区与构建日志仍保留。正式构建继续走 `npm run integrate -- build`。
 
@@ -777,21 +779,9 @@ node scripts/build-guard.mjs precheck            # 现有构建守卫保持兼�
 
 ### 8.12 统一集成、统一构建与联合验收（2026-11-16）
 
-- **正式测试安装包只来自 `integration` 分支的集成快照**，不直接打包共享工作区：快照只叠加
-  「待集成」任务的声明路径改动，未完成任务的未提交改动与更晚的 `main` 提交都不会进入产物。
-- 流程命令：`task add/check/ready`（登记与交付，`task check --commit` 绑定检查提交，省略时绑定
-  当时 `HEAD`；`task ready` 只认交付提交上的通过检查）、
-  `snapshot bootstrap|create`（基线与增量集成，含集成静态检查）、
-  `build --snapshot <id> --platform desktop|web|android`（独立构建工作区，相同「提交+平台+配置」
-  复用产物）、`accept --build <id> --task <id> --status pass|fail`（多 Agent 基于同一构建版本
-  各自验收）、`status`（汇总）。
-- 集成快照工作区固定为 `<仓库父目录>/<仓库名>-integration`（分支 `integration`），构建工作区为
-  `<仓库父目录>/<仓库名>-integration-build`（detached HEAD），两者独立锁、可并行，与 Agent 任务
-  Worktree 分开；桌面构建缓存 `src-tauri/target-integration`，直接执行并记录构建日志。
-- 记录在 `tmp/integration/{tasks,snapshots,builds,logs}`（不入库）；任务关联同时写进快照提交信息
-  （`TaskDock-Snapshot` / `TaskDock-Tasks`），因此只凭 commit 也能查到这个版本包含哪些任务。
-- 状态机、拒绝条件、退出码、记录字段、清理方式见 [INTEGRATION_BUILD.md](INTEGRATION_BUILD.md)；
-  自动化用例 `npm run integrate:test`（在临时 Git 仓库自建仓库，不读写真实工作区）。
+正式安装包来自集成快照。任务负责人先登记写入范围，再执行 `task verify --commit <交付提交>`，
+通过后用 `task ready` 标记待集成。快照、构建、验收、工作区身份和证据规则统一见
+[INTEGRATION_BUILD.md](INTEGRATION_BUILD.md) 对应阶段。工具回归使用 `npm run integrate:test`。
 
 ## 资源管理与清理
 
