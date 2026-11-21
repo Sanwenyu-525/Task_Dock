@@ -200,12 +200,14 @@ export function ProjectResourcesCard({
 
   const reload = useCallback(
     async (nextOffset: number, kind: WorkspaceResourceKind | "all") => {
+      // 每个请求都先领一个代号：即使 projectId 为空也要自增，作废上一个项目仍在途的请求。
+      const generation = ++generationRef.current;
       if (!projectId) {
         setPage(null);
         setError(null);
+        setLoading(false);
         return;
       }
-      const generation = ++generationRef.current;
       setLoading(true);
       try {
         const result = await workspaceResourceList(
@@ -232,8 +234,9 @@ export function ProjectResourcesCard({
     void reload(offset, filter);
   }, [offset, filter, reload]);
 
-  // 切项目：重置分页与筛选，避免把上一个项目的页码带过去。
+  // 切项目：重置分页与筛选，避免把上一个项目的页码与筛选带过去。
   useEffect(() => {
+    setFilter("all");
     setOffset(0);
     setPage(null);
     setError(null);

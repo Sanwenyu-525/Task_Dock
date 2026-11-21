@@ -5,7 +5,7 @@
 //! 后端数据口径由 Rust 侧测试保证。
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 const bridge = vi.hoisted(() => ({
   workspaceProjectProgress: vi.fn(),
@@ -23,6 +23,14 @@ afterEach(() => {
   cleanup();
   vi.clearAllMocks();
 });
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
 
 const progress = (over: Record<string, unknown> = {}) => ({
   itemsTotal: 4,
@@ -164,6 +172,94 @@ describe("ProjectResourcesCard", () => {
     bridge.notesList.mockResolvedValue([]);
     render(<ProjectResourcesCard projectId="p1" archived />);
 
+    expect(await screen.findByText(/项目已归档：资源只读/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /关联$/ })).toBeNull();
+  });
+
+  it("切换项目：筛选回到全部、分页回到 0，请求带 null 类型", async () => {
+    bridge.workspaceResourceList.mockResolvedValue(emptyPage);
+    bridge.notesList.mockResolvedValue([]);
+    const { rerender } = render(<ProjectResourcesCard projectId="p1" archived={false} />);
+    await screen.findByText(/还没有登记项目资源/);
+
+    fireEvent.click(screen.getByRole("combobox", { name: "筛选资源类型" }));
+    fireEvent.click(await screen.findByRole("option", { name: "产物" }));
+
+    await waitFor(() => expect(bridge.workspaceResourceList).toHaveBeenCalledWith("p1", "artifact", 0, 50));
+    expect(screen.getByRole("combobox", { name: "筛选资源类型" }).textContent).toContain("产物");
+
+    rerender(<ProjectResourcesCard projectId="p2" archived={false} />);
+
+    await waitFor(() => expect(bridge.workspaceResourceList).toHaveBeenLastCalledWith("p2", null, 0, 50));
+    expect(screen.getByRole("combobox", { name: "筛选资源类型" }).textContent).toContain("全部类型");
+  });
+
+  it("旧项目在途响应不会覆盖新项目资源", async () => {
+    const p1 = deferred<Record<string, unknown>>();
+    const pageB = {
+      links: [link({ id: "b1", projectId: "p2", label: "B项目资源" })],
+      total: 1,
+      offset: 0,
+      limit: 50,
+      hasMore: false,
+    };
+    bridge.workspaceResourceList.mockImplementation((projectId: string) =>
+      projectId === "p1" ? p1.promise : Promise.resolve(pageB),
+    );
+    bridge.notesList.mockResolvedValue([]);
+
+    const { rerender } = render(<ProjectResourcesCard projectId="p1" archived={false} />);
+    await waitFor(() => expect(bridge.workspaceResourceList).toHaveBeenCalledWith("p1", null, 0, 50));
+
+    rerender(<ProjectResourcesCard projectId="p2" archived={false} />);
+    expect(await screen.findByText("B项目资源")).toBeTruthy();
+
+    // 旧项目请求最后返回，其代号已被作废，不应改写界面。
+    await act(async () => {
+      p1.resolve({
+        links: [link({ id: "a1", projectId: "p1", label: "A项目资源" })],
+        total: 1,
+        offset: 0,
+        limit: 50,
+        hasMore: false,
+      });
+    });
+
+    expect(screen.queryByText("A项目资源")).toBeNull();
+    expect(screen.getByText("B项目资源")).toBeTruthy();
+  });
+
+  it("有数据时两类条目与失效提示都渲染，下一页带上正确 offset", async () => {
+    bridge.workspaceResourceList.mockResolvedValue({
+      links: [
+        link(),
+        link({ id: "r2", kind: "artifact", label: "报告", targetExists: false }),
+      ],
+      total: 120,
+      offset: 0,
+      limit: 50,
+      hasMore: true,
+    });
+    bridge.notesList.mockResolvedValue([]);
+    render(<ProjectResourcesCard projectId="p1" archived={false} />);
+
+    expect(await screen.findByText("设定草稿")).toBeTruthy();
+    expect(screen.getByText("报告")).toBeTruthy();
+    expect(screen.getByText("当前不可用")).toBeTruthy();
+    expect(screen.getByText(/共 120 条/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+    expect(bridge.workspaceResourceList).toHaveBeenCalledWith("p1", null, 50, 50);
+  });
+
+  it("切换到归档项目后新增关联按钮消失", async () => {
+    bridge.workspaceResourceList.mockResolvedValue(emptyPage);
+    bridge.notesList.mockResolvedValue([]);
+    const { rerender } = render(<ProjectResourcesCard projectId="p1" archived={false} />);
+    expect(await screen.findByText(/还没有登记项目资源/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /关联$/ })).toBeTruthy();
+
+    rerender(<ProjectResourcesCard projectId="p2" archived />);
     expect(await screen.findByText(/项目已归档：资源只读/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: /关联$/ })).toBeNull();
   });
