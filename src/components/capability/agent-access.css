@@ -229,3 +229,10 @@
   color: var(--status-error);
   font-weight: 600;
 }
+
+/* 职责边界说明（项目中枢 S7）：Agent 接入与项目资源分开管理。 */
+.capability-panel .agent-access-scope {
+  margin: 6px 0 8px;
+  font-size: 11px;
+  line-height: 1.5;
+}

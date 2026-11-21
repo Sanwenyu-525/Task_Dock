@@ -4750,6 +4750,9 @@ export interface ProjectHubPhase {
   sortOrder: number;
   taskCount: number;
   completedTaskCount: number;
+  /** 阶段内功能数（功能通过 planning_features.milestone_id 关联阶段）。 */
+  featureCount: number;
+  completedFeatureCount: number;
 }
 
 export interface ProjectHubMilestone {
@@ -4759,6 +4762,8 @@ export interface ProjectHubMilestone {
   targetDate: string | null;
   phaseId: string | null;
   sortOrder: number;
+  featureCount: number;
+  completedFeatureCount: number;
 }
 
 export interface ProjectHubCapability {
@@ -4777,6 +4782,8 @@ export interface ProjectHubCapability {
   phaseId: string | null;
   resourceCount: number;
   availableResourceCount: number;
+  /** 已做过可用性校验的关联数；0 且 resourceCount>0 表示「关联了但从未校验」。 */
+  verifiedResourceCount: number;
 }
 
 export interface ProjectHubTask {
@@ -4811,12 +4818,26 @@ export interface ProjectHubEvent {
   createdAt: string;
 }
 
+export interface ProjectHubFeature {
+  id: string;
+  title: string;
+  description: string;
+  status: string;
+  priority: string;
+  /** 所属阶段（planning_features.milestone_id 指向阶段行）。 */
+  milestoneId: string | null;
+  acceptanceCriteria: string;
+  targetDate: string | null;
+  sortOrder: number;
+}
+
 export interface ProjectHubSnapshot {
   project: ProjectHubProjectSummary;
   planId: string | null;
   goals: ProjectHubGoal[];
   phases: ProjectHubPhase[];
   milestones: ProjectHubMilestone[];
+  features: ProjectHubFeature[];
   capabilities: ProjectHubCapability[];
   tasks: ProjectHubTask[];
   deliverables: ProjectHubDeliverable[];
@@ -4851,6 +4872,17 @@ export interface ProjectHubCreateTaskInput {
   priority?: number | null;
 }
 
+/** 功能草案：随项目同事务落库到 planning_features。 */
+export interface ProjectHubCreateFeatureInput {
+  title: string;
+  /** 验收标准；空串表示尚未填写。 */
+  acceptance?: string;
+  /** P0 / P1 / P2。 */
+  priority?: string;
+  /** 所属阶段在 phases 数组中的下标；null = 暂未分阶段。 */
+  phaseIndex?: number | null;
+}
+
 export interface ProjectHubCreateCapabilityInput {
   name: string;
   category?: string;
@@ -4871,6 +4903,36 @@ export interface ProjectHubCreateInput {
   clientRequestId?: string | null;
   goals?: ProjectHubCreateGoalInput[];
   phases?: ProjectHubCreatePhaseInput[];
+  features?: ProjectHubCreateFeatureInput[];
   tasks?: ProjectHubCreateTaskInput[];
   capabilities?: ProjectHubCreateCapabilityInput[];
+}
+
+/** 可绑定资源候选：能力是「能不能做」，资源是「有没有可调用的东西」。 */
+export interface ProjectHubResourceCandidate {
+  kind: string;
+  id: string;
+  label: string;
+  /** global / project */
+  scope: string;
+  availability: string;
+  detail: string;
+}
+
+export interface ProjectHubResourceLink {
+  id: string;
+  capabilityId: string;
+  capabilityName: string;
+  resourceKind: string;
+  resourceId: string;
+  label: string;
+  availability: string;
+  lastCheckedAt: string | null;
+  createdAt: string;
+}
+
+export interface ProjectHubResourceLinkInput {
+  capabilityId: string;
+  resourceKind: string;
+  resourceId: string;
 }

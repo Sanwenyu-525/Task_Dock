@@ -13,6 +13,7 @@ use tauri::State;
 use crate::db::Db;
 use crate::error::{AppError, AppResult};
 
+use super::resources::{self, CapabilityResourceLink, ResourceCandidate, ResourceLinkInput};
 use super::service::{self, CreateProjectInput, ProjectHubSnapshot, ProjectSummary};
 
 fn background_error(context: &str, error: tauri::Error) -> AppError {
@@ -49,6 +50,81 @@ pub async fn project_hub_create_project(
     tauri::async_runtime::spawn_blocking(move || service::create_project(db.as_ref(), input))
         .await
         .map_err(|error| background_error("项目创建失败", error))?
+}
+
+// ── 项目资源（能力 ↔ 资源） ──────────────────────────────────────────
+
+/// 可绑定资源候选：只返回当前项目作用域内真实存在的资源。
+#[tauri::command]
+pub async fn project_hub_resource_candidates(
+    db: State<'_, Arc<Db>>,
+    project_id: String,
+    kind: Option<String>,
+    query: Option<String>,
+) -> AppResult<Vec<ResourceCandidate>> {
+    let db = db.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        resources::candidates(db.as_ref(), &project_id, kind.as_deref(), query.as_deref())
+    })
+    .await
+    .map_err(|error| background_error("项目资源查询失败", error))?
+}
+
+/// 项目已关联资源清单。
+#[tauri::command]
+pub async fn project_hub_resource_links(
+    db: State<'_, Arc<Db>>,
+    project_id: String,
+) -> AppResult<Vec<CapabilityResourceLink>> {
+    let db = db.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || resources::links(db.as_ref(), &project_id))
+        .await
+        .map_err(|error| background_error("项目资源清单读取失败", error))?
+}
+
+/// 绑定资源到能力（幂等）。
+#[tauri::command]
+pub async fn project_hub_resource_link(
+    db: State<'_, Arc<Db>>,
+    project_id: String,
+    input: ResourceLinkInput,
+) -> AppResult<CapabilityResourceLink> {
+    let db = db.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        resources::link(db.as_ref(), &project_id, input)
+    })
+    .await
+    .map_err(|error| background_error("项目资源关联失败", error))?
+}
+
+/// 解除资源关联（只删关联，不删资源本体）。
+#[tauri::command]
+pub async fn project_hub_resource_unlink(
+    db: State<'_, Arc<Db>>,
+    project_id: String,
+    link_id: String,
+) -> AppResult<()> {
+    let db = db.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        resources::unlink(db.as_ref(), &project_id, &link_id)
+    })
+    .await
+    .map_err(|error| background_error("项目资源解除关联失败", error))?
+}
+
+/// 重新校验资源可用性。
+#[tauri::command]
+pub async fn project_hub_resource_validate(
+    db: State<'_, Arc<Db>>,
+    project_id: String,
+    link_id: String,
+) -> AppResult<CapabilityResourceLink> {
+    let db = db.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        resources::validate(db.as_ref(), &project_id, &link_id)
+    })
+    .await
+    .map_err(|error| background_error("项目资源可用性校验失败", error))?
 }
 
 // ── 工作目录校验 ─────────────────────────────────────────────────────

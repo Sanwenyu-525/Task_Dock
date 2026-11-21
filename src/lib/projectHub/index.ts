@@ -15,3 +15,5 @@ export * from "./task";
 export * from "./workspace";
 export * from "./resource";
 export * from "./overview";
+export * from "./hubReadModel";
+export * from "./requestId";

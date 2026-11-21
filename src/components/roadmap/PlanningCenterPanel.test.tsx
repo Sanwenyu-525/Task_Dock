@@ -323,14 +323,14 @@ describe("项目总览", () => {
     expect(screen.getByLabelText("项目概览")).toBeTruthy();
   });
 
-  it("删除项目必须确认且明确影响面（功能/步骤/历史）", async () => {
+  it("删除计划必须确认且明确影响面（功能/步骤/历史）", async () => {
     const user = await renderWithProjects();
-    await user.click(screen.getByRole("button", { name: "删除项目" }));
-    const dialog = await screen.findByRole("dialog", { name: "删除项目" }, { timeout: WAIT.timeout });
+    await user.click(screen.getByRole("button", { name: "删除计划" }));
+    const dialog = await screen.findByRole("dialog", { name: "删除计划" }, { timeout: WAIT.timeout });
     expect(within(dialog).getByText(/3 个功能/)).toBeTruthy();
     expect(within(dialog).getByText(/进度历史/)).toBeTruthy();
     bridge.planningDeleteProject.mockResolvedValue(undefined);
-    await user.click(within(dialog).getByRole("button", { name: "删除项目" }));
+    await user.click(within(dialog).getByRole("button", { name: "删除计划" }));
     await waitFor(() => expect(bridge.planningDeleteProject).toHaveBeenCalledWith("p1"), WAIT);
   });
 });

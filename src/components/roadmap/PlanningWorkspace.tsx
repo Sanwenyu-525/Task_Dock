@@ -29,7 +29,7 @@ const VIEW_TABS: { key: PlanningView; label: string; icon: typeof LayoutDashboar
   { key: "milestones", label: "里程碑", icon: Flag },
 ];
 
-export default function PlanningWorkspace() {
+export default function PlanningWorkspace({ initialProjectId }: { initialProjectId?: string | null } = {}) {
   const projects = usePlanningStore((s) => s.projects);
   const projectsLoading = usePlanningStore((s) => s.projectsLoading);
   const projectsError = usePlanningStore((s) => s.projectsError);
@@ -59,6 +59,17 @@ export default function PlanningWorkspace() {
     const first = projects.find((p) => !p.archived) ?? projects[0];
     if (first) void selectProject(first.id);
   }, [projects, activeProjectId, selectProject]);
+
+  // 兼容深链：项目中枢传入的 active 计划 ID 优先定位（目标不存在时静默回落到默认选择）。
+  const deepLinkApplied = useRef(false);
+  useEffect(() => {
+    if (deepLinkApplied.current) return;
+    if (!initialProjectId) return;
+    const target = projects.find((p) => p.id === initialProjectId);
+    if (!target) return;
+    deepLinkApplied.current = true;
+    if (activeProjectId !== initialProjectId) void selectProject(initialProjectId);
+  }, [projects, initialProjectId, activeProjectId, selectProject]);
 
   const switchView = (next: PlanningView) => {
     // 手动切换视图时清空跳转定位，避免旧看板/里程碑的定位残留

@@ -447,6 +447,14 @@ export default function AgentAccessSection() {
       {error ? <div className="agent-access-error">{error}</div> : null}
       {notice ? <div className="agent-access-notice">{notice}</div> : null}
 
+      {/* 职责边界（项目中枢 S7）：Agent 接入属于「Agent 协作与接入体系」，
+          不是项目资源。资源关联（知识库 / Skill / MCP）请到「项目中枢 → 项目资源」。
+          能力中心的 capability 路由暂时保留兼容，等新入口完成真实验收再调整导航。 */}
+      <p className="cap-muted agent-access-scope">
+        本面板只负责 Agent 身份、权限授权、文件导入审批、交接、同步与冲突处理；知识库 / Skill / MCP
+        等资源关联在「项目中枢 → 项目资源」中管理。
+      </p>
+
       <div className="cap-tabs agent-access-tabs" role="tablist" aria-label={t("cap.tab.agent")}>
         {SUB_TABS.map((item) => {
           const Icon = item.icon;

@@ -19,10 +19,10 @@ use task_dock_lib::commands::project_workspace::{
 use task_dock_lib::db::Db;
 use task_dock_lib::error::AppError;
 use task_dock_lib::project_hub::service::{
-    activate_plan, create_project, create_project_plan, delete_plan, delete_project, get_project,
-    list_projects, validate_project_integrity, CreateCapabilityInput, CreateGoalInput,
-    CreatePhaseInput, CreatePlanInput, CreateProjectInput, CreateProjectRootInput, CreateTaskInput,
-    ProjectPatch as RootPatch, ProjectSummary,
+    activate_plan, archive_plan, create_project, create_project_plan, delete_plan, delete_project,
+    get_project, list_projects, validate_project_integrity, CreateCapabilityInput, CreateFeatureInput,
+    CreateGoalInput, CreatePhaseInput, CreatePlanInput, CreateProjectInput, CreateProjectRootInput,
+    CreateTaskInput, ProjectPatch as RootPatch, ProjectSummary,
 };
 
 fn memdb() -> Db {
@@ -97,6 +97,12 @@ fn rich_input(request_id: &str) -> CreateProjectInput {
             target_date: None,
             start_date: None,
             milestones: vec![],
+        }],
+        features: vec![CreateFeatureInput {
+            title: "搭建世界观框架".into(),
+            acceptance: "能列出主要设定".into(),
+            priority: Some("P0".into()),
+            phase_index: Some(0),
         }],
         tasks: vec![CreateTaskInput {
             title: "写世界观大纲".into(),
@@ -300,6 +306,8 @@ fn planning_archive_project_does_not_archive_project_root() {
             plan.id
         ),
     );
+    // 归档当前计划需要合法继任者：先建一个未归档计划。
+    let successor = create_second_plan(&db, &project_id, "继任计划");
 
     let archived = archive_project_impl(&db, plan.id.clone(), true).unwrap();
     assert!(archived.archived);
@@ -310,6 +318,14 @@ fn planning_archive_project_does_not_archive_project_root() {
         ),
         "active",
         "planning_archive_project 不得归档项目根"
+    );
+    assert_eq!(
+        text(
+            &db,
+            &format!("SELECT active_plan_id FROM workspace_projects WHERE id = '{project_id}'")
+        ),
+        successor,
+        "归档当前计划后必须切换到未归档继任者"
     );
 
     // 反向：项目归档也不改写计划状态
@@ -323,6 +339,238 @@ fn planning_archive_project_does_not_archive_project_root() {
             )
         ),
         "planning"
+    );
+}
+
+/// 建一个同项目、非 active 的计划容器。
+fn create_second_plan(db: &Db, project_id: &str, name: &str) -> String {
+    create_project_plan(
+        db,
+        CreatePlanInput {
+            project_id: project_id.to_string(),
+            name: Some(name.to_string()),
+            description: None,
+            target_date: None,
+            status: None,
+            template_id: None,
+            make_active: false,
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn archive_active_plan_switches_to_unarchived_successor() {
+    let db = memdb();
+    let plan = create_project_impl(&db, proj_input("归档切换")).unwrap();
+    let project_id = text(
+        &db,
+        &format!(
+            "SELECT workspace_project_id FROM planning_projects WHERE id = '{}'",
+            plan.id
+        ),
+    );
+    let successor = create_second_plan(&db, &project_id, "第二计划");
+
+    archive_plan(&db, &plan.id, true).unwrap();
+
+    assert_eq!(
+        count(
+            &db,
+            &format!(
+                "SELECT COUNT(*) FROM planning_projects WHERE id = '{}' AND archived = 1",
+                plan.id
+            )
+        ),
+        1,
+        "当前计划必须被归档"
+    );
+    assert_eq!(
+        count(
+            &db,
+            &format!(
+                "SELECT COUNT(*) FROM planning_projects
+                 WHERE workspace_project_id = '{project_id}' AND is_active = 1"
+            )
+        ),
+        1,
+        "同一项目只能有一个 active 计划"
+    );
+    assert_eq!(
+        text(
+            &db,
+            &format!("SELECT active_plan_id FROM workspace_projects WHERE id = '{project_id}'")
+        ),
+        successor
+    );
+    assert_eq!(
+        count(
+            &db,
+            &format!(
+                "SELECT COUNT(*) FROM planning_projects
+                 WHERE workspace_project_id = '{project_id}' AND is_active = 1 AND archived = 1"
+            )
+        ),
+        0,
+        "active 计划不得处于 archived 状态"
+    );
+    let report = validate_project_integrity(&db, &project_id).unwrap();
+    assert!(report.ok, "归档切换后完整性必须通过: {:?}", report.blocking);
+}
+
+#[test]
+fn archive_last_active_plan_without_successor_is_rejected() {
+    let db = memdb();
+    let plan = create_project_impl(&db, proj_input("没有继任者")).unwrap();
+    let project_id = text(
+        &db,
+        &format!(
+            "SELECT workspace_project_id FROM planning_projects WHERE id = '{}'",
+            plan.id
+        ),
+    );
+
+    let error = archive_plan(&db, &plan.id, true).unwrap_err();
+    assert!(
+        error.to_string().contains("继任"),
+        "归档当前计划必须要求合法继任者: {error}"
+    );
+    assert_eq!(
+        count(
+            &db,
+            &format!(
+                "SELECT COUNT(*) FROM planning_projects WHERE id = '{}' AND archived = 1",
+                plan.id
+            )
+        ),
+        0,
+        "被拒绝的归档不得落库"
+    );
+    let report = validate_project_integrity(&db, &project_id).unwrap();
+    assert!(report.ok, "拒绝归档后项目仍必须自洽: {:?}", report.blocking);
+}
+
+#[test]
+fn activating_archived_plan_is_rejected() {
+    let db = memdb();
+    let plan = create_project_impl(&db, proj_input("激活归档")).unwrap();
+    let project_id = text(
+        &db,
+        &format!(
+            "SELECT workspace_project_id FROM planning_projects WHERE id = '{}'",
+            plan.id
+        ),
+    );
+    let successor = create_second_plan(&db, &project_id, "第二计划");
+    archive_plan(&db, &plan.id, true).unwrap();
+
+    let error = activate_plan(&db, &plan.id).unwrap_err();
+    assert!(
+        error.to_string().contains("归档"),
+        "归档计划不得直接激活: {error}"
+    );
+    assert_eq!(
+        text(
+            &db,
+            &format!("SELECT active_plan_id FROM workspace_projects WHERE id = '{project_id}'")
+        ),
+        successor
+    );
+
+    // 显式恢复后可以激活
+    archive_plan(&db, &plan.id, false).unwrap();
+    activate_plan(&db, &plan.id).unwrap();
+    assert_eq!(
+        text(
+            &db,
+            &format!("SELECT active_plan_id FROM workspace_projects WHERE id = '{project_id}'")
+        ),
+        plan.id
+    );
+}
+
+#[test]
+fn integrity_detects_archived_active_plan() {
+    let db = memdb();
+    let plan = create_project_impl(&db, proj_input("脏数据")).unwrap();
+    let project_id = text(
+        &db,
+        &format!(
+            "SELECT workspace_project_id FROM planning_projects WHERE id = '{}'",
+            plan.id
+        ),
+    );
+    // 直接制造脏数据：active 计划同时处于 archived。
+    db.with_conn(|c| {
+        c.execute(
+            "UPDATE planning_projects SET archived = 1 WHERE id = ?1",
+            rusqlite::params![plan.id],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+
+    let report = validate_project_integrity(&db, &project_id).unwrap();
+    assert!(!report.ok, "完整性校验必须发现 archived active 计划");
+    assert!(
+        report
+            .blocking
+            .iter()
+            .any(|item| item.contains("archived")),
+        "阻塞原因必须指出 archived 状态: {:?}",
+        report.blocking
+    );
+}
+
+#[test]
+fn delete_active_plan_promotes_only_unarchived_successor() {
+    let db = memdb();
+    let plan = create_project_impl(&db, proj_input("删除当前计划")).unwrap();
+    let project_id = text(
+        &db,
+        &format!(
+            "SELECT workspace_project_id FROM planning_projects WHERE id = '{}'",
+            plan.id
+        ),
+    );
+    let successor = create_second_plan(&db, &project_id, "第二计划");
+    let archived_plan = create_second_plan(&db, &project_id, "已归档计划");
+    archive_plan(&db, &archived_plan, true).unwrap();
+
+    // 制造「当前计划 + 唯一未归档继任者已归档」：把当前计划切到 plan.id，
+    // 并让已归档计划成为唯一候选（successor 也归档）。
+    activate_plan(&db, &successor).unwrap();
+    archive_plan(&db, &successor, true).unwrap();
+    archive_plan(&db, &plan.id, false).unwrap();
+    db.with_conn(|c| {
+        c.execute(
+            "UPDATE planning_projects SET is_active = 0 WHERE id = ?1",
+            rusqlite::params![successor],
+        )?;
+        c.execute(
+            "UPDATE planning_projects SET is_active = 1 WHERE id = ?1",
+            rusqlite::params![plan.id],
+        )?;
+        c.execute(
+            "UPDATE workspace_projects SET active_plan_id = ?1 WHERE id = ?2",
+            rusqlite::params![plan.id, project_id],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+
+    let error = delete_plan(&db, &plan.id).unwrap_err();
+    assert!(
+        error.to_string().contains("继任"),
+        "没有未归档继任者时必须拒绝删除: {error}"
+    );
+    assert_eq!(
+        count(
+            &db,
+            &format!("SELECT COUNT(*) FROM planning_projects WHERE id = '{}'", plan.id)
+        ),
+        1,
+        "被拒绝的删除不得落库"
     );
 }
 

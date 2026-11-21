@@ -301,6 +301,9 @@ import type {
   ProjectHubProjectSummary,
   ProjectHubSnapshot,
   ProjectHubCreateInput,
+  ProjectHubResourceCandidate,
+  ProjectHubResourceLink,
+  ProjectHubResourceLinkInput,
 } from "./contracts/models";
 
 
@@ -2962,6 +2965,26 @@ export const projectHubGetProject = (projectId: string) =>
 
 export const projectHubCreateProject = (input: ProjectHubCreateInput) =>
   invoke<ProjectHubSnapshot>("project_hub_create_project", { input });
+
+/** 可绑定资源候选（知识库 / Skill / MCP / Agent）；只返回当前项目作用域内的真实资源。 */
+export const projectHubResourceCandidates = (projectId: string, kind?: string, query?: string) =>
+  invoke<ProjectHubResourceCandidate[]>("project_hub_resource_candidates", { projectId, kind, query });
+
+/** 项目已关联的资源清单。 */
+export const projectHubResourceLinks = (projectId: string) =>
+  invoke<ProjectHubResourceLink[]>("project_hub_resource_links", { projectId });
+
+/** 绑定资源到能力（幂等）。 */
+export const projectHubResourceLink = (projectId: string, input: ProjectHubResourceLinkInput) =>
+  invoke<ProjectHubResourceLink>("project_hub_resource_link", { projectId, input });
+
+/** 解除资源关联（只删关联，不删资源本体）。 */
+export const projectHubResourceUnlink = (projectId: string, linkId: string) =>
+  invoke<void>("project_hub_resource_unlink", { projectId, linkId });
+
+/** 重新校验资源可用性。 */
+export const projectHubResourceValidate = (projectId: string, linkId: string) =>
+  invoke<ProjectHubResourceLink>("project_hub_resource_validate", { projectId, linkId });
 
 /** 工作目录校验原始结果（`workspace_path_check`）：只含事实，不含 canonicalize 后的路径。 */
 export interface WorkspacePathCheckResult {

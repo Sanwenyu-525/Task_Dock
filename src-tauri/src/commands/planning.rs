@@ -796,21 +796,18 @@ pub fn planning_update_project(
 
 /// 归档 / 恢复：只改变计划的 `archived` 标记，**不修改项目根生命周期状态**
 /// （项目归档统一走 ProjectService / 工作空间项目状态接口）。
+///
+/// 不变量由 `archive_plan_tx` 保证：归档当前计划必须存在未归档继任者并在同一事务内切换，
+/// 否则返回 `Conflict`；恢复只清标记，不自动激活。
 pub fn archive_project_impl(
     db: &Db,
     id: String,
     archived: bool,
 ) -> AppResult<PlanningProject> {
-    let now = now_iso();
     db.with_transaction(|tx| {
         // 写操作顺带把旧数据补链到项目根，保证计划始终有合法 workspace_project_id。
         crate::project_hub::service::ensure_project_for_plan_tx(tx, &id)?;
-        tx.execute(
-            "UPDATE planning_projects SET archived = ?1, updated_at = ?2 WHERE id = ?3",
-            rusqlite::params![archived as i64, now, id],
-        )
-        .map_err(AppError::from)?;
-        Ok(())
+        crate::project_hub::service::archive_plan_tx(tx, &id, archived)
     })?;
     db.with_read(|conn| load_project_tx(conn, &id))
 }

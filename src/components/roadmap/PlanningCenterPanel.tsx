@@ -22,7 +22,13 @@ type Source = "hub" | "mine" | "builtin" | "collab";
 
 export default function PlanningCenterPanel() {
   const [source, setSource] = useState<Source>("hub");
+  /** 兼容深链：项目中枢把当前 active 计划 ID 交给规划编辑器定位项目。 */
+  const [planningTarget, setPlanningTarget] = useState<string | null>(null);
   const { t } = useLocale();
+  const openPlanning = (planId: string | null) => {
+    setPlanningTarget(planId);
+    setSource("mine");
+  };
   return (
     <div className="planning-panel page-fill">
       {/* 页面级页头（2026-11-15 统一）；项目中枢为默认入口，原规划编辑保留。 */}
@@ -66,9 +72,9 @@ export default function PlanningCenterPanel() {
         </div>
       </div>
       {source === "hub" ? (
-        <ProjectHubPanel />
+        <ProjectHubPanel onOpenPlanning={openPlanning} />
       ) : source === "mine" ? (
-        <PlanningWorkspace />
+        <PlanningWorkspace initialProjectId={planningTarget} />
       ) : source === "builtin" ? (
         <FeatureRoadmapPanel />
       ) : (

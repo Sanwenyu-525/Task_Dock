@@ -1,9 +1,11 @@
-//! 项目中枢（v78）：项目总览 / 规划 / 能力 / 执行 四视图。
+//! 项目中枢（v78）：项目总览 / 目标与规划 / 功能与看板 / 能力 / 项目资源 / 执行。
 //!
 //! 交互原则：
 //! - 默认入口是「你想完成什么？」自然语言描述；模板与手动创建保留为并列入口。
 //! - 草案先预览、可改名/改目标，确认后才写库；没有 AI 时完全走本地解析。
 //! - 进度与能力准备度使用已测试的领域函数；数据不足显示「待评估」，不编造百分比。
+//! - 创建请求带稳定 `clientRequestId`：同一草案重试幂等，参数变化自动换 ID。
+//! - 规划编辑仍由既有 PlanningWorkspace 承担（兼容深链），本面板不复制第二套写路径。
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -14,98 +16,74 @@ import {
   CheckCircle2,
   CircleDashed,
   FolderOpen,
+  KanbanSquare,
   Layers,
   LayoutDashboard,
+  Link2,
   ListChecks,
   Plus,
   Sparkles,
   Target,
+  Unlink,
 } from "lucide-react";
 import {
   openProjectWorkspaceWindow,
   projectHubCreateProject,
   projectHubGetProject,
   projectHubListProjects,
+  projectHubResourceCandidates,
+  projectHubResourceLink,
+  projectHubResourceLinks,
+  projectHubResourceUnlink,
+  projectHubResourceValidate,
   type ProjectHubCreateInput,
   type ProjectHubProjectSummary,
+  type ProjectHubResourceCandidate,
+  type ProjectHubResourceLink,
   type ProjectHubSnapshot,
 } from "../../lib/bridge";
 import {
+  buildCapabilityInput,
+  buildPhaseSummaries,
+  buildProgressInput,
   calculateCapabilityReadiness,
+  calculateProjectProgress,
+  clearRequestIdState,
   cloneProjectDraft,
+  createRequestId,
+  currentPhaseOf,
   generateProjectDraft,
   parseProjectIntent,
+  requestSignature,
+  resolveRequestId,
   KIND_LABELS,
 } from "../../lib/projectHub";
 import type { ProjectDraft, ProjectKind } from "../../lib/projectHub/types";
 import { Dialog } from "../ui/Dialog";
 import "./project-hub.css";
 
-type HubView = "overview" | "planning" | "capability" | "execution";
+type HubView = "overview" | "planning" | "features" | "capability" | "resources" | "execution";
 type CreateMode = "intent" | "template" | "manual";
 
 const VIEW_TABS: { key: HubView; label: string; icon: typeof LayoutDashboard }[] = [
   { key: "overview", label: "总览", icon: LayoutDashboard },
-  { key: "planning", label: "规划", icon: Layers },
+  { key: "planning", label: "目标与规划", icon: Layers },
+  { key: "features", label: "功能与看板", icon: KanbanSquare },
   { key: "capability", label: "能力", icon: Boxes },
+  { key: "resources", label: "项目资源", icon: Link2 },
   { key: "execution", label: "执行", icon: ListChecks },
 ];
 
 const KIND_OPTIONS: ProjectKind[] = ["novel", "game", "ai_comic", "general", "development"];
 
-function percent(completed: number, total: number): number | null {
-  if (total <= 0) return null;
-  return Math.round((completed / total) * 100);
-}
-
-function phasePercent(snapshot: ProjectHubSnapshot): number | null {
-  if (snapshot.phases.length === 0) return null;
-  const finished = snapshot.phases.filter(
-    (phase) => phase.taskCount > 0 && phase.completedTaskCount === phase.taskCount,
-  ).length;
-  return Math.round((finished / snapshot.phases.length) * 100);
-}
-
-function currentPhase(snapshot: ProjectHubSnapshot) {
-  return (
-    snapshot.phases.find(
-      (phase) => phase.taskCount > 0 && phase.completedTaskCount < phase.taskCount,
-    ) ?? snapshot.phases[0] ?? null
-  );
-}
-
-function readiness(snapshot: ProjectHubSnapshot) {
-  const requirements = snapshot.capabilities.map((capability) => ({
-    capabilityId: capability.capabilityId,
-    name: capability.name,
-    category: capability.category as "human" | "tool" | "ai" | "agent" | "external",
-    necessity: capability.necessity as "required" | "recommended" | "optional",
-    phaseId: capability.phaseId,
-    assessmentLevel: capability.assessmentLevel as
-      | "expert"
-      | "proficient"
-      | "basic"
-      | "learning"
-      | "none"
-      | null,
-    libraryMastery: capability.mastery as
-      | "expert"
-      | "proficient"
-      | "basic"
-      | "learning"
-      | "none"
-      | "unknown",
-    resource:
-      capability.availableResourceCount > 0
-        ? ("available" as const)
-        : capability.resourceCount > 0
-          ? ("partial" as const)
-          : ("unknown" as const),
-    impact: capability.impact,
-    alternative: capability.alternative,
-  }));
-  return calculateCapabilityReadiness(requirements);
-}
+const FEATURE_COLUMNS: { key: string; label: string }[] = [
+  { key: "planned", label: "待开始" },
+  { key: "in_progress", label: "进行中" },
+  { key: "review", label: "评审中" },
+  { key: "completed", label: "已完成" },
+  { key: "blocked", label: "受阻" },
+  { key: "paused", label: "已暂停" },
+];
 
 function readinessLabel(label: string): string {
   return {
@@ -116,7 +94,33 @@ function readinessLabel(label: string): string {
   }[label] ?? "待评估";
 }
 
-export default function ProjectHubPanel() {
+function availabilityLabel(value: string): string {
+  return {
+    available: "可用",
+    partial: "部分可用",
+    unavailable: "不可用",
+    unknown: "未校验",
+  }[value] ?? value;
+}
+
+function resourceKindLabel(value: string): string {
+  return {
+    knowledge: "知识库",
+    skill: "Skill",
+    mcp: "MCP",
+    agent: "Agent",
+    tool: "工具",
+    template: "模板",
+    workflow: "工作流",
+  }[value] ?? value;
+}
+
+export interface ProjectHubPanelProps {
+  /** 打开既有规划编辑器（兼容深链）：传入当前 active 计划 ID。 */
+  onOpenPlanning?: (planId: string | null) => void;
+}
+
+export default function ProjectHubPanel({ onOpenPlanning }: ProjectHubPanelProps = {}) {
   const [projects, setProjects] = useState<ProjectHubProjectSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [snapshot, setSnapshot] = useState<ProjectHubSnapshot | null>(null);
@@ -167,10 +171,18 @@ export default function ProjectHubPanel() {
   }, [selectedId]);
 
   const active = snapshot;
-  const current = active ? currentPhase(active) : null;
-  const status = active ? readiness(active) : null;
-  const taskPct = active ? percent(active.project.completedTaskCount, active.project.taskCount) : null;
-  const phasePct = active ? phasePercent(active) : null;
+
+  // 进度口径统一走领域函数：阶段按功能 + 交付物，整体按阶段等权。
+  const progress = useMemo(
+    () => (active ? calculateProjectProgress(buildProgressInput(active)) : null),
+    [active],
+  );
+  const phases = useMemo(() => (active ? buildPhaseSummaries(active) : []), [active]);
+  const current = useMemo(() => (active ? currentPhaseOf(active) : null), [active]);
+  const status = useMemo(
+    () => (active ? calculateCapabilityReadiness(buildCapabilityInput(active)) : null),
+    [active],
+  );
 
   const onCreate = async (input: ProjectHubCreateInput) => {
     const created = await projectHubCreateProject(input);
@@ -246,7 +258,7 @@ export default function ProjectHubPanel() {
             </div>
             <div className="ph-hero-side">
               <span>当前阶段</span>
-              <strong>{current?.name ?? "未规划"}</strong>
+              <strong>{current?.title ?? "全部阶段已完成"}</strong>
               <button
                 className="btn btn-ghost btn-sm"
                 onClick={() => void openProjectWorkspaceWindow({ projectId: active.project.id })}
@@ -257,9 +269,31 @@ export default function ProjectHubPanel() {
           </section>
 
           <div className="ph-metrics">
-            <Metric label="任务完成" value={taskPct === null ? "待评估" : `${taskPct}%`} hint={`${active.project.completedTaskCount}/${active.project.taskCount}`} />
-            <Metric label="阶段完成" value={phasePct === null ? "待评估" : `${phasePct}%`} hint={`${active.phases.length} 个阶段`} />
-            <Metric label="能力准备" value={status ? readinessLabel(status.label) : "待评估"} hint={`${status?.assessedCount ?? 0}/${active.capabilities.length} 已评估`} />
+            <Metric
+              label="任务完成"
+              value={progress ? metricText(progress.tasks.percent) : "待评估"}
+              hint={progress ? `${progress.tasks.completed}/${progress.tasks.total}` : ""}
+            />
+            <Metric
+              label="阶段完成"
+              value={progress ? metricText(progress.phases.percent) : "待评估"}
+              hint={progress ? progress.phases.note : ""}
+            />
+            <Metric
+              label="里程碑"
+              value={progress ? metricText(progress.milestones.percent) : "待评估"}
+              hint={progress ? progress.milestones.note : ""}
+            />
+            <Metric
+              label="整体进度"
+              value={progress ? metricText(progress.overall.percent) : "待评估"}
+              hint={progress ? progress.overall.note : ""}
+            />
+            <Metric
+              label="能力准备"
+              value={status ? readinessLabel(status.label) : "待评估"}
+              hint={status ? `${status.assessedCount}/${active.capabilities.length} 已评估` : ""}
+            />
             <Metric label="交付物" value={String(active.project.deliverableCount)} hint="已记录" />
           </div>
 
@@ -292,7 +326,7 @@ export default function ProjectHubPanel() {
                   <p className="ph-muted">当前没有检测到阻塞项。继续推进当前阶段任务。</p>
                 )}
                 <div className="ph-next">
-                  {!active.planId ? "项目还没有计划" : current ? `推进「${current.name}」` : "补充阶段"}
+                  {!active.planId ? "项目还没有计划" : current ? `推进「${current.title}」` : "阶段已全部完成"}
                   <ArrowUpRight size={14} />
                 </div>
               </section>
@@ -330,9 +364,21 @@ export default function ProjectHubPanel() {
 
           {view === "planning" ? (
             <div className="ph-view">
-              {active.goals.length > 0 ? (
-                <section className="ph-section">
+              <section className="ph-section">
+                <div className="ph-section-head">
                   <h3><Target size={16} /> 目标</h3>
+                  {onOpenPlanning ? (
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => onOpenPlanning(active.planId)}
+                    >
+                      在规划编辑器中打开
+                    </button>
+                  ) : null}
+                </div>
+                {active.goals.length === 0 ? (
+                  <p className="ph-muted">还没有目标。可以回到规划编辑器补充，或用自然语言重新规划。</p>
+                ) : (
                   <ul className="ph-list">
                     {active.goals.map((goal) => (
                       <li key={goal.id}>
@@ -341,8 +387,8 @@ export default function ProjectHubPanel() {
                       </li>
                     ))}
                   </ul>
-                </section>
-              ) : null}
+                )}
+              </section>
               <section className="ph-section">
                 <h3><Layers size={16} /> 阶段与里程碑</h3>
                 {active.phases.length === 0 ? (
@@ -350,12 +396,21 @@ export default function ProjectHubPanel() {
                 ) : (
                   <div className="ph-phases">
                     {active.phases.map((phase) => {
+                      const summary = phases.find((item) => item.id === phase.id);
                       const milestones = active.milestones.filter((item) => item.phaseId === phase.id);
                       return (
                         <div className="ph-phase" key={phase.id}>
                           <div className="ph-phase-head">
                             <strong>{phase.name}</strong>
-                            <span>{phase.taskCount === 0 ? "待评估" : `${phase.completedTaskCount}/${phase.taskCount}`}</span>
+                            <span>
+                              {summary?.status === "completed"
+                                ? "已完成"
+                                : phase.featureCount > 0
+                                  ? `功能 ${phase.completedFeatureCount}/${phase.featureCount}`
+                                  : phase.taskCount > 0
+                                    ? `任务 ${phase.completedTaskCount}/${phase.taskCount}`
+                                    : "待评估"}
+                            </span>
                           </div>
                           <p>{phase.description || "（无说明）"}</p>
                           {milestones.length > 0 ? (
@@ -368,6 +423,40 @@ export default function ProjectHubPanel() {
                               ))}
                             </ul>
                           ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
+            </div>
+          ) : null}
+
+          {view === "features" ? (
+            <div className="ph-view">
+              <section className="ph-section">
+                <h3><KanbanSquare size={16} /> 功能与看板</h3>
+                {active.features.length === 0 ? (
+                  <p className="ph-muted">还没有功能。创建项目时的功能草案会直接落库，也可以在规划编辑器里补充。</p>
+                ) : (
+                  <div className="ph-board">
+                    {FEATURE_COLUMNS.map((column) => {
+                      const items = active.features.filter((feature) => feature.status === column.key);
+                      if (items.length === 0) return null;
+                      return (
+                        <div className="ph-board-col" key={column.key}>
+                          <h4>{column.label}（{items.length}）</h4>
+                          <ul>
+                            {items.map((feature) => (
+                              <li key={feature.id}>
+                                <strong>{feature.title}</strong>
+                                <small>
+                                  {feature.priority}
+                                  {feature.acceptanceCriteria ? ` · ${feature.acceptanceCriteria}` : ""}
+                                </small>
+                              </li>
+                            ))}
+                          </ul>
                         </div>
                       );
                     })}
@@ -397,9 +486,13 @@ export default function ProjectHubPanel() {
                             : capability.mastery && capability.mastery !== "unknown"
                               ? `${masteryLabel(capability.mastery)} · ${capability.category}`
                               : "掌握程度待评估"}
-                          {capability.resourceCount > 0
-                            ? ` · ${capability.availableResourceCount}/${capability.resourceCount} 个可用资源`
-                            : " · 暂无关联资源"}
+                        </p>
+                        <p>
+                          {capability.resourceCount === 0
+                            ? "没有关联资源"
+                            : capability.verifiedResourceCount === 0
+                              ? `已关联 ${capability.resourceCount} 个资源，尚未校验可用性`
+                              : `${capability.availableResourceCount}/${capability.resourceCount} 个资源可用`}
                         </p>
                         {capability.impact ? <small>影响：{capability.impact}</small> : null}
                       </div>
@@ -408,6 +501,10 @@ export default function ProjectHubPanel() {
                 )}
               </section>
             </div>
+          ) : null}
+
+          {view === "resources" ? (
+            <ResourceView projectId={active.project.id} capabilities={active.capabilities} />
           ) : null}
 
           {view === "execution" ? (
@@ -453,6 +550,10 @@ export default function ProjectHubPanel() {
   );
 }
 
+function metricText(value: number | null): string {
+  return value === null ? "待评估" : `${Math.round(value * 10) / 10}%`;
+}
+
 function Metric({ label, value, hint }: { label: string; value: string; hint: string }) {
   return (
     <div className="ph-metric">
@@ -478,6 +579,175 @@ function masteryLabel(value: string): string {
   }[value] ?? value;
 }
 
+/** 项目资源视图：真实查询、绑定、解除绑定与可用性校验。 */
+function ResourceView({
+  projectId,
+  capabilities,
+}: {
+  projectId: string;
+  capabilities: ProjectHubSnapshot["capabilities"];
+}) {
+  const [links, setLinks] = useState<ProjectHubResourceLink[]>([]);
+  const [candidates, setCandidates] = useState<ProjectHubResourceCandidate[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [bindKind, setBindKind] = useState<string>("knowledge");
+  const [bindCapabilityId, setBindCapabilityId] = useState<string>("");
+
+  const reload = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [linkRows, candidateRows] = await Promise.all([
+        projectHubResourceLinks(projectId),
+        projectHubResourceCandidates(projectId, bindKind),
+      ]);
+      setLinks(linkRows);
+      setCandidates(candidateRows);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setLoading(false);
+    }
+  }, [projectId, bindKind]);
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  const bind = async (resourceId: string) => {
+    const capabilityId = bindCapabilityId || capabilities[0]?.capabilityId;
+    if (!capabilityId) return;
+    setError(null);
+    try {
+      await projectHubResourceLink(projectId, {
+        capabilityId,
+        resourceKind: bindKind,
+        resourceId,
+      });
+      await reload();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  };
+
+  const unlink = async (linkId: string) => {
+    setError(null);
+    try {
+      await projectHubResourceUnlink(projectId, linkId);
+      await reload();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  };
+
+  const validate = async (linkId: string) => {
+    setError(null);
+    try {
+      await projectHubResourceValidate(projectId, linkId);
+      await reload();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  };
+
+  return (
+    <div className="ph-view">
+      <section className="ph-section">
+        <h3><Link2 size={16} /> 已关联资源</h3>
+        {error ? (
+          <div className="ph-dialog-error" role="alert">
+            <AlertTriangle size={14} /> {error}
+          </div>
+        ) : null}
+        {links.length === 0 ? (
+          <p className="ph-muted">还没有关联资源。能力是「能不能做」，资源是「有没有可调用的东西」，两者分开管理。</p>
+        ) : (
+          <ul className="ph-list">
+            {links.map((link) => (
+              <li key={link.id}>
+                <span className="ph-tag">{resourceKindLabel(link.resourceKind)}</span>
+                <span>{link.label || link.resourceId}</span>
+                <span className="ph-muted">
+                  {link.capabilityName} · {availabilityLabel(link.availability)}
+                  {link.lastCheckedAt ? ` · ${link.lastCheckedAt.slice(0, 10)}` : ""}
+                </span>
+                <button className="btn btn-ghost btn-sm" onClick={() => void validate(link.id)}>
+                  校验可用性
+                </button>
+                <button className="btn btn-ghost btn-sm" onClick={() => void unlink(link.id)}>
+                  <Unlink size={13} /> 解除
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <section className="ph-section">
+        <h3><Plus size={16} /> 关联新资源</h3>
+        <div className="ph-bind-row">
+          <label className="field">
+            <span>资源类型</span>
+            <select
+              className="select"
+              value={bindKind}
+              onChange={(event) => setBindKind(event.target.value)}
+              aria-label="资源类型"
+            >
+              {["knowledge", "skill", "mcp", "agent"].map((kind) => (
+                <option key={kind} value={kind}>
+                  {resourceKindLabel(kind)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            <span>关联到能力</span>
+            <select
+              className="select"
+              value={bindCapabilityId}
+              onChange={(event) => setBindCapabilityId(event.target.value)}
+              aria-label="关联到能力"
+            >
+              <option value="">（默认第一个能力）</option>
+              {capabilities.map((capability) => (
+                <option key={capability.capabilityId} value={capability.capabilityId}>
+                  {capability.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        {loading ? (
+          <p className="ph-muted">正在读取资源…</p>
+        ) : candidates.length === 0 ? (
+          <p className="ph-muted">没有可关联的资源。{resourceKindLabel(bindKind)} 资源库当前为空。</p>
+        ) : (
+          <ul className="ph-list">
+            {candidates.map((candidate) => (
+              <li key={`${candidate.kind}:${candidate.id}`}>
+                <span>{candidate.label}</span>
+                <span className="ph-muted">
+                  {resourceKindLabel(candidate.kind)} · {candidate.scope === "project" ? "项目内" : "全局"} ·{" "}
+                  {availabilityLabel(candidate.availability)}
+                </span>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => void bind(candidate.id)}
+                  disabled={capabilities.length === 0}
+                >
+                  关联
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+    </div>
+  );
+}
+
 function CreateProjectDialog({
   mode,
   onModeChange,
@@ -496,6 +766,8 @@ function CreateProjectDialog({
   const [manualGoal, setManualGoal] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // 同一份草案重试复用同一个请求 ID；参数变化或创建成功后重置。
+  const requestIdRef = useRef({ id: "", signature: "" });
 
   const preview = useMemo(() => {
     if (!draft) return null;
@@ -506,6 +778,7 @@ function CreateProjectDialog({
       phases: draft.phases,
       capabilities: draft.capabilityRequirements,
       uncertainties: draft.uncertainties,
+      featureCount: draft.phases.reduce((sum, phase) => sum + phase.features.length, 0),
     };
   }, [draft]);
 
@@ -535,14 +808,13 @@ function CreateProjectDialog({
     setBusy(true);
     setError(null);
     try {
-      await onCreate({
+      const payload: Omit<ProjectHubCreateInput, "clientRequestId"> = {
         name: value.name.trim(),
         kind: value.kind,
         description: value.description,
         goal: value.goal,
         targetDate: value.targetDate,
         templateId: value.templateId,
-        clientRequestId: crypto.randomUUID(),
         goals: value.goal ? [{ title: value.goal }] : [],
         phases: value.phases.map((phase) => ({
           name: phase.title,
@@ -551,6 +823,14 @@ function CreateProjectDialog({
           startDate: phase.startDate,
           milestones: phase.milestoneTitles.map((name) => ({ name })),
         })),
+        features: value.phases.flatMap((phase) =>
+          phase.features.map((feature) => ({
+            title: feature.title,
+            acceptance: feature.acceptance,
+            priority: feature.priority,
+            phaseIndex: value.phases.findIndex((item) => item.id === phase.id),
+          })),
+        ),
         tasks: value.tasks.map((task) => ({
           title: task.title,
           description: "",
@@ -566,7 +846,13 @@ function CreateProjectDialog({
           impact: capability.impact,
           alternative: capability.alternative,
         })),
-      });
+      };
+      const signature = requestSignature(payload as Record<string, unknown>);
+      const resolved = resolveRequestId(requestIdRef.current, signature, createRequestId);
+      requestIdRef.current = resolved.state;
+      await onCreate({ ...payload, clientRequestId: resolved.id });
+      // 创建成功：清理请求 ID，下一次创建必然是新的请求。
+      requestIdRef.current = clearRequestIdState();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -582,16 +868,21 @@ function CreateProjectDialog({
     setBusy(true);
     setError(null);
     try {
-      await onCreate({
+      const payload: Omit<ProjectHubCreateInput, "clientRequestId"> = {
         name: manualName.trim(),
         kind: manualKind,
         goal: manualGoal.trim(),
-        clientRequestId: crypto.randomUUID(),
         phases: [],
+        features: [],
         tasks: [],
         capabilities: [],
         goals: manualGoal.trim() ? [{ title: manualGoal.trim() }] : [],
-      });
+      };
+      const signature = requestSignature(payload as Record<string, unknown>);
+      const resolved = resolveRequestId(requestIdRef.current, signature, createRequestId);
+      requestIdRef.current = resolved.state;
+      await onCreate({ ...payload, clientRequestId: resolved.id });
+      requestIdRef.current = clearRequestIdState();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -696,8 +987,8 @@ function CreateProjectDialog({
                 <ul>{preview.capabilities.map((capability) => <li key={capability.key}>{capability.name}<small>{necessityLabel(capability.necessity)} · {capability.targetLevel}</small></li>)}</ul>
               </div>
               <div>
-                <h4>预计产出（{draft.phases.reduce((sum, phase) => sum + phase.features.length, 0)} 项功能）</h4>
-                {draft.phases.some((phase) => phase.features.length > 0) ? (
+                <h4>预计产出（{preview.featureCount} 项功能，将随项目一起保存）</h4>
+                {preview.featureCount > 0 ? (
                   <ul>
                     {draft.phases
                       .flatMap((phase) => phase.features)
@@ -723,7 +1014,7 @@ function CreateProjectDialog({
               </div>
             </div>
             <div className="ph-uncertain">
-              <h4>工作空间建议</h4>
+              <h4>工作空间建议（仅建议，创建时不会自动创建工作空间）</h4>
               <p>{draft.workspace.note || "创建后可在工作空间中登记项目根目录。"}</p>
               <p>建议模块：{draft.workspace.moduleHints.join(" / ") || "按项目类型自动选择"}</p>
               {draft.workspace.rootPathHint ? <p>根目录：{draft.workspace.rootPathHint}</p> : null}

@@ -9,6 +9,7 @@
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::path::Path;
 
 use crate::agents::now_iso;
@@ -22,9 +23,12 @@ const MAX_DESCRIPTION: usize = 4000;
 const MAX_GOAL: usize = 2000;
 const MAX_TASK_TITLE: usize = 240;
 const MAX_PHASES: usize = 50;
+const MAX_FEATURES: usize = 2000;
 const MAX_TASKS: usize = 300;
 const MAX_CAPABILITIES: usize = 100;
 const MAX_GOALS: usize = 100;
+/// `planning_features.priority` 的合法取值（CHECK 约束）。
+const FEATURE_PRIORITIES: &[&str] = &["P0", "P1", "P2"];
 
 // ── 读模型 ──────────────────────────────────────────────────────────
 
@@ -76,6 +80,9 @@ pub struct ProjectPhase {
     pub sort_order: i64,
     pub task_count: i64,
     pub completed_task_count: i64,
+    /// 阶段内功能数（`planning_features.milestone_id = 阶段 ID`）。
+    pub feature_count: i64,
+    pub completed_feature_count: i64,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -86,6 +93,23 @@ pub struct ProjectMilestone {
     pub description: String,
     pub target_date: Option<String>,
     pub phase_id: Option<String>,
+    pub sort_order: i64,
+    pub feature_count: i64,
+    pub completed_feature_count: i64,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectFeature {
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    pub status: String,
+    pub priority: String,
+    /// 所属阶段（`planning_features.milestone_id` 指向阶段行）。
+    pub milestone_id: Option<String>,
+    pub acceptance_criteria: String,
+    pub target_date: Option<String>,
     pub sort_order: i64,
 }
 
@@ -107,6 +131,9 @@ pub struct ProjectCapabilityRequirement {
     pub phase_id: Option<String>,
     pub resource_count: i64,
     pub available_resource_count: i64,
+    /// 已做过可用性校验（`last_checked_at IS NOT NULL`）的关联数。
+    /// `resource_count=0` = 确认没有资源；`resource_count>0 && verified=0` = 关联了但从未校验。
+    pub verified_resource_count: i64,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -155,6 +182,8 @@ pub struct ProjectHubSnapshot {
     pub goals: Vec<ProjectGoal>,
     pub phases: Vec<ProjectPhase>,
     pub milestones: Vec<ProjectMilestone>,
+    /// 功能（`planning_features`）：阶段进度的计算单元。
+    pub features: Vec<ProjectFeature>,
     pub capabilities: Vec<ProjectCapabilityRequirement>,
     pub tasks: Vec<ProjectTaskItem>,
     pub deliverables: Vec<ProjectDeliverable>,
@@ -191,6 +220,19 @@ pub struct CreatePhaseInput {
     pub start_date: Option<String>,
     #[serde(default)]
     pub milestones: Vec<CreateMilestoneInput>,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateFeatureInput {
+    pub title: String,
+    /// 验收标准（`planning_features.acceptance_criteria`）；空串表示尚未填写。
+    #[serde(default)]
+    pub acceptance: String,
+    /// `P0` / `P1` / `P2`；缺省 `P1`（表默认值）。
+    pub priority: Option<String>,
+    /// 所属阶段在 `phases` 中的下标；`None` = 暂未分阶段。
+    pub phase_index: Option<usize>,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -237,6 +279,9 @@ pub struct CreateProjectInput {
     pub goals: Vec<CreateGoalInput>,
     #[serde(default)]
     pub phases: Vec<CreatePhaseInput>,
+    /// 功能草案：随项目同事务落库到 `planning_features`，通过 `phase_index` 关联阶段。
+    #[serde(default)]
+    pub features: Vec<CreateFeatureInput>,
     #[serde(default)]
     pub tasks: Vec<CreateTaskInput>,
     #[serde(default)]
@@ -398,8 +443,8 @@ fn load_snapshot(conn: &Connection, project_id: &str) -> AppResult<ProjectHubSna
     let plan_id: Option<String> = conn
         .query_row(
             "SELECT id FROM planning_projects
-             WHERE workspace_project_id = ?1 AND is_active = 1
-             ORDER BY archived, updated_at DESC LIMIT 1",
+             WHERE workspace_project_id = ?1 AND is_active = 1 AND archived = 0
+             ORDER BY updated_at DESC LIMIT 1",
             params![project_id],
             |r| r.get(0),
         )
@@ -408,6 +453,7 @@ fn load_snapshot(conn: &Connection, project_id: &str) -> AppResult<ProjectHubSna
     let goals = load_goals(conn, project_id)?;
     let phases = load_phases(conn, project_id, plan_id.as_deref())?;
     let milestones = load_milestones(conn, plan_id.as_deref())?;
+    let features = load_features(conn, plan_id.as_deref())?;
     let capabilities = load_capabilities(conn, project_id)?;
     let tasks = load_tasks(conn, project_id)?;
     let deliverables = load_deliverables(conn, project_id)?;
@@ -420,12 +466,40 @@ fn load_snapshot(conn: &Connection, project_id: &str) -> AppResult<ProjectHubSna
         goals,
         phases,
         milestones,
+        features,
         capabilities,
         tasks,
         deliverables,
         events,
         risks,
     })
+}
+
+fn load_features(conn: &Connection, plan_id: Option<&str>) -> AppResult<Vec<ProjectFeature>> {
+    let Some(plan_id) = plan_id else {
+        return Ok(Vec::new());
+    };
+    let mut stmt = conn.prepare(
+        "SELECT id, title, description, status, priority, milestone_id, acceptance_criteria,
+                target_date, sort_order
+         FROM planning_features
+         WHERE project_id = ?1
+         ORDER BY sort_order, created_at",
+    )?;
+    let rows = stmt.query_map(params![plan_id], |r| {
+        Ok(ProjectFeature {
+            id: r.get(0)?,
+            title: r.get(1)?,
+            description: r.get(2)?,
+            status: r.get(3)?,
+            priority: r.get(4)?,
+            milestone_id: r.get(5)?,
+            acceptance_criteria: r.get(6)?,
+            target_date: r.get(7)?,
+            sort_order: r.get(8)?,
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
 }
 
 fn load_goals(conn: &Connection, project_id: &str) -> AppResult<Vec<ProjectGoal>> {
@@ -463,7 +537,10 @@ fn load_phases(
         "SELECT m.id, m.name, m.description, m.target_date, m.start_date, m.sort_order,
                 (SELECT COUNT(*) FROM task_plan_links l WHERE l.project_id = ?1 AND l.phase_id = m.id),
                 (SELECT COUNT(*) FROM task_plan_links l JOIN tasks t ON t.id = l.task_id
-                  WHERE l.project_id = ?1 AND l.phase_id = m.id AND t.status = 'completed')
+                  WHERE l.project_id = ?1 AND l.phase_id = m.id AND t.status = 'completed'),
+                (SELECT COUNT(*) FROM planning_features f WHERE f.project_id = ?2 AND f.milestone_id = m.id),
+                (SELECT COUNT(*) FROM planning_features f WHERE f.project_id = ?2 AND f.milestone_id = m.id
+                  AND f.status = 'completed')
          FROM planning_milestones m
          WHERE m.project_id = ?2 AND m.kind = 'phase'
          ORDER BY m.sort_order, m.created_at",
@@ -478,6 +555,8 @@ fn load_phases(
             sort_order: r.get(5)?,
             task_count: r.get(6)?,
             completed_task_count: r.get(7)?,
+            feature_count: r.get(8)?,
+            completed_feature_count: r.get(9)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
@@ -488,8 +567,11 @@ fn load_milestones(conn: &Connection, plan_id: Option<&str>) -> AppResult<Vec<Pr
         return Ok(Vec::new());
     };
     let mut stmt = conn.prepare(
-        "SELECT id, name, description, target_date, phase_id, sort_order
-         FROM planning_milestones
+        "SELECT id, name, description, target_date, phase_id, sort_order,
+                (SELECT COUNT(*) FROM planning_features f WHERE f.project_id = ?1 AND f.milestone_id = m.id),
+                (SELECT COUNT(*) FROM planning_features f WHERE f.project_id = ?1 AND f.milestone_id = m.id
+                  AND f.status = 'completed')
+         FROM planning_milestones m
          WHERE project_id = ?1 AND kind = 'milestone'
          ORDER BY sort_order, created_at",
     )?;
@@ -501,6 +583,8 @@ fn load_milestones(conn: &Connection, plan_id: Option<&str>) -> AppResult<Vec<Pr
             target_date: r.get(3)?,
             phase_id: r.get(4)?,
             sort_order: r.get(5)?,
+            feature_count: r.get(6)?,
+            completed_feature_count: r.get(7)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
@@ -513,7 +597,9 @@ fn load_capabilities(conn: &Connection, project_id: &str) -> AppResult<Vec<Proje
                 r.alternative, r.phase_id,
                 (SELECT COUNT(*) FROM capability_resource_links l WHERE l.capability_id = c.id),
                 (SELECT COUNT(*) FROM capability_resource_links l
-                  WHERE l.capability_id = c.id AND l.availability = 'available')
+                  WHERE l.capability_id = c.id AND l.availability = 'available'),
+                (SELECT COUNT(*) FROM capability_resource_links l
+                  WHERE l.capability_id = c.id AND l.last_checked_at IS NOT NULL)
          FROM project_capability_requirements r
          JOIN project_capabilities c ON c.id = r.capability_id
          WHERE r.project_id = ?1
@@ -537,6 +623,7 @@ fn load_capabilities(conn: &Connection, project_id: &str) -> AppResult<Vec<Proje
             phase_id: r.get(12)?,
             resource_count: r.get(13)?,
             available_resource_count: r.get(14)?,
+            verified_resource_count: r.get(15)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
@@ -714,25 +801,81 @@ fn clean_root_path(value: Option<String>) -> AppResult<String> {
     Ok(text)
 }
 
-pub fn create_project(db: &Db, input: CreateProjectInput) -> AppResult<ProjectHubSnapshot> {
+/// 规范化后的创建请求：摘要必须基于「清洗后的值」，否则同一语义的两种写法会算出不同摘要。
+struct CleanCreate {
+    name: String,
+    kind: String,
+    description: String,
+    goal: String,
+    target_date: Option<String>,
+    root_path: String,
+    template_id: String,
+    client_request_id: String,
+    goals: Vec<(String, String)>,
+    phases: Vec<CleanPhase>,
+    features: Vec<CleanFeature>,
+    tasks: Vec<CleanTask>,
+    capabilities: Vec<CleanCapability>,
+}
+
+struct CleanPhase {
+    name: String,
+    description: String,
+    target_date: Option<String>,
+    start_date: Option<String>,
+    milestones: Vec<(String, String, Option<String>)>,
+}
+
+struct CleanFeature {
+    title: String,
+    acceptance: String,
+    priority: String,
+    phase_index: Option<usize>,
+}
+
+struct CleanTask {
+    title: String,
+    description: String,
+    due_at: Option<String>,
+    priority: i64,
+    phase_index: Option<usize>,
+}
+
+struct CleanCapability {
+    name: String,
+    category: String,
+    necessity: String,
+    target_level: String,
+    impact: String,
+    alternative: String,
+}
+
+fn clean_create(input: &CreateProjectInput) -> AppResult<CleanCreate> {
     let name = clean_text(&input.name, "项目名称", MAX_NAME, false)?;
     let kind = clean_enum(&input.kind, "项目类型", PROJECT_KINDS)?;
     let description = clean_text(&input.description, "项目描述", MAX_DESCRIPTION, true)?;
     let goal = clean_text(&input.goal, "项目目标", MAX_GOAL, true)?;
-    let target_date = clean_date(input.target_date, "目标日期")?;
-    let root_path = clean_root_path(input.root_path)?;
+    let target_date = clean_date(input.target_date.clone(), "目标日期")?;
+    let root_path = clean_root_path(input.root_path.clone())?;
     let template_id = input
         .template_id
-        .map(|s| s.trim().to_string())
+        .as_deref()
+        .map(str::trim)
         .filter(|s| !s.is_empty())
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .to_string();
     let client_request_id = input
         .client_request_id
-        .map(|s| s.trim().to_string())
+        .as_deref()
+        .map(str::trim)
         .filter(|s| !s.is_empty())
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .to_string();
     if input.phases.len() > MAX_PHASES {
         return Err(AppError::Validation("阶段数量过多".into()));
+    }
+    if input.features.len() > MAX_FEATURES {
+        return Err(AppError::Validation("功能数量过多".into()));
     }
     if input.tasks.len() > MAX_TASKS {
         return Err(AppError::Validation("任务数量过多".into()));
@@ -744,33 +887,210 @@ pub fn create_project(db: &Db, input: CreateProjectInput) -> AppResult<ProjectHu
         return Err(AppError::Validation("目标数量过多".into()));
     }
 
+    let goals = input
+        .goals
+        .iter()
+        .map(|item| {
+            Ok((
+                clean_text(&item.title, "目标", MAX_NAME, false)?,
+                clean_text(&item.note, "目标说明", MAX_DESCRIPTION, true)?,
+            ))
+        })
+        .collect::<AppResult<Vec<_>>>()?;
+
+    let phases = input
+        .phases
+        .iter()
+        .map(|item| {
+            let milestones = item
+                .milestones
+                .iter()
+                .map(|milestone| {
+                    Ok((
+                        clean_text(&milestone.name, "里程碑名称", MAX_NAME, false)?,
+                        clean_text(&milestone.description, "里程碑说明", MAX_DESCRIPTION, true)?,
+                        clean_date(milestone.target_date.clone(), "里程碑日期")?,
+                    ))
+                })
+                .collect::<AppResult<Vec<_>>>()?;
+            Ok(CleanPhase {
+                name: clean_text(&item.name, "阶段名称", MAX_NAME, false)?,
+                description: clean_text(&item.description, "阶段说明", MAX_DESCRIPTION, true)?,
+                target_date: clean_date(item.target_date.clone(), "阶段目标日期")?,
+                start_date: clean_date(item.start_date.clone(), "阶段开始日期")?,
+                milestones,
+            })
+        })
+        .collect::<AppResult<Vec<_>>>()?;
+
+    let features = input
+        .features
+        .iter()
+        .map(|item| {
+            let phase_index = item.phase_index.filter(|index| *index < phases.len());
+            if item.phase_index.is_some() && phase_index.is_none() {
+                return Err(AppError::Validation(format!(
+                    "功能「{}」所属阶段不存在",
+                    item.title.trim()
+                )));
+            }
+            Ok(CleanFeature {
+                title: clean_text(&item.title, "功能名称", MAX_TASK_TITLE, false)?,
+                acceptance: clean_text(&item.acceptance, "验收标准", MAX_DESCRIPTION, true)?,
+                priority: clean_enum(
+                    item.priority.as_deref().unwrap_or("P1"),
+                    "功能优先级",
+                    FEATURE_PRIORITIES,
+                )?,
+                phase_index,
+            })
+        })
+        .collect::<AppResult<Vec<_>>>()?;
+
+    let tasks = input
+        .tasks
+        .iter()
+        .map(|item| {
+            let phase_index = item.phase_index.filter(|index| *index < phases.len());
+            if item.phase_index.is_some() && phase_index.is_none() {
+                return Err(AppError::Validation(format!(
+                    "任务「{}」所属阶段不存在",
+                    item.title.trim()
+                )));
+            }
+            Ok(CleanTask {
+                title: clean_text(&item.title, "任务标题", MAX_TASK_TITLE, false)?,
+                description: clean_text(&item.description, "任务描述", MAX_DESCRIPTION, true)?,
+                due_at: clean_date(item.due_at.clone(), "任务截止时间")?,
+                priority: item.priority.unwrap_or(2).clamp(0, 3),
+                phase_index,
+            })
+        })
+        .collect::<AppResult<Vec<_>>>()?;
+
+    let capabilities = input
+        .capabilities
+        .iter()
+        .map(|item| {
+            Ok(CleanCapability {
+                name: clean_text(&item.name, "能力名称", MAX_NAME, false)?,
+                category: clean_enum(&item.category, "能力分类", CAPABILITY_CATEGORIES)?,
+                necessity: clean_enum(&item.necessity, "能力必要性", NECESSITIES)?,
+                target_level: clean_enum(&item.target_level, "目标能力水平", LEVELS)?,
+                impact: clean_text(&item.impact, "能力影响", MAX_DESCRIPTION, true)?,
+                alternative: clean_text(&item.alternative, "替代方案", MAX_DESCRIPTION, true)?,
+            })
+        })
+        .collect::<AppResult<Vec<_>>>()?;
+
+    Ok(CleanCreate {
+        name,
+        kind,
+        description,
+        goal,
+        target_date,
+        root_path,
+        template_id,
+        client_request_id,
+        goals,
+        phases,
+        features,
+        tasks,
+        capabilities,
+    })
+}
+
+/// 规范化请求摘要：同一份语义请求恒得同一摘要；参数变化必然改变摘要。
+fn request_digest(clean: &CleanCreate) -> String {
+    let canonical = serde_json::json!({
+        "name": clean.name,
+        "kind": clean.kind,
+        "description": clean.description,
+        "goal": clean.goal,
+        "targetDate": clean.target_date,
+        "rootPath": clean.root_path,
+        "templateId": clean.template_id,
+        "goals": clean.goals,
+        "phases": clean.phases.iter().map(|phase| serde_json::json!({
+            "name": phase.name,
+            "description": phase.description,
+            "targetDate": phase.target_date,
+            "startDate": phase.start_date,
+            "milestones": phase.milestones,
+        })).collect::<Vec<_>>(),
+        "features": clean.features.iter().map(|feature| serde_json::json!({
+            "title": feature.title,
+            "acceptance": feature.acceptance,
+            "priority": feature.priority,
+            "phaseIndex": feature.phase_index,
+        })).collect::<Vec<_>>(),
+        "tasks": clean.tasks.iter().map(|task| serde_json::json!({
+            "title": task.title,
+            "description": task.description,
+            "dueAt": task.due_at,
+            "priority": task.priority,
+            "phaseIndex": task.phase_index,
+        })).collect::<Vec<_>>(),
+        "capabilities": clean.capabilities.iter().map(|capability| serde_json::json!({
+            "name": capability.name,
+            "category": capability.category,
+            "necessity": capability.necessity,
+            "targetLevel": capability.target_level,
+            "impact": capability.impact,
+            "alternative": capability.alternative,
+        })).collect::<Vec<_>>(),
+    });
+    let mut hasher = Sha256::new();
+    hasher.update(canonical.to_string().as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+pub fn create_project(db: &Db, input: CreateProjectInput) -> AppResult<ProjectHubSnapshot> {
+    let clean = clean_create(&input)?;
+    let digest = request_digest(&clean);
+    let client_request_id = clean.client_request_id.clone();
+
     db.with_transaction(|conn| {
         if !client_request_id.is_empty() {
-            if let Some(existing) = conn
+            let existing: Option<(String, Option<String>)> = conn
                 .query_row(
-                    "SELECT project_id FROM project_events
+                    "SELECT project_id, json_extract(payload_json, '$.requestDigest')
+                     FROM project_events
                      WHERE kind = 'project_created'
                        AND json_extract(payload_json, '$.clientRequestId') = ?1
                      ORDER BY created_at LIMIT 1",
                     params![client_request_id],
-                    |r| r.get::<_, String>(0),
+                    |r| Ok((r.get(0)?, r.get(1)?)),
                 )
-                .optional()?
-            {
-                return load_snapshot(conn, &existing);
+                .optional()?;
+            if let Some((project_id, stored_digest)) = existing {
+                match stored_digest {
+                    // 旧版本事件没有摘要字段：按「同一请求」返回既有项目，保持兼容。
+                    None => return load_snapshot(conn, &project_id),
+                    Some(stored) if stored == digest => return load_snapshot(conn, &project_id),
+                    Some(_) => {
+                        return Err(AppError::Conflict(
+                            "同一请求 ID 已用于参数不同的项目创建；请使用新的请求 ID 重试".into(),
+                        ))
+                    }
+                }
             }
         }
 
         let now = now_iso();
+        let name = clean.name.clone();
+        let kind = clean.kind.clone();
+        let description = clean.description.clone();
+        let template_id = clean.template_id.clone();
         let (project_id, plan_id) = insert_project_root_tx(
             conn,
             &CreateProjectRootInput {
                 name: name.clone(),
                 kind: kind.clone(),
                 description: description.clone(),
-                goal,
-                target_date,
-                root_path: Some(root_path),
+                goal: clean.goal.clone(),
+                target_date: clean.target_date.clone(),
+                root_path: Some(clean.root_path.clone()),
                 dev_project_id: None,
                 note: Some(description.clone()),
                 template_id: Some(template_id.clone()),
@@ -781,28 +1101,25 @@ pub fn create_project(db: &Db, input: CreateProjectInput) -> AppResult<ProjectHu
             },
         )?;
 
-        let mut goal_rows = Vec::new();
-        for (index, item) in input.goals.iter().enumerate() {
-            let title = clean_text(&item.title, "目标", MAX_NAME, false)?;
-            let note = clean_text(&item.note, "目标说明", MAX_DESCRIPTION, true)?;
-            let id = uuid::Uuid::new_v4().to_string();
+        for (index, (title, note)) in clean.goals.iter().enumerate() {
             conn.execute(
                 "INSERT INTO project_goals
                  (id, project_id, parent_id, title, note, kind, metric, target_value, unit,
                   status, sort_order, source, created_at, updated_at)
                  VALUES (?1, ?2, NULL, ?3, ?4, 'goal', '', NULL, '', 'active', ?5, 'user', ?6, ?6)",
-                params![id, project_id, title, note, index as i64, now],
+                params![
+                    uuid::Uuid::new_v4().to_string(),
+                    project_id,
+                    title,
+                    note,
+                    index as i64,
+                    now
+                ],
             )?;
-            goal_rows.push(id);
         }
-        let _ = goal_rows;
 
         let mut phase_ids = Vec::new();
-        for (index, item) in input.phases.iter().enumerate() {
-            let phase_name = clean_text(&item.name, "阶段名称", MAX_NAME, false)?;
-            let phase_desc = clean_text(&item.description, "阶段说明", MAX_DESCRIPTION, true)?;
-            let phase_target = clean_date(item.target_date.clone(), "阶段目标日期")?;
-            let phase_start = clean_date(item.start_date.clone(), "阶段开始日期")?;
+        for (index, phase) in clean.phases.iter().enumerate() {
             let phase_id = uuid::Uuid::new_v4().to_string();
             conn.execute(
                 "INSERT INTO planning_milestones
@@ -812,18 +1129,15 @@ pub fn create_project(db: &Db, input: CreateProjectInput) -> AppResult<ProjectHu
                 params![
                     phase_id,
                     plan_id,
-                    phase_name,
-                    phase_desc,
-                    phase_target,
+                    phase.name,
+                    phase.description,
+                    phase.target_date,
                     index as i64,
                     now,
-                    phase_start
+                    phase.start_date
                 ],
             )?;
-            for (m_index, milestone) in item.milestones.iter().enumerate() {
-                let title = clean_text(&milestone.name, "里程碑名称", MAX_NAME, false)?;
-                let detail = clean_text(&milestone.description, "里程碑说明", MAX_DESCRIPTION, true)?;
-                let date = clean_date(milestone.target_date.clone(), "里程碑日期")?;
+            for (m_index, (title, detail, date)) in phase.milestones.iter().enumerate() {
                 conn.execute(
                     "INSERT INTO planning_milestones
                      (id, project_id, name, description, target_date, sort_order, created_at,
@@ -844,23 +1158,56 @@ pub fn create_project(db: &Db, input: CreateProjectInput) -> AppResult<ProjectHu
             phase_ids.push(phase_id);
         }
 
-        for (index, item) in input.capabilities.iter().enumerate() {
-            let cap_name = clean_text(&item.name, "能力名称", MAX_NAME, false)?;
-            let category = clean_enum(&item.category, "能力分类", CAPABILITY_CATEGORIES)?;
-            let necessity = clean_enum(&item.necessity, "能力必要性", NECESSITIES)?;
-            let target_level = clean_enum(&item.target_level, "目标能力水平", LEVELS)?;
-            let impact = clean_text(&item.impact, "能力影响", MAX_DESCRIPTION, true)?;
-            let alternative = clean_text(&item.alternative, "替代方案", MAX_DESCRIPTION, true)?;
+        // 功能草案：与项目同事务落库，milestone_id 指向所属阶段（阶段复用里程碑表）。
+        let mut feature_sort = std::collections::HashMap::<usize, i64>::new();
+        for feature in clean.features.iter() {
+            let milestone_id = feature
+                .phase_index
+                .and_then(|index| phase_ids.get(index))
+                .cloned()
+                .unwrap_or_default();
+            let sort_order = match feature.phase_index {
+                Some(index) => {
+                    let slot = feature_sort.entry(index).or_insert(0);
+                    let current = *slot;
+                    *slot += 1;
+                    current
+                }
+                None => 0,
+            };
+            conn.execute(
+                "INSERT INTO planning_features
+                 (id, project_id, title, description, status, priority, milestone_id, target_date,
+                  sort_order, created_at, updated_at, completed_at, acceptance_criteria)
+                 VALUES (?1, ?2, ?3, '', 'planned', ?4, ?5, NULL, ?6, ?7, ?7, NULL, ?8)",
+                params![
+                    uuid::Uuid::new_v4().to_string(),
+                    plan_id,
+                    feature.title,
+                    feature.priority,
+                    milestone_id,
+                    sort_order,
+                    now,
+                    feature.acceptance
+                ],
+            )?;
+        }
 
+        for (index, capability) in clean.capabilities.iter().enumerate() {
             conn.execute(
                 "INSERT OR IGNORE INTO project_capabilities
                  (id, name, category, description, mastery, mastery_note, created_at, updated_at)
                  VALUES (?1, ?2, ?3, '', 'unknown', '', ?4, ?4)",
-                params![uuid::Uuid::new_v4().to_string(), cap_name, category, now],
+                params![
+                    uuid::Uuid::new_v4().to_string(),
+                    capability.name,
+                    capability.category,
+                    now
+                ],
             )?;
             let capability_id: String = conn.query_row(
                 "SELECT id FROM project_capabilities WHERE name = ?1 AND category = ?2",
-                params![cap_name, category],
+                params![capability.name, capability.category],
                 |r| r.get(0),
             )?;
             conn.execute(
@@ -873,10 +1220,10 @@ pub fn create_project(db: &Db, input: CreateProjectInput) -> AppResult<ProjectHu
                     uuid::Uuid::new_v4().to_string(),
                     project_id,
                     capability_id,
-                    necessity,
-                    target_level,
-                    impact,
-                    alternative,
+                    capability.necessity,
+                    capability.target_level,
+                    capability.impact,
+                    capability.alternative,
                     if template_id.is_empty() { "user" } else { "template" },
                     index as i64,
                     now
@@ -884,14 +1231,10 @@ pub fn create_project(db: &Db, input: CreateProjectInput) -> AppResult<ProjectHu
             )?;
         }
 
-        for (index, item) in input.tasks.iter().enumerate() {
-            let title = clean_text(&item.title, "任务标题", MAX_TASK_TITLE, false)?;
-            let description = clean_text(&item.description, "任务描述", MAX_DESCRIPTION, true)?;
-            let due_at = clean_date(item.due_at.clone(), "任务截止时间")?;
-            let priority = item.priority.unwrap_or(2).clamp(0, 3);
-            let phase_id = item
+        for task in clean.tasks.iter() {
+            let phase_id = task
                 .phase_index
-                .and_then(|i| phase_ids.get(i))
+                .and_then(|index| phase_ids.get(index))
                 .cloned()
                 .unwrap_or_default();
             let task_id = uuid::Uuid::new_v4().to_string();
@@ -901,7 +1244,7 @@ pub fn create_project(db: &Db, input: CreateProjectInput) -> AppResult<ProjectHu
                   remind_at, advance_minutes, recurrence_rule_id, created_at, updated_at,
                   completed_at)
                  VALUES (?1, ?2, ?3, ?4, 'pending', ?5, '[]', ?6, NULL, 0, NULL, ?7, ?7, NULL)",
-                params![task_id, title, description, priority, kind, due_at, now],
+                params![task_id, task.title, task.description, task.priority, kind, task.due_at, now],
             )?;
             conn.execute(
                 "INSERT INTO task_plan_links
@@ -914,7 +1257,6 @@ pub fn create_project(db: &Db, input: CreateProjectInput) -> AppResult<ProjectHu
                  VALUES (?1, ?2, ?3)",
                 params![project_id, task_id, now],
             )?;
-            let _ = index;
         }
 
         conn.execute(
@@ -927,6 +1269,7 @@ pub fn create_project(db: &Db, input: CreateProjectInput) -> AppResult<ProjectHu
                 format!("创建项目「{name}」"),
                 serde_json::json!({
                     "clientRequestId": client_request_id,
+                    "requestDigest": digest,
                     "templateId": template_id,
                     "kind": kind,
                 })
@@ -1320,7 +1663,7 @@ pub(crate) fn ensure_project_for_plan_tx(
         if !workspace_exists(conn, &project_id)? {
             insert_recovered_root_tx(conn, &project_id, &plan, &now)?;
         }
-        if plan.is_active {
+        if plan.is_active && !plan.archived {
             // active_plan_id 为空或指向失效计划时，用当前计划修正。
             conn.execute(
                 "UPDATE workspace_projects SET active_plan_id = ?2, updated_at = ?3
@@ -1369,8 +1712,8 @@ pub(crate) fn ensure_project_plan_tx(conn: &Connection, project_id: &str) -> App
     if let Some(existing) = conn
         .query_row(
             "SELECT id FROM planning_projects
-             WHERE workspace_project_id = ?1 AND is_active = 1
-             ORDER BY archived, updated_at DESC LIMIT 1",
+             WHERE workspace_project_id = ?1 AND is_active = 1 AND archived = 0
+             ORDER BY updated_at DESC LIMIT 1",
             params![project_id],
             |r| r.get::<_, String>(0),
         )
@@ -1382,11 +1725,12 @@ pub(crate) fn ensure_project_plan_tx(conn: &Connection, project_id: &str) -> App
         )?;
         return Ok(existing);
     }
+    // 只有未归档计划可以作为继任；全部归档时新建计划，绝不静默复活归档计划。
     if let Some(existing) = conn
         .query_row(
             "SELECT id FROM planning_projects
-             WHERE workspace_project_id = ?1
-             ORDER BY archived ASC, updated_at DESC LIMIT 1",
+             WHERE workspace_project_id = ?1 AND archived = 0
+             ORDER BY sort_order, updated_at DESC LIMIT 1",
             params![project_id],
             |r| r.get::<_, String>(0),
         )
@@ -1418,7 +1762,16 @@ pub(crate) fn ensure_project_plan_tx(conn: &Connection, project_id: &str) -> App
 }
 
 /// 在同一事务内切换 active 计划：先清零其余计划，再置一，并同步项目指针。
+///
+/// 不变量：active 计划不得处于 archived 状态。归档计划必须显式恢复
+/// （`archive_plan(..., false)`）后才能激活，避免「归档即隐藏」被静默绕过。
 pub(crate) fn activate_plan_tx(conn: &Connection, plan_id: &str) -> AppResult<String> {
+    let plan = load_plan_row(conn, plan_id)?;
+    if plan.archived {
+        return Err(AppError::Conflict(
+            "计划已归档，不能直接设为当前计划；请先恢复该计划".into(),
+        ));
+    }
     let project_id = ensure_project_for_plan_tx(conn, plan_id)?;
     let now = now_iso();
     conn.execute(
@@ -1439,6 +1792,92 @@ pub(crate) fn activate_plan_tx(conn: &Connection, plan_id: &str) -> AppResult<St
 
 pub fn activate_plan(db: &Db, plan_id: &str) -> AppResult<String> {
     db.with_transaction(|conn| activate_plan_tx(conn, plan_id))
+}
+
+/// 归档 / 恢复计划容器（不变量内核）。
+///
+/// - 归档非当前计划：直接归档；
+/// - 归档当前计划且存在未归档继任者：同一事务内切换 active 并更新项目指针；
+/// - 归档当前计划且没有未归档继任者：返回 `Conflict`，不允许把项目变成「无 active 计划」；
+/// - 恢复归档计划：只清 `archived`，不自动激活（激活仍需显式调用 `activate_plan`）。
+pub(crate) fn archive_plan_tx(conn: &Connection, plan_id: &str, archived: bool) -> AppResult<()> {
+    let plan = load_plan_row(conn, plan_id)?;
+    let now = now_iso();
+    if !archived {
+        conn.execute(
+            "UPDATE planning_projects SET archived = 0, updated_at = ?2 WHERE id = ?1",
+            params![plan_id, now],
+        )?;
+        return Ok(());
+    }
+    if plan.archived {
+        return Ok(());
+    }
+    let project_id = plan
+        .project_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let Some(project_id) = project_id else {
+        // 尚无项目根的遗留计划：直接归档，补链在下次写入时完成。
+        conn.execute(
+            "UPDATE planning_projects SET archived = 1, updated_at = ?2 WHERE id = ?1",
+            params![plan_id, now],
+        )?;
+        return Ok(());
+    };
+    if !plan.is_active {
+        conn.execute(
+            "UPDATE planning_projects SET archived = 1, updated_at = ?2 WHERE id = ?1",
+            params![plan_id, now],
+        )?;
+        conn.execute(
+            "UPDATE workspace_projects SET updated_at = ?2 WHERE id = ?1",
+            params![project_id, now],
+        )?;
+        return Ok(());
+    }
+
+    // 归档当前计划：必须存在同项目、未归档的继任者。
+    let successor: Option<String> = conn
+        .query_row(
+            &format!(
+                "SELECT id FROM planning_projects
+                 WHERE ({OWNED_PLANS_WHERE}) AND id <> ?2 AND archived = 0
+                 ORDER BY sort_order, updated_at DESC, id ASC LIMIT 1"
+            ),
+            params![project_id, plan_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(next) = successor else {
+        return Err(AppError::Conflict(
+            "当前计划没有未归档的继任计划，已拒绝归档；请先新建或恢复一个计划".into(),
+        ));
+    };
+    // 唯一索引要求同一项目最多一个 is_active=1：先清当前计划，再置继任。
+    conn.execute(
+        "UPDATE planning_projects SET is_active = 0 WHERE id = ?1",
+        params![plan_id],
+    )?;
+    conn.execute(
+        "UPDATE planning_projects SET is_active = 1, updated_at = ?2 WHERE id = ?1",
+        params![next, now],
+    )?;
+    conn.execute(
+        "UPDATE workspace_projects SET active_plan_id = ?2, updated_at = ?3 WHERE id = ?1",
+        params![project_id, next, now],
+    )?;
+    conn.execute(
+        "UPDATE planning_projects SET archived = 1, updated_at = ?2 WHERE id = ?1",
+        params![plan_id, now],
+    )?;
+    Ok(())
+}
+
+pub fn archive_plan(db: &Db, plan_id: &str, archived: bool) -> AppResult<()> {
+    db.with_transaction(|conn| archive_plan_tx(conn, plan_id, archived))
 }
 
 /// 新建计划容器；`make_active=true` 时在同一事务切换 active 计划。
@@ -1533,32 +1972,36 @@ pub(crate) fn delete_plan_tx(conn: &Connection, plan_id: &str) -> AppResult<()> 
             ));
         }
         if plan.is_active {
+            // 继任者只能从未归档计划中选择；没有合法继任者则拒绝删除。
             let successor: Option<String> = conn
                 .query_row(
                     &format!(
                         "SELECT id FROM planning_projects
-                         WHERE ({OWNED_PLANS_WHERE}) AND id <> ?2
-                         ORDER BY archived ASC, updated_at DESC, id ASC LIMIT 1"
+                         WHERE ({OWNED_PLANS_WHERE}) AND id <> ?2 AND archived = 0
+                         ORDER BY sort_order, updated_at DESC, id ASC LIMIT 1"
                     ),
                     params![project_id, plan_id],
                     |r| r.get(0),
                 )
                 .optional()?;
+            let Some(next) = successor else {
+                return Err(AppError::Conflict(
+                    "当前计划没有未归档的继任计划，已拒绝删除；请先新建或恢复一个计划".into(),
+                ));
+            };
             // 唯一索引要求同一项目最多一个 is_active=1：先清当前计划，再置继任。
             conn.execute(
                 "UPDATE planning_projects SET is_active = 0 WHERE id = ?1",
                 params![plan_id],
             )?;
-            if let Some(next) = successor {
-                conn.execute(
-                    "UPDATE planning_projects SET is_active = 1, updated_at = ?2 WHERE id = ?1",
-                    params![next, now],
-                )?;
-                conn.execute(
-                    "UPDATE workspace_projects SET active_plan_id = ?2, updated_at = ?3 WHERE id = ?1",
-                    params![project_id, next, now],
-                )?;
-            }
+            conn.execute(
+                "UPDATE planning_projects SET is_active = 1, updated_at = ?2 WHERE id = ?1",
+                params![next, now],
+            )?;
+            conn.execute(
+                "UPDATE workspace_projects SET active_plan_id = ?2, updated_at = ?3 WHERE id = ?1",
+                params![project_id, next, now],
+            )?;
         }
     }
     conn.execute(
@@ -1602,24 +2045,35 @@ fn integrity_in_conn(conn: &Connection, project_id: &str) -> AppResult<ProjectIn
         .ok_or_else(|| AppError::NotFound(format!("工作空间项目不存在: {project_id}")))?;
 
     let mut stmt = conn.prepare(&format!(
-        "SELECT id, is_active, workspace_project_id FROM planning_projects WHERE {OWNED_PLANS_WHERE}"
+        "SELECT id, is_active, workspace_project_id, archived FROM planning_projects WHERE {OWNED_PLANS_WHERE}"
     ))?;
     let rows = stmt.query_map(params![project_id], |r| {
         Ok((
             r.get::<_, String>(0)?,
             r.get::<_, i64>(1)? != 0,
             r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+            r.get::<_, i64>(3)? != 0,
         ))
     })?;
     let mut blocking = Vec::new();
     let mut warnings = Vec::new();
     let mut plan_count = 0i64;
+    let mut archived_plan_count = 0i64;
     let mut active_ids = Vec::new();
+    let mut archived_active_ids = Vec::new();
+    let mut archived_ids = Vec::new();
     for row in rows {
-        let (id, is_active, linked) = row?;
+        let (id, is_active, linked, archived) = row?;
         plan_count += 1;
+        if archived {
+            archived_plan_count += 1;
+            archived_ids.push(id.clone());
+        }
         if is_active {
             active_ids.push(id.clone());
+            if archived {
+                archived_active_ids.push(id.clone());
+            }
         }
         if linked.trim().is_empty() {
             warnings.push(format!("计划 {id} 缺少 workspace_project_id，将在下次写入时自动补链"));
@@ -1634,10 +2088,22 @@ fn integrity_in_conn(conn: &Connection, project_id: &str) -> AppResult<ProjectIn
         if active_ids.len() > 1 {
             blocking.push(format!("同一项目存在 {} 个 active 计划", active_ids.len()));
         }
+        if !archived_active_ids.is_empty() {
+            blocking.push(format!(
+                "active 计划 {} 处于 archived 状态",
+                archived_active_ids.join(", ")
+            ));
+        }
+        if archived_plan_count == plan_count {
+            blocking.push("项目全部计划均已归档，没有可用计划".to_string());
+        }
         match active_plan_id.as_deref() {
             None => blocking.push("项目 active_plan_id 为空".to_string()),
             Some(pointer) if !active_ids.iter().any(|id| id == pointer) => {
                 blocking.push("active_plan_id 未指向本项目的 active 计划".to_string())
+            }
+            Some(pointer) if archived_ids.iter().any(|id| id == pointer) => {
+                blocking.push("active_plan_id 指向已归档计划".to_string())
             }
             _ => {}
         }
