@@ -471,6 +471,24 @@ CREATE INDEX IF NOT EXISTS idx_agent_ops_cursor
 "#,
 );
 
+/// v88（v86.1 可靠性修复）：操作状态版本 + 租约扫描索引。
+///
+/// `state_revision` 是**同一操作内部**的单调版本号：
+/// - 每次真实状态变更（状态/阶段/资源绑定/详情追加）+1；
+/// - 心跳与读取不推进——心跳不是状态变更，不能推动游标；
+/// - 前端以它优先于时间戳判定先后，避免同一时间戳或时钟回拨导致终态回退。
+///
+/// 旧行默认 0（表示「v88 之前写入」），新行从 1 开始；不修改既有状态语义。
+/// `idx_agent_ops_lease` 让周期过期扫描按索引定位，而不是全表扫 running。
+pub const MIGRATION_88: (i64, &str) = (
+    88,
+    r#"
+ALTER TABLE agent_operations ADD COLUMN state_revision INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS idx_agent_ops_lease
+  ON agent_operations(status, lease_expires_at);
+"#,
+);
+
 #[cfg(test)]
 mod tests {
     use crate::db::Db;
@@ -518,6 +536,49 @@ mod tests {
                 [],
             );
             assert!(rejected.is_err(), "CHECK 必须拒绝未知状态");
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn migration_88_adds_state_revision_and_lease_index() {
+        let db = Db::open_in_memory().unwrap();
+        db.with_read(|conn| {
+            let has_column: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('agent_operations')
+                      WHERE name='state_revision'",
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)?;
+            assert_eq!(has_column, 1, "v88 必须为 agent_operations 增加 state_revision");
+            // 旧行（未显式赋值）必须得到 0，避免 NULL 参与前端比较。
+            conn.execute(
+                "INSERT INTO agent_operations
+                   (id, agent_id, actor_kind, interface, action, status, phase, started_at, updated_at)
+                 VALUES ('legacy', 'a', 'agent', 'mcp', 'task.update', 'running', 'started', 'now', 'now')",
+                [],
+            )
+            .map_err(AppError::from)?;
+            let revision: i64 = conn
+                .query_row(
+                    "SELECT state_revision FROM agent_operations WHERE id='legacy'",
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)?;
+            assert_eq!(revision, 0);
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master
+                      WHERE type='index' AND name='idx_agent_ops_lease'",
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)?;
+            assert_eq!(n, 1, "缺少租约扫描索引");
             Ok(())
         })
         .unwrap();

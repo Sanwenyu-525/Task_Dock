@@ -18,7 +18,10 @@
 //! 事件（`agent-operation-changed`）只传元数据，**不作为事实来源**：
 //! 前端以数据库为真源，事件用于低延迟更新，丢失后由游标同步补齐。
 
-use std::sync::{Arc, OnceLock, RwLock};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::time::Duration;
 
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -33,9 +36,15 @@ pub const OPERATION_EVENT: &str = "agent-operation-changed";
 
 /// 租约时长（秒）。执行方需在到期前心跳续租，否则视为中断。
 pub const LEASE_SECS: i64 = 90;
+/// 共享心跳调度周期：一个租约期内至少续租 6 次；同一 tick 顺带扫描过期租约。
+pub const HEARTBEAT_SECS: u64 = 15;
+/// 心跳连续失败多少次后放弃本进程的续租（避免锁长时间不可用时无限占位）。
+const MAX_HEARTBEAT_ERRORS: u32 = 20;
 
 /// 单次活动查询上限。
 pub const MAX_ACTIVE_LIMIT: u32 = 50;
+/// 启动恢复返回的活动操作上限（不随历史条数截断；超过时仍需保证不遗漏常规规模）。
+pub const MAX_BOOTSTRAP_ACTIVE: u32 = 1000;
 /// 单次历史查询上限。
 pub const MAX_LIST_LIMIT: u32 = 200;
 /// 单次游标同步上限。
@@ -43,7 +52,7 @@ pub const MAX_SYNC_LIMIT: u32 = 100;
 /// 终态记录保留天数（活动审计仍按既有策略保留）。
 pub const RETENTION_DAYS: i64 = 30;
 /// 单次清理最多处理的行数。
-const MAX_SWEEP: usize = 200;
+pub const MAX_SWEEP: usize = 200;
 
 // ── 状态与阶段 ───────────────────────────────────────────────────
 
@@ -137,6 +146,9 @@ pub struct AgentOperation {
     pub project_id: String,
     pub status: OperationStatus,
     pub phase: OperationPhase,
+    /// 状态版本：每次**真实状态变更**（状态/阶段/资源绑定）单调 +1，心跳不推进。
+    /// 前端用它优先于时间戳判断先后，避免同一时间戳或时钟回拨造成终态回退。
+    pub state_revision: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revision: Option<i64>,
     pub request_id: String,
@@ -359,6 +371,148 @@ pub fn notify(operation: &AgentOperation) {
     }
 }
 
+// ── 租约运行期（共享调度器）──────────────────────────────────────
+//
+// 长操作必须在租约到期前续租，否则会被 `interrupt_stale` 判为中断。
+// 设计要点：
+// - **进程级唯一**：整个进程只有一个后台线程（首次 `start_runtime` 时创建），
+//   短操作只登记/注销一个 ID，不会各自开线程；
+// - 只续租**本进程启动的操作**：其它进程（例如并行 CLI）的行由它们自己续租，
+//   避免一个进程替另一个进程「续命」把真实失联掩盖掉；
+// - 心跳只写 `lease_expires_at`，不改 `updated_at` / `state_revision`，
+//   因此不会推动游标、也不会和状态版本比较互相干扰；
+// - 终态不可被心跳复活：`heartbeat` 的 WHERE 限定 `status='running'`，
+//   影响行数为 0 即注销该 ID。
+
+#[derive(Debug)]
+struct LeaseEntry {
+    /// 连续失败次数（数据库锁竞争等可恢复错误）。
+    errors: u32,
+}
+
+static TRACKED: OnceLock<Mutex<HashMap<String, LeaseEntry>>> = OnceLock::new();
+static RUNTIME_STARTED: AtomicBool = AtomicBool::new(false);
+
+fn tracked() -> &'static Mutex<HashMap<String, LeaseEntry>> {
+    TRACKED.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 登记本进程拥有的操作（同一 ID 幂等）。运行期未启用时为空操作。
+fn track(operation_id: &str) {
+    if !RUNTIME_STARTED.load(Ordering::Relaxed) {
+        return;
+    }
+    if let Ok(mut jobs) = tracked().lock() {
+        jobs.entry(operation_id.to_string())
+            .or_insert(LeaseEntry { errors: 0 });
+    }
+}
+
+/// 注销（终态或失联）。幂等。
+pub fn untrack(operation_id: &str) {
+    if let Ok(mut jobs) = tracked().lock() {
+        jobs.remove(operation_id);
+    }
+}
+
+/// 当前进程正在续租的操作数（诊断/测试用）。
+pub fn tracked_count() -> usize {
+    tracked().lock().map(|jobs| jobs.len()).unwrap_or(0)
+}
+
+/// 一次续租扫描的统计。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LeaseTick {
+    pub renewed: u32,
+    /// 已不是 running（被完成/被中断/被删除）→ 注销。
+    pub released: u32,
+    /// 数据库暂时不可写（锁竞争）→ 保留，下一轮重试。
+    pub deferred: u32,
+}
+
+/// 续租所有登记的操作。**可单测**：不依赖线程与真实时间。
+pub fn tick_leases(db: &Db) -> LeaseTick {
+    let ids: Vec<String> = tracked()
+        .lock()
+        .map(|jobs| jobs.keys().cloned().collect())
+        .unwrap_or_default();
+    let mut report = LeaseTick::default();
+    for id in ids {
+        match heartbeat_checked(db, &id) {
+            Ok(true) => {
+                report.renewed += 1;
+                if let Ok(mut jobs) = tracked().lock() {
+                    if let Some(entry) = jobs.get_mut(&id) {
+                        entry.errors = 0;
+                    }
+                }
+            }
+            Ok(false) => {
+                report.released += 1;
+                untrack(&id);
+            }
+            Err(err) => {
+                tracing::warn!(operation_id = %id, "Agent 操作续租失败（保留重试）: {}", err.user_message());
+                let mut give_up = false;
+                if let Ok(mut jobs) = tracked().lock() {
+                    if let Some(entry) = jobs.get_mut(&id) {
+                        entry.errors += 1;
+                        give_up = entry.errors >= MAX_HEARTBEAT_ERRORS;
+                    }
+                }
+                if give_up {
+                    // 长时间拿不到写锁：放弃本进程续租，让租约自然过期（不伪造完成）。
+                    untrack(&id);
+                } else {
+                    report.deferred += 1;
+                }
+            }
+        }
+    }
+    report
+}
+
+/// 启动共享租约调度（幂等）。
+///
+/// `sweep=true` 时同一个线程顺带周期收敛过期租约（主进程）；
+/// 独立 CLI 传 `false`——它无权替其它进程判死。
+pub fn start_runtime(db: Arc<Db>, sweep: bool) -> bool {
+    let started = RUNTIME_STARTED
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok();
+    if !started {
+        return false;
+    }
+    // 先写一次时间戳不重要的空扫描：确保线程创建失败时不会永久持有「已启动」标记。
+    let spawn = std::thread::Builder::new()
+        .name("agent-op-lease".into())
+        .spawn(move || loop {
+            std::thread::sleep(Duration::from_secs(HEARTBEAT_SECS));
+            let tick = tick_leases(&db);
+            if tick.renewed + tick.released + tick.deferred > 0 {
+                tracing::debug!(
+                    renewed = tick.renewed,
+                    released = tick.released,
+                    deferred = tick.deferred,
+                    "Agent 操作租约续租"
+                );
+            }
+            if sweep {
+                match interrupt_stale(&db) {
+                    Ok(0) => {}
+                    Ok(n) => tracing::warn!("租约过期：{n} 个 Agent 操作已标记 interrupted"),
+                    Err(err) => tracing::warn!("Agent 操作过期扫描失败: {err}"),
+                }
+            }
+        });
+    if let Err(err) = spawn {
+        RUNTIME_STARTED.store(false, Ordering::SeqCst);
+        tracing::warn!("Agent 操作租约调度线程创建失败: {err}");
+        return false;
+    }
+    true
+}
+
 // ── 生命周期写入 ─────────────────────────────────────────────────
 
 fn new_operation(principal: &Principal, input: &OperationInput<'_>) -> AgentOperation {
@@ -379,6 +533,7 @@ fn new_operation(principal: &Principal, input: &OperationInput<'_>) -> AgentOper
         project_id: input.project_id.to_string(),
         status: OperationStatus::Running,
         phase: OperationPhase::Started,
+        state_revision: 1,
         revision: None,
         request_id: input.request_id.to_string(),
         started_at: started_at.clone(),
@@ -398,9 +553,9 @@ fn insert(conn: &Connection, operation: &AgentOperation) -> AppResult<()> {
     conn.execute(
         "INSERT INTO agent_operations
            (id, agent_row_id, agent_id, actor_kind, interface, action, resource_kind,
-            resource_id, project_id, status, phase, revision, request_id, error_code, detail,
-            started_at, updated_at, finished_at, lease_expires_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
+            resource_id, project_id, status, phase, state_revision, revision, request_id,
+            error_code, detail, started_at, updated_at, finished_at, lease_expires_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
         rusqlite::params![
             operation.id,
             // agent_row_id 只作弱引用：Agent 被删除后仍保留 agent_id 快照用于追溯。
@@ -414,6 +569,7 @@ fn insert(conn: &Connection, operation: &AgentOperation) -> AppResult<()> {
             operation.project_id,
             operation.status.as_str(),
             operation.phase.as_str(),
+            operation.state_revision,
             operation.revision,
             operation.request_id,
             operation.error_code,
@@ -447,6 +603,8 @@ pub fn start(
         }
         Ok(())
     })?;
+    // 只登记本进程启动的操作；长操作由共享调度器续租，短操作在首次 tick 前已结束。
+    track(&operation.id);
     notify(&operation);
     Ok(operation)
 }
@@ -485,6 +643,7 @@ pub fn update_target(
                     resource_id   = COALESCE(?3, resource_id),
                     project_id    = COALESCE(?4, project_id),
                     updated_at = ?5,
+                    state_revision = state_revision + 1,
                     lease_expires_at = ?6
               WHERE id = ?1 AND status = 'running'",
             rusqlite::params![
@@ -523,7 +682,8 @@ pub fn update_phase(
     let changed = db.with_conn(|conn| {
         conn.execute(
             "UPDATE agent_operations
-                SET phase = ?2, updated_at = ?3, lease_expires_at = ?4
+                SET phase = ?2, updated_at = ?3, state_revision = state_revision + 1,
+                    lease_expires_at = ?4
               WHERE id = ?1 AND status = 'running'",
             rusqlite::params![operation_id, phase.as_str(), updated_at, lease],
         )
@@ -539,28 +699,40 @@ pub fn update_phase(
     Ok(operation)
 }
 
-/// 心跳：只续租，不改阶段。
+/// 心跳：只续租。
+///
+/// **不写 `updated_at` / `state_revision`**：心跳不是状态变更，不能推动游标、
+/// 也不能让前端把「同一状态的新时间戳」当成新事件。
+/// `status='running'` 是硬条件：已进入终态的操作不会被心跳复活。
 pub fn heartbeat(db: &Db, operation_id: &str) -> bool {
+    heartbeat_checked(db, operation_id).unwrap_or(false)
+}
+
+/// 心跳（保留错误类型，供调度器区分「锁竞争」与「已终态」）。
+pub fn heartbeat_checked(db: &Db, operation_id: &str) -> AppResult<bool> {
     if operation_id.is_empty() {
-        return false;
+        return Ok(false);
     }
-    let now = chrono::Utc::now();
+    let lease = lease_deadline(chrono::Utc::now());
     db.with_conn(|conn| {
         conn.execute(
-            "UPDATE agent_operations SET updated_at = ?2, lease_expires_at = ?3
+            "UPDATE agent_operations SET lease_expires_at = ?2
               WHERE id = ?1 AND status = 'running'",
-            rusqlite::params![operation_id, now.to_rfc3339(), lease_deadline(now)],
+            rusqlite::params![operation_id, lease],
         )
         .map_err(AppError::from)
     })
     .map(|n| n > 0)
-    .unwrap_or(false)
 }
 
 /// **在业务写事务内**把操作置为 committed，并写入真实资源 ID / revision / 完成时间。
 ///
 /// 与业务数据同事务提交：业务回滚时本更新一并回滚，绝不会出现「业务失败但显示成功」。
-/// 允许从 `interrupted` 恢复为 committed：业务确实提交了，租约误判不能改写事实。
+/// 这是消解「业务已提交、操作记录未完成」窗口的首选方式：两者要么同时生效，
+/// 要么同时回滚，不存在需要事后猜测的第三种状态。
+///
+/// 允许从 `interrupted` 恢复为 committed：业务确实提交了，租约误判不能改写事实；
+/// 这类恢复会在 detail 里留痕（`业务提交后恢复`），便于审计区分。
 pub fn complete_tx(
     conn: &Connection,
     operation_id: &str,
@@ -568,6 +740,37 @@ pub fn complete_tx(
 ) -> AppResult<Option<AgentOperation>> {
     if operation_id.is_empty() {
         return Ok(None);
+    }
+    let prior: Option<(String, String)> = conn
+        .query_row(
+            "SELECT status, detail FROM agent_operations WHERE id = ?1",
+            rusqlite::params![operation_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(AppError::from)?;
+    let (prior_status, prior_detail) = match prior {
+        Some(row) => row,
+        None => return Ok(None),
+    };
+    // 终态不可回退：只有 running（正常完成）与 interrupted（真实恢复）能进入 committed。
+    if !matches!(prior_status.as_str(), "running" | "interrupted") {
+        return Ok(None);
+    }
+    let recovered = prior_status == "interrupted";
+    let mut detail = result
+        .detail
+        .clone()
+        .map(|d| sanitize_detail(&d))
+        .filter(|d| !d.is_empty())
+        .unwrap_or(prior_detail);
+    if recovered {
+        let note = "业务提交后恢复（曾被租约判定中断）";
+        detail = if detail.is_empty() {
+            note.to_string()
+        } else {
+            truncate_detail(format!("{detail}｜{note}"))
+        };
     }
     let now = crate::agents::now_iso();
     let changed = conn
@@ -579,10 +782,11 @@ pub fn complete_tx(
                     resource_id   = COALESCE(NULLIF(?3, ''), resource_id),
                     project_id    = COALESCE(NULLIF(?4, ''), project_id),
                     revision      = COALESCE(?5, revision),
-                    detail        = COALESCE(NULLIF(?6, ''), detail),
+                    detail        = ?6,
                     error_code    = '',
                     finished_at   = ?7,
                     updated_at    = ?7,
+                    state_revision = state_revision + 1,
                     lease_expires_at = NULL
               WHERE id = ?1 AND status IN ('running','interrupted')",
             rusqlite::params![
@@ -591,7 +795,7 @@ pub fn complete_tx(
                 result.resource_id.clone().unwrap_or_default(),
                 result.project_id.clone().unwrap_or_default(),
                 result.revision,
-                result.detail.clone().map(|d| sanitize_detail(&d)).unwrap_or_default(),
+                detail,
                 now,
             ],
         )
@@ -612,10 +816,172 @@ pub fn complete(
     result: &OperationResult,
 ) -> AppResult<Option<AgentOperation>> {
     let operation = db.with_conn(|conn| complete_tx(conn, operation_id, result))?;
+    // 事务外完成：无论是否命中（可能已在业务事务内完成），本进程都不再需要续租。
+    untrack(operation_id);
     if let Some(op) = &operation {
         notify(op);
     }
     Ok(operation)
+}
+
+/// 读取当前记录并广播一次（事务内已完成时，提交后用它补发事件）。
+pub fn notify_current(db: &Db, operation_id: &str) {
+    if let Ok(Some(op)) = get(db, operation_id) {
+        notify(&op);
+    }
+}
+
+/// 只追加详情，不改状态（文件归档失败等「业务已提交、收尾有异常」）。
+///
+/// 状态与完成时间保持不变；`state_revision` 递增，前端会把它当成同一终态的新版本。
+pub fn append_detail(db: &Db, operation_id: &str, extra: &str) -> AppResult<Option<AgentOperation>> {
+    if operation_id.is_empty() || extra.trim().is_empty() {
+        return Ok(None);
+    }
+    let now = crate::agents::now_iso();
+    let changed = db.with_conn(|conn| {
+        let prior: Option<String> = conn
+            .query_row(
+                "SELECT detail FROM agent_operations WHERE id = ?1 AND status <> 'running'",
+                rusqlite::params![operation_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(AppError::from)?;
+        let Some(prior) = prior else {
+            return Ok(0usize);
+        };
+        let detail = if prior.is_empty() {
+            sanitize_detail(extra)
+        } else {
+            truncate_detail(format!("{prior}｜{}", sanitize_detail(extra)))
+        };
+        conn.execute(
+            "UPDATE agent_operations
+                SET detail = ?2, updated_at = ?3, state_revision = state_revision + 1
+              WHERE id = ?1 AND status <> 'running'",
+            rusqlite::params![operation_id, detail, now],
+        )
+        .map_err(AppError::from)
+    })?;
+    if changed == 0 {
+        return Ok(None);
+    }
+    let operation = get(db, operation_id)?;
+    if let Some(op) = &operation {
+        notify(op);
+    }
+    Ok(operation)
+}
+
+// ── 事务内完成守卫 ───────────────────────────────────────────────
+//
+// 用于「业务写入 + 操作收尾必须原子」的入口（REST、文件导入、CLI 资源写入）：
+// 把 `complete_tx` 挂到既有 `WriteGuard` 事务链上，业务回滚时操作状态一并回滚，
+// 业务提交时操作状态同时生效，从结构上消除「业务已提交、操作记录未完成」的窗口。
+
+/// 把一次业务写入的真实结果（资源 + revision）与状态提交绑定在同一事务。
+///
+/// 收尾是 **best-effort**：操作可视化的任何问题都不得让已成功的业务写入回滚
+/// （契约 §四.8）。真正需要严格校验的是业务守卫（幂等占位/导入租约），
+/// 它们在 `CompositeGuard` 里先执行。
+pub struct OperationGuard {
+    operation_id: String,
+    captured: Mutex<Option<(String, String, i64)>>,
+}
+
+impl OperationGuard {
+    pub fn new(operation_id: impl Into<String>) -> Self {
+        Self {
+            operation_id: operation_id.into(),
+            captured: Mutex::new(None),
+        }
+    }
+
+    pub fn operation_id(&self) -> &str {
+        &self.operation_id
+    }
+
+    /// 事务内已经写入的终态（提交后供入口补发事件）。
+    fn result(&self) -> OperationResult {
+        match self.captured.lock().ok().and_then(|slot| slot.clone()) {
+            Some((kind, id, revision)) => OperationResult::new()
+                .resource(kind, id)
+                .revision(Some(revision)),
+            None => OperationResult::new(),
+        }
+    }
+}
+
+impl super::store::WriteGuard for OperationGuard {
+    fn check(&self, _conn: &Connection) -> AppResult<()> {
+        // 执行权由业务守卫负责；这里不做额外校验，避免把可视化变成写入前置条件。
+        Ok(())
+    }
+
+    fn record_operation(&self, conn: &Connection, kind: &str, id: &str) -> AppResult<()> {
+        if self.operation_id.is_empty() {
+            return Ok(());
+        }
+        // 与 `bump_revision` 同事务、且在其之后调用：读到的就是本次写入产生的版本。
+        let (revision, _, _) = super::store::read_revision(conn, kind, id)?;
+        if let Ok(mut slot) = self.captured.lock() {
+            *slot = Some((kind.to_string(), id.to_string(), revision));
+        }
+        Ok(())
+    }
+
+    fn complete(&self, conn: &Connection) -> AppResult<()> {
+        let result = self.result();
+        match complete_tx(conn, &self.operation_id, &result) {
+            Ok(_) => Ok(()),
+            Err(err) => {
+                tracing::warn!(
+                    operation_id = %self.operation_id,
+                    "事务内写入 Agent 操作终态失败（不影响业务提交）: {}",
+                    err.user_message()
+                );
+                Ok(())
+            }
+        }
+    }
+}
+
+/// 组合守卫：业务守卫（严格）在前，操作收尾（best-effort）在后。
+///
+/// 顺序不可颠倒：业务守卫失败必须让事务整体回滚，此时操作收尾也随之回滚。
+pub struct CompositeGuard<'a> {
+    business: &'a (dyn super::store::WriteGuard + Sync),
+    operation: &'a OperationGuard,
+}
+
+impl<'a> CompositeGuard<'a> {
+    pub fn new(
+        business: &'a (dyn super::store::WriteGuard + Sync),
+        operation: &'a OperationGuard,
+    ) -> Self {
+        Self {
+            business,
+            operation,
+        }
+    }
+}
+
+impl super::store::WriteGuard for CompositeGuard<'_> {
+    fn check(&self, conn: &Connection) -> AppResult<()> {
+        self.business.check(conn)?;
+        self.operation.check(conn)
+    }
+
+    fn record_operation(&self, conn: &Connection, kind: &str, id: &str) -> AppResult<()> {
+        self.business.record_operation(conn, kind, id)?;
+        self.operation.record_operation(conn, kind, id)
+    }
+
+    fn complete(&self, conn: &Connection) -> AppResult<()> {
+        self.business.complete(conn)?;
+        self.operation.complete(conn)
+    }
 }
 
 /// 业务失败/回滚后收敛状态：`Conflict` → conflict，其余 → failed。
@@ -662,7 +1028,8 @@ pub fn fail_with(
         conn.execute(
             "UPDATE agent_operations
                 SET status = ?2, phase = 'done', error_code = ?3, detail = ?4,
-                    finished_at = ?5, updated_at = ?5, lease_expires_at = NULL
+                    finished_at = ?5, updated_at = ?5, state_revision = state_revision + 1,
+                    lease_expires_at = NULL
               WHERE id = ?1 AND status IN ('running','interrupted')",
             rusqlite::params![operation_id, status.as_str(), code, detail, now],
         )
@@ -671,6 +1038,7 @@ pub fn fail_with(
     if changed == 0 {
         return Ok(None);
     }
+    untrack(operation_id);
     let operation = get(db, operation_id)?;
     if let Some(op) = &operation {
         notify(op);
@@ -681,6 +1049,9 @@ pub fn fail_with(
 /// 找出租约过期且从未正常结束的操作，标记为 interrupted。
 ///
 /// 只处理 `running` 且租约确实过期的行：仍在执行的长任务只要按约定续租就不会被误判。
+/// 扫描分两步（SELECT 候选 → 逐条 UPDATE），UPDATE **重新校验**
+/// `status='running'` 与 `lease_expires_at < now`：
+/// 扫描期间刚成功续租的操作不会被覆盖成 interrupted。
 pub fn interrupt_stale(db: &Db) -> AppResult<u32> {
     let now = crate::agents::now_iso();
     let ids: Vec<String> = db.with_read(|conn| {
@@ -710,14 +1081,17 @@ pub fn interrupt_stale(db: &Db) -> AppResult<u32> {
                 "UPDATE agent_operations
                     SET status = 'interrupted', phase = 'done', error_code = 'INTERRUPTED',
                         detail = CASE WHEN detail = '' THEN '租约过期，未收到完成结果' ELSE detail END,
-                        finished_at = ?2, updated_at = ?2, lease_expires_at = NULL
-                  WHERE id = ?1 AND status = 'running'",
+                        finished_at = ?2, updated_at = ?2, state_revision = state_revision + 1,
+                        lease_expires_at = NULL
+                  WHERE id = ?1 AND status = 'running'
+                    AND lease_expires_at IS NOT NULL AND lease_expires_at < ?2",
                 rusqlite::params![id, now],
             )
             .map_err(AppError::from)
         })?;
         if changed > 0 {
             affected += 1;
+            untrack(&id);
             if let Ok(Some(op)) = get(db, &id) {
                 notify(&op);
             }
@@ -754,8 +1128,8 @@ fn read_operation(conn: &Connection, id: &str) -> AppResult<Option<AgentOperatio
 }
 
 const SELECT_COLUMNS: &str = "SELECT id, agent_id, actor_kind, interface, action, resource_kind,
-        resource_id, project_id, status, phase, revision, request_id, error_code, detail,
-        started_at, updated_at, finished_at, lease_expires_at
+        resource_id, project_id, status, phase, state_revision, revision, request_id,
+        error_code, detail, started_at, updated_at, finished_at, lease_expires_at
    FROM agent_operations";
 
 fn map_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentOperation> {
@@ -772,14 +1146,15 @@ fn map_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentOperation> {
         project_id: row.get(7)?,
         status: OperationStatus::parse(&status_raw).unwrap_or(OperationStatus::Interrupted),
         phase: OperationPhase::parse(&phase_raw).unwrap_or(OperationPhase::Done),
-        revision: row.get(10)?,
-        request_id: row.get(11)?,
-        error_code: row.get(12)?,
-        detail: row.get(13)?,
-        started_at: row.get(14)?,
-        updated_at: row.get(15)?,
-        finished_at: row.get(16)?,
-        lease_expires_at: row.get(17)?,
+        state_revision: row.get(10)?,
+        revision: row.get(11)?,
+        request_id: row.get(12)?,
+        error_code: row.get(13)?,
+        detail: row.get(14)?,
+        started_at: row.get(15)?,
+        updated_at: row.get(16)?,
+        finished_at: row.get(17)?,
+        lease_expires_at: row.get(18)?,
     })
 }
 
@@ -915,44 +1290,86 @@ pub fn sync_since(
     };
     let bootstrap = cursor.is_none();
     let operations = db.with_read(|conn| {
-        // 启动/首次同步只读「最近的 N 条」，避免从历史第一行开始拉；
+        // 首次同步（没有游标）不是「只看最近 N 条」：
+        // 仍然在运行的操作**无论多旧**都必须恢复到 Store（否则 UI 永远看不到它），
+        // 最近历史只取一页，其余通过历史分页查询（`has_more` 明确告知）。
         // 有游标后严格按 (updated_at, id) keyset 递增，不重复也不跳行。
-        let sql = if bootstrap {
-            format!(
-                "{SELECT_COLUMNS}
-                  ORDER BY updated_at DESC, id DESC
-                  LIMIT ?1"
-            )
-        } else {
-            format!(
-                "{SELECT_COLUMNS}
-                  WHERE (updated_at > ?1 OR (updated_at = ?1 AND id > ?2))
-                  ORDER BY updated_at ASC, id ASC
-                  LIMIT ?3"
-            )
-        };
-        let mut stmt = conn.prepare(&sql).map_err(AppError::from)?;
         let mut out = Vec::new();
         if bootstrap {
-            let rows = stmt
-                .query_map(rusqlite::params![limit as i64], map_row)
+            // 启动恢复分两段，**运行中的操作不受历史条数限制**：
+            // 1) 全部 running（硬上限 MAX_BOOTSTRAP_ACTIVE，防止异常数据拖垮 UI）；
+            // 2) 最近一页终态历史（供「最近记录」列表）。
+            // 若只按 updated_at 取最近 N 条，长时间运行且很少变更的操作会被
+            // 大量新终态挤出窗口，UI 就再也看不到它——这是 v86 的 P1 缺陷。
+            let running_limit = MAX_BOOTSTRAP_ACTIVE;
+            let history_limit = limit.max(1);
+            let mut running_stmt = conn
+                .prepare(&format!(
+                    "{SELECT_COLUMNS} WHERE status = 'running'
+                      ORDER BY updated_at DESC, id DESC LIMIT ?1"
+                ))
+                .map_err(AppError::from)?;
+            let rows = running_stmt
+                .query_map(rusqlite::params![running_limit as i64], map_row)
                 .map_err(AppError::from)?;
             for row in rows {
                 out.push(row.map_err(AppError::from)?);
             }
+            let mut history_stmt = conn
+                .prepare(&format!(
+                    "{SELECT_COLUMNS} WHERE status <> 'running'
+                      ORDER BY updated_at DESC, id DESC LIMIT ?1"
+                ))
+                .map_err(AppError::from)?;
+            let rows = history_stmt
+                .query_map(rusqlite::params![history_limit as i64], map_row)
+                .map_err(AppError::from)?;
+            for row in rows {
+                let op = row.map_err(AppError::from)?;
+                if !out.iter().any(|existing| existing.id == op.id) {
+                    out.push(op);
+                }
+            }
             // 统一按时间正序返回，前端合并逻辑只有一条路径。
-            out.reverse();
+            out.sort_by(|left, right| {
+                (left.updated_at.as_str(), left.id.as_str())
+                    .cmp(&(right.updated_at.as_str(), right.id.as_str()))
+            });
+            Ok(out)
         } else {
+            let mut stmt = conn
+                .prepare(&format!(
+                    "{SELECT_COLUMNS}
+                      WHERE (updated_at > ?1 OR (updated_at = ?1 AND id > ?2))
+                      ORDER BY updated_at ASC, id ASC
+                      LIMIT ?3"
+                ))
+                .map_err(AppError::from)?;
             let rows = stmt
                 .query_map(rusqlite::params![after_at, after_id, limit as i64], map_row)
                 .map_err(AppError::from)?;
             for row in rows {
                 out.push(row.map_err(AppError::from)?);
             }
+            Ok(out)
         }
-        Ok(out)
     })?;
-    let has_more = !bootstrap && operations.len() as u32 >= limit;
+    // 启动恢复已经把全部运行中操作 + 一页历史一次返回；`has_more` 只表示
+    // 「终态历史还有更多」——前端不需要为历史翻页（最近记录只保留 20 条），
+    // 但必须能如实告知调用方还有未读历史。
+    let has_more = if bootstrap {
+        let terminal_total: i64 = db.with_read(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM agent_operations WHERE status <> 'running'",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(AppError::from)
+        })?;
+        terminal_total > limit as i64
+    } else {
+        operations.len() as u32 >= limit
+    };
     let next = operations.last().map(|op| OperationCursor {
         updated_at: op.updated_at.clone(),
         id: op.id.clone(),
@@ -979,6 +1396,15 @@ const SECRET_MARKERS: &[&str] = &[
     "apikey=",
     "authorization:",
 ];
+
+/// 截断到 500 字符（保留可读摘要，不切断 UTF-8）。
+fn truncate_detail(raw: String) -> String {
+    if raw.chars().count() <= 500 {
+        return raw;
+    }
+    let trimmed: String = raw.chars().take(500).collect();
+    format!("{trimmed}…")
+}
 
 /// 操作详情只保留可复核摘要：截断、去换行、替换明显的凭据片段。
 pub fn sanitize_detail(raw: &str) -> String {
@@ -1078,21 +1504,42 @@ pub fn describe_rest_write(method: &str, path: &str) -> Option<(&'static str, &'
     Some(action)
 }
 
-/// REST 写请求的资源 ID（路径末段为 ID 时使用；集合端点为空）。
+/// REST 写请求的资源 ID。
+///
+/// 规则（与 `ROUTES` 的路径形态一致）：
+/// - `/api/v1/tasks/t1` → `t1`；
+/// - `/api/v1/tasks/t1/complete` → `t1`（子动作不是资源 ID）；
+/// - 集合端点 `/api/v1/tasks` → 空（创建后由响应对象回填真实 ID）。
 pub fn rest_target_id(path: &str) -> String {
+    const SUB_ACTIONS: &[&str] = &[
+        "complete", "accept", "approve", "reject", "run", "scan", "export", "resolve",
+    ];
     let rest = path.trim_matches('/').split('/').collect::<Vec<_>>();
     if rest.len() < 4 || rest[0] != "api" || rest[1] != "v1" {
         return String::new();
     }
-    let id = rest[rest.len() - 1];
-    // 子动作（complete/approve）不是资源 ID。
-    if matches!(id, "complete" | "approve" | "reject" | "run" | "scan" | "export") {
+    const COLLECTIONS: &[&str] = &[
+        "tasks", "features", "milestones", "notes", "knowledge", "decisions", "agents",
+        "handoffs", "reports", "imports", "sync", "plans", "projects",
+    ];
+    let last = rest[rest.len() - 1];
+    if SUB_ACTIONS.contains(&last) {
+        // /api/v1/<collection>/<id>/<sub-action>（允许 /agents/handoffs/<id>/<action>）：
+        // ID 紧邻子动作之前；若前一段仍是集合名（如 /sync/scan），说明没有资源 ID。
+        if rest.len() < 5 {
+            return String::new();
+        }
+        let candidate = rest[rest.len() - 2];
+        return if COLLECTIONS.contains(&candidate) {
+            String::new()
+        } else {
+            candidate.to_string()
+        };
+    }
+    if rest.len() != 4 {
         return String::new();
     }
-    if rest.len() >= 5 {
-        return String::new();
-    }
-    id.to_string()
+    last.to_string()
 }
 
 #[cfg(test)]
@@ -1123,6 +1570,18 @@ mod tests {
             request_id: "",
             detail: "",
         }
+    }
+
+    /// 租约调度表是进程级共享状态：涉及它的用例必须串行，避免互相续租。
+    fn lease_test_lock() -> &'static std::sync::Mutex<()> {
+        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| std::sync::Mutex::new(()))
+    }
+
+    /// 直接登记到共享调度表（不启动后台线程，`tick_leases` 可确定性调用）。
+    fn track_for_test(id: &str) {
+        let mut jobs = super::tracked().lock().unwrap();
+        jobs.insert(id.to_string(), super::LeaseEntry { errors: 0 });
     }
 
     #[test]
@@ -1440,6 +1899,353 @@ mod tests {
         );
         assert_eq!(describe_rest_write("GET", "/api/v1/tasks"), None);
         assert_eq!(rest_target_id("/api/v1/tasks/t1"), "t1");
-        assert_eq!(rest_target_id("/api/v1/tasks/t1/complete"), "");
+        // 子动作路径必须回填真实任务 ID，不能因为末段是 complete 就丢 ID。
+        assert_eq!(rest_target_id("/api/v1/tasks/t1/complete"), "t1");
+        assert_eq!(rest_target_id("/api/v1/agents/handoffs/h1/accept"), "h1");
+        assert_eq!(rest_target_id("/api/v1/sync/scan"), "");
     }
+
+    #[test]
+    fn renewed_lease_is_not_swept_and_expired_one_is() {
+        let db = Db::open_in_memory().unwrap();
+        let renewed = start(&db, &principal(), &input("task.update", "task")).unwrap();
+        let stale = start(&db, &principal(), &input("task.update", "task")).unwrap();
+        let past = (chrono::Utc::now() - chrono::Duration::seconds(30)).to_rfc3339();
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE agent_operations SET lease_expires_at = ?2 WHERE id = ?1",
+                rusqlite::params![stale.id, past],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        // 续租后扫描不得把刚续租的操作覆盖成 interrupted。
+        assert!(heartbeat(&db, &renewed.id));
+        let swept = interrupt_stale(&db).unwrap();
+        assert_eq!(swept, 1, "只应清理真正过期的一条");
+        assert_eq!(
+            get(&db, &renewed.id).unwrap().unwrap().status,
+            OperationStatus::Running
+        );
+        assert_eq!(
+            get(&db, &stale.id).unwrap().unwrap().status,
+            OperationStatus::Interrupted
+        );
+    }
+
+    #[test]
+    fn shared_scheduler_renews_tracked_lease_and_releases_terminal() {
+        // 共享调度器：登记 → 续租；终态后心跳不得复活，登记项自动注销。
+        let _serial = lease_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let db = Db::open_in_memory().unwrap();
+        let op = start(&db, &principal(), &input("sync.scan", "sync")).unwrap();
+        let past = (chrono::Utc::now() - chrono::Duration::seconds(30)).to_rfc3339();
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE agent_operations SET lease_expires_at = ?2 WHERE id = ?1",
+                rusqlite::params![op.id, past],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        track_for_test(&op.id);
+        let tick = tick_leases(&db);
+        assert_eq!(tick.renewed, 1, "登记的操作必须被续租");
+        let renewed = get(&db, &op.id).unwrap().unwrap();
+        assert!(
+            renewed.lease_expires_at.as_deref().unwrap_or("") > past.as_str(),
+            "续租必须把租约推到未来: {:?}",
+            renewed.lease_expires_at
+        );
+        assert_eq!(interrupt_stale(&db).unwrap(), 0, "续租后不得被判定中断");
+
+        // 终态不可被心跳复活：完成后再登记，tick 只注销，不改状态。
+        complete(&db, &op.id, &OperationResult::new().resource("sync", "s-1")).unwrap();
+        track_for_test(&op.id);
+        let tick = tick_leases(&db);
+        assert_eq!(tick.released, 1);
+        assert_eq!(tracked_count(), 0, "终态操作必须从调度表注销");
+        let after = get(&db, &op.id).unwrap().unwrap();
+        assert_eq!(after.status, OperationStatus::Committed);
+        assert!(after.lease_expires_at.is_none());
+    }
+
+    #[test]
+    fn bootstrap_sync_restores_old_running_operation_beyond_recent_history() {
+        let db = Db::open_in_memory().unwrap();
+        let running = start(&db, &principal(), &input("sync.scan", "sync")).unwrap();
+        for index in 0..60 {
+            let op = start(&db, &principal(), &input("task.update", "task")).unwrap();
+            complete(&db, &op.id, &OperationResult::new().resource("task", &format!("t{index}")))
+                .unwrap();
+        }
+        // 把运行中操作的更新时间压到历史之前，模拟「启动后很久仍有未完成操作」。
+        let old = (chrono::Utc::now() - chrono::Duration::hours(2)).to_rfc3339();
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE agent_operations SET updated_at = ?2, started_at = ?2 WHERE id = ?1",
+                rusqlite::params![running.id, old],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        let sync = sync_since(&db, None, 20).unwrap();
+        assert!(
+            sync.operations.iter().any(|op| op.id == running.id),
+            "首次同步必须包含仍然有效的运行中操作，即使它比最近历史更旧"
+        );
+        assert!(sync.has_more, "历史被截断时必须明确告知还有更多");
+        // 游标之后不重复返回同一条。
+        let next = sync_since(&db, sync.cursor.as_ref(), 100).unwrap();
+        assert!(!next.operations.iter().any(|op| op.id == running.id));
+    }
+
+    #[test]
+    fn state_revision_advances_on_transitions_but_not_on_heartbeat() {
+        let db = Db::open_in_memory().unwrap();
+        let op = start(&db, &principal(), &input("task.update", "task")).unwrap();
+        assert_eq!(op.state_revision, 1, "创建即版本 1");
+
+        let target = update_target(&db, &op.id, &OperationTarget::resource("task", "t-1"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(target.state_revision, 2);
+
+        let writing = update_phase(&db, &op.id, OperationPhase::Writing).unwrap().unwrap();
+        assert_eq!(writing.state_revision, 3);
+
+        // 心跳只续租：不推版本、不改 updated_at（否则会推动游标制造假事件）。
+        let before = get(&db, &op.id).unwrap().unwrap();
+        assert!(heartbeat(&db, &op.id));
+        let after = get(&db, &op.id).unwrap().unwrap();
+        assert_eq!(after.state_revision, before.state_revision);
+        assert_eq!(after.updated_at, before.updated_at);
+        assert_ne!(after.lease_expires_at, before.lease_expires_at);
+
+        let done = complete(&db, &op.id, &OperationResult::new().resource("task", "t-1"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(done.state_revision, 4);
+        assert!(done.state_revision > writing.state_revision, "版本必须单调递增");
+    }
+
+    #[test]
+    fn operation_guard_completes_inside_business_transaction() {
+        use crate::agent_access::store::WriteGuard;
+
+        let db = Db::open_in_memory().unwrap();
+        // 提交：业务与终态同时生效。
+        let committed = start(&db, &principal(), &input("task.update", "task")).unwrap();
+        let guard = OperationGuard::new(&committed.id);
+        db.with_transaction(|conn| {
+            guard.record_operation(conn, "task", "t-1")?;
+            guard.complete(conn)
+        })
+        .unwrap();
+        let done = get(&db, &committed.id).unwrap().unwrap();
+        assert_eq!(done.status, OperationStatus::Committed);
+        assert_eq!(done.resource_id, "t-1");
+        assert_eq!(done.error_code, "");
+
+        // 回滚：业务失败时终态一并回滚，绝不出现「业务失败但显示成功」。
+        let rolled = start(&db, &principal(), &input("task.update", "task")).unwrap();
+        let guard = OperationGuard::new(&rolled.id);
+        let result: AppResult<()> = db.with_transaction(|conn| {
+            guard.record_operation(conn, "task", "t-2")?;
+            guard.complete(conn)?;
+            Err(AppError::Validation("业务校验失败".into()))
+        });
+        assert!(result.is_err());
+        assert_eq!(
+            get(&db, &rolled.id).unwrap().unwrap().status,
+            OperationStatus::Running,
+            "业务回滚后操作必须保持 running"
+        );
+    }
+
+    #[test]
+    fn late_completion_recovers_interrupted_without_repeating_business() {
+        let db = Db::open_in_memory().unwrap();
+        let op = start(&db, &principal(), &input("task.update", "task")).unwrap();
+        // 模拟租约被误判（例如执行者短暂卡顿）：业务随后才真正提交。
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE agent_operations
+                    SET status='interrupted', phase='done', error_code='INTERRUPTED',
+                        finished_at=?2, updated_at=?2, lease_expires_at=NULL, state_revision=state_revision+1
+                  WHERE id=?1",
+                rusqlite::params![op.id, crate::agents::now_iso()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let recovered = complete(&db, &op.id, &OperationResult::new().resource("task", "t-9"))
+            .unwrap()
+            .expect("真实业务结果必须能纠正误判");
+        assert_eq!(recovered.status, OperationStatus::Committed);
+        assert!(recovered.detail.contains("业务提交后恢复"));
+        assert_eq!(recovered.error_code, "");
+        // 重复完成是幂等的：不再产生第二次终态写入。
+        assert!(complete(&db, &op.id, &OperationResult::new().resource("task", "t-9"))
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn append_detail_keeps_terminal_status() {
+        let db = Db::open_in_memory().unwrap();
+        let op = start(&db, &principal(), &input("import.create", "task")).unwrap();
+        let done = complete(&db, &op.id, &OperationResult::new().resource("task", "t-1"))
+            .unwrap()
+            .unwrap();
+        let updated = append_detail(&db, &op.id, "文件归档失败（数据库已提交）")
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.status, OperationStatus::Committed);
+        assert_eq!(updated.finished_at, done.finished_at, "完成时间不得被改写");
+        assert!(updated.detail.contains("归档失败"));
+        assert_eq!(updated.state_revision, done.state_revision + 1);
+        // running 不接受详情追加（避免把过程状态当成终态结论）。
+        let running = start(&db, &principal(), &input("task.update", "task")).unwrap();
+        assert!(append_detail(&db, &running.id, "x").unwrap().is_none());
+    }
+
+    #[test]
+    fn keyset_sync_pages_through_identical_timestamps_without_gaps() {        let db = Db::open_in_memory().unwrap();
+        let mut ids = Vec::new();
+        for _ in 0..5 {
+            ids.push(start(&db, &principal(), &input("task.update", "task")).unwrap().id);
+        }
+        // 同一时间戳：游标必须用 (updated_at, id) 复合键继续，不跳行也不重复。
+        let ts = "2026-11-21T00:00:00+00:00".to_string();
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE agent_operations SET updated_at = ?1",
+                rusqlite::params![ts],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let mut cursor = Some(OperationCursor {
+            updated_at: ts.clone(),
+            id: String::new(),
+        });
+        let mut seen: Vec<String> = Vec::new();
+        loop {
+            let page = sync_since(&db, cursor.as_ref(), 2).unwrap();
+            for op in &page.operations {
+                seen.push(op.id.clone());
+            }
+            cursor = page.cursor.clone();
+            if page.operations.is_empty() || !page.has_more {
+                break;
+            }
+        }
+        seen.sort();
+        ids.sort();
+        assert_eq!(seen, ids, "分页必须覆盖全部记录且不重复");
+        assert_eq!(seen.len(), 5);
+    }
+
+    #[test]
+    fn bootstrap_restores_more_than_fifty_active_operations() {
+        // 场景 D：活动操作超过历史查询上限（50）时必须全部恢复。
+        let db = Db::open_in_memory().unwrap();
+        let mut running = Vec::new();
+        for _ in 0..120 {
+            running.push(start(&db, &principal(), &input("task.update", "task")).unwrap().id);
+        }
+        for index in 0..60 {
+            let op = start(&db, &principal(), &input("task.update", "task")).unwrap();
+            complete(
+                &db,
+                &op.id,
+                &OperationResult::new().resource("task", &format!("done-{index}")),
+            )
+            .unwrap();
+        }
+        let sync = sync_since(&db, None, 50).unwrap();
+        let restored: Vec<&String> = sync
+            .operations
+            .iter()
+            .filter(|op| op.status == OperationStatus::Running)
+            .map(|op| &op.id)
+            .collect();
+        assert_eq!(restored.len(), 120, "启动恢复不得遗漏任何活动操作");
+        for id in &running {
+            assert!(restored.contains(&id), "运行中操作 {} 未被恢复", id);
+        }
+        assert_eq!(sync.active_count, 120);
+    }
+
+    #[test]
+    fn two_agents_on_same_resource_do_not_share_lease() {
+        let db = Db::open_in_memory().unwrap();
+        let mut other = principal();
+        other.agent_id = "claude".into();
+        let a = start(&db, &principal(), &input("task.update", "task")).unwrap();
+        let b = start(&db, &other, &input("task.update", "task")).unwrap();
+        update_target(&db, &a.id, &OperationTarget::resource("task", "t-1")).unwrap();
+        update_target(&db, &b.id, &OperationTarget::resource("task", "t-1")).unwrap();
+        let past = (chrono::Utc::now() - chrono::Duration::seconds(30)).to_rfc3339();
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE agent_operations SET lease_expires_at = ?2 WHERE id = ?1",
+                rusqlite::params![b.id, past],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        // 续租 A 不能顺带续租 B：租约是每个操作独立的。
+        assert!(heartbeat(&db, &a.id));
+        let b_after = get(&db, &b.id).unwrap().unwrap();
+        assert_eq!(b_after.lease_expires_at.as_deref(), Some(past.as_str()));
+        assert_eq!(interrupt_stale(&db).unwrap(), 1, "B 的租约仍然过期");
+        assert_eq!(
+            get(&db, &a.id).unwrap().unwrap().status,
+            OperationStatus::Running
+        );
+    }
+
+    #[test]
+    fn concurrent_heartbeat_and_complete_converge_to_committed() {
+        // 并发：心跳与完成同时发生，终态必须稳定为 committed 且租约清空。
+        let db = Arc::new(Db::open_in_memory().unwrap());
+        let op = start(&db, &principal(), &input("task.update", "task")).unwrap();
+        let mut handles = Vec::new();
+        for _ in 0..4 {
+            let db = db.clone();
+            let id = op.id.clone();
+            handles.push(std::thread::spawn(move || {
+                for _ in 0..20 {
+                    let _ = heartbeat(&db, &id);
+                }
+            }));
+        }
+        let db2 = db.clone();
+        let id2 = op.id.clone();
+        let done = std::thread::spawn(move || {
+            complete(
+                &db2,
+                &id2,
+                &OperationResult::new().resource("task", "t-1"),
+            )
+            .unwrap()
+        });
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        let completed = done.join().unwrap().expect("完成必须成功");
+        assert_eq!(completed.status, OperationStatus::Committed);
+        let final_state = get(&db, &op.id).unwrap().unwrap();
+        assert_eq!(final_state.status, OperationStatus::Committed);
+        assert!(
+            final_state.lease_expires_at.is_none(),
+            "终态不得保留租约（否则会被误判为仍在运行）"
+        );
+    }
+
 }

@@ -749,6 +749,10 @@ pub fn run() {
             {
                 tracing::warn!("Agent 操作历史清理失败: {err}");
             }
+            // v86.1：共享租约调度。同一线程负责
+            // 1) 为本进程的长操作续租（短操作只登记 ID，不创建线程）；
+            // 2) 周期把过期 running 收敛为 interrupted（CLI 异常退出不再依赖重启）。
+            agent_access::operations::start_runtime(db.clone(), true);
             handle.manage(db.clone());
             // 统一音频通知服务（TTS 合成 + 本地缓存）：
             // 缓存目录走 app_cache_dir/audio/tts（验收/便携模式随 TASK_DOCK_DATA_DIR 隔离），

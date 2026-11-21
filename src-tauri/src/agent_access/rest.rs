@@ -882,7 +882,7 @@ async fn run_claim_execution(
 
     // 业务写入与幂等占位绑定在同一事务：提交即标记 committed 并记录 operation 指针，
     // 进程在「提交后、写响应前」退出时可据此重建响应，绝不重复写入。
-    let guard = store::RequestCacheGuard::new(
+    let claim_guard = store::RequestCacheGuard::new(
         &claim.row_id,
         "rest",
         &claim.key,
@@ -891,17 +891,31 @@ async fn run_claim_execution(
     );
     // 幂等占位已取得 → 才可能出现真实业务写入；此时开始记录操作。
     let operation = begin_rest_operation(&state.db, &principal, &method, &path, &request_id);
+    // v86.1：把「业务提交 + 幂等占位置 committed + 操作置 committed」放进同一个事务。
+    // 业务回滚时三者一起回滚；提交时三者一起生效，不再存在
+    // 「业务已提交、操作记录还是 running」的窗口。
+    let operation_guard = operations::OperationGuard::new(
+        operation
+            .as_ref()
+            .map(|op| op.id.clone())
+            .unwrap_or_default(),
+    );
+    let guarded = operations::CompositeGuard::new(&claim_guard, &operation_guard);
     let outcome = tokio::time::timeout_at(
         grace_deadline.into(),
-        dispatch(&state, &principal, &method, &path, &query, &body, &guard),
+        dispatch(&state, &principal, &method, &path, &query, &body, &guarded),
     )
     .await;
     match outcome {
         Ok(Ok((data, page))) => {
             if let Some(op) = &operation {
-                // 业务已提交：以真实返回对象绑定资源 ID / revision。
+                // 事务内已完成时 `complete` 返回 None（事件未发），补发一次；
+                // 未被守卫覆盖的端点在事务外收敛，`complete` 自己会广播。
                 let result = operations::OperationResult::from_value(&op.resource_kind, &data);
-                let _ = operations::complete(&state.db, &op.id, &result);
+                match operations::complete(&state.db, &op.id, &result) {
+                    Ok(Some(_)) => {}
+                    _ => operations::notify_current(&state.db, &op.id),
+                }
             }
             let meta = meta_of(&principal, &request_id, page);
             let envelope = Envelope::ok(data, meta);
@@ -953,7 +967,19 @@ async fn run_claim_execution(
             }
         }
         Err(_) => {
-            // 宽限期耗尽仍未完成 → 释放占位（允许后续重试）并记录 last_error。
+            // 宽限期耗尽仍未完成 → 操作必须以明确终态收敛，不能长期停在 running。
+            // 结论是「未核实」而不是「失败」：业务事务可能已提交，只是响应没写回，
+            // 因此用 interrupted + 稳定错误码，让人/Agent 复核，绝不伪造 committed。
+            if let Some(op) = &operation {
+                let _ = operations::fail_with(
+                    &state.db,
+                    &op.id,
+                    operations::OperationStatus::Interrupted,
+                    "REST_GRACE_EXHAUSTED",
+                    "请求超过宽限期仍未完成，业务结果未核实",
+                );
+            }
+            // 释放占位（允许后续重试）并记录 last_error。
             let _ = store::cache_fail(
                 &state.db,
                 &claim.row_id,
@@ -1390,6 +1416,14 @@ async fn handle(req: Request<Incoming>, state: Arc<RestState>) -> Response<Full<
         None => {
             // 无幂等占位：超时即取消（事务未提交则随 future drop 回滚）。
             let operation = begin_rest_operation(&state.db, &principal, &method, &path, &request_id);
+            // 无幂等占位的写路径：用空业务守卫 + 操作守卫，同样把状态收尾放进业务事务。
+            let operation_guard = operations::OperationGuard::new(
+                operation
+                    .as_ref()
+                    .map(|op| op.id.clone())
+                    .unwrap_or_default(),
+            );
+            let guarded = operations::CompositeGuard::new(&store::NoGuard, &operation_guard);
             match tokio::time::timeout_at(
                 deadline.into(),
                 dispatch(
@@ -1399,7 +1433,7 @@ async fn handle(req: Request<Incoming>, state: Arc<RestState>) -> Response<Full<
                     &path,
                     &query,
                     &body,
-                    &store::NoGuard,
+                    &guarded,
                 ),
             )
             .await
@@ -1419,7 +1453,10 @@ async fn handle(req: Request<Incoming>, state: Arc<RestState>) -> Response<Full<
                     if let Some(op) = &operation {
                         let result =
                             operations::OperationResult::from_value(&op.resource_kind, &data);
-                        let _ = operations::complete(&state.db, &op.id, &result);
+                        match operations::complete(&state.db, &op.id, &result) {
+                            Ok(Some(_)) => {}
+                            _ => operations::notify_current(&state.db, &op.id),
+                        }
                     }
                     let meta = meta_of(&principal, &request_id, page);
                     let envelope = Envelope::ok(data, meta);
@@ -1437,7 +1474,20 @@ async fn handle(req: Request<Incoming>, state: Arc<RestState>) -> Response<Full<
                     }
                     Err(err)
                 }
-                Err(_) => return timeout_response(&principal, &request_id),
+                Err(_) => {
+                    // 无幂等占位的超时：future 已被取消，事务未提交（回滚），
+                    // 操作收敛为 interrupted 并记录明确原因，避免悬挂 90s。
+                    if let Some(op) = &operation {
+                        let _ = operations::fail_with(
+                            &state.db,
+                            &op.id,
+                            operations::OperationStatus::Interrupted,
+                            "REQUEST_TIMEOUT",
+                            "请求超时，业务执行已取消",
+                        );
+                    }
+                    return timeout_response(&principal, &request_id);
+                }
             }
         }
     };

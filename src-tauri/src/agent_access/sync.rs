@@ -1238,7 +1238,16 @@ pub fn scan(db: &Db, actor: &Principal, row: &workspace::WorkspaceRow) -> AppRes
                 detail: &rel,
             },
         );
-        match import_document_guarded(db, &import_principal, &doc, &lease_guard) {
+        // v86.1：业务事务与操作终态同事务提交（导入租约守卫 + 操作守卫）。
+        // 数据库提交成功而操作记录失败/进程退出时，不会再把「其实已导入」显示成未完成。
+        let operation_guard = operations::OperationGuard::new(
+            operation
+                .as_ref()
+                .map(|op| op.id.clone())
+                .unwrap_or_default(),
+        );
+        let guarded = operations::CompositeGuard::new(&lease_guard, &operation_guard);
+        match import_document_guarded(db, &import_principal, &doc, &guarded) {
             Ok(message) => {
                 // 租约已在业务事务内置 ok（与业务数据同事务提交），此处无需再收尾。
                 report.imported += 1;
@@ -1285,13 +1294,21 @@ pub fn scan(db: &Db, actor: &Principal, row: &workspace::WorkspaceRow) -> AppRes
                     };
                     let result = operations::OperationResult::new()
                         .revision(doc.envelope.base_revision)
-                        .detail(detail);
+                        .detail(detail.clone());
                     let result = match doc.envelope.payload.get("task_id").and_then(|v| v.as_str())
                     {
                         Some(id) => result.resource(&op.resource_kind, id),
                         None => result,
                     };
-                    let _ = operations::complete(db, &op.id, &result);
+                    // 事务内已 committed 时 `complete` 返回 None：只追加归档/详情，
+                    // 状态保持 committed（业务确实已提交，归档失败不是业务失败）。
+                    match operations::complete(db, &op.id, &result) {
+                        Ok(Some(_)) => {}
+                        _ => {
+                            let _ = operations::append_detail(db, &op.id, &detail);
+                            operations::notify_current(db, &op.id);
+                        }
+                    }
                 }
             }
             Err(err) => {
@@ -1512,7 +1529,15 @@ pub fn approve_import(
         &lease.owner,
         lease.attempt,
     );
-    match import_document_guarded(db, &principal, &doc, &lease_guard) {
+    // 与 scan 相同：业务提交、租约置 ok、操作置 committed 同事务。
+    let operation_guard = operations::OperationGuard::new(
+        operation
+            .as_ref()
+            .map(|op| op.id.clone())
+            .unwrap_or_default(),
+    );
+    let guarded = operations::CompositeGuard::new(&lease_guard, &operation_guard);
+    match import_document_guarded(db, &principal, &doc, &guarded) {
         Ok(message) => {
             // 租约已在业务事务内置 ok（与业务数据同事务提交）。
             let note = if note.trim().is_empty() {
@@ -1575,12 +1600,18 @@ pub fn approve_import(
                 };
                 let result = operations::OperationResult::new()
                     .revision(doc.envelope.base_revision)
-                    .detail(detail);
+                    .detail(detail.clone());
                 let result = match doc.envelope.payload.get("task_id").and_then(|v| v.as_str()) {
                     Some(id) => result.resource(&op.resource_kind, id),
                     None => result,
                 };
-                let _ = operations::complete(db, &op.id, &result);
+                match operations::complete(db, &op.id, &result) {
+                    Ok(Some(_)) => {}
+                    _ => {
+                        let _ = operations::append_detail(db, &op.id, &detail);
+                        operations::notify_current(db, &op.id);
+                    }
+                }
             }
             Ok(message)
         }

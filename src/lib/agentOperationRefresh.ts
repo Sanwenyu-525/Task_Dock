@@ -52,8 +52,11 @@ function flush(): void {
 
 function consider(op: AgentOperation): void {
   if (!op || !op.id || op.status === "running") return;
-  if (seen.has(op.id)) return;
-  seen.add(op.id);
+  // 按「操作 + 终态」去重：同一操作从 interrupted 恢复为 committed 是一次真实提交，
+  // 必须刷新业务数据；而 append_detail（同状态的详情更新）不会重复刷新。
+  const key = `${op.id}:${op.status}`;
+  if (seen.has(key)) return;
+  seen.add(key);
   if (seen.size > SEEN_LIMIT) seen.clear();
   // MCP 写入已有 planning-changed：保持单一刷新来源。
   if (op.interface === "mcp") return;
@@ -69,7 +72,9 @@ function consider(op: AgentOperation): void {
 export function ensureAgentOperationBusinessRefresh(): void {
   if (started) return;
   started = true;
-  for (const op of useAgentOperationsStore.getState().recent) seen.add(op.id);
+  for (const op of useAgentOperationsStore.getState().recent) {
+    seen.add(`${op.id}:${op.status}`);
+  }
   useAgentOperationsStore.subscribe((state, prev) => {
     if (state.recent === prev.recent) return;
     for (const op of state.recent) consider(op);

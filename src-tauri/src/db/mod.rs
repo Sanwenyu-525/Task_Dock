@@ -2162,6 +2162,9 @@ CREATE INDEX idx_sec_audit_cat ON security_audit_log(category, created_at);
     (85, crate::collab::schema::MIGRATION_85),
     // Agent 操作可视化（v86）：统一操作生命周期表（可变过程状态，非审计历史）。
     crate::agent_access::schema::MIGRATION_86,
+    // v86.1 可靠性修复（v88）：操作状态版本（前端乱序判定）+ 租约扫描索引。
+    // 纯新增列/索引，不改 v86 既有列语义。
+    crate::agent_access::schema::MIGRATION_88,
 ];
 
 /// 历史测试数据的保守回填（幂等）。

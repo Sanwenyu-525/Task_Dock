@@ -2425,6 +2425,12 @@ export interface AgentOperation {
   projectId: string;
   status: AgentOperationStatus;
   phase: AgentOperationPhase;
+  /**
+   * 状态版本：后端每次**真实状态变更**（状态/阶段/资源绑定/详情追加）单调 +1。
+   * 心跳不推进。前端以它优先于 `updatedAt` 判定先后，避免同一时间戳
+   * 或时钟回拨让终态被旧事件覆盖。旧后端可能不返回（按 v88 之前的数据处理）。
+   */
+  stateRevision?: number;
   revision?: number;
   requestId: string;
   startedAt: string;

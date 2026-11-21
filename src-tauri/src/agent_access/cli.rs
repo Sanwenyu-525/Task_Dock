@@ -300,7 +300,7 @@ pub fn main_entry(args: Vec<String>) -> i32 {
         return 0;
     }
     let db = match open_db() {
-        Ok(db) => db,
+        Ok(db) => std::sync::Arc::new(db),
         Err(err) => {
             eprintln!("{}", err.user_message());
             return 7;
@@ -338,9 +338,19 @@ pub fn main_entry(args: Vec<String>) -> i32 {
     };
 
     let request_id = format!("cli-{}", uuid::Uuid::new_v4().simple());
+    // 写命令才需要租约续租：CLI 是独立进程、执行时长未知（批量知识写入/同步扫描），
+    // 超过 90 秒不续租会被桌面端判为 interrupted。进程级共享调度器只创建一个线程，
+    // 短操作在首次 tick 前就结束，线程随进程退出。`sweep=false`：CLI 无权替别的进程判死。
+    //
+    // **必须在 start 之前启用**：`start` 只在运行期已启动时登记操作；
+    // 顺序颠倒会让整个 CLI 进程的操作都不被续租。
+    let write_action = classify_cli_write(&argv);
+    if write_action.is_some() {
+        operations::start_runtime(db.clone(), false);
+    }
     // 认证已完成 → 开始记录操作（读命令不记录）。CLI 在 UI 关闭时照常运行，
     // 前端通过 SQLite 游标增量感知，不依赖任何桌面端进程。
-    let operation = classify_cli_write(&argv).and_then(|(action, kind, target)| {
+    let operation = write_action.and_then(|(action, kind, target)| {
         operations::try_start(
             &db,
             &principal,
@@ -356,10 +366,23 @@ pub fn main_entry(args: Vec<String>) -> i32 {
     });
     let compact_context = argv.first().is_some_and(|group| group == "context")
         && take_flag(&mut argv.clone(), "--format").as_deref() == Some("compact_json");
-    match execute(&db, &principal, &cli, argv) {
+    // v86.1：写命令的业务事务与操作终态同事务提交。
+    // 业务成功但进程在写操作记录前退出时，不会再留下「已完成却显示运行中」的行。
+    let operation_guard = operations::OperationGuard::new(
+        operation
+            .as_ref()
+            .map(|op| op.id.clone())
+            .unwrap_or_default(),
+    );
+    match execute(&db, &principal, &cli, argv, &operation_guard) {
         Ok(outcome) => {
             if let Some(op) = &operation {
-                let _ = operations::complete(&db, &op.id, &cli_operation_result(&outcome.data));
+                let result = cli_operation_result(&outcome.data);
+                // 事务内已完成 → `complete` 返回 None（未广播），补发一次事件。
+                match operations::complete(&db, &op.id, &result) {
+                    Ok(Some(_)) => {}
+                    _ => operations::notify_current(&db, &op.id),
+                }
             }
             let mut meta = Meta::new(&principal, &request_id);
             if let Some(page) = &outcome.page {
@@ -451,8 +474,14 @@ fn filter_fields(data: Value, fields: &[String]) -> Value {
     }
 }
 
-fn execute(db: &Db, principal: &Principal, cli: &Cli, mut args: Vec<String>) -> AppResult<Outcome> {
-    let outcome = execute_inner(db, principal, cli, &mut args)?;
+fn execute(
+    db: &Db,
+    principal: &Principal,
+    cli: &Cli,
+    mut args: Vec<String>,
+    guard: &dyn store::WriteGuard,
+) -> AppResult<Outcome> {
+    let outcome = execute_inner(db, principal, cli, &mut args, guard)?;
     validate_cli_arguments(&args)?;
     Ok(outcome)
 }
@@ -462,6 +491,7 @@ fn execute_inner(
     principal: &Principal,
     cli: &Cli,
     args: &mut Vec<String>,
+    guard: &dyn store::WriteGuard,
 ) -> AppResult<Outcome> {
     if args.is_empty() {
         return Err(usage_err("缺少命令组（status|info|project|task|plan|knowledge|decision|context|agent|search|sync）"));
@@ -609,7 +639,7 @@ fn execute_inner(
                     advance_minutes: take_flag(args, "--advance-minutes")
                         .and_then(|v| v.parse::<i64>().ok()),
                 };
-                let task = service::create_task(db, principal, input)?;
+                let task = service::create_task_guarded(db, principal, input, guard, "")?;
                 Ok(Outcome {
                     human: format!("创建任务 {} {}", task.id, task.title),
                     data: serde_json::to_value(&task)?,
@@ -637,7 +667,7 @@ fn execute_inner(
                 };
                 let base = take_flag(args, "--base-revision")
                     .and_then(|v| v.parse::<i64>().ok());
-                let task = service::update_task(db, principal, &id, patch, base)?;
+                let task = service::update_task_guarded(db, principal, &id, patch, base, guard)?;
                 Ok(Outcome {
                     human: format!("更新任务 {} {}", task.id, task.title),
                     data: serde_json::to_value(&task)?,
@@ -648,7 +678,7 @@ fn execute_inner(
                 let id = require_positional(args, "task_id")?;
                 let base = take_flag(args, "--base-revision")
                     .and_then(|v| v.parse::<i64>().ok());
-                let task = service::complete_task(db, principal, &id, base)?;
+                let task = service::complete_task_guarded(db, principal, &id, base, guard)?;
                 Ok(Outcome {
                     human: format!("完成任务 {} 当前状态 {}", task.id, task.status),
                     data: serde_json::to_value(&task)?,
@@ -765,7 +795,7 @@ fn execute_inner(
                     kb_id: take_flag(args, "--kb-id").or_else(|| take_flag(args, "--kb")),
                     kb_name: take_flag(args, "--kb-name"),
                 };
-                let doc = service::create_knowledge(db, principal, input)?;
+                let doc = service::create_knowledge_guarded(db, principal, input, guard)?;
                 Ok(Outcome {
                     human: format!("写入知识 {} {}（{} 分块）", doc.id, doc.title, doc.chunk_count),
                     data: serde_json::to_value(&doc)?,
@@ -783,7 +813,7 @@ fn execute_inner(
                             .and_then(|p| std::fs::read_to_string(p).ok())
                     }),
                 };
-                let doc = service::update_knowledge(db, principal, &id, patch, base)?;
+                let doc = service::update_knowledge_guarded(db, principal, &id, patch, base, guard)?;
                 Ok(Outcome {
                     human: format!("更新知识 {} {}", doc.id, doc.title),
                     data: serde_json::to_value(&doc)?,
@@ -841,7 +871,7 @@ fn execute_inner(
                     tags: take_all(args, "--tag"),
                     status: take_flag(args, "--status"),
                 };
-                let created = store::create_decision(db, principal, input)?;
+                let created = store::create_decision_guarded(db, principal, input, guard)?;
                 Ok(Outcome {
                     human: format!("记录决策 {} {}", created.id, created.title),
                     data: serde_json::to_value(&created)?,
@@ -1010,7 +1040,7 @@ fn execute_inner(
                             risks: take_all(args, "--risk"),
                             next_steps: take_all(args, "--next"),
                         };
-                        let created = handoff::create_handoff(db, principal, input)?;
+                        let created = handoff::create_handoff_guarded(db, principal, input, guard)?;
                         Ok(Outcome {
                             human: format!(
                                 "创建交接 {} {} → {}",
@@ -1095,7 +1125,7 @@ fn execute_inner(
                             evidence: Vec::new(),
                             risks: take_all(args, "--risk"),
                         };
-                        let out = handoff::create_report(db, principal, input)?;
+                        let out = handoff::create_report_guarded(db, principal, input, guard)?;
                         Ok(Outcome {
                             human: format!("提交报告 {} {}", out.report.id, out.report.result),
                             data: serde_json::to_value(&out)?,
