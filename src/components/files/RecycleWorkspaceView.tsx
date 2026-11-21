@@ -70,6 +70,9 @@ function formatDeleted(ms: number): string {
 type SortKey = "deleted" | "size" | "name" | "path" | "volume";
 type KindKey = "all" | "file" | "folder";
 
+/** 永久删除的实际语义：完整删除 / 只移出索引（异常项）/ 两者混合。 */
+type PurgeScope = "full" | "indexOnly" | "mixed";
+
 const SORT_OPTIONS: Array<{ value: SortKey; zh: string; en: string }> = [
   { value: "deleted", zh: "删除时间", en: "Deleted" },
   { value: "size", zh: "大小", en: "Size" },
@@ -160,9 +163,13 @@ export default function RecycleWorkspaceView() {
   const inflightRef = useRef<Map<number, number>>(new Map());
   const generationRef = useRef(0);
 
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+  // 选择与页面缓存解耦：ID 集合是语义唯一来源，选中时的元数据快照保证
+  // 页面被 6 页窗口淘汰后，批量恢复/永久删除仍能覆盖完整选择范围。
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [selectedMeta, setSelectedMeta] = useState<Map<string, RecycleItem>>(new Map());
   const [anchorId, setAnchorId] = useState<string | null>(null);
   const [detailId, setDetailId] = useState<string | null>(null);
+  const [detailSnapshot, setDetailSnapshot] = useState<RecycleItem | null>(null);
 
   const [sync, setSync] = useState<RecycleSyncStatus | null>(null);
   const [syncProgress, setSyncProgress] = useState<RecycleScanProgress | null>(null);
@@ -177,7 +184,7 @@ export default function RecycleWorkspaceView() {
 
   const [confirm, setConfirm] = useState<
     | { kind: "restore"; ids: string[] }
-    | { kind: "purge"; ids: string[] }
+    | { kind: "purge"; ids: string[]; scope: PurgeScope }
     | { kind: "empty" }
     | null
   >(null);
@@ -348,9 +355,12 @@ export default function RecycleWorkspaceView() {
     setPages({});
     setTotal(0);
     setQueryMs(null);
-    setSelected(new Set());
+    setSelectedIds(new Set());
+    setSelectedMeta(new Map());
     setAnchorId(null);
     setDetailId(null);
+    setDetailSnapshot(null);
+    setCtxMenu(null);
     setScrollTop(0);
     setFirstLoaded(false);
     if (scrollRef.current) scrollRef.current.scrollTop = 0;
@@ -393,6 +403,9 @@ export default function RecycleWorkspaceView() {
         setSyncSummary(summary);
         setSyncProgress(null);
         setSync((prev) => (prev ? { ...prev, running: false } : prev));
+        // 同步后索引可能已变，详情快照不再可信。
+        setDetailId(null);
+        setDetailSnapshot(null);
         void recycleStats().then((s) => alive && setStats(s));
         void fetchPage(0, { ...query, offset: 0 });
         showToast(t("fw.recycle.syncDone", { count: summary.volumes.length }), { kind: "success" });
@@ -455,9 +468,11 @@ export default function RecycleWorkspaceView() {
   // 终态刷新列表与统计（只刷新缓存，不触发扫描）；清掉已删除行的旧选择。
   useEffect(() => {
     if (!job || !isFileJobTerminal(job)) return;
-    setSelected(new Set());
+    setSelectedIds(new Set());
+    setSelectedMeta(new Map());
     setAnchorId(null);
     setDetailId(null);
+    setDetailSnapshot(null);
     setCtxMenu(null);
     void fetchPage(0, { ...query, offset: 0 });
     void recycleStats().then((s) => setStats(s));
@@ -502,19 +517,35 @@ export default function RecycleWorkspaceView() {
     return rows;
   }, [pages, visibleStart, visibleEnd]);
 
+  /** 只在当前缓存页里找最新版本；找不到说明该页已被窗口淘汰。 */
+  const findCachedItem = useCallback(
+    (id: string): RecycleItem | null => {
+      for (const items of Object.values(pages)) {
+        const hit = items.find((item) => item.id === id);
+        if (hit) return hit;
+      }
+      return null;
+    },
+    [pages],
+  );
+
   const detailItem = useMemo(() => {
     if (!detailId) return null;
-    for (const items of Object.values(pages)) {
-      const hit = items.find((item) => item.id === detailId);
-      if (hit) return hit;
-    }
-    return null;
-  }, [detailId, pages]);
+    const cached = findCachedItem(detailId);
+    if (cached) return cached;
+    // 页面淘汰后回退到打开详情时的快照：详情不消失，也不会串到别的行。
+    return detailSnapshot && detailSnapshot.id === detailId ? detailSnapshot : null;
+  }, [detailId, detailSnapshot, findCachedItem]);
 
+  // 选择范围只由 selectedIds 决定，元数据来自选中时的快照，不再依赖页面缓存。
   const selectedItems = useMemo(() => {
-    const all = Object.values(pages).flat();
-    return all.filter((item) => selected.has(item.id));
-  }, [pages, selected]);
+    const items: RecycleItem[] = [];
+    for (const id of selectedIds) {
+      const hit = selectedMeta.get(id);
+      if (hit) items.push(hit);
+    }
+    return items;
+  }, [selectedIds, selectedMeta]);
 
   // 元数据不可读 / `$R` 丢失 / 孤儿项目没有可恢复的原始路径：只允许永久删除，
   // 不把「恢复必失败」的项目送进任务队列。
@@ -523,11 +554,44 @@ export default function RecycleWorkspaceView() {
     [selectedItems],
   );
 
+  // 异常项（missing_data / unreadable）在后端只做索引移除，UI 必须如实说明。
+  const selectedAnomalyCount = selectedItems.filter((item) => item.state !== "present").length;
+  const selectedAllAnomaly = selectedItems.length > 0 && selectedAnomalyCount === selectedItems.length;
+
   const allVolumes = stats?.volumes ?? [];
 
   // ── 选择 ────────────────────────────────────────────────────────────
-  const onRowClick = (e: ReactMouseEvent<HTMLDivElement>, item: RecycleItem, index: number) => {
+  /** 唯一的选择写入口：selectedMeta 只保留 selectedIds 中存在的键。 */
+  const commitSelection = useCallback(
+    (ids: Set<string>, added: readonly RecycleItem[] = []) => {
+      setSelectedIds(ids);
+      setSelectedMeta((prev) => {
+        const next = new Map<string, RecycleItem>();
+        for (const id of ids) {
+          const hit = prev.get(id);
+          if (hit) next.set(id, hit);
+        }
+        for (const item of added) {
+          if (ids.has(item.id)) next.set(item.id, item);
+        }
+        return next;
+      });
+    },
+    [],
+  );
+
+  const openDetail = (item: RecycleItem) => {
     setDetailId(item.id);
+    setDetailSnapshot(item);
+  };
+
+  const closeDetail = () => {
+    setDetailId(null);
+    setDetailSnapshot(null);
+  };
+
+  const onRowClick = (e: ReactMouseEvent<HTMLDivElement>, item: RecycleItem, index: number) => {
+    openDetail(item);
     if (e.shiftKey && anchorId) {
       const anchorIndex = (() => {
         for (const [start, items] of Object.entries(pages)) {
@@ -539,37 +603,41 @@ export default function RecycleWorkspaceView() {
       if (anchorIndex >= 0) {
         const lo = Math.min(anchorIndex, index);
         const hi = Math.max(anchorIndex, index);
-        const next = new Set(selected);
+        const next = new Set(selectedIds);
+        const added: RecycleItem[] = [];
         for (let i = lo; i <= hi; i += 1) {
           const start = Math.floor(i / PAGE_SIZE) * PAGE_SIZE;
           const hit = pages[start]?.[i - start];
-          if (hit) next.add(hit.id);
+          if (hit) {
+            next.add(hit.id);
+            added.push(hit);
+          }
         }
-        setSelected(next);
+        commitSelection(next, added);
         return;
       }
     }
     if (e.ctrlKey || e.metaKey) {
-      const next = new Set(selected);
+      const next = new Set(selectedIds);
       if (next.has(item.id)) next.delete(item.id);
       else next.add(item.id);
-      setSelected(next);
+      commitSelection(next, [item]);
       setAnchorId(item.id);
       return;
     }
-    setSelected(new Set([item.id]));
+    commitSelection(new Set([item.id]), [item]);
     setAnchorId(item.id);
   };
 
   const toggleSelectAllPage = (checked: boolean) => {
     const pageStart = Math.floor(visibleStart / PAGE_SIZE) * PAGE_SIZE;
     const items = pages[pageStart] ?? [];
-    const next = new Set(selected);
+    const next = new Set(selectedIds);
     for (const item of items) {
       if (checked) next.add(item.id);
       else next.delete(item.id);
     }
-    setSelected(next);
+    commitSelection(next, items);
   };
 
   // ── 操作 ────────────────────────────────────────────────────────────
@@ -579,9 +647,26 @@ export default function RecycleWorkspaceView() {
     setConfirm({ kind: "restore", ids });
   };
 
+  /** 解析待删除项的当前状态：先缓存页，再选中快照，最后详情快照。 */
+  const purgeScopeOf = (ids: string[]): PurgeScope => {
+    let known = 0;
+    let anomaly = 0;
+    for (const id of ids) {
+      const hit =
+        findCachedItem(id) ??
+        selectedMeta.get(id) ??
+        (detailSnapshot && detailSnapshot.id === id ? detailSnapshot : null);
+      if (!hit) continue;
+      known += 1;
+      if (hit.state !== "present") anomaly += 1;
+    }
+    if (known === 0 || anomaly === 0) return "full";
+    return anomaly === known ? "indexOnly" : "mixed";
+  };
+
   const askPurge = (ids: string[]) => {
     if (!ids.length) return;
-    setConfirm({ kind: "purge", ids });
+    setConfirm({ kind: "purge", ids, scope: purgeScopeOf(ids) });
   };
 
   const runRestore = async (ids: string[], conflict: "skip" | "rename") => {
@@ -654,9 +739,9 @@ export default function RecycleWorkspaceView() {
       return;
     }
     if (e.key === "Delete" || e.key === "Backspace") {
-      if (selected.size === 0) return;
+      if (selectedIds.size === 0) return;
       e.preventDefault();
-      askPurge([...selected]);
+      askPurge([...selectedIds]);
     }
   };
 
@@ -826,10 +911,10 @@ export default function RecycleWorkspaceView() {
           <button
             type="button"
             className="btn sm danger"
-            disabled={selected.size === 0 || jobBusy}
-            onClick={() => askPurge([...selected])}
+            disabled={selectedIds.size === 0 || jobBusy}
+            onClick={() => askPurge([...selectedIds])}
           >
-            {t("fw.recycle.purge")}
+            {selectedAllAnomaly ? t("fw.recycle.purgeIndexOnly") : t("fw.recycle.purge")}
           </button>
           <button
             type="button"
@@ -881,7 +966,17 @@ export default function RecycleWorkspaceView() {
                         : job.status === "failed"
                           ? t("fw.recycle.jobFailedResult", { ok: job.ok, failed: job.failed, message: job.message ?? "" })
                           : t("fw.recycle.jobFinished", { ok: job.ok, failed: job.failed, skipped: job.skipped })}
+            {/* 取消/部分完成/失败必须带出任务级说明：清空在启动后取消时，
+                「部分项目已永久删除」不能被读成「已回滚」。 */}
+            {isFileJobTerminal(job) && job.status !== "completed" && job.message
+              ? ` · ${job.message}`
+              : ""}
           </span>
+          {job.indexPending ? (
+            <span className="rc-job-index" title={job.message ?? undefined}>
+              {t("fw.recycle.indexPending", { count: job.indexPending })}
+            </span>
+          ) : null}
           {!jobTrackingLost && jobBusy && job.cancelable && !job.cancelRequested && job.status !== "cancelling" && (
             <button type="button" className="btn sm" disabled={jobCancelBusy} onClick={() => void requestJobCancel()}>
               {job.status === "pending" ? t("fw.recycle.cancelQueuedJob") : t("fw.recycle.cancelJob")}
@@ -919,29 +1014,32 @@ export default function RecycleWorkspaceView() {
                 <div
                   key={item.id}
                   role="option"
-                  aria-selected={selected.has(item.id)}
-                  className={`rc-row${selected.has(item.id) ? " is-selected" : ""}${
+                  aria-selected={selectedIds.has(item.id)}
+                  className={`rc-row${selectedIds.has(item.id) ? " is-selected" : ""}${
                     detailId === item.id ? " is-active" : ""
                   }`}
                   style={{ transform: `translateY(${index * ROW_H}px)` }}
                   onClick={(e) => onRowClick(e, item, index)}
-                  onDoubleClick={() => askRestore([item.id])}
+                  onDoubleClick={() => {
+                    // 数据缺失/元数据损坏的条目不可能恢复：双击不得发起必失败的任务。
+                    if (item.state === "present") askRestore([item.id]);
+                  }}
                   onContextMenu={(e) => {
                     e.preventDefault();
-                    if (!selected.has(item.id)) setSelected(new Set([item.id]));
-                    setDetailId(item.id);
+                    if (!selectedIds.has(item.id)) commitSelection(new Set([item.id]), [item]);
+                    openDetail(item);
                     setCtxMenu({ x: e.clientX, y: e.clientY, id: item.id });
                   }}
                 >
                   <span className="rc-cell-check" onClick={(e) => e.stopPropagation()}>
                     <Checkbox
-                      checked={selected.has(item.id)}
+                      checked={selectedIds.has(item.id)}
                       ariaLabel={t("fw.recycle.selectItem", { name: item.name })}
                       onChange={(checked) => {
-                        const next = new Set(selected);
+                        const next = new Set(selectedIds);
                         if (checked) next.add(item.id);
                         else next.delete(item.id);
-                        setSelected(next);
+                        commitSelection(next, [item]);
                       }}
                     />
                   </span>
@@ -986,7 +1084,7 @@ export default function RecycleWorkspaceView() {
                 type="button"
                 className="icon-btn sm"
                 aria-label={t("fw.recycle.closeDetail")}
-                onClick={() => setDetailId(null)}
+                onClick={closeDetail}
               >
                 ×
               </button>
@@ -1012,12 +1110,20 @@ export default function RecycleWorkspaceView() {
             <div className="rc-detail-path-label">{t("fw.recycle.detailPath")}</div>
             <div className="rc-detail-path">{detailItem.originalPath}</div>
             {detailItem.anomaly && <div className="rc-detail-anomaly">{detailItem.anomaly}</div>}
+            {detailItem.state !== "present" && (
+              <div className="rc-detail-anomaly">{t("fw.recycle.indexOnlyHint")}</div>
+            )}
             <div className="rc-detail-actions">
-              <button type="button" className="btn sm" onClick={() => askRestore([detailItem.id])}>
-                {t("fw.recycle.restore")}
-              </button>
+              {/* 异常项无法恢复（数据已缺失），不提供必然失败的按钮。 */}
+              {detailItem.state === "present" && (
+                <button type="button" className="btn sm" onClick={() => askRestore([detailItem.id])}>
+                  {t("fw.recycle.restore")}
+                </button>
+              )}
               <button type="button" className="btn sm danger" onClick={() => askPurge([detailItem.id])}>
-                {t("fw.recycle.purge")}
+                {detailItem.state === "present"
+                  ? t("fw.recycle.purge")
+                  : t("fw.recycle.purgeIndexOnly")}
               </button>
             </div>
           </aside>
@@ -1025,10 +1131,10 @@ export default function RecycleWorkspaceView() {
       </div>
 
       {/* 选中数量提示 */}
-      {selected.size > 0 && (
+      {selectedIds.size > 0 && (
         <div className="rc-selection-bar" role="status">
-          <span>{t("fw.recycle.selected", { count: selected.size })}</span>
-          <button type="button" className="btn sm" onClick={() => setSelected(new Set())}>
+          <span>{t("fw.recycle.selected", { count: selectedIds.size })}</span>
+          <button type="button" className="btn sm" onClick={() => commitSelection(new Set())}>
             {t("fw.recycle.clearSelection")}
           </button>
         </div>
@@ -1049,9 +1155,9 @@ export default function RecycleWorkspaceView() {
             },
             {
               key: "purge",
-              label: t("fw.recycle.purge"),
+              label: selectedAllAnomaly ? t("fw.recycle.purgeIndexOnly") : t("fw.recycle.purge"),
               danger: true,
-              onSelect: () => askPurge([...selected]),
+              onSelect: () => askPurge([...selectedIds]),
             },
           ]}
         />
@@ -1112,12 +1218,22 @@ export default function RecycleWorkspaceView() {
         </div>
       </Dialog>
 
-      {/* 永久删除确认 */}
+      {/* 永久删除确认：异常项只移出索引，说明必须在操作前讲清 */}
       <ConfirmDialog
         open={confirm?.kind === "purge"}
         title={t("fw.recycle.purgeTitle", { count: confirm?.kind === "purge" ? confirm.ids.length : 0 })}
-        detail={t("fw.recycle.purgeBody")}
-        confirmLabel={t("fw.recycle.purgeConfirm")}
+        detail={
+          confirm?.kind === "purge" && confirm.scope === "indexOnly"
+            ? t("fw.recycle.purgeBodyIndexOnly")
+            : confirm?.kind === "purge" && confirm.scope === "mixed"
+              ? t("fw.recycle.purgeBodyMixed")
+              : t("fw.recycle.purgeBody")
+        }
+        confirmLabel={
+          confirm?.kind === "purge" && confirm.scope === "indexOnly"
+            ? t("fw.recycle.purgeIndexOnly")
+            : t("fw.recycle.purgeConfirm")
+        }
         danger
         onCancel={() => setConfirm(null)}
         onConfirm={() => {
@@ -1204,10 +1320,6 @@ export default function RecycleWorkspaceView() {
             {t("common.close")}
           </button>
         </div>
-      )}
-
-      {selectedItems.length > 0 && selected.size > selectedItems.length && (
-        <div className="rc-stats-muted">{t("fw.recycle.selectionPartial")}</div>
       )}
     </div>
   );

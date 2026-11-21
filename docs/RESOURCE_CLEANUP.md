@@ -172,7 +172,7 @@
 
 | 类别 | 扫描根 | 删除边界 |
 |---|---|---|
-| `recycle_bin` | 各本地卷 `$Recycle.Bin\<当前用户 SID>`（文件系统口径） | 通过 `SHEmptyRecycleBinW` 清空所有驱动器上的回收站项目 |
+| `recycle_bin` | 各本地卷 `$Recycle.Bin\<当前用户 SID>`；预览优先复用回收站索引，过期或读取失败时回退文件系统遍历 | 提交统一 `fsops` 清空任务，逐卷由独立子进程执行 Shell 删除；结果按 `EmptyOutcome` 五态判定 |
 | `user_temp` | `%TEMP%`（缺省回退 `%LOCALAPPDATA%\Temp`） | 超过 7 天未修改的普通文件；不删目录 |
 | `system_temp` | `%SystemRoot%\Temp` | 同上；需要管理员权限的文件计入跳过 |
 | `crash_dumps` | `%LOCALAPPDATA%\CrashDumps`、WER `ReportArchive` / `ReportQueue` | 同上 |
@@ -182,7 +182,7 @@
 - 有界：每类最多 24,000 个条目、6 秒预算、递归深度 4；超限返回 `partial` + `SCAN_LIMIT_REACHED`，结果只代表已检查子集。无法读取的项计入 `skippedFiles` 并返回 `partial` + `PARTIAL_READ`（结果可能不完整，可重新扫描）。
 - 执行只接受服务端 `previewId`（5 分钟 TTL、一次性消费、最多保留 8 条）。每个候选在删除前重新校验：根目录归属、文件身份（卷序列号 + 文件索引）、大小、修改时间、年龄；任一不符或被占用（`FILE_IN_USE`）即跳过。
 - 用户临时目录可能被其他进程以拒绝 DELETE 共享的方式打开（实测会出现 Win32 错误 32），父目录锁会 fail-closed 使整类候选被跳过；因此用户垃圾删除使用 `fs_safety::remove_scanned_file`（不锁父目录，仍按文件句柄复核身份、大小、修改时间与最终路径）。应用自管的三个缓存类别继续使用带父目录锁的 `remove_file_if_unchanged`。未覆盖父目录在删除瞬间被重命名的命名空间竞态。
-- 回收站预览按文件系统口径统计：只汇总各卷 `$Recycle.Bin\<SID>` 中**有 `$I` 记录配对**的 `$R` 条目（含目录递归，条目上限 24 万 / 8 秒）。不使用 `SHQueryRecycleBinW`：实测 1.8 万项时 Shell 枚举约需 80 秒，会拖死整次预览。清空仍走 `SHEmptyRecycleBinW`（无确认框、无进度条、无提示音），**清空所有驱动器**；实际释放量按清空前后的同一文件系统口径差测量，不做逐文件身份复核；测量失败时显示「无法复核」而不是虚报 0。回收站是估算口径，可能与资源管理器显示的项数不同（孤儿数据不计入）。
+- 回收站预览优先复用索引统计（10 分钟内新鲜、读取成功且状态可用），索引缺失、过期或读取失败时回退到有界文件系统遍历：只汇总各卷 `$Recycle.Bin\<SID>` 中**有 `$I` 记录配对**的 `$R` 条目（含目录递归，条目上限 24 万 / 8 秒），并标注数据来源与采集时间。回退遍历不使用 `SHQueryRecycleBinW`：实测 1.8 万项时 Shell 枚举约需 80 秒，会拖死整次预览。清空不再直通 `SHEmptyRecycleBinW`，而是提交统一 `fsops` 清空任务：逐卷由独立子进程执行 Shell 删除，父进程按心跳批次数与退出码映射为 `EmptyOutcome` 五态；资源面板默认提交全部卷，回收站工作区可指定卷。只有 `CancelledBeforeStart` 可断言「回收站未被修改」；`CancelledAfterStart`、`Failed`、`Unverified` 一律保守标记缓存 stale，并按真实 `$I`/`$R` 重新对账。实际释放量按清空前后的同一口径差测量，不做逐文件身份复核；测量失败时显示「无法复核」而不是虚报 0。回收站是估算口径，可能与资源管理器显示的项数不同（孤儿数据不计入）。
 - 危险操作二次确认：确认面板写明「立即删除、不进入回收站、无法撤销」；预览 TTL 到期或执行后立即作废，必须重新扫描。默认不勾选任何类别。
 - 不扫描用户文档、下载、桌面、OneDrive 等个人目录；不处理 Windows Update 缓存、Delivery Optimization、Windows.old、Installer 缓存与组件存储（需要管理员权限或风险更高，另行分期）。
 
@@ -267,7 +267,72 @@
 
 - 资源管理只回答「能安全清理多少、清什么」，不提供回收站浏览/恢复；
   浏览、搜索、恢复、永久删除、清空由回收站工作区负责。
-- 回收站体积预览仍是**限量遍历**（类别上限 + 时间预算），因为预览必须随时可用，
-  不能依赖可能尚未建立的索引；索引只服务于浏览与恢复。
+- 回收站体积预览优先复用新鲜索引，缺失、过期或读取失败时回退**限量遍历**（类别上限 + 时间预算）；预览始终可用，不因索引尚未建立而失败。索引服务于浏览、恢复，以及预览的快速路径。
 - 卷与 SID 发现不再各写一份：`user_junk::recycle_bin_roots` 委托
   `recycle::volume::bin_volumes`，避免资源面板与回收站视图看到的范围不一致。
+
+## 2026-11-21 回收站清空与批量回收可靠性收敛
+
+本轮把「清空回收站」从布尔式成功/失败改为可区分的结果状态机，并让资源面板的清空、回收站工作区的删除、后台扫描三者共享同一套占用与对账规则。没有新增 IPC 命令，也没有改变删除范围。
+
+### 清空结果五态（`recycle/volume.rs::EmptyOutcome`）
+
+`empty_recycle_bin` 由独立子进程执行单卷 Shell 删除，父进程根据「执行指令是否已下发」「心跳批次数」「子进程退出码」判定结果。五态取代原来的 `Option<Result<(), (String, String)>>`：
+
+| 结果 | 判定依据 | 对磁盘的含义 |
+|---|---|---|
+| `CancelledBeforeStart` | 执行指令下发前取消 | 没有任何条目被删除，缓存不失效 |
+| `CancelledAfterStart { batches }` | 指令已下发后取消 | 已确认 `batches` 批完成，其余条目状态未知 |
+| `Completed` | 子进程退出码 0，且复核已无配对条目 | 该卷回收站没有剩余配对项 |
+| `Failed { code, message }` | 退出码 3（`EMPTY_REMAINS`）、4/5 之外的其他非零码，或指令下发前失败 | 明确失败，可能已删除一部分 |
+| `Unverified { code, message, batches }` | 退出码 4（`EMPTY_UNVERIFIED`）/ 5（`SHELL_FAILED`）、无退出码、15 分钟无批次进展（`SHELL_TIMEOUT`） | 无法确认；**不能当作成功** |
+
+`EmptyOutcome::may_have_deleted()` 只有 `CancelledBeforeStart` 返回 false；`batches()`、`is_cancelled()`、`failure()` 是配套判据。子进程每完成一批向 stdout 写一行心跳，父进程只按换行计数，心跳不携带条目名或路径。
+
+### 清空后的处置计划（`fsops/mod.rs::plan_empty_outcome`）
+
+`plan_empty_outcome` 是纯函数（不碰磁盘、不碰数据库），把结果映射为条目状态、稳定错误码、是否标记 stale 与任务收尾方式：
+
+| 结果 | 条目状态 | code | 标记 stale / index_pending | 任务收尾 |
+|---|---|---|---|---|
+| `CancelledBeforeStart` | skipped | `RECYCLE_CANCELLED` | 否 | cancelled，message「清空已在开始前取消，回收站未被修改」 |
+| `CancelledAfterStart` | skipped | `RECYCLE_CANCELLED_AFTER_START` | 是 | cancelled，说明「部分项目已永久删除，正在按真实 $I/$R 重新核对」 |
+| `Completed` + 索引对账成功 | ok | `OK` | 否 | 正常完成 |
+| `Completed` + 索引对账失败 | partial | `INDEX_UPDATE_FAILED` | 是 | 说明「系统操作已完成，但索引更新失败」 |
+| `Failed` | failed | 原始码 | 是 | 按失败收尾 |
+| `Unverified` | failed | `EMPTY_UNVERIFIED` / `SHELL_FAILED` / `SHELL_TIMEOUT` | 是 | 说明「清空结果无法确认，正在按真实 $I/$R 重新核对」 |
+
+`Completed` 若没有收到对账结果（代码中按不应发生处理），按 failed + `EMPTY_UNVERIFIED` 收尾，同样标记重新对账，不冒充成功。
+
+关键原则：**Shell 结果与 SQLite 更新是两件独立的事**。不允许把「系统操作已完成 + 索引失败」写成纯 Shell 失败，也不允许写成成功；`partial` + `INDEX_UPDATE_FAILED` 是唯一正确表达。
+
+### 对账调度（`recycle/mod.rs`）
+
+- `SyncAdmission { Admitted, Running, Throttled }` 取代布尔准入。`Throttled` 与 `Running` 必须分开：节流只是「本次不启动」，不能登记补扫，否则每次节流都会多扫一遍。
+- `RecycleService::follow_up: AtomicBool`：扫描进行中收到强制同步请求时，不并发启动第二个扫描（避免旧快照覆盖新状态），只置位标记。`run_sync` 在 `finish_sync` 并发出 `recycle:sync-done` 之后取走标记；若 `recycle_volume_state` 中仍有 `state='stale'` 的卷，再调用一次 `start_sync(true)`。标记只取一次，不形成定时轮询、消息队列或无限重试。
+- 存在待对账卷时，`start_sync` 会绕过 8 秒节流（缓存已知不可信，必须尽快按真实 `$I`/`$R` 核对）。
+- `mark_reconcile(&[ReconcileTarget])`、`request_reconcile(app, targets)`、`request_resync(app)` 是统一入口；`ReconcileTarget { bin_root, volume, code }` 描述需要重新对账的卷。
+- `bin_root`（`X:\$Recycle.Bin\<SID>`）含用户 SID，只作为内部键使用，不得进入前端事件、诊断日志或用户可见消息。
+
+### 分层资源锁与冲突矩阵（`fsops/mod.rs::RecycleClaims`）
+
+`RecycleClaims` 使用两张表：`volumes: HashMap<bin_root, ClaimEntry>` 与 `entries: HashMap<(bin_root, record_key), ClaimEntry>`。冲突判定不再比较「字符串是否完全相同」，而是按卷与条目两个层级判断：
+
+- `try_claim_entry(bin_root, record_key, job_id, kind)`：同卷被整卷独占 → 拒绝（`volume_wide=true`）；同条目被别的任务占用 → 拒绝；同一任务重复声明同一 ID → 幂等成功。
+- `try_claim_volume(bin_root, job_id, kind)`：该卷已被清空占用 → 拒绝；该卷存在任何条目操作 → 拒绝；否则登记整卷。
+- 不同卷之间互不影响，仍然并行，不是全局串行。
+
+冲突矩阵（8 条）：
+
+| 请求 A | 请求 B | 结果 |
+|---|---|---|
+| D 盘 A 条目 | D 盘 A 恢复 | 拒绝 |
+| D 盘 A 条目 | D 盘 A 删除 | 拒绝 |
+| D 盘 A 条目 | D 盘清空 | 拒绝 |
+| D 盘清空 | D 盘 A 恢复 | 拒绝 |
+| D 盘清空 | D 盘 B 删除 | 拒绝 |
+| D 盘清空 | C 盘 A 恢复 | 允许 |
+| C 盘 A 条目 | D 盘 A 恢复 | 允许 |
+| D 盘 A 条目 | D 盘 B 恢复 | 允许 |
+
+`ClaimsGuard::drop` 统一调用 `release_job`，覆盖正常结束、取消、失败与 panic 展开。`Scheduler` 用 `catch_unwind` 捕获执行体 panic，把任务收尾为 failed（`"任务执行体异常中止"`），而不是让 worker 线程静默消失、占用声明永久残留。

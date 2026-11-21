@@ -78,6 +78,25 @@ pub struct RecycleService {
     last_finish_ms: AtomicI64,
     status: Mutex<SyncStatus>,
     cache_gate: Mutex<()>,
+    /// 扫描进行中又被请求「重新对账」：不在扫描期间并发启动第二个扫描，
+    /// 只登记标记，由当前扫描收尾后补跑一次。
+    follow_up: AtomicBool,
+}
+
+/// 同步准入结果。三种情况必须分开：`Throttled` 不是「已经在跑」，
+/// 不能因此登记补扫，否则每次节流都会多扫一遍。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SyncAdmission {
+    Admitted,
+    Running,
+    Throttled,
+}
+
+/// 需要重新对账的一卷：`bin_root` 含用户 SID，只在本模块内部使用，不外发。
+pub struct ReconcileTarget {
+    pub bin_root: String,
+    pub volume: String,
+    pub code: String,
 }
 
 impl RecycleService {
@@ -90,6 +109,7 @@ impl RecycleService {
             last_finish_ms: AtomicI64::new(0),
             status: Mutex::new(SyncStatus::default()),
             cache_gate: Mutex::new(()),
+            follow_up: AtomicBool::new(false),
         })
     }
 
@@ -111,6 +131,48 @@ impl RecycleService {
         scan::reconcile_empty(&conn, volume)
     }
 
+    /// 把若干卷标记为「缓存不可信，需要重新对账」。
+    ///
+    /// 只改状态、不删缓存：离线或损坏时仍要可浏览，但统计会如实呈现为 `stale`，
+    /// 不再冒充最新数据。返回成功标记的卷数。
+    pub fn mark_reconcile(&self, targets: &[ReconcileTarget]) -> usize {
+        let mut marked = 0;
+        for target in targets {
+            if self
+                .db
+                .with_conn(|conn| {
+                    index::mark_reconcile_required(
+                        conn,
+                        &target.bin_root,
+                        &target.volume,
+                        &target.code,
+                    )
+                })
+                .is_ok()
+            {
+                marked += 1;
+            }
+        }
+        marked
+    }
+
+    /// 标记需要重新对账并请求尽快同步。
+    ///
+    /// 已有扫描在运行时不会并发启动第二个扫描，而是登记「收尾后补扫」，
+    /// 保证本轮扫描结束后待对账卷最终得到一次**有效**同步。
+    pub fn request_reconcile(self: &Arc<Self>, app: &AppHandle, targets: &[ReconcileTarget]) -> usize {
+        let marked = self.mark_reconcile(targets);
+        if marked > 0 {
+            let _ = self.start_sync(app, true);
+        }
+        marked
+    }
+
+    /// 请求一次强制同步（等价于用户点「同步」）。
+    pub fn request_resync(self: &Arc<Self>, app: &AppHandle) -> SyncStatus {
+        self.start_sync(app, true)
+    }
+
     pub fn sync_status(&self) -> SyncStatus {
         self.status.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
@@ -124,20 +186,21 @@ impl RecycleService {
     }
 
     /// 准入、取消和收尾共用状态锁，避免重复扫描及旧一轮收尾覆盖新一轮。
-    fn reserve_sync(&self, force: bool, now: i64) -> bool {
+    fn reserve_sync(&self, force: bool, now: i64) -> SyncAdmission {
         let mut status = self.status.lock().unwrap_or_else(|e| e.into_inner());
         let last_activity = self.last_start_ms.load(Ordering::Relaxed)
             .max(self.last_finish_ms.load(Ordering::Relaxed));
-        if self.running.load(Ordering::Relaxed)
-            || (!force && now - last_activity < SYNC_THROTTLE_MS)
-        {
-            return false;
+        if self.running.load(Ordering::Relaxed) {
+            return SyncAdmission::Running;
+        }
+        if !force && now - last_activity < SYNC_THROTTLE_MS {
+            return SyncAdmission::Throttled;
         }
         *status = SyncStatus { running: true, started_ms: now, ..SyncStatus::default() };
         self.cancel.store(false, Ordering::SeqCst);
         self.last_start_ms.store(now, Ordering::SeqCst);
         self.running.store(true, Ordering::SeqCst);
-        true
+        SyncAdmission::Admitted
     }
 
     fn finish_sync(&self, finished_ms: i64, error: Option<String>) {
@@ -165,9 +228,23 @@ impl RecycleService {
             .with_read(index::pending_reconcile)
             .map(|volumes| !volumes.is_empty())
             .unwrap_or(false);
-        if !self.reserve_sync(force || reconcile_pending, now) {
-            return self.sync_status();
+        let urgent = force || reconcile_pending;
+        match self.reserve_sync(urgent, now) {
+            SyncAdmission::Admitted => self.spawn_sync(app),
+            SyncAdmission::Throttled => self.sync_status(),
+            SyncAdmission::Running => {
+                // 已有扫描在跑：绝不并发启动第二个（否则旧快照会覆盖新状态）。
+                // 只登记「收尾后补扫」，让待对账卷在本轮结束后得到一次有效同步。
+                if urgent {
+                    self.follow_up.store(true, Ordering::SeqCst);
+                }
+                self.sync_status()
+            }
         }
+    }
+
+    /// 准入已通过后真正启动扫描线程。调用方必须已持有 `running` 标记。
+    fn spawn_sync(self: &Arc<Self>, app: &AppHandle) -> SyncStatus {
         let volumes = match volume::bin_volumes() {
             Ok(volumes) => volumes,
             Err((code, message)) => {
@@ -190,6 +267,11 @@ impl RecycleService {
             return self.sync_status();
         }
         self.sync_status()
+    }
+
+    #[cfg(test)]
+    fn take_follow_up(&self) -> bool {
+        self.follow_up.swap(false, Ordering::SeqCst)
     }
 
     fn run_sync(
@@ -323,6 +405,19 @@ impl RecycleService {
                 serde_json::json!(summary.volumes.iter().map(|v| v.removed).sum::<usize>()),
             )
             .emit();
+
+        // 本轮扫描期间有人请求「重新对账」：已收尾，补跑一次，保证待对账卷在
+        // **本轮扫描结束之后**得到一次有效同步。标志位只取一次，不形成轮询或重试环。
+        if self.follow_up.swap(false, Ordering::SeqCst) {
+            let still_pending = self
+                .db
+                .with_read(index::pending_reconcile)
+                .map(|volumes| !volumes.is_empty())
+                .unwrap_or(false);
+            if still_pending {
+                let _ = self.start_sync(&app, true);
+            }
+        }
     }
 }
 
@@ -343,16 +438,66 @@ mod tests {
             })
         }).collect();
         let admitted = threads.into_iter()
-            .map(|t| usize::from(t.join().unwrap())).sum::<usize>();
+            .map(|t| usize::from(t.join().unwrap() == SyncAdmission::Admitted))
+            .sum::<usize>();
         assert_eq!(admitted, 1);
         service.cancel_sync();
         assert!(service.sync_status().cancel_requested);
-        assert!(!service.reserve_sync(true, 100_001));
+        assert_eq!(service.reserve_sync(true, 100_001), SyncAdmission::Running);
         assert!(service.sync_status().cancel_requested);
         service.finish_sync(200_000, None);
-        assert!(!service.reserve_sync(false, 200_001));
-        assert!(service.reserve_sync(false, 208_000));
+        assert_eq!(service.reserve_sync(false, 200_001), SyncAdmission::Throttled);
+        assert_eq!(service.reserve_sync(false, 208_000), SyncAdmission::Admitted);
         assert!(!service.sync_status().cancel_requested);
+    }
+
+    /// 扫描中请求对账：不得并发启动第二个扫描，但要留下「收尾后补扫」标记。
+    #[test]
+    fn reconcile_request_during_running_scan_defers_instead_of_racing() {
+        let service = RecycleService::new(Arc::new(Db::open_in_memory().unwrap()));
+        assert_eq!(service.reserve_sync(true, 10_000), SyncAdmission::Admitted);
+        let marked = service.mark_reconcile(&[ReconcileTarget {
+            bin_root: r"D:\$Recycle.Bin\S-1".into(),
+            volume: "D:".into(),
+            code: "EMPTY_CANCELLED_AFTER_START".into(),
+        }]);
+        assert_eq!(marked, 1, "标记 stale 必须真实落库");
+        // 已有扫描在跑：本次不启动新扫描，只登记补扫。
+        assert_eq!(service.reserve_sync(true, 10_001), SyncAdmission::Running);
+        service.follow_up.store(true, Ordering::SeqCst);
+        assert!(service.take_follow_up(), "补扫标记必须可被取走");
+        assert!(!service.take_follow_up(), "补扫只执行一次，不形成轮询环");
+        let pending = service.db.with_read(index::pending_reconcile).unwrap();
+        assert_eq!(pending, vec![r"D:\$Recycle.Bin\S-1".to_string()]);
+        service.finish_sync(20_000, None);
+        assert_eq!(service.reserve_sync(true, 20_001), SyncAdmission::Admitted);
+    }
+
+    /// 节流拒绝不等于「已在运行」：不得因为节流登记补扫（否则每次节流都多扫一遍）。
+    #[test]
+    fn throttled_admission_does_not_schedule_follow_up() {
+        let service = RecycleService::new(Arc::new(Db::open_in_memory().unwrap()));
+        assert_eq!(service.reserve_sync(true, 5_000), SyncAdmission::Admitted);
+        service.finish_sync(6_000, None);
+        assert_eq!(service.reserve_sync(false, 7_000), SyncAdmission::Throttled);
+        assert!(!service.take_follow_up());
+    }
+
+    /// 清空后标记 stale：统计必须呈现为「不完整」，不能继续冒充最新。
+    #[test]
+    fn stale_volume_after_cancelled_empty_is_not_reported_as_fresh() {
+        let service = RecycleService::new(Arc::new(Db::open_in_memory().unwrap()));
+        let marked = service.mark_reconcile(&[ReconcileTarget {
+            bin_root: r"D:\$Recycle.Bin\S-1".into(),
+            volume: "D:".into(),
+            code: "EMPTY_UNVERIFIED".into(),
+        }]);
+        assert_eq!(marked, 1);
+        let stats = service.stats().unwrap();
+        assert_eq!(stats.state, "partial");
+        assert_eq!(stats.volumes[0].state, "stale");
+        assert_eq!(stats.volumes[0].error_code.as_deref(), Some("EMPTY_UNVERIFIED"));
+        assert_eq!(stats.indexed_at_ms, 0, "stale 卷不得带「最新同步时间」");
     }
 
     #[test]

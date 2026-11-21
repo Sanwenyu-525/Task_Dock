@@ -780,6 +780,17 @@ pub struct ResolvedItem {
     pub is_dir: bool,
     pub size: Option<i64>,
     pub state: String,
+    /// 扫描登记的异常标记（`ORPHAN_DATA` / 元数据损坏原因）；决定异常条目的处置文案。
+    pub anomaly: Option<String>,
+}
+
+/// 该索引状态能否交给 Windows Shell 执行「真正的删除 / 恢复」。
+///
+/// `missing_data`（`$I` 在、`$R` 已不存在）与 `unreadable`（元数据损坏，或只有 `$R`
+/// 的孤儿）都不能走 Shell：前者没有数据可删，后者定位不可信。它们只能「从索引移除」，
+/// 且必须向用户说明这不是磁盘数据清理。
+pub fn supports_native_action(state: &str) -> bool {
+    state == STATE_PRESENT
 }
 
 /// 无法执行的一条请求：必须逐项反馈，不能悄悄缩小操作范围。
@@ -845,7 +856,7 @@ pub fn resolve(conn: &Connection, ids: &[String]) -> AppResult<ResolveOutcome> {
                 .join(", ");
             let sql = format!(
                 "SELECT bin_root, record_key, data_name, volume, original_path, file_name, is_dir, \
-                 size, size_known, state FROM recycle_index \
+                 size, size_known, state, anomaly FROM recycle_index \
                  WHERE volume = ?1 AND record_key IN ({placeholders})"
             );
             let mut stmt = conn.prepare_cached(&sql)?;
@@ -872,6 +883,7 @@ pub fn resolve(conn: &Connection, ids: &[String]) -> AppResult<ResolveOutcome> {
                         is_dir: row.get::<_, i64>(6)? != 0,
                         size: (known != 0).then_some(size),
                         state: row.get(9)?,
+                        anomaly: row.get(10)?,
                     },
                 ))
             })?;
@@ -1121,6 +1133,16 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    #[test]
+    fn only_present_entries_are_native_actionable() {
+        // `missing_data`（$R 已丢失）与 `unreadable`（元数据损坏 / 只有 $R 的孤儿）
+        // 都不可交给 Shell：只能从索引移除，UI 不得提供「必失败」的删除按钮。
+        assert!(supports_native_action(STATE_PRESENT));
+        assert!(!supports_native_action(STATE_MISSING_DATA));
+        assert!(!supports_native_action(STATE_UNREADABLE));
+        assert!(!supports_native_action(""));
     }
 
     #[test]

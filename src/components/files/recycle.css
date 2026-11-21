@@ -150,6 +150,12 @@
   color: var(--danger, #dc2626);
 }
 
+/* 索引待更新：系统操作已完成但缓存未对齐，属于警告而不是失败。 */
+.rc-job-index {
+  color: var(--warning, #d97706);
+  white-space: nowrap;
+}
+
 .rc-main {
   display: flex;
   flex: 1;

@@ -54,6 +54,10 @@ const MAX_PENDING: usize = 32;
 /// 全局高 IO 并发上限（同时执行的批量文件任务数）。
 const MAX_CONCURRENT_HEAVY: usize = 2;
 
+/// 条目结果码：系统操作无法执行、本次**只从索引移除**（数据已不存在或元数据损坏）。
+/// 不是失败，也绝不是「永久删除成功」——磁盘上的 `$I`/`$R` 没有被修改。
+pub const RECYCLE_INDEX_ONLY: &str = "RECYCLE_INDEX_ONLY";
+
 fn is_terminal(status: &str) -> bool {
     matches!(status, "completed" | "partial" | "failed" | "cancelled")
 }
@@ -335,8 +339,24 @@ impl Scheduler {
                         continue;
                     }
                     emit_progress(&scheduler.app, &job.handle);
-                    (job.work)(&scheduler.app, &job.handle);
-                    if !job.handle.is_terminal() {
+                    // 执行体 panic 不得带走 worker 线程（否则后续任务永久排队）：
+                    // 捕获后如实收尾为失败；占用声明由 ClaimsGuard 在栈展开时释放。
+                    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        (job.work)(&scheduler.app, &job.handle);
+                    }))
+                    .is_err();
+                    if panicked {
+                        if !job.handle.is_terminal() {
+                            job.handle.update(|s| {
+                                s.status = "failed".into();
+                                s.phase = "done".into();
+                                s.cancelable = false;
+                                s.finished_ms = chrono::Utc::now().timestamp_millis();
+                                s.message = Some("任务执行体异常中止".into());
+                            });
+                        }
+                        emit_progress(&scheduler.app, &job.handle);
+                    } else if !job.handle.is_terminal() {
                         // 执行体异常返回（不应发生）：如实收尾为失败，不伪装成功。
                         job.handle.update(|s| {
                             s.status = "failed".into();
@@ -377,12 +397,26 @@ impl Scheduler {
     }
 }
 
-/// 回收站条目/卷的操作占用声明：同一条目不得同时被恢复与永久删除，
-/// 同一卷不得同时执行两次清空。进程内生效；崩溃后任务本身也不存在，
-/// 真实状态由下一次同步按 `$I`/`$R` 重新对账。
+/// 回收站条目/卷的分层操作占用声明。
+///
+/// 两类资源：
+/// - **卷**（父键 = `bin_root`）：整卷清空独占该卷；
+/// - **条目**（父键 + `record_key`）：单个恢复/永久删除。
+///
+/// 冲突判定不是「字符串完全相同」——条目请求必须检查同卷是否被整卷独占，
+/// 整卷请求必须检查该卷是否还有任何条目操作。不同卷之间互不影响，仍然并行。
+/// 声明进程内生效；崩溃后任务本身也不存在，真实状态由下一次同步按 `$I`/`$R` 对账。
 #[derive(Default)]
 pub struct RecycleClaims {
-    inner: Mutex<HashMap<String, ClaimEntry>>,
+    inner: Mutex<ClaimTable>,
+}
+
+#[derive(Default)]
+struct ClaimTable {
+    /// `bin_root` → 独占整卷的任务（清空）。
+    volumes: HashMap<String, ClaimEntry>,
+    /// `(bin_root, record_key)` → 条目任务（恢复 / 永久删除）。
+    entries: HashMap<(String, String), ClaimEntry>,
 }
 
 #[derive(Clone)]
@@ -391,35 +425,97 @@ struct ClaimEntry {
     kind: &'static str,
 }
 
+/// 占用冲突：只描述「谁占着」，不含 `bin_root`（里面有用户 SID，不得进事件与日志）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ClaimConflict {
+    holder: &'static str,
+    /// 冲突来自整卷独占（而不是同一条目）。
+    volume_wide: bool,
+}
+
+impl ClaimConflict {
+    /// 条目请求被拒时的用户文案。
+    fn for_entry(self) -> String {
+        if self.volume_wide {
+            format!("该磁盘正在被其他任务（{}）清空，本次未执行", self.holder)
+        } else {
+            format!("该项目正在被其他任务（{}）处理，本次未执行", self.holder)
+        }
+    }
+}
+
 impl RecycleClaims {
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// 返回 `None` 表示占用成功；`Some(占用方任务类型)` 表示冲突。
-    fn try_claim(&self, key: &str, job_id: &str, kind: &'static str) -> Option<&'static str> {
-        let mut map = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(existing) = map.get(key) {
-            if existing.job_id != job_id {
-                return Some(existing.kind);
+    /// 声明一个条目。返回 `None` 表示占用成功（同一任务重复声明是幂等的）。
+    fn try_claim_entry(
+        &self,
+        bin_root: &str,
+        record_key: &str,
+        job_id: &str,
+        kind: &'static str,
+    ) -> Option<ClaimConflict> {
+        let mut table = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        // 1. 整卷已被别的任务独占（清空进行中）→ 该卷内任何条目都不能再动。
+        if let Some(holder) = table.volumes.get(bin_root) {
+            if holder.job_id != job_id {
+                return Some(ClaimConflict { holder: holder.kind, volume_wide: true });
             }
+            // 同一任务已持有整卷：条目声明被卷覆盖，无需重复登记。
             return None;
         }
-        map.insert(
-            key.to_string(),
-            ClaimEntry { job_id: job_id.to_string(), kind },
-        );
+        // 2. 同一条目已被别的任务占用（恢复 vs 永久删除）。
+        let key = entry_claim_key(bin_root, record_key);
+        if let Some(holder) = table.entries.get(&key) {
+            if holder.job_id != job_id {
+                return Some(ClaimConflict { holder: holder.kind, volume_wide: false });
+            }
+            // 同一任务重复声明同一个 ID：幂等，不自我冲突。
+            return None;
+        }
+        table.entries.insert(key, ClaimEntry { job_id: job_id.to_string(), kind });
         None
     }
 
+    /// 声明整卷（清空）。返回 `None` 表示占用成功。
+    fn try_claim_volume(&self, bin_root: &str, job_id: &str, kind: &'static str) -> Option<ClaimConflict> {
+        let mut table = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(holder) = table.volumes.get(bin_root) {
+            if holder.job_id != job_id {
+                return Some(ClaimConflict { holder: holder.kind, volume_wide: true });
+            }
+            return None;
+        }
+        // 该卷还有任何条目操作（含即将恢复的条目）→ 拒绝整卷清空。
+        // 条目数受 MAX_OP_PATHS 与并发任务数约束，这里线性扫描足够。
+        let conflict = table
+            .entries
+            .iter()
+            .find(|((root, _), entry)| root == bin_root && entry.job_id != job_id)
+            .map(|(_, entry)| entry.kind);
+        if let Some(holder) = conflict {
+            return Some(ClaimConflict { holder, volume_wide: false });
+        }
+        table.volumes.insert(volume_claim_key(bin_root).to_string(), ClaimEntry {
+            job_id: job_id.to_string(),
+            kind,
+        });
+        None
+    }
+
+    /// 释放某任务持有的全部声明（含取消、失败、panic 展开路径）。
     fn release_job(&self, job_id: &str) {
-        let mut map = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        map.retain(|_, entry| entry.job_id != job_id);
+        let mut table = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        table.volumes.retain(|_, entry| entry.job_id != job_id);
+        table.entries.retain(|_, entry| entry.job_id != job_id);
     }
 
     #[cfg(test)]
     fn active(&self) -> usize {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).len()
+        let table = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        table.volumes.len() + table.entries.len()
     }
 }
 
@@ -431,7 +527,7 @@ fn recycle_claims() -> &'static RecycleClaims {
     CLAIMS.get_or_init(RecycleClaims::new)
 }
 
-/// 任务结束时释放自己持有的全部声明（含取消、失败与提前返回路径）。
+/// 任务结束时释放自己持有的全部声明（含取消、失败与 panic 展开路径）。
 struct ClaimsGuard {
     claims: &'static RecycleClaims,
     job_id: String,
@@ -443,12 +539,18 @@ impl Drop for ClaimsGuard {
     }
 }
 
-fn entry_claim_key(bin_root: &str, record_key: &str) -> String {
-    format!("entry\u{0}{bin_root}\u{0}{record_key}")
+/// 条目资源键：卷父键（`bin_root`）+ 记录键。
+///
+/// `bin_root` 形如 `D:\$Recycle.Bin\S-1-5-21-...`，含用户 SID：**只在这里做内部键**，
+/// 不得写入前端事件、诊断日志或用户可见消息。
+fn entry_claim_key(bin_root: &str, record_key: &str) -> (String, String) {
+    (bin_root.to_string(), record_key.to_string())
 }
 
-fn volume_claim_key(volume: &str) -> String {
-    format!("volume\u{0}{volume}")
+/// 卷资源父键：直接用 `bin_root`，这样「清空 D 盘」与「恢复 D 盘某条目」
+/// 落在同一个资源命名空间里，不会因为一个用盘符、一个用 bin_root 而互不可见。
+fn volume_claim_key(bin_root: &str) -> &str {
+    bin_root
 }
 
 /// 成功操作后的索引写入失败：主结果不伪装成功，逐条记 `partial` 并标记对账。
@@ -989,7 +1091,7 @@ pub fn start_restore(
                 label: item.name.clone(),
                 status: "failed".into(),
                 code: "RECYCLE_STATE_NOT_RESTORABLE".into(),
-                message: Some("该项目缺少数据或元数据损坏，只能永久删除".into()),
+                message: Some("该项目缺少数据或元数据损坏，只能从索引移除".into()),
             });
             continue;
         }
@@ -1045,13 +1147,14 @@ pub fn start_restore(
             }
             let mut claimed_items: Vec<recycle_index::ResolvedItem> = Vec::with_capacity(runnable.len());
             for item in runnable.into_iter() {
-                let key = entry_claim_key(&item.bin_root, &item.record_key);
-                if let Some(holder) = claims.try_claim(&key, &job_id, "restore") {
+                if let Some(conflict) =
+                    claims.try_claim_entry(&item.bin_root, &item.record_key, &job_id, "restore")
+                {
                     record_result(worker, JobEntryResult {
                         label: item.name.clone(),
                         status: "failed".into(),
-                        code: "RECYCLE_ENTRY_BUSY".into(),
-                        message: Some(format!("该项目正在被其他任务（{holder}）处理，本次未执行")),
+                        code: if conflict.volume_wide { "RECYCLE_VOLUME_BUSY" } else { "RECYCLE_ENTRY_BUSY" }.into(),
+                        message: Some(conflict.for_entry()),
                     });
                     continue;
                 }
@@ -1153,7 +1256,26 @@ pub fn start_restore(
     )
 }
 
-/// 永久删除回收站项目。成功后写墓碑并移除索引记录。
+/// 「只能从索引移除」的逐条说明。必须让用户明白：磁盘上的 `$I`/`$R` 没有被修改，
+/// 因此这不是磁盘空间清理，也不是「永久删除」。
+fn index_only_message(item: &recycle_index::ResolvedItem) -> String {
+    if item.state == recycle_index::STATE_MISSING_DATA {
+        "数据已不存在（$R 缺失），本次仅从索引移除；磁盘上的 $I 元数据未改动".into()
+    } else if item.anomaly.as_deref() == Some(crate::recycle::scan::ANOMALY_ORPHAN_DATA) {
+        "缺少 $I 元数据的孤儿数据：本次仅从索引隐藏，磁盘上的 $R 数据仍在回收站目录中，未删除".into()
+    } else {
+        "元数据损坏：本次仅从索引隐藏，磁盘上的 $I/$R 均未改动".into()
+    }
+}
+
+/// 永久删除回收站项目。
+///
+/// 分流规则（对应「真正的永久删除」与「从索引移除异常记录」必须区分）：
+/// - `present`：走 Windows Shell 真删除，成功后写墓碑并移除索引记录；
+/// - `missing_data` / `unreadable`：**不调用 Shell**（没有数据可删、或定位不可信），
+///   只写墓碑并移除索引记录，逐条返回 `status=ok` + `code=RECYCLE_INDEX_ONLY`，
+///   文案明确说明磁盘未被修改。
+///
 /// 逐项反馈规则同 [`start_restore`]；条目被占用时该条失败，不影响其余条目。
 pub fn start_purge(
     app: &AppHandle,
@@ -1166,14 +1288,22 @@ pub fn start_purge(
     let db = app.state::<Arc<Db>>().inner().clone();
     let resolved = db.with_read(|conn| recycle_index::resolve(conn, &ids))?;
     let failures: Vec<JobEntryResult> = resolved.unresolved.iter().map(unresolved_entry).collect();
-    let runnable = resolved.items;
+    let mut native_items = Vec::with_capacity(resolved.items.len());
+    let mut index_only_items = Vec::with_capacity(resolved.items.len());
+    for item in resolved.items {
+        if recycle_index::supports_native_action(&item.state) {
+            native_items.push(item);
+        } else {
+            index_only_items.push(item);
+        }
+    }
     let total = ids.len();
-    if runnable.is_empty() {
+    if native_items.is_empty() && index_only_items.is_empty() {
         return Ok(immediate_job(
             app,
             "purge",
             total,
-            Some("没有可删除的项目，详见失败明细".into()),
+            Some("没有可处理的条目，详见失败明细".into()),
             failures,
         ));
     }
@@ -1194,22 +1324,75 @@ pub fn start_purge(
             for entry in pre_failures {
                 record_result(worker, entry);
             }
-            let mut claimed_items: Vec<recycle_index::ResolvedItem> = Vec::with_capacity(runnable.len());
-            for item in runnable.into_iter() {
-                let key = entry_claim_key(&item.bin_root, &item.record_key);
-                if let Some(holder) = claims.try_claim(&key, &job_id, "purge") {
+            let mut claimed_native: Vec<recycle_index::ResolvedItem> =
+                Vec::with_capacity(native_items.len());
+            for item in native_items.into_iter() {
+                if let Some(conflict) =
+                    claims.try_claim_entry(&item.bin_root, &item.record_key, &job_id, "purge")
+                {
                     record_result(worker, JobEntryResult {
                         label: item.name.clone(),
                         status: "failed".into(),
-                        code: "RECYCLE_ENTRY_BUSY".into(),
-                        message: Some(format!("该项目正在被其他任务（{holder}）处理，本次未执行")),
+                        code: if conflict.volume_wide { "RECYCLE_VOLUME_BUSY" } else { "RECYCLE_ENTRY_BUSY" }.into(),
+                        message: Some(conflict.for_entry()),
                     });
                     continue;
                 }
-                claimed_items.push(item);
+                claimed_native.push(item);
+            }
+            let mut claimed_index_only: Vec<recycle_index::ResolvedItem> =
+                Vec::with_capacity(index_only_items.len());
+            for item in index_only_items.into_iter() {
+                if let Some(conflict) =
+                    claims.try_claim_entry(&item.bin_root, &item.record_key, &job_id, "purge")
+                {
+                    record_result(worker, JobEntryResult {
+                        label: item.name.clone(),
+                        status: "failed".into(),
+                        code: if conflict.volume_wide { "RECYCLE_VOLUME_BUSY" } else { "RECYCLE_ENTRY_BUSY" }.into(),
+                        message: Some(conflict.for_entry()),
+                    });
+                    continue;
+                }
+                claimed_index_only.push(item);
+            }
+            // 异常条目：只动索引。写墓碑保证「清空前启动的旧扫描快照」不会把它写回来。
+            if !claimed_index_only.is_empty() {
+                let keys: Vec<(String, String)> = claimed_index_only
+                    .iter()
+                    .map(|item| (item.bin_root.clone(), item.record_key.clone()))
+                    .collect();
+                match db.with_conn(|conn| recycle_index::mark_removed_batch(conn, &keys)) {
+                    Ok(_) => {
+                        for item in claimed_index_only {
+                            record_result(
+                                worker,
+                                JobEntryResult {
+                                    label: item.name.clone(),
+                                    status: "ok".into(),
+                                    code: RECYCLE_INDEX_ONLY.into(),
+                                    message: Some(index_only_message(&item)),
+                                },
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        for item in claimed_index_only {
+                            record_index_failure(
+                                worker,
+                                &db,
+                                &item.bin_root,
+                                &item.volume,
+                                item.name.clone(),
+                                error.to_string(),
+                            );
+                        }
+                    }
+                }
+                emit_progress(app, worker);
             }
             let mut cancelled = false;
-            for chunk in claimed_items.chunks(NATIVE_BATCH) {
+            for chunk in claimed_native.chunks(NATIVE_BATCH) {
                 if worker.cancel_requested() {
                     cancelled = true;
                     break;
@@ -1311,7 +1494,108 @@ pub struct EmptyRequest {
     pub volumes: Option<Vec<String>>,
 }
 
-/// 清空回收站。逐卷执行并逐卷报告；成功卷清理索引，失败卷保留缓存。
+/// 单卷清空后的处置计划（纯数据，便于单测穷举所有分支）。
+///
+/// Shell 结果与索引更新是**两件独立的事**：Shell 成功 + 索引失败必须表现为
+/// 「系统操作已完成、索引更新失败、需要重新对账」，既不是纯失败，也不是成功。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EmptyVolumePlan {
+    /// 条目结果状态：ok | failed | skipped | partial
+    entry_status: &'static str,
+    code: String,
+    message: Option<String>,
+    /// 该卷缓存已不可信：标记 stale 并请求重新对账。
+    mark_reconcile: bool,
+    /// 任务整体按「取消」收尾（可能发生在已删除部分条目之后）。
+    cancelled: bool,
+    /// 覆盖任务级说明（解释不可逆后果，避免被误读为「回滚」）。
+    job_message: Option<String>,
+}
+
+/// 清空结果 → 处置计划。纯函数：不碰磁盘、不碰数据库，所有分支都可单测。
+fn plan_empty_outcome(
+    outcome: &crate::recycle::volume::EmptyOutcome,
+    reconcile: Option<Result<(), String>>,
+) -> EmptyVolumePlan {
+    use crate::recycle::volume::EmptyOutcome;
+    match outcome {
+        // 启动前取消：什么都没发生 —— 不标 stale、不清索引、不谎报成功。
+        EmptyOutcome::CancelledBeforeStart => EmptyVolumePlan {
+            entry_status: "skipped",
+            code: "RECYCLE_CANCELLED".into(),
+            message: Some("已在启动前取消，未删除任何项目".into()),
+            mark_reconcile: false,
+            cancelled: true,
+            job_message: Some("清空已在开始前取消，回收站未被修改".into()),
+        },
+        // 启动后取消：已有批次不可逆，必须重新对账；绝不尝试「恢复」已删除的数据。
+        EmptyOutcome::CancelledAfterStart { batches } => EmptyVolumePlan {
+            entry_status: "skipped",
+            code: "RECYCLE_CANCELLED_AFTER_START".into(),
+            message: Some(format!("执行中取消：已确认完成 {batches} 批，其余条目状态未知")),
+            mark_reconcile: true,
+            cancelled: true,
+            job_message: Some("清空已取消：部分项目已永久删除，正在按真实 $I/$R 重新核对".into()),
+        },
+        EmptyOutcome::Completed => match reconcile {
+            Some(Ok(())) => EmptyVolumePlan {
+                entry_status: "ok",
+                code: "OK".into(),
+                message: None,
+                mark_reconcile: false,
+                cancelled: false,
+                job_message: None,
+            },
+            // 系统操作已经完成：不能记成 Shell 失败，也不能记成成功。
+            Some(Err(error)) => EmptyVolumePlan {
+                entry_status: "partial",
+                code: "INDEX_UPDATE_FAILED".into(),
+                message: Some(format!(
+                    "系统操作已完成（回收站已清空），但索引更新失败，已标记重新对账：{error}"
+                )),
+                mark_reconcile: true,
+                cancelled: false,
+                job_message: Some("系统操作已完成，但索引更新失败，正在重新核对".into()),
+            },
+            // 不应发生：Completed 必须带对账结果；缺失时按未核实处理，绝不冒充成功。
+            None => EmptyVolumePlan {
+                entry_status: "failed",
+                code: "EMPTY_UNVERIFIED".into(),
+                message: Some("清空已完成，但未执行索引对账".into()),
+                mark_reconcile: true,
+                cancelled: false,
+                job_message: Some("清空结果未完成对账，正在按真实 $I/$R 重新核对".into()),
+            },
+        },
+        EmptyOutcome::Failed { code, message } => EmptyVolumePlan {
+            entry_status: "failed",
+            code: code.clone(),
+            message: Some(message.clone()),
+            mark_reconcile: true,
+            cancelled: false,
+            // 失败原因必须进任务级说明：UI 的失败文案会把它展示给用户，
+            // 否则只会显示任务创建时的「永久删除，无法恢复」。
+            job_message: Some(message.clone()),
+        },
+        EmptyOutcome::Unverified { code, message, batches } => EmptyVolumePlan {
+            entry_status: "failed",
+            code: code.clone(),
+            message: Some(format!("{message}（已确认 {batches} 批）")),
+            // 保留 unverified 语义：不用「失败」断言磁盘没变，也不写成成功。
+            mark_reconcile: true,
+            cancelled: false,
+            job_message: Some("清空结果无法确认，正在按真实 $I/$R 重新核对".into()),
+        },
+    }
+}
+
+/// 清空回收站：逐卷执行、逐卷报告。
+///
+/// 语义要点（与「取消 = 什么都没发生」的直觉不同，必须如实表达）：
+/// - 启动前取消 → 未删除任何项目，缓存保持原样；
+/// - 启动后取消 → 已删除的不可恢复，卷标记 stale、index_pending+1，并调度重新扫描；
+/// - Shell 成功但索引失败 → 条目 `partial` + `INDEX_UPDATE_FAILED`，不是纯失败；
+/// - 结果无法确认（子进程异常退出/超时）→ 保留 `EMPTY_UNVERIFIED` 语义，绝不报成功。
 pub fn start_empty(
     app: &AppHandle,
     request: EmptyRequest,
@@ -1345,70 +1629,74 @@ pub fn start_empty(
             let claims = recycle_claims();
             let job_id = worker.snapshot().id;
             let _guard = ClaimsGuard { claims, job_id: job_id.clone() };
-            let db = app.state::<Arc<Db>>().inner().clone();
             let mut cancelled = false;
+            let mut needs_resync = false;
             for volume in selected {
                 if worker.cancel_requested() {
                     cancelled = true;
                     break;
                 }
-                if let Some(holder) = claims.try_claim(&volume_claim_key(&volume.volume), &job_id, "empty") {
+                let bin_root = volume.root.to_string_lossy().into_owned();
+                // 卷级占用：该卷任何条目操作都会拒绝整卷清空，反之亦然。
+                if let Some(conflict) =
+                    claims.try_claim_volume(volume_claim_key(&bin_root), &job_id, "empty")
+                {
                     record_result(
                         worker,
                         JobEntryResult {
                             label: volume.volume.clone(),
                             status: "failed".into(),
-                            code: "RECYCLE_VOLUME_BUSY".into(),
-                            message: Some(format!("该磁盘正在被其他任务（{holder}）清空，本次未执行")),
+                            code: if conflict.volume_wide { "RECYCLE_VOLUME_BUSY" } else { "RECYCLE_ENTRY_BUSY" }.into(),
+                            message: Some(if conflict.volume_wide {
+                                format!("该磁盘正在被其他任务（{}）清空，本次未执行", conflict.holder)
+                            } else {
+                                format!("该磁盘仍有其他任务（{}）在处理条目，本次未执行清空", conflict.holder)
+                            }),
                         },
                     );
+                    emit_progress(app, worker);
                     continue;
                 }
-                let bin_root = volume.root.to_string_lossy().into_owned();
-                let Some(outcome) = crate::recycle::volume::empty_recycle_bin(&volume, || worker.cancel_requested()) else {
-                    cancelled = true;
-                    break;
+                let outcome = crate::recycle::volume::empty_recycle_bin(&volume, || {
+                    worker.cancel_requested()
+                });
+                let reconcile = if matches!(outcome, crate::recycle::volume::EmptyOutcome::Completed) {
+                    Some(recycle.reconcile_empty(&volume).map_err(|error| error.to_string()))
+                } else {
+                    None
                 };
-                let outcome = outcome.and_then(|()| recycle.reconcile_empty(&volume)
-                    .map_err(|error| ("EMPTY_UNVERIFIED".into(), error.to_string())));
-                match outcome {
-                    Ok(()) => {
-                        record_result(
-                            worker,
-                            JobEntryResult {
-                                label: volume.volume.clone(),
-                                status: "ok".into(),
-                                code: "OK".into(),
-                                message: None,
-                            },
-                        );
-                    }
-                    Err((code, message)) => {
-                        // 清空结果未核实或索引未同步：标记该卷需要重新对账，
-                        // 下一次同步按真实 `$I`/`$R` 重建，不把未知伪装成成功。
-                        if db
-                            .with_conn(|conn| {
-                                recycle_index::mark_reconcile_required(
-                                    conn,
-                                    &bin_root,
-                                    &volume.volume,
-                                    &code,
-                                )
-                            })
-                            .is_ok()
-                        {
-                            worker.update(|snapshot| snapshot.index_pending += 1);
-                        }
-                        worker.update(|snapshot| snapshot.message = Some(message.clone()));
-                        record_result(worker, JobEntryResult {
-                            label: volume.volume.clone(),
-                            status: "failed".into(),
-                            code,
-                            message: Some(message),
-                        });
-                    }
+                let plan = plan_empty_outcome(&outcome, reconcile);
+                if plan.mark_reconcile {
+                    let marked = recycle.mark_reconcile(&[crate::recycle::ReconcileTarget {
+                        bin_root: bin_root.clone(),
+                        volume: volume.volume.clone(),
+                        code: plan.code.clone(),
+                    }]);
+                    worker.update(|snapshot| snapshot.index_pending += marked);
+                    needs_resync = true;
+                }
+                record_result(
+                    worker,
+                    JobEntryResult {
+                        label: volume.volume.clone(),
+                        status: plan.entry_status.into(),
+                        code: plan.code,
+                        message: plan.message,
+                    },
+                );
+                if let Some(message) = plan.job_message {
+                    worker.update(|snapshot| snapshot.message = Some(message));
+                }
+                if plan.cancelled {
+                    cancelled = true;
+                    emit_progress(app, worker);
+                    break;
                 }
                 emit_progress(app, worker);
+            }
+            if needs_resync {
+                // 不在扫描进行中并发启动第二个扫描：服务端会登记「收尾后补扫」。
+                recycle.request_resync(app);
             }
             finish(worker, cancelled);
             emit_progress(app, worker);
@@ -1761,26 +2049,218 @@ mod tests {
         })
     }
 
+    const BIN_C: &str = r"C:\$Recycle.Bin\S-1-5-21-1";
+    const BIN_D: &str = r"D:\$Recycle.Bin\S-1-5-21-1";
+
+    /// §4.2 并发测试矩阵：条目 ↔ 条目、条目 ↔ 整卷、跨卷互不影响。
     #[test]
-    fn recycle_claims_block_concurrent_entry_operations_until_released() {
+    fn layered_claims_match_the_volume_entry_conflict_matrix() {
+        let claims = RecycleClaims::new();
+        // D 盘 A 条目被恢复任务占用。
+        assert_eq!(claims.try_claim_entry(BIN_D, "A", "job-1", "restore"), None);
+        // 同条目：恢复 / 永久删除都拒绝，并回报占用方类型。
+        assert_eq!(
+            claims.try_claim_entry(BIN_D, "A", "job-2", "restore"),
+            Some(ClaimConflict { holder: "restore", volume_wide: false })
+        );
+        assert_eq!(
+            claims.try_claim_entry(BIN_D, "A", "job-3", "purge"),
+            Some(ClaimConflict { holder: "restore", volume_wide: false })
+        );
+        // D 盘清空：该卷存在条目操作 → 拒绝。
+        assert_eq!(
+            claims.try_claim_volume(BIN_D, "job-4", "empty"),
+            Some(ClaimConflict { holder: "restore", volume_wide: false })
+        );
+        // 同卷不同条目、不同卷同条目都允许。
+        assert_eq!(claims.try_claim_entry(BIN_D, "B", "job-5", "purge"), None);
+        assert_eq!(claims.try_claim_entry(BIN_C, "A", "job-6", "restore"), None);
+    }
+
+    /// 先清空再操作条目：同卷条目一律拒绝，其余卷仍可并行。
+    #[test]
+    fn volume_claim_blocks_entries_on_the_same_disk_only() {
+        let claims = RecycleClaims::new();
+        assert_eq!(claims.try_claim_volume(BIN_D, "job-empty", "empty"), None);
+        assert_eq!(
+            claims.try_claim_entry(BIN_D, "A", "job-r", "restore"),
+            Some(ClaimConflict { holder: "empty", volume_wide: true })
+        );
+        assert_eq!(
+            claims.try_claim_entry(BIN_D, "B", "job-p", "purge"),
+            Some(ClaimConflict { holder: "empty", volume_wide: true })
+        );
+        assert_eq!(
+            claims.try_claim_volume(BIN_D, "job-empty-2", "empty"),
+            Some(ClaimConflict { holder: "empty", volume_wide: true })
+        );
+        // 另一个卷不受影响（不做全局串行）。
+        assert_eq!(claims.try_claim_entry(BIN_C, "A", "job-c", "restore"), None);
+        // 但 C 盘此时也有在途条目：C 盘清空同样被拒绝（卷级检查对任何卷都成立）。
+        assert_eq!(
+            claims.try_claim_volume(BIN_C, "job-c-empty", "empty"),
+            Some(ClaimConflict { holder: "restore", volume_wide: false })
+        );
+        claims.release_job("job-c");
+        assert_eq!(claims.try_claim_volume(BIN_C, "job-c-empty", "empty"), None);
+    }
+
+    /// 同一任务内部重复声明（多次提交同一个 ID）不得自我冲突。
+    #[test]
+    fn repeated_claims_by_the_same_job_are_idempotent() {
+        let claims = RecycleClaims::new();
+        for _ in 0..3 {
+            assert_eq!(claims.try_claim_entry(BIN_D, "A", "job-1", "restore"), None);
+        }
+        assert_eq!(claims.active(), 1, "重复声明只登记一条");
+
+        let claims = RecycleClaims::new();
+        assert!(claims.try_claim_volume(BIN_D, "job-1", "empty").is_none());
+        assert!(claims.try_claim_volume(BIN_D, "job-1", "empty").is_none());
+        assert!(claims.try_claim_entry(BIN_D, "A", "job-1", "empty").is_none());
+        assert_eq!(claims.active(), 1, "整卷占用已覆盖该卷全部条目");
+    }
+
+    /// 多线程同时竞争同一条目：只允许一个赢家。
+    #[test]
+    fn concurrent_claims_admit_exactly_one_winner() {
         let claims: &'static RecycleClaims = Box::leak(Box::new(RecycleClaims::new()));
-        let key = entry_claim_key(r"D:\$Recycle.Bin\S-1", "A");
-        assert!(claims.try_claim(&key, "job-1", "restore").is_none());
-        // 同一任务重复声明是幂等的（同一批里不自我冲突）。
-        assert!(claims.try_claim(&key, "job-1", "restore").is_none());
-        // 另一任务的恢复/永久删除都必须被拒绝。
-        assert_eq!(claims.try_claim(&key, "job-2", "purge"), Some("restore"));
-        assert_eq!(claims.try_claim(&key, "job-3", "restore"), Some("restore"));
-        let volume_key = volume_claim_key("D:");
-        assert!(claims.try_claim(&volume_key, "job-1", "empty").is_none());
-        assert_eq!(claims.try_claim(&volume_key, "job-2", "empty"), Some("empty"));
-        {
-            let _guard = ClaimsGuard { claims, job_id: "job-1".into() };
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let threads: Vec<_> = (0..8)
+            .map(|index| {
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    claims
+                        .try_claim_entry(BIN_D, "A", &format!("job-{index}"), "restore")
+                        .is_none()
+                })
+            })
+            .collect();
+        let winners = threads
+            .into_iter()
+            .map(|handle| usize::from(handle.join().unwrap()))
+            .sum::<usize>();
+        assert_eq!(winners, 1, "并发声明必须只有一个成功");
+        assert_eq!(claims.active(), 1);
+        for index in 0..8 {
+            claims.release_job(&format!("job-{index}"));
         }
         assert_eq!(claims.active(), 0);
-        assert!(claims.try_claim(&key, "job-2", "purge").is_none());
-        claims.release_job("job-2");
+    }
+
+    /// 正常结束 / 中途取消 / worker panic：占用都必须释放。
+    #[test]
+    fn claims_are_released_on_finish_cancel_and_panic() {
+        let claims: &'static RecycleClaims = Box::leak(Box::new(RecycleClaims::new()));
+        {
+            let _guard = ClaimsGuard { claims, job_id: "job-finish".into() };
+            assert!(claims.try_claim_entry(BIN_D, "A", "job-finish", "restore").is_none());
+        }
         assert_eq!(claims.active(), 0);
+
+        {
+            let _guard = ClaimsGuard { claims, job_id: "job-cancel".into() };
+            assert!(claims.try_claim_entry(BIN_D, "A", "job-cancel", "purge").is_none());
+            assert!(claims.try_claim_volume(BIN_C, "job-cancel", "empty").is_none());
+        }
+        assert_eq!(claims.active(), 0, "取消路径必须释放条目与卷两类占用");
+
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = ClaimsGuard { claims, job_id: "job-panic".into() };
+            assert!(claims.try_claim_volume(BIN_D, "job-panic", "empty").is_none());
+            panic!("worker 异常退出");
+        }));
+        std::panic::set_hook(previous);
+        assert!(panicked.is_err());
+        assert_eq!(claims.active(), 0, "panic 展开必须释放占用");
+        assert!(
+            claims.try_claim_volume(BIN_D, "job-after", "empty").is_none(),
+            "释放后其他任务必须能取得整卷"
+        );
+        claims.release_job("job-after");
+    }
+
+    /// 清空结果 → 处置计划：启动前/启动后取消语义完全不同。
+    #[test]
+    fn empty_plan_distinguishes_cancel_before_start_from_cancel_after_start() {
+        use crate::recycle::volume::EmptyOutcome;
+
+        let before = plan_empty_outcome(&EmptyOutcome::CancelledBeforeStart, None);
+        assert_eq!(before.entry_status, "skipped");
+        assert!(!before.mark_reconcile, "启动前取消不得把缓存标成失效");
+        assert!(before.cancelled);
+        assert!(before.job_message.unwrap().contains("未被修改"));
+
+        for batches in [0usize, 1, 9] {
+            let after = plan_empty_outcome(&EmptyOutcome::CancelledAfterStart { batches }, None);
+            assert_eq!(after.code, "RECYCLE_CANCELLED_AFTER_START");
+            assert!(after.mark_reconcile, "启动后取消必须按真实 $I/$R 重新对账");
+            assert!(after.cancelled);
+            assert_ne!(after.entry_status, "ok", "已发生删除的取消不是成功");
+            assert!(after.message.unwrap().contains(&batches.to_string()));
+        }
+    }
+
+    /// Shell 结果与 SQLite 更新必须分开表达。
+    #[test]
+    fn empty_plan_separates_shell_result_from_index_update() {
+        use crate::recycle::volume::EmptyOutcome;
+
+        let ok = plan_empty_outcome(&EmptyOutcome::Completed, Some(Ok(())));
+        assert_eq!((ok.entry_status, ok.code.as_str()), ("ok", "OK"));
+        assert!(!ok.mark_reconcile);
+
+        let index_failed = plan_empty_outcome(&EmptyOutcome::Completed, Some(Err("db locked".into())));
+        assert_eq!(index_failed.entry_status, "partial", "系统操作已完成，不能记成 Shell 失败");
+        assert_eq!(index_failed.code, "INDEX_UPDATE_FAILED");
+        assert!(index_failed.mark_reconcile, "索引失败必须触发重新对账");
+
+        let failed = plan_empty_outcome(
+            &EmptyOutcome::Failed { code: "EMPTY_REMAINS".into(), message: "仍有条目".into() },
+            None,
+        );
+        assert_eq!(failed.entry_status, "failed");
+        assert!(failed.mark_reconcile);
+
+        let unverified = plan_empty_outcome(
+            &EmptyOutcome::Unverified {
+                code: "EMPTY_UNVERIFIED".into(),
+                message: "无法核对清空结果".into(),
+                batches: 2,
+            },
+            None,
+        );
+        assert_eq!(unverified.entry_status, "failed");
+        assert_eq!(unverified.code, "EMPTY_UNVERIFIED", "未核实必须有独立稳定码");
+        assert!(unverified.mark_reconcile);
+        assert!(unverified.message.as_deref().unwrap_or_default().contains('2'));
+        assert!(unverified.job_message.is_some(), "UI 必须被告知结果待核对");
+    }
+
+    /// 进程异常退出（子进程被杀）也不得被当成成功。
+    #[test]
+    fn empty_plan_never_reports_success_for_unknown_outcomes() {
+        use crate::recycle::volume::EmptyOutcome;
+        for outcome in [
+            EmptyOutcome::CancelledBeforeStart,
+            EmptyOutcome::CancelledAfterStart { batches: 0 },
+            EmptyOutcome::Unverified {
+                code: "EMPTY_UNVERIFIED".into(),
+                message: "清空子进程异常退出".into(),
+                batches: 4,
+            },
+            EmptyOutcome::Completed,
+        ] {
+            let plan = plan_empty_outcome(&outcome, None);
+            assert_ne!(
+                (plan.entry_status, plan.code.as_str()),
+                ("ok", "OK"),
+                "缺少对账结果的 {outcome:?} 不得报成功"
+            );
+        }
     }
 
     #[test]

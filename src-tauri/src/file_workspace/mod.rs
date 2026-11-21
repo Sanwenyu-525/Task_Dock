@@ -5,6 +5,10 @@
 //!   目标目录先校验存在且为目录，冲突策略显式给定，绝不静默覆盖；
 //! - 删除默认走回收站（SHFileOperationW FOF_ALLOWUNDO）；永久删除单独命令语义
 //!   （`permanent=true`），并有深度上限与重解析点（符号链接/junction）不跟随保护；
+//! - 回收站删除整批只调 **一次** `SHFileOperationW`，但它只有整批返回码与整批
+//!   中止标志、没有逐项回调：逐项证明需要 `IFileOperation` + 进度 sink（本轮不
+//!   重写）。因此「读不到源状态」「整批报错但源已消失」一律标记
+//!   `FS_OP_UNVERIFIED`（未确认），绝不伪造成功。详见「删除」节的评估结论。
 //! - 目录复制/移动递归受深度上限与重解析点保护，不做无界递归；
 //! - 受保护目录（应用数据目录）拒绝作为删除/移动/复制的目标或源；
 //! - 报告逐条给出结果（ok/failed/skipped + 原因），部分成功如实返回，不伪造全成功。
@@ -738,6 +742,12 @@ pub const FS_OP_VALIDATION: &str = "FS_OP_VALIDATION";
 pub const FS_OP_UNSUPPORTED: &str = "FS_OP_UNSUPPORTED";
 /// 用户或系统中止（回收站取消），不是内部故障。
 pub const FS_OP_CANCELLED: &str = "FS_OP_CANCELLED";
+/// 无法确认回收站操作是否生效（源路径状态不可读 / Shell 整批返回错误但源已消失）。
+///
+/// 这是「既不能证明成功、也不能断言失败」的第三态：`SHFileOperationW` 只有整批
+/// 返回码与整批中止标志，没有逐项回调，因此这些条目的真实归属不可证明。
+/// 宁可显式标为未确认，也不伪造成功（旧实现把所有读取错误当成功，属 P1 缺陷）。
+pub const FS_OP_UNVERIFIED: &str = "FS_OP_UNVERIFIED";
 /// 未分类。
 pub const FS_OP_UNKNOWN: &str = "FS_OP_UNKNOWN";
 /// 多种错误码并存时汇总使用。
@@ -753,6 +763,9 @@ pub fn fs_op_category(code: &str) -> &'static str {
         FS_OP_VALIDATION => "validation",
         FS_OP_UNSUPPORTED => "unsupported",
         FS_OP_CANCELLED => "cancelled",
+        // 未确认不是「已确认的 IO 故障」：归到 io 会把它与磁盘错误、占用混在
+        // 一起统计，掩盖「结果不可证明」这一独立性质；归到 unknown 更诚实。
+        FS_OP_UNVERIFIED => "unknown",
         _ => "unknown",
     }
 }
@@ -1569,22 +1582,156 @@ pub fn move_paths_with_progress(
 
 // ── 删除 ────────────────────────────────────────────────────────────────
 
-/// `SHFileOperationW` 的 Shell 错误码 → 稳定错误码（1257 起为 Shell 专用码）。
+// ── 回收站删除的验证边界（评估结论，不重写为 IFileOperation）────────────
+//
+// 为什么仍是整批 `SHFileOperationW`：
+// 1. `SHFileOperationW` 只有**一个**整批返回码与**一个**整批 `fAnyOperationsAborted`，
+//    没有任何逐项回调。逐项证明（「这个文件究竟是不是被本次调用移入回收站」）必须
+//    改用 `IFileOperation` + `IFileOperationProgressSink`（仓库内
+//    `src-tauri/src/recycle/ops.rs` 有同类实现），整条普通文件删除链路都要重写。
+// 2. 本轮不重写：批量一次 Shell 调用（500 项 1 次）是明确的性能与用户预期约束，
+//    且 `delete_paths` 里的重解析点保护、盘符根/UNC 根保护都挂在现有链路上。
+// 3. 代价必须如实呈现：整批报错时无法区分「这条已被 Shell 移入回收站」与
+//    「这条被其他进程删掉 / 根本没处理」。因此引入 `FS_OP_UNVERIFIED` 第三态，
+//    把不可证明的条目显式标为未确认，再由 UI 提示用户去回收站核对——绝不把
+//    「读不到源状态」当成成功（旧实现的 P1 缺陷就在于此）。
+// 4. 待办：若要逐项证明，改用 IFileOperation 并用 sink 的 PostDeleteItem 回填
+//    每项 HRESULT，届时 `FS_OP_UNVERIFIED` 只会保留给「读状态失败」一种情形。
+
+/// `SHFileOperationW` 的 Shell 错误码 → 稳定错误码。
+///
+/// 0x71–0x83 是 Shell 的 `DE_*` 区间（不同 Windows 版本的个别常量命名略有差异，
+/// 但数值与含义稳定）；其余是 Win32 码（`SHFileOperationW` 也会直接回传）。
 fn shell_delete_code(code: i32) -> &'static str {
     match code {
-        0x71 | 0x78 => FS_OP_ACCESS_DENIED, // DE_ACCESSDENIEDSRC / DE_ACCESSDENIEDDST
-        0x74 | 0x7C => FS_OP_SOURCE_MISSING, // DE_FILENOTFOUND / DE_INVALIDFILES
-        0x75 | 0x76 => FS_OP_FILE_BUSY,     // DE_SHAREVIOLATION / DE_LOCKVIOLATION
-        1223 => FS_OP_CANCELLED,            // ERROR_CANCELLED
+        // DE_ACCESSDENIEDSRC：源拒绝访问（ACL / 只读卷）。
+        0x71 => FS_OP_ACCESS_DENIED,
+        // DE_ACCESSDENIEDDST：目标（回收站存储）拒绝访问。
+        0x78 => FS_OP_ACCESS_DENIED,
+        // 路径过长：属于输入侧限制，不是「源不存在」；按校验拒绝归类，
+        // 前端提示用户缩短路径/改用上级目录，而不是让用户以为文件消失了。
+        0x72 => FS_OP_VALIDATION,
+        // DE_INVALIDFILES：文件名无效 / 源无法被 Shell 识别为可删除对象。
+        0x7C => FS_OP_SOURCE_MISSING,
+        // DE_FILENOTFOUND：源已不存在。
+        0x74 => FS_OP_SOURCE_MISSING,
+        // DE_SHAREVIOLATION：源被其他进程以不共享方式打开。
+        0x75 => FS_OP_FILE_BUSY,
+        // DE_LOCKVIOLATION：源被锁（锁字节区间 / 独占）。
+        0x76 => FS_OP_FILE_BUSY,
+        // DE_DELETESFROMREADONLY：只读属性导致拒绝删除。
+        0x7A => FS_OP_ACCESS_DENIED,
+        // ERROR_CANCELLED（Win32 1223）：用户在系统确认框/进度框取消。
+        1223 => FS_OP_CANCELLED,
+        // Win32 ERROR_ACCESS_DENIED。
+        5 => FS_OP_ACCESS_DENIED,
+        // Win32 ERROR_FILE_NOT_FOUND / ERROR_PATH_NOT_FOUND。
+        2 | 3 => FS_OP_SOURCE_MISSING,
+        // Win32 ERROR_SHARING_VIOLATION / ERROR_LOCK_VIOLATION。
+        32 | 33 => FS_OP_FILE_BUSY,
+        // 其余（含 DE_* 区间里未单列的码与未知 Win32 码）一律按 IO 故障。
         _ => FS_OP_IO,
+    }
+}
+
+/// 一次「源是否还在」的判定结果。三种状态必须分开：
+/// - `Gone`：读取确认不存在（`NotFound` / Win32 2、3）；
+/// - `Present`：仍然存在；
+/// - `Unknown`：读取失败但不是 `NotFound`（拒绝访问 / 共享冲突 / 其他 IO）——
+///   既不能当成功，也不能断言失败。
+///
+/// 刻意**不用** `Path::exists()`：它把权限错误、共享冲突都吞成 `false`，
+/// 会把「读不到」误判成「已经删掉」，正是本模块要修掉的 P1 缺陷。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SourceState {
+    Gone,
+    Present,
+    Unknown,
+}
+
+fn source_state(path: &Path) -> SourceState {
+    match fs::symlink_metadata(path) {
+        Ok(_) => SourceState::Present,
+        Err(err) => {
+            use std::io::ErrorKind;
+            // `NotFound` 是「确认不存在」的唯一可靠信号；
+            // raw 2/3 覆盖 ErrorKind 映射不到的路径不存在场景。
+            if err.kind() == ErrorKind::NotFound {
+                return SourceState::Gone;
+            }
+            match err.raw_os_error() {
+                Some(2) | Some(3) => SourceState::Gone,
+                // 5 拒绝访问、32/33 共享冲突，以及其余一切错误：无法证明。
+                _ => SourceState::Unknown,
+            }
+        }
+    }
+}
+
+/// 单个条目的回收站结果判定。`code` 是 `SHFileOperationW` 的整批返回码，
+/// `aborted` 是整批的 `fAnyOperationsAborted`。
+///
+/// 语义（整批判定 + 单项状态复核，二者交叉验证）：
+/// | 源状态   | 整批返回                        | 结果 |
+/// |----------|---------------------------------|------|
+/// | Gone     | code == 0 且未中止              | Ok：Shell 报告整批成功，源已离开原位置 |
+/// | Gone     | aborted                         | Ok：中止前已处理的条目确实已移走 |
+/// | Gone     | code != 0 且未中止              | Err(UNVERIFIED)：整批报错，无法确认这条是被 Shell 移入回收站还是被别的进程删掉 |
+/// | Present  | code == 0 且未中止              | Err(IO)：Shell 说成功但源仍在，状态不一致，不能报成功 |
+/// | Present  | aborted                         | Err(CANCELLED) |
+/// | Present  | code != 0                       | Err(shell_delete_code(code)) |
+/// | Unknown  | 任意                            | Err(UNVERIFIED)：读不到源状态，无法证明 |
+fn classify_recycle_outcome(
+    state: SourceState,
+    code: i32,
+    aborted: bool,
+) -> Result<(), FsFailure> {
+    match state {
+        SourceState::Gone => {
+            if aborted || code == 0 {
+                Ok(())
+            } else {
+                Err(FsFailure::new(
+                    FS_OP_UNVERIFIED,
+                    "recycle",
+                    format!(
+                        "Shell 批量删除返回错误码 {code}，源已不在原位置，但无法确认是否由本次操作移入回收站"
+                    ),
+                ))
+            }
+        }
+        SourceState::Present => {
+            if aborted {
+                Err(FsFailure::new(FS_OP_CANCELLED, "recycle", "操作被系统中止"))
+            } else if code == 0 {
+                // Shell 报整批成功却仍有源存在：状态不一致，绝不报成功。
+                Err(FsFailure::new(
+                    FS_OP_IO,
+                    "recycle",
+                    "Shell 报告成功但源仍然存在（状态不一致）",
+                ))
+            } else {
+                Err(FsFailure::new(
+                    shell_delete_code(code),
+                    "recycle",
+                    format!("回收站删除失败（Shell 返回码 {code}）"),
+                ))
+            }
+        }
+        SourceState::Unknown => Err(FsFailure::new(
+            FS_OP_UNVERIFIED,
+            "recycle",
+            "无法读取源路径状态（拒绝访问或被占用），不能确认回收站删除是否生效",
+        )),
     }
 }
 
 /// 一次 Shell 调用删除整批路径：`pFrom` 是双 NUL 结尾的多路径列表，
 /// 对 500 项只需 **1 次** `SHFileOperationW`，而不是逐项一次。
 ///
-/// 逐项结果以「原路径已不存在」复核：Shell 把所有源移动到回收站，
-/// 成功的条目必然离开原位置；仍存在的条目按 Shell 返回码如实失败。
+/// 逐项结果以「源是否还留在原位置」复核，并按
+/// [`classify_recycle_outcome`] 的三态语义判定：确认成功才 ok，确认失败才 failed，
+/// 读不到状态或整批报错但源已消失则标记 `FS_OP_UNVERIFIED`。
 /// 注意：`FOF_ALLOWUNDO` 在卷不支持回收站时由系统改为永久删除，这与
 /// 逐项调用的既有语义一致，不因批量化而改变。
 #[cfg(windows)]
@@ -1599,10 +1746,10 @@ fn recycle_delete_batch(paths: &[PathBuf]) -> Vec<Result<(), FsFailure>> {
         return Vec::new();
     }
     #[cfg(test)]
-    shell_recycle_call_count().fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    shell_recycle_call_count_bump();
     #[cfg(test)]
     if let Some(code) = run_shell_recycle_mock(paths) {
-        return verify_recycled(paths, code as i32, false);
+        return verify_recycled(paths, code as i32, shell_recycle_mock_aborted());
     }
 
     let mut from: Vec<u16> = Vec::with_capacity(paths.len() * 64 + 2);
@@ -1626,46 +1773,53 @@ fn recycle_delete_batch(paths: &[PathBuf]) -> Vec<Result<(), FsFailure>> {
 }
 
 /// 逐项复核回收站删除：返回与输入同序、等长的结果。
+///
+/// 只做「读源状态 + 三态判定」，不再出现「任何读取错误都当成功」。
 #[cfg(windows)]
 fn verify_recycled(paths: &[PathBuf], code: i32, aborted: bool) -> Vec<Result<(), FsFailure>> {
     paths
         .iter()
-        .map(|path| {
-            if fs::symlink_metadata(path).is_err() {
-                // 已离开原位置（进入回收站或被系统永久删除）。
-                Ok(())
-            } else if aborted {
-                Err(FsFailure::new(FS_OP_CANCELLED, "recycle", "操作被系统中止"))
-            } else {
-                Err(FsFailure::new(
-                    shell_delete_code(code),
-                    "recycle",
-                    format!("回收站删除失败（Shell 返回码 {code}）"),
-                ))
-            }
-        })
+        .map(|path| classify_recycle_outcome(source_state(path), code, aborted))
         .collect()
 }
 
 #[cfg(test)]
 mod shell_seam {
     use super::*;
-    use std::cell::RefCell;
-    use std::sync::atomic::AtomicUsize;
-
-    static CALLS: AtomicUsize = AtomicUsize::new(0);
+    use std::cell::{Cell, RefCell};
 
     thread_local! {
+        // 计数按测试线程隔离：测试并行运行时全局 AtomicUsize 会互相干扰，
+        // 让「整批 = 1 次 Shell 调用」这类断言偶发失败。
+        static CALLS: Cell<usize> = const { Cell::new(0) };
         static MOCK: RefCell<Option<Box<dyn FnMut(&[PathBuf]) -> u32>>> = const { RefCell::new(None) };
+        // 替身签名只有返回码，无法表达 `fAnyOperationsAborted`：单独存一个标志，
+        // 仅被 `recycle_delete_batch` 的测试分支读取，生产路径完全不看它。
+        static MOCK_ABORTED: Cell<bool> = const { Cell::new(false) };
     }
 
-    pub(crate) fn shell_recycle_call_count() -> &'static AtomicUsize {
-        &CALLS
+    pub(crate) fn shell_recycle_call_count() -> usize {
+        CALLS.with(|calls| calls.get())
+    }
+
+    pub(crate) fn shell_recycle_call_count_bump() {
+        CALLS.with(|calls| calls.set(calls.get() + 1));
     }
 
     pub(crate) fn set_shell_recycle_mock(mock: Option<Box<dyn FnMut(&[PathBuf]) -> u32>>) {
         MOCK.with(|slot| *slot.borrow_mut() = mock);
-        CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
+        // 每次装/卸替身都清空中止标志与计数，避免线程复用导致跨用例串味。
+        MOCK_ABORTED.with(|flag| flag.set(false));
+        CALLS.with(|calls| calls.set(0));
+    }
+
+    /// 设置整批中止标志；必须在 [`set_shell_recycle_mock`] 之后调用（后者会重置）。
+    pub(crate) fn set_shell_recycle_aborted(aborted: bool) {
+        MOCK_ABORTED.with(|flag| flag.set(aborted));
+    }
+
+    pub(crate) fn shell_recycle_mock_aborted() -> bool {
+        MOCK_ABORTED.with(|flag| flag.get())
     }
 
     /// 测试替身：避免把测试文件真正放进用户回收站；仍走同一逐项复核路径。
@@ -1678,7 +1832,10 @@ mod shell_seam {
 }
 
 #[cfg(test)]
-use shell_seam::{run_shell_recycle_mock, set_shell_recycle_mock, shell_recycle_call_count};
+use shell_seam::{
+    run_shell_recycle_mock, set_shell_recycle_aborted, set_shell_recycle_mock,
+    shell_recycle_call_count, shell_recycle_call_count_bump, shell_recycle_mock_aborted,
+};
 
 #[cfg(not(windows))]
 fn recycle_delete_batch(paths: &[PathBuf]) -> Vec<Result<(), FsFailure>> {
@@ -3435,7 +3592,6 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn recycle_delete_uses_one_shell_call_for_whole_batch() {
-        use std::sync::atomic::Ordering;
         let root = temp_root("recycle-batch");
         let mut paths = Vec::new();
         for index in 0..25 {
@@ -3454,7 +3610,7 @@ mod tests {
         for path in &batch_paths {
             let _ = recycle_delete_batch(std::slice::from_ref(path));
         }
-        let per_item_calls = shell_recycle_call_count().load(Ordering::SeqCst);
+        let per_item_calls = shell_recycle_call_count();
         assert_eq!(per_item_calls, 25, "逐项策略必须产生 25 次 Shell 调用");
 
         // 新策略：整批一次。
@@ -3466,7 +3622,7 @@ mod tests {
             }
         })));
         let report = delete_paths(&paths, false, &protected()).unwrap();
-        let batch_calls = shell_recycle_call_count().load(Ordering::SeqCst);
+        let batch_calls = shell_recycle_call_count();
         set_shell_recycle_mock(None);
         assert_eq!(batch_calls, 1);
         assert!(captured.lock().unwrap().contains(&25));
@@ -3508,11 +3664,348 @@ mod tests {
 
     #[test]
     fn shell_delete_codes_map_to_stable_codes() {
+        // DE_* 区间：拒绝访问 / 路径过长 / 源缺失 / 占用 / 只读。
         assert_eq!(shell_delete_code(0x71), FS_OP_ACCESS_DENIED);
+        assert_eq!(shell_delete_code(0x78), FS_OP_ACCESS_DENIED);
+        assert_eq!(shell_delete_code(0x7A), FS_OP_ACCESS_DENIED);
+        assert_eq!(shell_delete_code(0x72), FS_OP_VALIDATION);
         assert_eq!(shell_delete_code(0x74), FS_OP_SOURCE_MISSING);
+        assert_eq!(shell_delete_code(0x7C), FS_OP_SOURCE_MISSING);
         assert_eq!(shell_delete_code(0x75), FS_OP_FILE_BUSY);
+        assert_eq!(shell_delete_code(0x76), FS_OP_FILE_BUSY);
+        // Win32 回传码。
         assert_eq!(shell_delete_code(1223), FS_OP_CANCELLED);
+        assert_eq!(shell_delete_code(5), FS_OP_ACCESS_DENIED);
+        assert_eq!(shell_delete_code(2), FS_OP_SOURCE_MISSING);
+        assert_eq!(shell_delete_code(3), FS_OP_SOURCE_MISSING);
+        assert_eq!(shell_delete_code(32), FS_OP_FILE_BUSY);
+        assert_eq!(shell_delete_code(33), FS_OP_FILE_BUSY);
+        // 未单列的码（含 0：Shell 成功码不是错误码，但映射函数必须稳定）。
         assert_eq!(shell_delete_code(0), FS_OP_IO);
+        assert_eq!(shell_delete_code(0x1234), FS_OP_IO);
+    }
+
+    // ── 回收站三态判定（新增，替代「读取错误即成功」）────────────────────
+
+    /// 回收站专项测试目录：唯一前缀 + uuid，绝不与既有测试目录/用户目录混用。
+    fn recycle_temp_root(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "taskdock-fw-recycle-{tag}-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn paths_of(files: &[PathBuf]) -> Vec<String> {
+        files
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// 1) 全部成功：mock 真正删除 3 个文件并返回 0 → 3 个 ok。
+    #[cfg(windows)]
+    #[test]
+    fn recycle_all_success_reports_each_item_ok() {
+        let root = recycle_temp_root("all-ok");
+        let files: Vec<PathBuf> = (0..3).map(|i| root.join(format!("f{i}.txt"))).collect();
+        for file in &files {
+            fs::write(file, b"x").unwrap();
+        }
+        set_shell_recycle_mock(Some(Box::new(|batch: &[PathBuf]| {
+            for path in batch {
+                fs::remove_file(path).unwrap();
+            }
+            0
+        })));
+        let report = delete_paths(&paths_of(&files), false, &protected()).unwrap();
+        set_shell_recycle_mock(None);
+        assert_eq!(report.attempted, 3);
+        assert_eq!(report.ok, 3, "{:?}", report.entries);
+        assert_eq!(report.failed, 0);
+        for (entry, file) in report.entries.iter().zip(files.iter()) {
+            assert_eq!(entry.status, "ok");
+            assert!(!file.exists(), "mock 已删除的文件不应仍存在");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 2) 全部失败：mock 返回 0x71 且保留文件 → 3 个 failed / ACCESS_DENIED。
+    #[cfg(windows)]
+    #[test]
+    fn recycle_all_failure_reports_access_denied() {
+        let root = recycle_temp_root("all-fail");
+        let files: Vec<PathBuf> = (0..3).map(|i| root.join(format!("f{i}.txt"))).collect();
+        for file in &files {
+            fs::write(file, b"x").unwrap();
+        }
+        set_shell_recycle_mock(Some(Box::new(|_: &[PathBuf]| 0x71)));
+        let report = delete_paths(&paths_of(&files), false, &protected()).unwrap();
+        set_shell_recycle_mock(None);
+        assert_eq!(report.failed, 3);
+        for entry in &report.entries {
+            assert_eq!(entry.status, "failed");
+            assert_eq!(entry.code.as_deref(), Some(FS_OP_ACCESS_DENIED));
+            assert_eq!(entry.stage.as_deref(), Some("recycle"));
+        }
+        for file in &files {
+            assert!(file.exists(), "失败条目必须保留在磁盘上");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 3) 部分成功：mock 只删第一个却返回整批错误 → 首个 UNVERIFIED，
+    ///    其余 ACCESS_DENIED；结果与输入下标一一对应（不错位）。
+    #[cfg(windows)]
+    #[test]
+    fn recycle_partial_success_keeps_input_alignment() {
+        let root = recycle_temp_root("partial");
+        let files: Vec<PathBuf> = (0..3).map(|i| root.join(format!("f{i}.txt"))).collect();
+        for file in &files {
+            fs::write(file, b"x").unwrap();
+        }
+        set_shell_recycle_mock(Some(Box::new(|batch: &[PathBuf]| {
+            fs::remove_file(&batch[0]).unwrap();
+            0x71
+        })));
+        let paths = paths_of(&files);
+        let report = delete_paths(&paths, false, &protected()).unwrap();
+        set_shell_recycle_mock(None);
+        assert_eq!(report.entries.len(), 3);
+        for (entry, path) in report.entries.iter().zip(paths.iter()) {
+            assert_eq!(&entry.source, path, "逐项结果必须与输入顺序一致");
+        }
+        assert_eq!(report.entries[0].status, "failed");
+        // 第一个虽已消失，但整批报错：无法确认是本次移入回收站 → 未确认。
+        assert_eq!(report.entries[0].code.as_deref(), Some(FS_OP_UNVERIFIED));
+        assert_eq!(report.entries[1].code.as_deref(), Some(FS_OP_ACCESS_DENIED));
+        assert_eq!(report.entries[2].code.as_deref(), Some(FS_OP_ACCESS_DENIED));
+        assert!(!files[0].exists());
+        assert!(files[1].exists());
+        assert!(files[2].exists());
+        assert_eq!(report.ok, 0);
+        assert_eq!(report.failed, 3);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 4) 执行前源已消失：Shell 返回 0 → 视为成功（确实已离开原位置）。
+    #[cfg(windows)]
+    #[test]
+    fn recycle_missing_source_with_success_code_is_ok() {
+        let root = recycle_temp_root("pre-gone");
+        let gone = root.join("gone.txt"); // 从未创建
+        set_shell_recycle_mock(Some(Box::new(|_: &[PathBuf]| 0)));
+        let results = recycle_delete_batch(std::slice::from_ref(&gone));
+        set_shell_recycle_mock(None);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_ok(), "确认不存在 + 整批成功 → ok");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 5) 执行期间被其他程序删除：mock 删除文件但返回 0x71 → UNVERIFIED，不是 ok。
+    #[cfg(windows)]
+    #[test]
+    fn recycle_source_deleted_during_operation_is_unverified() {
+        let root = recycle_temp_root("racy-gone");
+        let file = root.join("racy.txt");
+        fs::write(&file, b"x").unwrap();
+        set_shell_recycle_mock(Some(Box::new(|batch: &[PathBuf]| {
+            // 模拟「其他进程删掉了它」：Shell 并未报告成功。
+            fs::remove_file(&batch[0]).unwrap();
+            0x71
+        })));
+        let results = recycle_delete_batch(std::slice::from_ref(&file));
+        set_shell_recycle_mock(None);
+        let err = results[0].as_ref().unwrap_err();
+        assert_eq!(err.code, FS_OP_UNVERIFIED);
+        assert_eq!(err.stage, "recycle");
+        let root_text = root.to_string_lossy().into_owned();
+        assert!(!err.reason.contains(&root_text), "reason 不得包含完整路径");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 6) 状态不可读：直接单测分类，不改 ACL。
+    #[test]
+    fn classify_unknown_state_is_unverified_for_any_code() {
+        for code in [0, 0x71, 1223] {
+            let err = classify_recycle_outcome(SourceState::Unknown, code, false)
+                .unwrap_err();
+            assert_eq!(err.code, FS_OP_UNVERIFIED, "code={code} 仍不可证明");
+            assert_eq!(err.stage, "recycle");
+        }
+        // aborted 也不能把「读不到」变成成功或取消。
+        let err = classify_recycle_outcome(SourceState::Unknown, 0, true).unwrap_err();
+        assert_eq!(err.code, FS_OP_UNVERIFIED);
+    }
+
+    /// 纯函数：Gone / Present 的其他分支（不依赖 Shell 替身）。
+    #[test]
+    fn classify_gone_and_present_matrix() {
+        assert!(classify_recycle_outcome(SourceState::Gone, 0, false).is_ok());
+        assert!(classify_recycle_outcome(SourceState::Gone, 0x71, true).is_ok());
+        assert_eq!(
+            classify_recycle_outcome(SourceState::Gone, 0x71, false)
+                .unwrap_err()
+                .code,
+            FS_OP_UNVERIFIED
+        );
+        assert_eq!(
+            classify_recycle_outcome(SourceState::Present, 0, false)
+                .unwrap_err()
+                .code,
+            FS_OP_IO
+        );
+        assert_eq!(
+            classify_recycle_outcome(SourceState::Present, 0x75, false)
+                .unwrap_err()
+                .code,
+            FS_OP_FILE_BUSY
+        );
+        assert_eq!(
+            classify_recycle_outcome(SourceState::Present, 0, true)
+                .unwrap_err()
+                .code,
+            FS_OP_CANCELLED
+        );
+    }
+
+    /// 8) 用户取消：文件仍在 → CANCELLED；已被删除 → ok。
+    #[cfg(windows)]
+    #[test]
+    fn recycle_aborted_reports_cancelled_only_when_source_remains() {
+        let root = recycle_temp_root("aborted");
+        let kept = root.join("kept.txt");
+        fs::write(&kept, b"x").unwrap();
+        set_shell_recycle_mock(Some(Box::new(|_: &[PathBuf]| 0x75)));
+        set_shell_recycle_aborted(true);
+        let results = recycle_delete_batch(std::slice::from_ref(&kept));
+        assert_eq!(
+            results[0].as_ref().unwrap_err().code,
+            FS_OP_CANCELLED,
+            "中止且源仍在 → 取消"
+        );
+        assert!(kept.exists());
+
+        let removed = root.join("removed.txt");
+        fs::write(&removed, b"x").unwrap();
+        set_shell_recycle_mock(Some(Box::new(|batch: &[PathBuf]| {
+            fs::remove_file(&batch[0]).unwrap();
+            0
+        })));
+        set_shell_recycle_aborted(true);
+        let results = recycle_delete_batch(std::slice::from_ref(&removed));
+        set_shell_recycle_mock(None);
+        assert!(results[0].is_ok(), "中止前已处理的条目确实已移走 → ok");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 9) 符号链接：处理链接本身，不跟随目标。环境无法创建链接时如实跳过。
+    #[cfg(windows)]
+    #[test]
+    fn recycle_symlink_removes_link_without_touching_target() {
+        use std::os::windows::fs::symlink_file;
+        let root = recycle_temp_root("symlink");
+        let target = root.join("target.txt");
+        fs::write(&target, b"keep").unwrap();
+        let link = root.join("link.txt");
+        match symlink_file(&target, &link) {
+            Ok(()) => {
+                assert_eq!(source_state(&link), SourceState::Present);
+                set_shell_recycle_mock(Some(Box::new(|batch: &[PathBuf]| {
+                    for path in batch {
+                        // 删除链接本身（Windows 上 remove_file 不会跟进目标）。
+                        fs::remove_file(path).unwrap();
+                    }
+                    0
+                })));
+                let report =
+                    delete_paths(&[link.to_string_lossy().into_owned()], false, &protected())
+                        .unwrap();
+                set_shell_recycle_mock(None);
+                assert_eq!(report.ok, 1, "{:?}", report.entries);
+                assert!(
+                    fs::symlink_metadata(&link).is_err(),
+                    "链接本身必须被处理"
+                );
+                assert!(target.exists(), "符号链接目标文件必须仍存在（不跟随）");
+            }
+            Err(err) => {
+                eprintln!("未执行：环境无法创建符号链接（{err}），跳过断言");
+            }
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 10) 500 项整批：500 个 ok，且只有 1 次 Shell 调用。
+    #[cfg(windows)]
+    #[test]
+    fn recycle_500_items_use_single_shell_call() {
+        let root = recycle_temp_root("batch-500");
+        let mut files = Vec::with_capacity(MAX_OP_PATHS);
+        for i in 0..MAX_OP_PATHS {
+            let file = root.join(format!("f{i:03}.txt"));
+            fs::write(&file, b"x").unwrap();
+            files.push(file);
+        }
+        set_shell_recycle_mock(Some(Box::new(|batch: &[PathBuf]| {
+            for path in batch {
+                fs::remove_file(path).unwrap();
+            }
+            0
+        })));
+        let report = delete_paths(&paths_of(&files), false, &protected()).unwrap();
+        let calls = shell_recycle_call_count();
+        set_shell_recycle_mock(None);
+        assert_eq!(report.attempted, MAX_OP_PATHS);
+        assert_eq!(report.ok, MAX_OP_PATHS, "{:?}", report.entries.first());
+        assert_eq!(calls, 1, "500 项必须只触发 1 次 Shell 调用");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 11) 多批连续执行：每批各 1 次 Shell 调用，结果互不污染。
+    #[cfg(windows)]
+    #[test]
+    fn recycle_consecutive_batches_do_not_leak_results() {
+        let root = recycle_temp_root("batches");
+        let make_batch = |prefix: &str| -> (Vec<PathBuf>, Vec<String>) {
+            let files: Vec<PathBuf> = (0..200)
+                .map(|i| root.join(format!("{prefix}{i:03}.txt")))
+                .collect();
+            for file in &files {
+                fs::write(file, b"x").unwrap();
+            }
+            let paths = paths_of(&files);
+            (files, paths)
+        };
+        let (first_files, first_paths) = make_batch("a");
+        let (second_files, second_paths) = make_batch("b");
+        set_shell_recycle_mock(Some(Box::new(|batch: &[PathBuf]| {
+            for path in batch {
+                fs::remove_file(path).unwrap();
+            }
+            0
+        })));
+        let first = delete_paths(&first_paths, false, &protected()).unwrap();
+        let calls_after_first = shell_recycle_call_count();
+        let second = delete_paths(&second_paths, false, &protected()).unwrap();
+        let calls_after_second = shell_recycle_call_count();
+        set_shell_recycle_mock(None);
+        assert_eq!(calls_after_first, 1);
+        assert_eq!(calls_after_second, 2);
+        assert_eq!(first.ok, 200);
+        assert_eq!(second.ok, 200);
+        // 互不污染：各自 entries 只指向自己的输入。
+        for (entry, path) in first.entries.iter().zip(first_paths.iter()) {
+            assert_eq!(&entry.source, path);
+        }
+        for (entry, path) in second.entries.iter().zip(second_paths.iter()) {
+            assert_eq!(&entry.source, path);
+        }
+        assert!(first_files.iter().all(|f| !f.exists()));
+        assert!(second_files.iter().all(|f| !f.exists()));
+        let _ = fs::remove_dir_all(&root);
     }
 
     /// 真实回收站批量删除对照：需显式开启，只创建唯一前缀测试文件。

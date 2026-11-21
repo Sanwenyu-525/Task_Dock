@@ -188,23 +188,89 @@ pub fn bin_root_for_drive(drive_root: &str) -> Option<PathBuf> {
 #[cfg(windows)]
 const EMPTY_WORKER: &str = "--recycle-empty-worker";
 
-/// 通过独立进程执行单卷 Shell 清空。返回 None 表示已取消，卷实际状态须重新同步。
+/// 单卷清空的执行结果分类。
+///
+/// 取消、失败、「无法核实」必须彼此可区分：调用方要据此决定**缓存是否需要失效**。
+/// 只有 [`EmptyOutcome::Completed`] 代表「Shell 已确认该卷没有剩余配对条目」；
+/// 只有 [`EmptyOutcome::CancelledBeforeStart`] 代表「什么都没发生」。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EmptyOutcome {
+    /// 子进程收到执行指令前已取消：没有任何条目被删除，缓存不需要失效。
+    CancelledBeforeStart,
+    /// 已在执行中被取消：`batches` 批已确认完成，其余条目状态未知（可能已被删除）。
+    CancelledAfterStart { batches: usize },
+    /// Shell 报告完成，且复核确认已无配对条目。
+    Completed,
+    /// Shell 明确失败（含「仍有配对条目」）。可能已删除一部分。
+    Failed { code: String, message: String },
+    /// 无法确认结果（子进程异常退出、复核失败、超时）。**绝不能当作成功**。
+    Unverified { code: String, message: String, batches: usize },
+}
+
+impl EmptyOutcome {
+    /// 已确认完成的批次数（子进程每完成一批回一行心跳）。
+    pub fn batches(&self) -> usize {
+        match self {
+            EmptyOutcome::CancelledAfterStart { batches }
+            | EmptyOutcome::Unverified { batches, .. } => *batches,
+            _ => 0,
+        }
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        matches!(
+            self,
+            EmptyOutcome::CancelledBeforeStart | EmptyOutcome::CancelledAfterStart { .. }
+        )
+    }
+
+    /// 是否可能已经发生不可逆删除（决定要不要把缓存标成 stale 并重新对账）。
+    ///
+    /// 取消发生在启动前 → 什么都没发生；其余情况一律按「可能已删除」保守处理，
+    /// 因为没有任何证据能证明磁盘未被改动。
+    pub fn may_have_deleted(&self) -> bool {
+        !matches!(self, EmptyOutcome::CancelledBeforeStart)
+    }
+
+    /// 失败/未核实对应的稳定错误码与文案；`Completed` 返回 `None`。
+    pub fn failure(&self) -> Option<(&str, &str)> {
+        match self {
+            EmptyOutcome::Failed { code, message }
+            | EmptyOutcome::Unverified { code, message, .. } => Some((code.as_str(), message.as_str())),
+            _ => None,
+        }
+    }
+}
+
+/// 子进程的退出方式。`NotStarted` 与 `Cancelled` 必须分开：
+/// 前者没有发生任何删除，后者的批次可能已经落盘。
+enum WorkerExit {
+    NotStarted,
+    Cancelled { batches: usize },
+    Finished { code: Option<i32>, batches: usize },
+}
+
+/// 通过独立进程执行单卷 Shell 清空。
+///
+/// 返回值区分「启动前取消 / 启动后取消 / 完成 / 失败 / 未核实」五种情况；调用方
+/// **不得**把取消或未核实当作成功，也不得在启动后取消时假设磁盘没变。
 #[cfg(windows)]
-pub fn empty_recycle_bin(
-    volume: &BinVolume,
-    cancelled: impl Fn() -> bool,
-) -> Option<Result<(), (String, String)>> {
+pub fn empty_recycle_bin(volume: &BinVolume, cancelled: impl Fn() -> bool) -> EmptyOutcome {
     use std::io::{self, Read, Write};
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
     use std::process::Stdio;
-    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
     use std::time::{Duration, Instant};
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
         SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
 
-    let run = || -> io::Result<Option<i32>> {
+    // 记录「执行指令是否已经下发给子进程」：这是启动前/启动后取消的唯一分界。
+    let started = std::cell::Cell::new(false);
+    let batches = Arc::new(AtomicUsize::new(0));
+    let run = || -> io::Result<WorkerExit> {
         let raw = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
         if raw.is_null() {
             return Err(io::Error::last_os_error());
@@ -233,27 +299,43 @@ pub fn empty_recycle_bin(
         if cancelled() {
             drop(job);
             child.wait()?;
-            return Ok(None);
+            return Ok(WorkerExit::NotStarted);
         }
         child.stdin.take().expect("piped stdin").write_all(b"1")?;
+        // 指令已下发：从此刻起任何取消都不能假设「磁盘没变」。
+        started.set(true);
         let mut pipe = child.stdout.take().expect("piped stdout");
-        let heartbeat = Arc::new(AtomicBool::new(false));
-        let signalled = heartbeat.clone();
+        let heartbeat = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&batches);
+        let signalled = Arc::clone(&heartbeat);
         let reader = std::thread::Builder::new().name("recycle-clear-progress".into()).spawn(move || {
             let mut buffer = [0; 64];
-            while pipe.read(&mut buffer).is_ok_and(|size| size != 0) {
-                signalled.store(true, Ordering::Relaxed);
+            while let Ok(size) = pipe.read(&mut buffer) {
+                if size == 0 {
+                    break;
+                }
+                // 子进程每完成一批写一行；换行数即已确认批次数（不含条目名）。
+                let lines = buffer[..size].iter().filter(|byte| **byte == b'\n').count();
+                if lines > 0 {
+                    counter.fetch_add(lines, Ordering::Relaxed);
+                }
+                signalled.fetch_add(1, Ordering::Relaxed);
             }
         })?;
         let mut last_progress = Instant::now();
         let outcome = (|| loop {
             if let Some(status) = child.try_wait()? {
-                return Ok(status.code());
+                return Ok(WorkerExit::Finished {
+                    code: status.code(),
+                    batches: batches.load(Ordering::Relaxed),
+                });
             }
             if cancelled() {
-                return Ok(None);
+                return Ok(WorkerExit::Cancelled {
+                    batches: batches.load(Ordering::Relaxed),
+                });
             }
-            if heartbeat.swap(false, Ordering::Relaxed) {
+            if heartbeat.swap(0, Ordering::Relaxed) > 0 {
                 last_progress = Instant::now();
             }
             if last_progress.elapsed() >= Duration::from_secs(900) {
@@ -267,22 +349,53 @@ pub fn empty_recycle_bin(
         outcome
     };
     match run() {
-        Ok(None) => None,
-        Ok(Some(0)) => Some(Ok(())),
-        Ok(Some(3)) => Some(Err(("EMPTY_REMAINS".into(), "回收站仍有配对条目，请重新同步".into()))),
-        Ok(Some(4)) => Some(Err(("EMPTY_UNVERIFIED".into(), "无法核对清空结果，请重新同步".into()))),
-        Ok(Some(5)) => Some(Err(("SHELL_FAILED".into(), "Windows 批量删除未完成，请重新同步后重试".into()))),
-        Ok(Some(code)) => Some(Err(("SHELL_FAILED".into(), format!("清空回收站失败（Shell 返回 0x{code:08X}）")))),
-        Err(err) => Some(Err((
-            if err.kind() == io::ErrorKind::TimedOut { "SHELL_TIMEOUT" } else { "SHELL_FAILED" }.into(),
-            format!("清空任务未能核实结果，请重新同步：{err}"),
-        ))),
+        Ok(WorkerExit::NotStarted) => EmptyOutcome::CancelledBeforeStart,
+        Ok(WorkerExit::Cancelled { batches }) => EmptyOutcome::CancelledAfterStart { batches },
+        Ok(WorkerExit::Finished { code: Some(0), .. }) => EmptyOutcome::Completed,
+        Ok(WorkerExit::Finished { code: Some(3), .. }) => EmptyOutcome::Failed {
+            code: "EMPTY_REMAINS".into(),
+            message: "回收站仍有配对条目，请重新同步".into(),
+        },
+        Ok(WorkerExit::Finished { code: Some(4), batches }) => EmptyOutcome::Unverified {
+            code: "EMPTY_UNVERIFIED".into(),
+            message: "无法核对清空结果，请重新同步".into(),
+            batches,
+        },
+        Ok(WorkerExit::Finished { code: Some(5), batches }) => EmptyOutcome::Unverified {
+            code: "SHELL_FAILED".into(),
+            message: "Windows 批量删除未完成，请重新同步后重试".into(),
+            batches,
+        },
+        Ok(WorkerExit::Finished { code: Some(code), batches }) => EmptyOutcome::Unverified {
+            code: "SHELL_FAILED".into(),
+            message: format!("清空回收站失败（Shell 返回 0x{code:08X}）"),
+            batches,
+        },
+        // 子进程被系统终止（无退出码）：无法确认已完成/已删除多少。
+        Ok(WorkerExit::Finished { code: None, batches }) => EmptyOutcome::Unverified {
+            code: "EMPTY_UNVERIFIED".into(),
+            message: "清空子进程异常退出，无法确认结果，请重新同步".into(),
+            batches,
+        },
+        Err(err) if started.get() => EmptyOutcome::Unverified {
+            code: if err.kind() == io::ErrorKind::TimedOut { "SHELL_TIMEOUT" } else { "SHELL_FAILED" }.into(),
+            message: format!("清空任务未能核实结果，请重新同步：{err}"),
+            batches: batches.load(Ordering::Relaxed),
+        },
+        // 执行指令尚未下发：没有发生删除，按失败处理即可。
+        Err(err) => EmptyOutcome::Failed {
+            code: "SHELL_FAILED".into(),
+            message: format!("清空任务未能启动：{err}"),
+        },
     }
 }
 
 #[cfg(not(windows))]
-pub fn empty_recycle_bin(_volume: &BinVolume, _cancelled: impl Fn() -> bool) -> Option<Result<(), (String, String)>> {
-    Some(Err(("UNSUPPORTED".into(), "当前平台不支持回收站".into())))
+pub fn empty_recycle_bin(_volume: &BinVolume, _cancelled: impl Fn() -> bool) -> EmptyOutcome {
+    EmptyOutcome::Failed {
+        code: "UNSUPPORTED".into(),
+        message: "当前平台不支持回收站".into(),
+    }
 }
 
 #[cfg(windows)]

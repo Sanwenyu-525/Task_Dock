@@ -2,8 +2,9 @@
  * @vitest-environment jsdom
  */
 //! 回收站视图交互回归：缓存打开与首次同步、后台同步事件、磁盘筛选与分页、
-//! 虚拟滚动与并发去重、跨页选择、缓存淘汰后的部分选择、恢复/永久删除、部分
-//! 失败与对账失败、取消未生效、重开刷新、清空范围。只 mock IPC，不触碰真实回收站。
+//! 虚拟滚动与并发去重、跨页选择、缓存淘汰后选择不丢失、恢复/永久删除、异常
+//! 条目的索引移除语义、部分失败与对账失败、取消未生效、重开刷新、清空范围。
+//! 只 mock IPC，不触碰真实回收站。
 
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -106,7 +107,7 @@ const syncStatus: RecycleSyncStatus = {
   lastError: null,
 };
 
-const item = (id: string): RecycleItem => ({
+const item = (id: string, over: Partial<RecycleItem> = {}): RecycleItem => ({
   id,
   volume: "C:",
   name: `${id}.txt`,
@@ -116,6 +117,7 @@ const item = (id: string): RecycleItem => ({
   deletedMs: 1000,
   state: "present",
   anomaly: null,
+  ...over,
 });
 
 const pageItems = (prefix: string, count = 4): RecycleItem[] =>
@@ -358,7 +360,7 @@ describe("RecycleWorkspaceView 选择", () => {
     expect(screen.getByText("已选择 7 项")).toBeTruthy();
   });
 
-  it("缓存页被淘汰后，不在当前缓存的选中项给出部分选择提示", async () => {
+  it("缓存页被淘汰后选中项不丢失，批量永久删除仍覆盖全部所选", async () => {
     const total = 3200;
     bridge.recycleList.mockImplementation((query: RecycleQuery) => {
       const offset = query.offset ?? 0;
@@ -379,7 +381,7 @@ describe("RecycleWorkspaceView 选择", () => {
     expect(screen.getByText("已选择 2 项")).toBeTruthy();
     expect(screen.queryByText("部分选中项尚未加载，操作只作用于已加载项")).toBeNull();
 
-    // 逐页滚动把最早的第 1 页挤出 6 页缓存窗口，第 2 页仍在缓存内。
+    // 逐页滚动把最早的第 1 页挤出 6 页缓存窗口。
     scrollTo(24200);
     await screen.findByRole("option", { name: /p20\.txt/ });
     scrollTo(36200);
@@ -389,8 +391,18 @@ describe("RecycleWorkspaceView 选择", () => {
     scrollTo(60200);
     await screen.findByRole("option", { name: /p50\.txt/ });
 
-    expect(await screen.findByText("部分选中项尚未加载，操作只作用于已加载项")).toBeTruthy();
+    // 选择数量由 selectedIds 决定，不随缓存淘汰变化，也不再出现部分选择提示。
     expect(screen.getByText("已选择 2 项")).toBeTruthy();
+    expect(screen.queryByText(/部分选中项尚未加载/)).toBeNull();
+
+    fireEvent.click(screen.getAllByRole("button", { name: "永久删除" })[0]);
+    const dialog = await screen.findByRole("dialog", { name: "永久删除 2 项？" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "永久删除" }));
+
+    await waitFor(() => expect(bridge.recyclePurge).toHaveBeenCalledTimes(1));
+    const purged = bridge.recyclePurge.mock.calls[0][0] as string[];
+    expect(purged).toHaveLength(2);
+    expect(purged).toEqual(expect.arrayContaining(["p00", "p10"]));
   });
 });
 
@@ -418,6 +430,79 @@ describe("RecycleWorkspaceView 批量操作", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "永久删除" }));
 
     await waitFor(() => expect(bridge.recyclePurge).toHaveBeenCalledWith(["a"], expect.any(String)));
+  });
+
+  it("跨页选择后批量恢复不漏项，recycleRestore 收到全部所选 ID", async () => {
+    const total = 800;
+    bridge.recycleList.mockImplementation((query: RecycleQuery) => {
+      const offset = query.offset ?? 0;
+      return Promise.resolve({
+        items: pageItems(offset === 0 ? "p0" : "p1"),
+        total,
+        offset,
+        limit: 400,
+        stats: null,
+        queryMs: 2,
+      });
+    });
+
+    render(<RecycleWorkspaceView />);
+    fireEvent.click(await screen.findByRole("option", { name: /p00\.txt/ }));
+    scrollTo(12200);
+    fireEvent.click(await screen.findByRole("option", { name: /p10\.txt/ }), { ctrlKey: true });
+    expect(screen.getByText("已选择 2 项")).toBeTruthy();
+
+    fireEvent.click(screen.getAllByRole("button", { name: "恢复" })[0]);
+    const dialog = await screen.findByRole("dialog", { name: "恢复 2 项" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "开始恢复" }));
+
+    await waitFor(() => expect(bridge.recycleRestore).toHaveBeenCalledTimes(1));
+    const restored = bridge.recycleRestore.mock.calls[0][0] as string[];
+    expect(restored).toHaveLength(2);
+    expect(restored).toEqual(expect.arrayContaining(["p00", "p10"]));
+  });
+});
+
+describe("RecycleWorkspaceView 异常条目语义", () => {
+  it("仅选中 missing_data 项时，永久删除按钮显示「从索引移除」并在确认后仍提交该 ID", async () => {
+    bridge.recycleList.mockResolvedValue({
+      items: [item("m0", { state: "missing_data", anomaly: "ORPHAN_DATA" })],
+      total: 1,
+      offset: 0,
+      limit: 400,
+      stats: null,
+      queryMs: 2,
+    });
+
+    render(<RecycleWorkspaceView />);
+    fireEvent.click(await screen.findByRole("option", { name: /m0\.txt/ }));
+
+    // 工具栏按钮：全部选中项都是异常项，只能是索引移除。
+    fireEvent.click(screen.getAllByRole("button", { name: "从索引移除" })[0]);
+    const dialog = await screen.findByRole("dialog", { name: "永久删除 1 项？" });
+    expect(within(dialog).getByText(/只从索引移除/)).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "从索引移除" }));
+
+    await waitFor(() => expect(bridge.recyclePurge).toHaveBeenCalledWith(["m0"], expect.any(String)));
+  });
+
+  it("missing_data 项的详情面板不显示「恢复」按钮，只提示索引移除", async () => {
+    bridge.recycleList.mockResolvedValue({
+      items: [item("m0", { state: "missing_data" })],
+      total: 1,
+      offset: 0,
+      limit: 400,
+      stats: null,
+      queryMs: 2,
+    });
+
+    render(<RecycleWorkspaceView />);
+    fireEvent.click(await screen.findByRole("option", { name: /m0\.txt/ }));
+
+    const detail = await screen.findByLabelText("项目详情");
+    expect(within(detail).queryByRole("button", { name: "恢复" })).toBeNull();
+    expect(within(detail).getByRole("button", { name: "从索引移除" })).toBeTruthy();
+    expect(within(detail).getByText(/只能从索引移除/)).toBeTruthy();
   });
 });
 
@@ -498,6 +583,33 @@ describe("RecycleWorkspaceView 任务状态", () => {
     expect(screen.queryByText(/正在取消/)).toBeNull();
     expect(screen.getByText(/已处理 0\/2 · 成功 0 · 失败 0/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "取消任务" })).toBeTruthy();
+  });
+
+  it("清空启动后取消：说明部分项目已永久删除，并显示索引待更新", async () => {
+    render(<RecycleWorkspaceView />);
+    await screen.findByRole("button", { name: "清空回收站" });
+    await waitFor(() => expect(jobListener).not.toBeNull());
+
+    act(() =>
+      jobListener?.(
+        job({
+          status: "cancelled",
+          total: 2,
+          done: 1,
+          ok: 0,
+          failed: 0,
+          skipped: 1,
+          indexPending: 1,
+          message: "清空已取消：部分项目已永久删除，正在按真实 $I/$R 重新核对",
+        }),
+      ),
+    );
+
+    // 取消不能被读成「回滚」：必须带出任务级说明与索引待更新提示。
+    expect(await screen.findByText(/部分项目已永久删除/)).toBeTruthy();
+    expect(screen.getByText("索引待更新 1 卷")).toBeTruthy();
+    // 仍是取消态，不能落到「成功 x · 失败 y · 跳过 z」的完成文案。
+    expect(screen.queryByText(/^清空任务 · 成功 0 · 失败 0 · 跳过 1$/)).toBeNull();
   });
 
   it("部分失败显示部分完成结果，不冒充成功也不弹成功提示", async () => {

@@ -70,7 +70,7 @@ SQLite（db/mod.rs MIGRATIONS 末尾追加） + 设置键 file_workspace_layouts
 | 任务 | `fs_copy_job_start`、`fs_move_job_start`、`fs_delete_job_start`、`fs_job_status`、`fs_job_cancel`、`fs_job_report`、`fs_batch_rename_job_start` | 事件 `recycle:job-progress`；轮询 100ms 节流 |
 | 预览 | `fs_preview_image`、`fs_read_text`、`fs_preview_media_url`、`fs_release_preview_url`、`fs_thumbnail` | 短期 token + Range；只读 |
 | 系统 | `fs_open`、`fs_reveal`、`fs_drag_out` | 只读/系统动作 |
-| 回收站 | `recycle_stats/list/sync/sync_status/sync_cancel/restore/purge/empty` | 索引只是缓存，Shell 为准 |
+| 回收站 | `recycle_stats/list/sync/sync_status/sync_cancel/restore/purge/empty` | 索引只是缓存，Shell 为准；清空按 `EmptyOutcome` 五态收口，取消/未核实不得当成功 |
 | 手机文件 | `mobile_file_list/offer/delete/reveal/open_inbox/import_shelf/thumbnail` | 文件本体在 `data_dir/mobile_files` |
 | 暂存架 | `shelf_add_paths`、`shelf_paste_current`、`shelf_move_items`、`shelf_copy_to`、`shelf_drop_to_directory` 等 | 引用/托管两种模式 |
 
@@ -955,3 +955,105 @@ SVG 安全：SVG 只以 `Blob(image/svg+xml)` 喂给 `<img>`；不在 DOM 注入
 - `force=true`（`invalidateDirs`，文件操作后）：不复用正在进行的手动刷新，保证拿到操作后内容；
 - 两种模式都递增 `reqSeq`，旧响应晚到一律丢弃；
 - 返回 `true/false`；被更新请求取代时返回 `false`，调用方不得据此显示错误。
+
+---
+
+## 11. 回收站可靠性收敛（2026-11-21）
+
+本轮不新增 IPC 命令，也不改变删除范围；改动集中在清空结果语义、扫描准入、占用声明、普通文件批量回收验证、异常条目索引语义与前端选择缓存。
+
+### 11.1 分层资源锁
+
+`fsops::RecycleClaims` 用两张表表达两个层级：
+
+- `volumes: HashMap<bin_root, ClaimEntry>`：整卷清空；
+- `entries: HashMap<(bin_root, record_key), ClaimEntry>`：单条恢复/永久删除。
+
+`try_claim_entry` 先检查同卷是否被整卷独占（`volume_wide=true`），再检查同条目是否被其他任务占用；同一任务重复声明同一 ID 幂等。`try_claim_volume` 在该卷已被清空、或仍存在任何条目操作时拒绝。冲突不再用「字符串完全相同」判断。
+
+| 请求 A | 请求 B | 结果 |
+|---|---|---|
+| D 盘 A 条目 | D 盘 A 恢复/删除 | 拒绝 |
+| D 盘 A 条目 | D 盘清空 | 拒绝 |
+| D 盘清空 | D 盘 A 恢复、D 盘 B 删除 | 拒绝 |
+| D 盘清空 | C 盘 A 恢复 | 允许 |
+| C 盘 A 条目 | D 盘 A 恢复 | 允许 |
+| D 盘 A 条目 | D 盘 B 恢复 | 允许 |
+
+不同卷仍然并行。`ClaimsGuard::drop` 调用 `release_job`，覆盖正常结束、取消、失败与 panic 展开；`Scheduler` 用 `catch_unwind` 捕获执行体 panic，把任务收尾为 failed（`"任务执行体异常中止"`），避免 worker 线程消失后占用声明永久残留。
+
+### 11.2 清空取消语义
+
+`recycle/volume.rs::EmptyOutcome` 把单卷清空分为五态：
+
+| 结果 | 含义 |
+|---|---|
+| `CancelledBeforeStart` | 执行指令未下发，没有任何条目被删除 |
+| `CancelledAfterStart { batches }` | 指令已下发，已确认 `batches` 批完成，其余未知 |
+| `Completed` | 子进程退出码 0，且复核已无配对条目 |
+| `Failed { code, message }` | 明确失败（`EMPTY_REMAINS` 或 4/5 之外的其他非零码），可能已删一部分 |
+| `Unverified { code, message, batches }` | 退出码 4/5、无退出码或 15 分钟无进展；不能当作成功 |
+
+`may_have_deleted()` 只有 `CancelledBeforeStart` 返回 false。`fsops::plan_empty_outcome` 是纯函数：
+
+- 启动前取消 → skipped + `RECYCLE_CANCELLED`，不标 stale；
+- 启动后取消 → skipped + `RECYCLE_CANCELLED_AFTER_START`，标 stale 并重新对账；
+- `Completed` + 索引对账失败 → partial + `INDEX_UPDATE_FAILED`，不是纯 Shell 失败；
+- `Failed` / `Unverified` → failed + 原始码，标 stale 并重新对账。
+
+`RecycleService::follow_up` 保证扫描进行中不并发启动第二个扫描：只置位标记，`run_sync` 收尾并发出 `recycle:sync-done` 后取走一次；若仍有 `state='stale'` 的卷，再 `start_sync(true)` 补跑一次。标记只取一次，不形成轮询或重试环。`SyncAdmission::Throttled` 与 `Running` 分开，节流不登记补扫。
+
+### 11.3 普通文件批量回收的三态验证
+
+`file_workspace/mod.rs` 新增 `SourceState { Gone, Present, Unknown }` 与 `source_state(path)`：
+
+- `NotFound`、Win32 2/3 → `Gone`；
+- `PermissionDenied`、共享冲突及其他错误 → `Unknown`；
+- 刻意不使用 `Path::exists()`，它会把权限错误吞成 false，误判为「已删除」。
+
+`classify_recycle_outcome(state, code, aborted)` 的判定：
+
+| 源状态 | Shell 整批结果 | 结果 |
+|---|---|---|
+| Gone | code 0 或未中止 | ok |
+| Gone | aborted | ok（中止前已处理的条目确实已移走） |
+| Gone | code != 0 | `FS_OP_UNVERIFIED`（无法证明是本次移入回收站还是其他进程删除） |
+| Present | code 0 | `FS_OP_IO`（Shell 说成功但源仍在） |
+| Present | aborted | `FS_OP_CANCELLED` |
+| Present | code != 0 | `shell_delete_code(code)` |
+| Unknown | 任意 | `FS_OP_UNVERIFIED` |
+
+新增稳定错误码 `FS_OP_UNVERIFIED`（`fs_op_category` → `unknown`）。`shell_delete_code` 补全 `DE_*`（0x71/0x78 拒绝访问、0x72 路径过长 → VALIDATION、0x7C/0x74 源不存在、0x75/0x76 占用、0x7A 只读）与 Win32 5/2/3/32/33/1223。
+
+仍保留**每批一次** `SHFileOperationW`（500 项 1 次），未改为 `IFileOperation`：逐项证明需要 sink 的 `PostDeleteItem`，整条普通文件删除链路要重写；本轮把不可证明的情况标成 `unverified`，不伪造成功。这是已评估的取舍，不是遗漏。
+
+### 11.4 `missing_data` / `unreadable` 的索引移除语义
+
+`recycle::index::supports_native_action(state)` 只有 `present` 返回 true。`start_purge` 据此分流：
+
+- `present`：走 Shell 真删除；
+- `missing_data`（`$I` 在、`$R` 已丢失）与 `unreadable`（元数据损坏或只有 `$R` 的孤儿）：**不调用 Shell**，只写墓碑并移除索引行，逐条返回 `status=ok` + `code=RECYCLE_INDEX_ONLY`。
+
+文案分别说明「数据已不存在」「孤儿数据仍在回收站目录」「$I/$R 未改动」。禁止直接删除未知 `$I`/`$R`；索引移除不是磁盘清理。
+
+墓碑（`recycle_restored_metadata`）保证旧扫描快照不把已移除条目写回。只有 `$R` 的孤儿使用 `(meta_len, meta_mtime) = (0,0)` 墓碑；扫描的 `forget_tombstones` 阶段不会丢弃 `(0,0)` 墓碑，否则下一轮扫描会把孤儿重新写回。`ResolvedItem` 新增 `anomaly` 字段（如 `ORPHAN_DATA`）。
+
+### 11.5 前端选择与缓存解耦
+
+`RecycleWorkspaceView.tsx` 的选择改为 `selectedIds: Set<string>` + `selectedMeta: Map<string, RecycleItem>`，不再从页面缓存派生：
+
+- 页面缓存按 6 页淘汰时不丢选择；批量恢复与批量删除使用同一范围 `[...selectedIds]`；
+- 详情新增 `detailSnapshot`：缓存页淘汰后仍能显示打开时的快照；查询条件变化、任务终态、同步完成、关闭详情都会清空，不显示过期详情；
+- 异常项全选时按钮与确认文案为「从索引移除」+ `fw.recycle.purgeBodyIndexOnly`；混合选择使用 `fw.recycle.purgeBodyMixed`；详情对异常项隐藏「恢复」按钮并显示 `fw.recycle.indexOnlyHint`；双击异常项不再发起恢复；
+- 删除「部分选中项尚未加载」提示——选择已不依赖缓存。
+
+### 11.6 测试清单
+
+| 命令 | 结果 |
+|---|---|
+| `npm run cargo -- test --lib recycle::` | 62 passed / 0 failed / 3 ignored |
+| `npm run cargo -- test --lib fsops::` | 26 passed |
+| `npm run cargo -- test --lib file_workspace::` | 84 passed / 0 failed / 1 ignored |
+| `npx vitest run src/components/files/RecycleWorkspaceView.test.tsx` | 21 passed |
+
+本轮新增：清空处置计划 4 个、准入与补扫 3 个、分层锁 5 个、孤儿/缺失数据不复活 2 个、状态判定 1 个、回收站验证 11 个。普通单测不触碰真实回收站：清空用纯状态机 + 子进程退出码映射；批量回收用 `shell_seam` 测试替身（mock 内真实删除临时文件）；符号链接用例在环境无法创建链接时跳过并打印「未执行」，不伪造通过。

@@ -38,7 +38,7 @@ const META_READ_PARALLEL_MIN: usize = 256;
 const META_READ_QUEUE: usize = 128;
 
 /// `$R` 存在但 `$I` 缺失：索引得到条目，但原始路径/删除时间不可知。
-const ANOMALY_ORPHAN_DATA: &str = "ORPHAN_DATA";
+pub const ANOMALY_ORPHAN_DATA: &str = "ORPHAN_DATA";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -519,7 +519,15 @@ pub fn scan_volume(
             .collect();
         removed = index::delete_records(conn, &bin_root, &stale)?;
         let expired = tombstones.iter()
-            .filter(|(key, fingerprint)| snapshot.meta_files.get(*key) != Some(*fingerprint))
+            .filter(|(key, fingerprint)| {
+                // (0,0) 是「只有 `$R` 的孤儿被用户从索引移除」留下的墓碑：它没有 `$I`
+                // 可比对指纹，一旦丢弃，下一轮扫描就会把孤儿重新写回索引。
+                // 保留到该键不再出现为止（用户真正删掉 `$R` 后自然不再写入）。
+                if **fingerprint == (0, 0) {
+                    return false;
+                }
+                snapshot.meta_files.get(*key) != Some(*fingerprint)
+            })
             .collect();
         index::forget_tombstones(conn, &bin_root, expired)?;
     }
@@ -1007,6 +1015,67 @@ mod perf_tests {
         let page = index::page(&conn, &index::RecycleQuery::default()).unwrap();
         assert_eq!(page.items[0].original_path, r"D:\dir\季度 报告.docx");
         assert_eq!(page.items[0].size, Some(128));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// `$I` 在、`$R` 缺失：只能「从索引移除」，且移除后不得被下一轮扫描复活。
+    #[test]
+    fn missing_data_entry_can_be_hidden_and_never_resurrects() {
+        let root = std::env::temp_dir().join(format!("td-orphan-meta-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("$Iorphan"),
+            meta_bytes(r"D:\lost\a.txt", 12, 1_700_000_000_000),
+        )
+        .unwrap();
+        let volume = BinVolume { volume: "T:".into(), root: root.clone(), drive_root: "T:\\".into() };
+        let conn = Connection::open_in_memory().unwrap();
+        index::init_schema(&conn).unwrap();
+        let first = scan_volume(&conn, &volume, &AtomicBool::new(false), &|_| {}).unwrap();
+        assert_eq!(first.items, 1);
+        assert_eq!(first.missing_data, 1);
+
+        let bin_root = root.to_string_lossy().into_owned();
+        let resolved = index::resolve(&conn, &["T:|orphan".to_string()]).unwrap();
+        assert_eq!(resolved.items.len(), 1);
+        assert!(
+            !index::supports_native_action(&resolved.items[0].state),
+            "missing_data 不能交给 Shell 删除"
+        );
+        // 永久删除路径对 missing_data 的真实处置：写墓碑 + 移除索引行，不碰磁盘。
+        index::mark_removed_batch(&conn, &[(bin_root, "orphan".into())]).unwrap();
+        assert_eq!(index::page(&conn, &RecycleQuery::default()).unwrap().total, 0);
+        for _ in 0..2 {
+            let again = scan_volume(&conn, &volume, &AtomicBool::new(false), &|_| {}).unwrap();
+            assert_eq!(again.items, 0, "已从索引移除的 missing_data 不得复活");
+        }
+        assert!(root.join("$Iorphan").exists(), "禁止直接删除未知 $I 文件");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// 只有 `$R` 的孤儿：从索引移除后同样不得复活（`(0,0)` 墓碑必须保留）。
+    #[test]
+    fn orphan_payload_hidden_from_index_is_not_resurrected_by_next_scan() {
+        let root = std::env::temp_dir().join(format!("td-orphan-data-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("$Rlost.txt"), b"payload").unwrap();
+        let volume = BinVolume { volume: "T:".into(), root: root.clone(), drive_root: "T:\\".into() };
+        let conn = Connection::open_in_memory().unwrap();
+        index::init_schema(&conn).unwrap();
+        let first = scan_volume(&conn, &volume, &AtomicBool::new(false), &|_| {}).unwrap();
+        assert_eq!(first.items, 1);
+        assert_eq!(first.unreadable, 1);
+        let page = index::page(&conn, &RecycleQuery::default()).unwrap();
+        assert_eq!(page.items[0].state, STATE_UNREADABLE);
+        assert_eq!(page.items[0].anomaly.as_deref(), Some(ANOMALY_ORPHAN_DATA));
+
+        let bin_root = root.to_string_lossy().into_owned();
+        index::mark_removed_batch(&conn, &[(bin_root, "lost.txt".into())]).unwrap();
+        for _ in 0..2 {
+            let again = scan_volume(&conn, &volume, &AtomicBool::new(false), &|_| {}).unwrap();
+            assert_eq!(again.items, 0, "已隐藏的孤儿数据不得被下一轮扫描写回");
+        }
+        assert!(root.join("$Rlost.txt").exists(), "只隐藏索引，绝不删除 $R 数据");
         fs::remove_dir_all(root).unwrap();
     }
 
