@@ -122,7 +122,7 @@ export default function ProjectsView({ onOpenFeatures, onOpenMilestones }: Proje
     const next = !activeProject.archived;
     archiveProject(activeProject.id, next)
       .then(() =>
-        showToast(next ? "项目已归档，可在列表中恢复" : "项目已恢复", { kind: "success" }),
+        showToast(next ? "计划已归档，可在列表中恢复" : "计划已恢复", { kind: "success" }),
       )
       .catch((e) => showToast(`操作失败：${String(e)}`, { kind: "error" }));
   };
@@ -331,8 +331,8 @@ export default function ProjectsView({ onOpenFeatures, onOpenMilestones }: Proje
                 {activeProject?.archived ? (
                   <button
                     className="icon-btn sm"
-                    data-tip="恢复项目"
-                    aria-label="恢复项目"
+                    data-tip="恢复计划"
+                    aria-label="恢复计划"
                     onClick={handleArchive}
                   >
                     <ArchiveRestore size={13} />
@@ -340,8 +340,8 @@ export default function ProjectsView({ onOpenFeatures, onOpenMilestones }: Proje
                 ) : (
                   <button
                     className="icon-btn sm"
-                    data-tip="归档项目"
-                    aria-label="归档项目"
+                    data-tip="归档计划（当前计划需要先有未归档的继任计划）"
+                    aria-label="归档计划"
                     disabled={!activeProject}
                     onClick={handleArchive}
                   >
