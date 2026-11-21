@@ -108,3 +108,32 @@ HTTP 状态映射：`VALIDATION→400`、`UNAUTHORIZED→401`、`FORBIDDEN→403
 - 拒绝 `Origin` 头；不返回 `Access-Control-Allow-*`。
 - 不记录 body、token、上下文正文；日志只有方法/路径/状态/耗时/request_id。
 - 无能力 → 403 且写 `agent_activity_logs(error_code=FORBIDDEN)`；不降级执行。
+
+## `POST /api/v1/projects`（2026-11-21）
+
+```http
+POST /api/v1/projects
+Authorization: Bearer <token>
+Idempotency-Key: <可选>
+Content-Type: application/json
+
+{
+  "clientRequestId": "可选，等价于 requestId",
+  "name": "项目名",
+  "kind": "general",
+  "description": "…",
+  "goal": "…",
+  "targetDate": "2026-12-31",
+  "templateId": "…",
+  "rootPath": "D:////Projects////demo",
+  "directoryMode": "metadata_only | attach_existing",
+  "note": "…",
+  "initialPlan": { "phases": [], "features": [], "tasks": [], "goals": [], "capabilities": [] }
+}
+```
+
+- 权限：`projects.create`；`scope=readonly` 直接 403；创建后只授予新项目根；
+- **拒绝 `directoryMode=create_new`**：REST 不代任何客户端写文件系统，请由人类在 UI/CLI 创建目录；
+- 响应 201：`{ created, project, activePlan, workspace, provisioningStatus }`；
+- 幂等：`Idempotency-Key` 走既有缓存；`clientRequestId` 与 UI/MCP/CLI 共用同一摘要；
+- 仍只监听 loopback，未新增任何公网暴露面。

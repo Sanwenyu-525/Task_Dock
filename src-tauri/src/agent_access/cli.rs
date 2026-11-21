@@ -26,9 +26,12 @@ pub const USAGE: &str = r#"Task Dock Agent CLI
 用法:
   taskdock status [--json]
   taskdock info [--json]
-  taskdock project list [--json] [--limit N] [--offset N]
-  taskdock project get <project_id>
+  taskdock project list [--json] [--limit N] [--offset N] [--kind 项目类型]
+  taskdock project get <project_id|plan_id>
   taskdock project current
+  taskdock project create --name ... [--kind general] [--goal ...] [--template ID]
+                          [--root <绝对目录>] [--dir-mode metadata_only|attach_existing|create_new]
+                          [--request-id ID]
   taskdock task list [--status pending|completed|all] [--search KW] [--limit N]
   taskdock task get <task_id>
   taskdock task create --title <标题> [--description ...] [--priority 0-3] [--due ISO] [--tag x]
@@ -90,7 +93,7 @@ struct Outcome {
 pub const COMMANDS: &[(&str, &str, &str)] = &[
     ("status", "-", "接口/工作空间/数据库/版本总览"),
     ("info", "-", "版本、路径、协议、schema"),
-    ("project", "list|get|current", "项目列表/详情/当前项目"),
+    ("project", "list|get|current|create", "项目列表/详情/当前/创建"),
     ("task", "list|get|create|update|complete|search", "任务读写"),
     ("plan", "list|current|get", "规划列表/当前/详情"),
     ("knowledge", "bases|search|get|create|update", "知识检索与写入"),
@@ -228,6 +231,7 @@ fn classify_cli_write(args: &[String]) -> Option<(&'static str, &'static str, St
         .find(|a| !a.starts_with("--"))
         .map(String::as_str);
     let (action, kind) = match (group, sub, third) {
+        ("project", "create", _) => ("project.create", "project"),
         ("task", "create", _) => ("task.create", "task"),
         ("task", "update", _) => ("task.update", "task"),
         ("task", "complete", _) => ("task.complete", "task"),
@@ -586,6 +590,71 @@ fn execute_inner(
                     }
                     None => Err(AppError::NotFound("没有进行中的规划项目".into())),
                 }
+            }
+            "create" => {
+                // 创建是独立能力：project_rw 不等于可新建项目。
+                perms::require(db, principal, Capability::ProjectsCreate, "")?;
+                let name = take_flag(args, "--name")
+                    .map(|v| v.trim().to_string())
+                    .filter(|v| !v.is_empty())
+                    .ok_or_else(|| usage_err("project create 需要 --name"))?;
+                let kind = take_flag(args, "--kind").unwrap_or_else(|| "general".into());
+                let description = take_flag(args, "--description").unwrap_or_default();
+                let goal = take_flag(args, "--goal").unwrap_or_default();
+                let target_date = take_flag(args, "--target-date").filter(|v| !v.is_empty());
+                let template_id = take_flag(args, "--template").filter(|v| !v.is_empty());
+                let root_path = take_flag(args, "--root").filter(|v| !v.is_empty());
+                let mode_raw = take_flag(args, "--dir-mode").unwrap_or_default();
+                let mode = if mode_raw.trim().is_empty() {
+                    crate::project_hub::creation::DirectoryMode::default_for(
+                        root_path.as_deref().unwrap_or_default(),
+                    )
+                } else {
+                    crate::project_hub::creation::DirectoryMode::parse(&mode_raw).ok_or_else(|| {
+                        usage_err("--dir-mode 允许 metadata_only | attach_existing | create_new")
+                    })?
+                };
+                let client_request_id = take_flag(args, "--request-id").unwrap_or_default();
+                let request = crate::project_hub::creation::CreateProjectRequest {
+                    client_request_id,
+                    name,
+                    kind,
+                    description,
+                    goal,
+                    target_date,
+                    template_id,
+                    root_path,
+                    directory_mode: mode,
+                    dev_project_id: None,
+                    note: None,
+                    plan_name: None,
+                    plan_description: None,
+                    plan_status: None,
+                    draft: Default::default(),
+                    agent_access_policy:
+                        crate::project_hub::creation::AgentAccessPolicy::CreatorProjectAndPlan,
+                };
+                let created = crate::project_hub::creation::create(db, request)?;
+                if let Some(row_id) = principal.agent_row_id.as_deref() {
+                    // 只授予刚创建的项目根（+ 该计划），不扩大为全局权限。
+                    perms::grant_created_project(
+                        db,
+                        row_id,
+                        &created.project.id,
+                    )?;
+                }
+                let data = serde_json::to_value(&created)?;
+                Ok(Outcome {
+                    human: format!(
+                        "已创建 {}（projectId={}, activePlanId={}, 目录={}）",
+                        created.project.name,
+                        created.project.id,
+                        created.active_plan.id,
+                        created.provisioning_status
+                    ),
+                    data,
+                    page: None,
+                })
             }
             other => Err(usage_err(&format!("未知子命令 project {other}"))),
         },

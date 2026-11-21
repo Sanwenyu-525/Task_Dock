@@ -728,6 +728,13 @@ pub fn run() {
                 Err(e) => tracing::error!("处理中断恢复失败（需人工检查恢复日志）: {}", e),
             }
             tracing::info!("setup: 中断恢复检查完成");
+            // 项目目录初始化恢复：`create_new` 在「建目录」与「事务提交」之间崩溃时，
+            // 只删「空目录 + 无项目引用」的孤儿目录；其他情况一律保留并记录。
+            match project_hub::creation::recover_pending(&db) {
+                Ok(0) => {}
+                Ok(removed) => tracing::info!("项目目录恢复：清理 {removed} 个遗留空目录"),
+                Err(e) => tracing::error!("项目目录恢复失败（需人工核对恢复日志）: {}", e),
+            }
             // 受理序号起点必须高于库内已持久化的最大序号：
             // 时钟回拨/重启后新事件仍严格新于历史，旧事件不会覆盖新状态。
             match db.max_ingest_seq() {
@@ -1625,6 +1632,7 @@ pub fn run() {
             project_hub::commands::project_hub_list_projects,
             project_hub::commands::project_hub_get_project,
             project_hub::commands::project_hub_create_project,
+            project_hub::commands::project_create,
             project_hub::commands::project_hub_resource_candidates,
             project_hub::commands::project_hub_resource_links,
             project_hub::commands::project_hub_resource_link,

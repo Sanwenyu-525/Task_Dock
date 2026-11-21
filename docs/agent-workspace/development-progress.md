@@ -253,3 +253,15 @@ exit 0（隔离数据目录 `tmp/acceptance/agent-access-v82-20261120-224854/`�
 - 预算按选定表示估算，双份输出计入 Markdown。REST GET 支持字段投影，分页元数据以及资源授权继续独立处理。
 - 等量上下文样本中，CLI、MCP、REST 的 token 分别减少 49.5%、48.5%、36.7%。
   Rust 模块回归 171/171，真实传输与文件投影抽测 5/5。详见 [test-plan.md](test-plan.md#16-上下文输出与-token-预算2026-11-21)。
+
+## 2026-11-21：统一项目身份与项目创建
+
+已完成：`project_hub::creation` 统一创建服务（幂等优先、目录三模式、恢复日志带租约/状态）、
+Agent 读模型按项目根去重、计划独立列表与反解析、`projects.create` / `projects.write`（v90）、
+授权表外键改挂项目根（v91）、MCP/CLI/REST 共用创建服务、投影文件协议按项目根分目录。
+
+验证：`cargo test --test project_creation_identity` 12/12；`cargo check --lib` 通过；
+`vitest src/workbench/WorkbenchShell.test.tsx` 21/21。
+
+未完成：真实 Dev 窗口截图与「人类→Agent→人类」跨入口集成演练（本轮被共享工作树内其他会话的
+在途改动阻塞，`cargo test --lib` 测试二进制加载失败 `0xC0000139`）。

@@ -10,7 +10,6 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::path::Path;
 
 use crate::agents::now_iso;
 use crate::commands::planning::PROJECT_STATUSES as PLAN_STATUSES;
@@ -18,17 +17,17 @@ use crate::commands::project_workspace::{PROJECT_KINDS, PROJECT_STATUSES as WORK
 use crate::db::Db;
 use crate::error::{AppError, AppResult};
 
-const MAX_NAME: usize = 120;
-const MAX_DESCRIPTION: usize = 4000;
-const MAX_GOAL: usize = 2000;
-const MAX_TASK_TITLE: usize = 240;
-const MAX_PHASES: usize = 50;
-const MAX_FEATURES: usize = 2000;
-const MAX_TASKS: usize = 300;
-const MAX_CAPABILITIES: usize = 100;
-const MAX_GOALS: usize = 100;
+pub(crate) const MAX_NAME: usize = 120;
+pub(crate) const MAX_DESCRIPTION: usize = 4000;
+pub(crate) const MAX_GOAL: usize = 2000;
+pub(crate) const MAX_TASK_TITLE: usize = 240;
+pub(crate) const MAX_PHASES: usize = 50;
+pub(crate) const MAX_FEATURES: usize = 2000;
+pub(crate) const MAX_TASKS: usize = 300;
+pub(crate) const MAX_CAPABILITIES: usize = 100;
+pub(crate) const MAX_GOALS: usize = 100;
 /// `planning_features.priority` 的合法取值（CHECK 约束）。
-const FEATURE_PRIORITIES: &[&str] = &["P0", "P1", "P2"];
+pub(crate) const FEATURE_PRIORITIES: &[&str] = &["P0", "P1", "P2"];
 
 // ── 读模型 ──────────────────────────────────────────────────────────
 
@@ -770,7 +769,7 @@ fn derive_risks(
 
 // ── 创建实现 ────────────────────────────────────────────────────────
 
-fn clean_text(value: &str, field: &str, max: usize, allow_empty: bool) -> AppResult<String> {
+pub(crate) fn clean_text(value: &str, field: &str, max: usize, allow_empty: bool) -> AppResult<String> {
     let text = value.trim().to_string();
     if text.is_empty() && !allow_empty {
         return Err(AppError::Validation(format!("{field}不能为空")));
@@ -781,7 +780,7 @@ fn clean_text(value: &str, field: &str, max: usize, allow_empty: bool) -> AppRes
     Ok(text)
 }
 
-fn clean_enum(value: &str, field: &str, allowed: &[&str]) -> AppResult<String> {
+pub(crate) fn clean_enum(value: &str, field: &str, allowed: &[&str]) -> AppResult<String> {
     let text = value.trim();
     if !allowed.contains(&text) {
         return Err(AppError::Validation(format!("{field}取值不支持：{text}")));
@@ -789,7 +788,7 @@ fn clean_enum(value: &str, field: &str, allowed: &[&str]) -> AppResult<String> {
     Ok(text.to_string())
 }
 
-fn clean_date(value: Option<String>, field: &str) -> AppResult<Option<String>> {
+pub(crate) fn clean_date(value: Option<String>, field: &str) -> AppResult<Option<String>> {
     let Some(value) = value else { return Ok(None) };
     let text = value.trim();
     if text.is_empty() {
@@ -810,69 +809,170 @@ fn clean_date(value: Option<String>, field: &str) -> AppResult<Option<String>> {
     Err(AppError::Validation(format!("{field}必须是 YYYY-MM-DD 或 RFC3339")))
 }
 
-fn clean_root_path(value: Option<String>) -> AppResult<String> {
+/// 路径策略的唯一判定（后端所有入口 + 前端 `checkWorkspacePath` 同一口径）。
+///
+/// 只接受**本地绝对路径**：
+/// - Windows：盘符绝对路径 `X:\…` / `X:/…`；拒绝 UNC（`\\server\share`、`//server/share`）、
+///   verbatim/设备路径（`\\?\…`、`\\.\…`）、盘符相对（`C:foo`）与普通相对路径；
+/// - Linux / macOS：以 `/` 开头的绝对路径。
+///
+/// 为什么拒绝 UNC：`create_new` 与崩溃恢复都依赖「存在性 / 空目录」的可靠判定，
+/// 网络盘断连会把「不可访问」伪装成「不存在」，恢复线程会据此误判并删除用户目录。
+/// 若将来要支持网络目录，必须先补连接可用性探测与独立的安全验证，不能只放开校验。
+pub(crate) fn root_path_violation(text: &str) -> Option<&'static str> {
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    #[cfg(windows)]
+    {
+        if text.starts_with("\\\\") || text.starts_with("//") {
+            return Some("unc");
+        }
+        let bytes = text.as_bytes();
+        let drive_absolute = bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && (bytes[2] == b'\\' || bytes[2] == b'/');
+        if !drive_absolute {
+            return Some("not-absolute");
+        }
+        // 盘符后的 `:` 同样非法（如 `C:\a:b`），所以从第 3 个字节开始查。
+        if has_illegal_path_chars(&text[2..]) {
+            return Some("illegal-char");
+        }
+        None
+    }
+    #[cfg(not(windows))]
+    {
+        if !text.starts_with('/') {
+            return Some("not-absolute");
+        }
+        if has_illegal_path_chars(text) {
+            return Some("illegal-char");
+        }
+        None
+    }
+}
+
+/// Windows 目录名非法字符 + 控制字符（无法创建目录）。
+pub(crate) fn has_illegal_path_chars(rest: &str) -> bool {
+    rest.chars()
+        .any(|c| c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*'))
+}
+
+/// 路径策略的可读文案：后端错误与前端提示共用，避免两处措辞不一致。
+pub(crate) fn root_path_error(reason: &str) -> String {
+    match reason {
+        "unc" => "不支持网络目录（UNC）或 \\\\?\\ 扩展路径：请选择本地磁盘上的工作目录".into(),
+        "illegal-char" => "工作目录含非法字符（< > : \" | ? *）".into(),
+        _ => "工作目录必须是绝对路径（如 D:\\Projects\\demo）".into(),
+    }
+}
+
+/// 路径比较键：Windows 忽略大小写与分隔符差异（`D:/Work` 与 `d:\work\` 同键），
+/// macOS 默认不区分大小写，Linux 保留原始大小写。
+///
+/// 只用于**相等**判定（引用检查、日志去重），绝不做前缀归属判断。
+pub(crate) fn path_key(path: &str) -> String {
+    let mut text = path.trim().to_string();
+    #[cfg(windows)]
+    {
+        text = text.replace('/', "\\");
+        while text.len() > 3 && text.ends_with('\\') {
+            text.pop();
+        }
+        text.make_ascii_lowercase();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        while text.len() > 1 && text.ends_with('/') {
+            text.pop();
+        }
+        text.make_ascii_lowercase();
+    }
+    #[cfg(all(not(windows), not(target_os = "macos")))]
+    {
+        while text.len() > 1 && text.ends_with('/') {
+            text.pop();
+        }
+    }
+    text
+}
+
+/// 两个路径是否指向同一位置（空路径永远不相等）。
+pub(crate) fn same_path(left: &str, right: &str) -> bool {
+    !left.trim().is_empty() && !right.trim().is_empty() && path_key(left) == path_key(right)
+}
+
+pub(crate) fn clean_root_path(value: Option<String>) -> AppResult<String> {
     let Some(value) = value else { return Ok(String::new()) };
     let text = value.trim().to_string();
     if text.is_empty() {
         return Ok(String::new());
     }
-    if !Path::new(&text).is_absolute() {
-        return Err(AppError::Validation("工作目录必须是绝对路径".into()));
+    if let Some(reason) = root_path_violation(&text) {
+        return Err(AppError::Validation(root_path_error(reason)));
     }
     Ok(text)
 }
 
 /// 规范化后的创建请求：摘要必须基于「清洗后的值」，否则同一语义的两种写法会算出不同摘要。
-struct CleanCreate {
-    name: String,
-    kind: String,
-    description: String,
-    goal: String,
-    target_date: Option<String>,
-    root_path: String,
-    template_id: String,
-    client_request_id: String,
-    goals: Vec<(String, String)>,
-    phases: Vec<CleanPhase>,
-    features: Vec<CleanFeature>,
-    tasks: Vec<CleanTask>,
-    capabilities: Vec<CleanCapability>,
+#[derive(Clone, Debug)]
+pub(crate) struct CleanCreate {
+    pub(crate) name: String,
+    pub(crate) kind: String,
+    pub(crate) description: String,
+    pub(crate) goal: String,
+    pub(crate) target_date: Option<String>,
+    pub(crate) root_path: String,
+    pub(crate) template_id: String,
+    pub(crate) client_request_id: String,
+    pub(crate) goals: Vec<(String, String)>,
+    pub(crate) phases: Vec<CleanPhase>,
+    pub(crate) features: Vec<CleanFeature>,
+    pub(crate) tasks: Vec<CleanTask>,
+    pub(crate) capabilities: Vec<CleanCapability>,
 }
 
-struct CleanPhase {
-    name: String,
-    description: String,
-    target_date: Option<String>,
-    start_date: Option<String>,
-    milestones: Vec<(String, String, Option<String>)>,
+#[derive(Clone, Debug)]
+pub(crate) struct CleanPhase {
+    pub(crate) name: String,
+    pub(crate) description: String,
+    pub(crate) target_date: Option<String>,
+    pub(crate) start_date: Option<String>,
+    pub(crate) milestones: Vec<(String, String, Option<String>)>,
 }
 
-struct CleanFeature {
-    title: String,
-    acceptance: String,
-    priority: String,
-    phase_index: Option<usize>,
+#[derive(Clone, Debug)]
+pub(crate) struct CleanFeature {
+    pub(crate) title: String,
+    pub(crate) acceptance: String,
+    pub(crate) priority: String,
+    pub(crate) phase_index: Option<usize>,
 }
 
-struct CleanTask {
-    title: String,
-    description: String,
-    due_at: Option<String>,
-    priority: i64,
-    phase_index: Option<usize>,
+#[derive(Clone, Debug)]
+pub(crate) struct CleanTask {
+    pub(crate) title: String,
+    pub(crate) description: String,
+    pub(crate) due_at: Option<String>,
+    pub(crate) priority: i64,
+    pub(crate) phase_index: Option<usize>,
 }
 
-struct CleanCapability {
-    name: String,
-    category: String,
-    necessity: String,
-    target_level: String,
-    impact: String,
-    alternative: String,
-    phase_index: Option<usize>,
+#[derive(Clone, Debug)]
+pub(crate) struct CleanCapability {
+    pub(crate) name: String,
+    pub(crate) category: String,
+    pub(crate) necessity: String,
+    pub(crate) target_level: String,
+    pub(crate) impact: String,
+    pub(crate) alternative: String,
+    pub(crate) phase_index: Option<usize>,
 }
 
-fn clean_create(input: &CreateProjectInput) -> AppResult<CleanCreate> {
+pub(crate) fn clean_create(input: &CreateProjectInput) -> AppResult<CleanCreate> {
     let name = clean_text(&input.name, "项目名称", MAX_NAME, false)?;
     let kind = clean_enum(&input.kind, "项目类型", PROJECT_KINDS)?;
     let description = clean_text(&input.description, "项目描述", MAX_DESCRIPTION, true)?;
@@ -1031,7 +1131,7 @@ fn clean_create(input: &CreateProjectInput) -> AppResult<CleanCreate> {
 }
 
 /// 规范化请求摘要：同一份语义请求恒得同一摘要；参数变化必然改变摘要。
-fn request_digest(clean: &CleanCreate) -> String {
+pub(crate) fn request_digest(clean: &CleanCreate) -> String {
     let canonical = serde_json::json!({
         "name": clean.name,
         "kind": clean.kind,
@@ -1076,245 +1176,17 @@ fn request_digest(clean: &CleanCreate) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+/// 项目中枢创建入口（自然语言/模板/手动）。
+///
+/// 只做「把草案转成统一请求」，事务、幂等、目录初始化全部交给
+/// `project_hub::creation`——本函数不含任何创建 SQL。
 pub fn create_project(db: &Db, input: CreateProjectInput) -> AppResult<ProjectHubSnapshot> {
-    let clean = clean_create(&input)?;
-    let digest = request_digest(&clean);
-    let client_request_id = clean.client_request_id.clone();
-
-    db.with_transaction(|conn| {
-        if !client_request_id.is_empty() {
-            let existing: Option<(String, Option<String>)> = conn
-                .query_row(
-                    "SELECT project_id, json_extract(payload_json, '$.requestDigest')
-                     FROM project_events
-                     WHERE kind = 'project_created'
-                       AND json_extract(payload_json, '$.clientRequestId') = ?1
-                     ORDER BY created_at LIMIT 1",
-                    params![client_request_id],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .optional()?;
-            if let Some((project_id, stored_digest)) = existing {
-                match stored_digest {
-                    // 旧版本事件没有摘要字段：按「同一请求」返回既有项目，保持兼容。
-                    None => return load_snapshot(conn, &project_id),
-                    Some(stored) if stored == digest => return load_snapshot(conn, &project_id),
-                    Some(_) => {
-                        return Err(AppError::Conflict(
-                            "同一请求 ID 已用于参数不同的项目创建；请使用新的请求 ID 重试".into(),
-                        ))
-                    }
-                }
-            }
-        }
-
-        let now = now_iso();
-        let name = clean.name.clone();
-        let kind = clean.kind.clone();
-        let description = clean.description.clone();
-        let template_id = clean.template_id.clone();
-        let (project_id, plan_id) = insert_project_root_tx(
-            conn,
-            &CreateProjectRootInput {
-                name: name.clone(),
-                kind: kind.clone(),
-                description: description.clone(),
-                goal: clean.goal.clone(),
-                target_date: clean.target_date.clone(),
-                root_path: Some(clean.root_path.clone()),
-                dev_project_id: None,
-                note: Some(description.clone()),
-                template_id: Some(template_id.clone()),
-                plan_name: Some(name.clone()),
-                plan_description: Some(description),
-                plan_status: Some("planning".into()),
-                plan_sort_order: None,
-            },
-        )?;
-
-        for (index, (title, note)) in clean.goals.iter().enumerate() {
-            conn.execute(
-                "INSERT INTO project_goals
-                 (id, project_id, parent_id, title, note, kind, metric, target_value, unit,
-                  status, sort_order, source, created_at, updated_at)
-                 VALUES (?1, ?2, NULL, ?3, ?4, 'goal', '', NULL, '', 'active', ?5, 'user', ?6, ?6)",
-                params![
-                    uuid::Uuid::new_v4().to_string(),
-                    project_id,
-                    title,
-                    note,
-                    index as i64,
-                    now
-                ],
-            )?;
-        }
-
-        let mut phase_ids = Vec::new();
-        for (index, phase) in clean.phases.iter().enumerate() {
-            let phase_id = uuid::Uuid::new_v4().to_string();
-            conn.execute(
-                "INSERT INTO planning_milestones
-                 (id, project_id, name, description, target_date, sort_order, created_at, updated_at,
-                  kind, start_date, phase_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, 'phase', ?8, NULL)",
-                params![
-                    phase_id,
-                    plan_id,
-                    phase.name,
-                    phase.description,
-                    phase.target_date,
-                    index as i64,
-                    now,
-                    phase.start_date
-                ],
-            )?;
-            for (m_index, (title, detail, date)) in phase.milestones.iter().enumerate() {
-                conn.execute(
-                    "INSERT INTO planning_milestones
-                     (id, project_id, name, description, target_date, sort_order, created_at,
-                      updated_at, kind, start_date, phase_id)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, 'milestone', NULL, ?8)",
-                    params![
-                        uuid::Uuid::new_v4().to_string(),
-                        plan_id,
-                        title,
-                        detail,
-                        date,
-                        m_index as i64,
-                        now,
-                        phase_id
-                    ],
-                )?;
-            }
-            phase_ids.push(phase_id);
-        }
-
-        // 功能草案：与项目同事务落库，milestone_id 指向所属阶段（阶段复用里程碑表）。
-        let mut feature_sort = std::collections::HashMap::<usize, i64>::new();
-        for feature in clean.features.iter() {
-            let milestone_id = feature
-                .phase_index
-                .and_then(|index| phase_ids.get(index))
-                .cloned()
-                .unwrap_or_default();
-            let sort_order = match feature.phase_index {
-                Some(index) => {
-                    let slot = feature_sort.entry(index).or_insert(0);
-                    let current = *slot;
-                    *slot += 1;
-                    current
-                }
-                None => 0,
-            };
-            conn.execute(
-                "INSERT INTO planning_features
-                 (id, project_id, title, description, status, priority, milestone_id, target_date,
-                  sort_order, created_at, updated_at, completed_at, acceptance_criteria)
-                 VALUES (?1, ?2, ?3, '', 'planned', ?4, ?5, NULL, ?6, ?7, ?7, NULL, ?8)",
-                params![
-                    uuid::Uuid::new_v4().to_string(),
-                    plan_id,
-                    feature.title,
-                    feature.priority,
-                    milestone_id,
-                    sort_order,
-                    now,
-                    feature.acceptance
-                ],
-            )?;
-        }
-
-        for (index, capability) in clean.capabilities.iter().enumerate() {
-            conn.execute(
-                "INSERT OR IGNORE INTO project_capabilities
-                 (id, name, category, description, mastery, mastery_note, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, '', 'unknown', '', ?4, ?4)",
-                params![
-                    uuid::Uuid::new_v4().to_string(),
-                    capability.name,
-                    capability.category,
-                    now
-                ],
-            )?;
-            let capability_id: String = conn.query_row(
-                "SELECT id FROM project_capabilities WHERE name = ?1 AND category = ?2",
-                params![capability.name, capability.category],
-                |r| r.get(0),
-            )?;
-            conn.execute(
-                "INSERT OR IGNORE INTO project_capability_requirements
-                 (id, project_id, capability_id, phase_id, necessity, target_level,
-                  assessment_level, status, impact, alternative, source, sort_order,
-                  created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, 'open', ?7, ?8, ?9, ?10, ?11, ?11)",
-                params![
-                    uuid::Uuid::new_v4().to_string(),
-                    project_id,
-                    capability_id,
-                    capability
-                        .phase_index
-                        .and_then(|index| phase_ids.get(index))
-                        .cloned(),
-                    capability.necessity,
-                    capability.target_level,
-                    capability.impact,
-                    capability.alternative,
-                    if template_id.is_empty() { "user" } else { "template" },
-                    index as i64,
-                    now
-                ],
-            )?;
-        }
-
-        for task in clean.tasks.iter() {
-            let phase_id = task
-                .phase_index
-                .and_then(|index| phase_ids.get(index))
-                .cloned()
-                .unwrap_or_default();
-            let task_id = uuid::Uuid::new_v4().to_string();
-            conn.execute(
-                "INSERT INTO tasks
-                 (id, title, description, priority, status, category, tags, due_at,
-                  remind_at, advance_minutes, recurrence_rule_id, created_at, updated_at,
-                  completed_at)
-                 VALUES (?1, ?2, ?3, ?4, 'pending', ?5, '[]', ?6, NULL, 0, NULL, ?7, ?7, NULL)",
-                params![task_id, task.title, task.description, task.priority, kind, task.due_at, now],
-            )?;
-            conn.execute(
-                "INSERT INTO task_plan_links
-                 (id, task_id, project_id, phase_id, milestone_id, created_at)
-                 VALUES (?1, ?2, ?3, ?4, '', ?5)",
-                params![uuid::Uuid::new_v4().to_string(), task_id, project_id, phase_id, now],
-            )?;
-            conn.execute(
-                "INSERT OR IGNORE INTO workspace_task_links (project_id, task_id, created_at)
-                 VALUES (?1, ?2, ?3)",
-                params![project_id, task_id, now],
-            )?;
-        }
-
-        conn.execute(
-            "INSERT INTO project_events
-             (id, project_id, kind, actor, summary, payload_json, created_at)
-             VALUES (?1, ?2, 'project_created', 'user', ?3, ?4, ?5)",
-            params![
-                uuid::Uuid::new_v4().to_string(),
-                project_id,
-                format!("创建项目「{name}」"),
-                serde_json::json!({
-                    "clientRequestId": client_request_id,
-                    "requestDigest": digest,
-                    "templateId": template_id,
-                    "kind": kind,
-                })
-                .to_string(),
-                now
-            ],
-        )?;
-
-        load_snapshot(conn, &project_id)
-    })
+    let mode = super::creation::DirectoryMode::default_for(
+        input.root_path.as_deref().unwrap_or_default(),
+    );
+    let request = super::creation::CreateProjectRequest::from_hub_input(input, mode);
+    let result = super::creation::create(db, request)?;
+    db.with_read(|conn| load_snapshot(conn, &result.project.id))
 }
 
 // ── 项目根写入：唯一创建入口 ────────────────────────────────────────
@@ -1335,7 +1207,7 @@ fn workspace_exists(conn: &Connection, id: &str) -> AppResult<bool> {
         .is_some())
 }
 
-fn load_summary(conn: &Connection, project_id: &str) -> AppResult<ProjectSummary> {
+pub(crate) fn load_summary(conn: &Connection, project_id: &str) -> AppResult<ProjectSummary> {
     conn.query_row(
         &format!("{} WHERE p.id = ?1", summary_sql()),
         params![project_id],
@@ -1434,11 +1306,31 @@ pub(crate) fn insert_project_root_tx(
 }
 
 /// 创建工作空间项目（含初始计划）：供 `workspace_project_save` 等执行环境入口复用。
+///
+/// 同样收敛到统一创建服务：目录模式按「有路径 = 关联已有目录」推断，
+/// `workspace_project_save` 不负责创建目录（快速创建的新目录走 `project_create`）。
 pub fn create_project_root(db: &Db, input: CreateProjectRootInput) -> AppResult<ProjectSummary> {
-    db.with_transaction(|conn| {
-        let (project_id, _) = insert_project_root_tx(conn, &input)?;
-        load_summary(conn, &project_id)
-    })
+    let root = input.root_path.clone().unwrap_or_default();
+    let request = super::creation::CreateProjectRequest {
+        client_request_id: String::new(),
+        name: input.name,
+        kind: input.kind,
+        description: input.description,
+        goal: input.goal,
+        target_date: input.target_date,
+        template_id: input.template_id,
+        root_path: input.root_path,
+        directory_mode: super::creation::DirectoryMode::default_for(&root),
+        dev_project_id: input.dev_project_id,
+        note: input.note,
+        plan_name: input.plan_name,
+        plan_description: input.plan_description,
+        plan_status: input.plan_status,
+        draft: super::creation::InitialPlanDraft::default(),
+        agent_access_policy: super::creation::AgentAccessPolicy::None,
+    };
+    let result = super::creation::create(db, request)?;
+    Ok(result.project)
 }
 
 // ── 项目根读/改/删 ─────────────────────────────────────────────────
@@ -1625,6 +1517,124 @@ pub fn delete_project(db: &Db, project_id: &str) -> AppResult<ProjectDeleteOutco
 }
 
 // ── 计划容器生命周期 ────────────────────────────────────────────────
+
+/// 计划摘要（对外统一读模型）：`project_id` 是所属项目根，`id` 才是计划 ID。
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectPlanSummary {
+    pub id: String,
+    pub project_id: String,
+    pub name: String,
+    pub description: String,
+    pub status: String,
+    pub target_date: Option<String>,
+    pub is_active: bool,
+    pub archived: bool,
+    pub revision: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+const PLAN_SUMMARY_SQL: &str =
+    "SELECT p.id, COALESCE(NULLIF(p.workspace_project_id, ''), ''), p.name, p.description,
+            p.status, p.target_date, p.is_active, p.archived, p.revision, p.created_at, p.updated_at
+     FROM planning_projects p";
+
+fn row_to_plan_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectPlanSummary> {
+    Ok(ProjectPlanSummary {
+        id: row.get(0)?,
+        project_id: row.get(1)?,
+        name: row.get(2)?,
+        description: row.get(3)?,
+        status: row.get(4)?,
+        target_date: row.get(5)?,
+        is_active: row.get::<_, i64>(6)? != 0,
+        archived: row.get::<_, i64>(7)? != 0,
+        revision: row.get(8)?,
+        created_at: row.get(9)?,
+        updated_at: row.get(10)?,
+    })
+}
+
+pub fn load_plan_summary(conn: &Connection, plan_id: &str) -> AppResult<ProjectPlanSummary> {
+    conn.query_row(
+        &format!("{PLAN_SUMMARY_SQL} WHERE p.id = ?1"),
+        params![plan_id],
+        row_to_plan_summary,
+    )
+    .optional()?
+    .ok_or_else(|| AppError::NotFound(format!("计划不存在: {plan_id}")))
+}
+
+/// 项目的全部计划（含归档），按 active 优先、创建时间升序。
+pub fn list_plan_summaries(
+    conn: &Connection,
+    project_id: &str,
+) -> AppResult<Vec<ProjectPlanSummary>> {
+    let mut stmt = conn.prepare(&format!(
+        "{PLAN_SUMMARY_SQL} WHERE p.workspace_project_id = ?1
+         ORDER BY p.is_active DESC, p.archived ASC, p.created_at ASC"
+    ))?;
+    let rows = stmt.query_map(params![project_id], row_to_plan_summary)?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(AppError::from)?);
+    }
+    Ok(out)
+}
+
+/// 项目根解析结果。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProjectRef {
+    /// 传入的就是项目根。
+    Project(String),
+    /// 传入的是计划 ID，已解析到所属项目根。
+    Plan { plan_id: String, project_id: String },
+}
+
+/// 把「项目 ID 或计划 ID」统一解析为项目根。
+///
+/// 只读，不做修复：旧数据缺项目链时返回 `None`，由调用方在事务内调用
+/// [`ensure_project_for_plan_tx`] 补建（见 `agent_access::service`）。
+pub fn resolve_project_ref(conn: &Connection, id: &str) -> AppResult<Option<ProjectRef>> {
+    let id = id.trim();
+    if id.is_empty() {
+        return Ok(None);
+    }
+    let is_root: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM workspace_projects WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if is_root.is_some() {
+        return Ok(Some(ProjectRef::Project(id.to_string())));
+    }
+    let plan: Option<(Option<String>, Option<i64>)> = conn
+        .query_row(
+            "SELECT NULLIF(trim(workspace_project_id), ''), 1 FROM planning_projects WHERE id = ?1",
+            params![id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    Ok(match plan {
+        Some((Some(project_id), _)) => Some(ProjectRef::Plan {
+            plan_id: id.to_string(),
+            project_id,
+        }),
+        Some((None, _)) => None,
+        None => None,
+    })
+}
+
+/// 只解析项目根 ID（不区分来源）。
+pub fn resolve_project_root(conn: &Connection, id: &str) -> AppResult<Option<String>> {
+    Ok(resolve_project_ref(conn, id)?.map(|resolved| match resolved {
+        ProjectRef::Project(project_id) => project_id,
+        ProjectRef::Plan { project_id, .. } => project_id,
+    }))
+}
 
 struct PlanRow {
     project_id: Option<String>,

@@ -299,6 +299,8 @@ import type {
   CapabilityRecipeRun,
   CapabilityRecipeRunPage,
   ProjectHubProjectSummary,
+  ProjectCreateInput,
+  ProjectCreateResult,
   ProjectHubSnapshot,
   ProjectHubCreateInput,
   ProjectHubResourceCandidate,
@@ -2251,6 +2253,15 @@ export const workspaceProjectSave = (input: {
     note: input.note ?? null,
   });
 
+/**
+ * 统一项目创建（Workbench 快速创建）。
+ *
+ * 与项目中枢/CLI/MCP/REST 共用后端 Project Creation Service：同一校验、同一事务、
+ * 同一幂等摘要。目录模式必须显式传递，不能靠「路径不存在」推断。
+ */
+export const projectCreate = (input: ProjectCreateInput) =>
+  invoke<ProjectCreateResult>("project_create", { input });
+
 export const workspaceProjectSetStatus = (id: string, status: WorkspaceProjectStatus) =>
   invoke<{ project: WorkspaceProject }>("workspace_project_set_status", { id, status });
 
@@ -2989,7 +3000,8 @@ export const projectHubResourceValidate = (projectId: string, linkId: string) =>
 /** 工作目录校验原始结果（`workspace_path_check`）：只含事实，不含 canonicalize 后的路径。 */
 export interface WorkspacePathCheckResult {
   status: "empty" | "invalid" | "offline" | "not-directory" | "inaccessible" | "ok";
-  reason?: "not-absolute" | "illegal-char" | null;
+  /** `unc` = 网络目录 / `\\?\` 扩展路径（产品不支持，创建服务会拒绝）。 */
+  reason?: "not-absolute" | "unc" | "illegal-char" | null;
   path?: string | null;
 }
 

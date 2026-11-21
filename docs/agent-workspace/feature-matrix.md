@@ -60,3 +60,15 @@
 | Agent 成果版本比较 | 部分 | 交接/报告有 revision 与历史行；无 diff 视图 |
 | 跨项目知识复用 | 已实现 | 知识库可跨项目检索（`kb_ids` 过滤） |
 | 通用 Workspace 协议 | 已实现 | `manifest` + 协议版本 + 文件布局，其他软件可只读接入 |
+
+## 统一项目创建（2026-11-21）
+
+| 能力 | 状态 | 说明 |
+|---|---|---|
+| 项目列表按项目根去重 | 已实现 | 同一项目不再返回「planning + workspace」两行 |
+| 项目详情接受计划 ID | 已实现 | 返回 `projectId` / `planId` / `plans`，授权按项目根 |
+| 计划列表独立 | 已实现 | `GET /plans` 条目带 `projectId`、`isActive` |
+| 四入口共用创建服务 | 已实现 | UI IPC / CLI / MCP / REST 同一事务与幂等 |
+| `projects.create` 独立授权 | 已实现 | 无该能力时 `project_rw` 也不能创建 |
+| 目录三模式 + 补偿 | 已实现 | `create_new` 仅 UI/CLI；REST/MCP 只关联已有目录 |
+| Agent 文件协议按项目根 | 已实现 | `projects/{projectId}/plans/{planId}/plan.md` |

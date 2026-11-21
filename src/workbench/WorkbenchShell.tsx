@@ -149,8 +149,8 @@ import {
   workbenchNavAck,
   workbenchTakeNav,
   workbenchUiReady,
+  projectCreate,
   workspaceProjectList,
-  workspaceProjectSave,
   workspaceSetActiveProject,
   appExitAck,
   onAppBeforeExit,
@@ -159,6 +159,7 @@ import {
   type ResourceSnapshot,
   type WorkbenchNavRequest,
   type WorkbenchNavStatus,
+  type ProjectDirectoryMode,
   type WorkspaceKind,
   type WorkspaceProject,
 } from "../lib/bridge";
@@ -166,6 +167,11 @@ import { formatBytes } from "../lib/clipboardUi";
 // 底部状态栏「包信息」：构建溯源与包标识独立成组件，外壳只负责摆放。
 import WorkbenchBuildStatus from "./WorkbenchBuildStatus";
 import { createActiveProjectWriter, type ActiveProjectWriter } from "../workspace/activeProjectWriter";
+import {
+  buildCreatePayload,
+  createRequestId as projectHubRequestId,
+  generateProjectDraft,
+} from "../lib/projectHub";
 import { resolveWorkspaceProfile, WORKSPACE_PROFILES } from "../workspace/workspaceProfiles";
 import { pickFolder } from "../lib/filesWorkspace/folderPicker";
 import { checkWorkspacePath } from "../lib/workspacePath";
@@ -199,6 +205,13 @@ const NAV_DRAG_CLICK_GUARD_MS = 350;
 const KIND_OPTIONS = (Object.values(WORKSPACE_PROFILES) as Array<{ kind: WorkspaceKind; label: string }>).map(
   (profile) => ({ value: profile.kind, label: profile.label }),
 );
+
+/** 新建项目的目录模式：与后端 `DirectoryMode` 一一对应。 */
+const DIRECTORY_MODE_OPTIONS: Array<{ value: ProjectDirectoryMode; label: string }> = [
+  { value: "metadata_only", label: "仅项目元数据（不设置目录）" },
+  { value: "attach_existing", label: "关联已有目录（目录可离线）" },
+  { value: "create_new", label: "创建新目录（父目录必须存在）" },
+];
 
 type ProjectModuleRequest = { token: number; module: "overview" | "items" | "links" | "settings" };
 
@@ -444,6 +457,10 @@ export default function WorkbenchShell() {
   const [createRoot, setCreateRoot] = useState("");
   const [createRootPicking, setCreateRootPicking] = useState(false);
   const [createNote, setCreateNote] = useState("");
+  const [createGoal, setCreateGoal] = useState("");
+  const [createDirMode, setCreateDirMode] = useState<ProjectDirectoryMode>("metadata_only");
+  const [createApplyTemplate, setCreateApplyTemplate] = useState(false);
+  const [createRequestId, setCreateRequestId] = useState<string | null>(null);
   const [createBusy, setCreateBusy] = useState(false);
   // R13: 工作目录离线确认（目录当前不存在时，允许用户明确选择「仍然保存」）。
   const [offlineRootConfirm, setOfflineRootConfirm] = useState<string | null>(null);
@@ -851,6 +868,8 @@ export default function WorkbenchShell() {
       });
       if (result.status === "ok") {
         setCreateRoot(result.path);
+        // 选中目录即表达「关联已有目录」；新建目录必须由用户显式选择。
+        setCreateDirMode((mode) => (mode === "metadata_only" ? "attach_existing" : mode));
         return;
       }
       if (result.status === "invalid") {
@@ -903,9 +922,11 @@ export default function WorkbenchShell() {
       }
       if (result.status === "invalid") {
         showToast(
-          result.reason === "not-absolute"
-            ? "根目录必须是绝对路径（如 D:\\\\Projects\\\\demo）"
-            : "工作目录含非法字符（< > : \" | ? *）",
+          result.reason === "unc"
+            ? "不支持网络目录（UNC）：请选择本地磁盘上的工作目录"
+            : result.reason === "not-absolute"
+              ? "根目录必须是绝对路径（如 D:\\\\Projects\\\\demo）"
+              : "工作目录含非法字符（< > : \" | ? *）",
           { kind: "error" },
         );
         return;
@@ -918,29 +939,90 @@ export default function WorkbenchShell() {
         showToast("无法访问工作目录（可能是权限不足）", { kind: "error" });
         return;
       }
-      if (result.status === "offline" && !(await confirmOfflineRoot(result.path))) {
+      if (result.status === "offline") {
+        // 目录不存在：只有「关联已有目录」才允许离线保存；
+        // 「创建新目录」由后端校验父目录后创建，不能把离线当异常。
+        if (createDirMode === "metadata_only") {
+          showToast("当前模式只创建项目元数据，请先选择目录模式", { kind: "error" });
+          return;
+        }
+        if (createDirMode === "attach_existing" && !(await confirmOfflineRoot(result.path))) {
+          return;
+        }
+      }
+      if (result.status === "ok" && createDirMode === "create_new") {
+        showToast("目标目录已存在，请改用「关联已有目录」", { kind: "error" });
         return;
       }
     }
     setCreateBusy(true);
     try {
-      const response = await workspaceProjectSave({
-        id: null,
+      // 模板只是「初始计划的默认值」，展开后与手动填写的字段走同一创建服务。
+      const draft = createApplyTemplate
+        ? buildCreatePayload(
+            generateProjectDraft(
+              {
+                raw: createGoal.trim() || name,
+                title: name,
+                titleSource: "user",
+                kind: createKind,
+                goals: [],
+                constraints: [],
+                uncertainties: [],
+                deliverables: [],
+                scopeNotes: [],
+                provider: "local",
+              },
+              { name },
+            ),
+          )
+        : null;
+      const requestId = createRequestId ?? projectHubRequestId();
+      setCreateRequestId(requestId);
+      const result = await projectCreate({
+        clientRequestId: requestId,
         name,
         kind: createKind,
-        rootPath: root || null,
+        goal: createGoal.trim(),
+        rootPath: createDirMode === "metadata_only" ? null : root || null,
+        directoryMode: createDirMode,
         devProjectId: null,
         note: createNote.trim() || null,
+        ...(draft
+          ? {
+              goals: draft.goals,
+              phases: draft.phases,
+              features: draft.features,
+              tasks: draft.tasks,
+              capabilities: draft.capabilities,
+            }
+          : {}),
       });
       await refreshProjects();
-      selectProject(response.project.id);
+      await selectProject(result.project.id);
       setCreateOpen(false);
       setCreateName("");
       setCreateRoot("");
       setCreateNote("");
+      setCreateGoal("");
       setCreateKind("general");
+      setCreateDirMode("metadata_only");
+      setCreateApplyTemplate(false);
+      setCreateRequestId(null);
       goRoute("workspace");
-      showToast(`已创建「${response.project.name}」`, { kind: "success" });
+      // 只显示真实创建结果：项目根 ID、active 计划与目录状态。
+      const dirLabel =
+        result.provisioningStatus === "created"
+          ? "已创建目录"
+          : result.provisioningStatus === "attached_offline"
+            ? "目录当前离线"
+            : result.provisioningStatus === "attached"
+              ? "已关联目录"
+              : "未设置目录";
+      showToast(
+        `已创建「${result.project.name}」（activePlanId=${result.activePlan.id.slice(0, 8)}…，${dirLabel}）`,
+        { kind: "success" },
+      );
     } catch (e) {
       showToast(`创建项目失败：${errorMessage(e)}`, { kind: "error" });
     } finally {
@@ -951,6 +1033,10 @@ export default function WorkbenchShell() {
     createRoot,
     createKind,
     createNote,
+    createGoal,
+    createDirMode,
+    createApplyTemplate,
+    createRequestId,
     refreshProjects,
     selectProject,
     goRoute,
@@ -2861,17 +2947,53 @@ export default function WorkbenchShell() {
               />
             </div>
           </div>
+          <div className="field">
+            <span>项目目标（可空）</span>
+            <input
+              className="ws-input"
+              value={createGoal}
+              placeholder="一句话说明这个项目要达成什么"
+              onChange={(event) => setCreateGoal(event.target.value)}
+            />
+          </div>
+          {/* 三种目录模式互斥：不能用「路径不存在」推断「新建目录」。 */}
+          <div className="field">
+            <span>目录模式</span>
+            <Select
+              value={createDirMode}
+              options={DIRECTORY_MODE_OPTIONS}
+              onChange={(value) => setCreateDirMode(value as ProjectDirectoryMode)}
+              block
+              ariaLabel="目录模式"
+            />
+          </div>
           <div className="field wb-create-root">
-            <span>工作目录（可空）</span>
+            <span>
+              工作目录
+              {createDirMode === "metadata_only" ? "（当前模式不需要）" : ""}
+            </span>
             <div className="wb-create-path-picker">
               <input
                 className="ws-input wb-create-path-input"
-                aria-label="工作目录（可空）"
+                aria-label="工作目录"
                 value={createRoot}
-                placeholder="选择或输入目录，可留空"
+                placeholder={
+                  createDirMode === "create_new"
+                    ? "输入要新建的目录（父目录必须存在）"
+                    : "选择或输入已有目录"
+                }
                 spellCheck={false}
+                disabled={createDirMode === "metadata_only"}
                 data-tip={createRoot || undefined}
-                onChange={(event) => setCreateRoot(event.target.value)}
+                onChange={(event) => {
+                  const next = event.target.value;
+                  setCreateRoot(next);
+                  // 从「仅元数据」开始输入路径时，用户意图明确变为「关联已有目录」；
+                  // 「新建目录」必须由用户自己选，绝不自动推断。
+                  if (next.trim() && createDirMode === "metadata_only") {
+                    setCreateDirMode("attach_existing");
+                  }
+                }}
               />
               <button
                 type="button"
@@ -2895,6 +3017,19 @@ export default function WorkbenchShell() {
               )}
             </div>
           </div>
+          <label className="field wb-create-template">
+            <span className="wb-create-check">
+              <input
+                type="checkbox"
+                checked={createApplyTemplate}
+                onChange={(event) => setCreateApplyTemplate(event.target.checked)}
+              />
+              按项目类型生成初始阶段与功能
+            </span>
+            <span className="wb-create-hint">
+              模板只生成阶段/功能/能力的初始草案，全部随项目同事务落库；不勾选则只创建项目与空计划。
+            </span>
+          </label>
           <label className="field">
             <span>备注</span>
             <textarea

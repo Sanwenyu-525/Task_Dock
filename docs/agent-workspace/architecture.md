@@ -173,3 +173,15 @@ start(running) ──▶ writing ──▶ committed（MCP 与业务同事务；
 
 细节（事件契约、资源关联、故障恢复、权限与测试）见
 [`operation-visualization.md`](operation-visualization.md)。
+
+## 统一项目身份（2026-11-21）
+
+Agent 侧所有「项目」引用统一解析到 `workspace_projects.id`：
+
+- `GET /projects` 每个项目一行，`activePlanId` 是摘要字段；
+- `GET /projects/{id}` 接受项目根或计划 ID，响应带 `projectId` / `planId` / `activePlanId` / `plans`；
+- `GET /plans` 独立返回计划，条目带 `projectId`；
+- 授权、操作记录、上下文装配、文件投影一律用项目根；计划 ID 只在入参兼容层出现。
+
+实现：`project_hub::service::{resolve_project_ref, resolve_project_root}` +
+`agent_access::service` 的读模型；计划缺项目根时在事务内用 `ensure_project_for_plan_tx` 补建。

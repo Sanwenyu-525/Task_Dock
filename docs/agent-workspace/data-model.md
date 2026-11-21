@@ -123,3 +123,15 @@
 - 迁移只追加，不改已发布 DDL；`mcp_agent_capabilities` 重建保留全部旧行。
 - 备份/恢复：新表登记进 `BACKUP_TABLES`（见实现），旧备份恢复后缺表由迁移补齐。
 - 回退：删除新表不影响既有业务；`mcp_agents` 三个新列留空即可（旧程序 SELECT 不引用）。
+
+## v90 / v91：统一项目身份（2026-11-21）
+
+- **v90**：重建 `mcp_agent_capabilities` 的 CHECK，加入 `projects.create` / `projects.write`，
+  逐行复制旧授权，不新增默认授权。
+- **v91**：`mcp_agent_grants.project_id` 的外键从 `planning_projects(id)` 改到
+  `workspace_projects(id)`。迁移步骤：
+  1. 为「有授权但缺项目根」的历史计划按同 ID 补建项目根；
+  2. 给这些计划回填 `workspace_project_id` 与 `is_active`，并补 `active_plan_id`；
+  3. 重建授权表并按 `COALESCE(plan.workspace_project_id, grant.project_id)` 映射，`INSERT OR IGNORE` 去重；
+  4. 删除旧表、改名、重建索引。
+- 影响：授权只能挂项目根；删除项目级联清理授权；旧计划 ID 入参在判定前解析，不需要重新授权。

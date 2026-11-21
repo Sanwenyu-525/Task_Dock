@@ -240,38 +240,111 @@ pub fn export_all(db: &Db, row: &workspace::WorkspaceRow) -> AppResult<ExportRep
 
     let local = Principal::local(Source::System);
 
-    // 项目
-    for project in list_projects_impl(db, Some(true))? {
-        let name = project.name.clone();
-        let id = project.id.clone();
-        let body = project_markdown(db, &id, &name, "planning")?;
-        write(
-            &format!("projects/{id}/project.md"),
-            "project",
-            &id,
-            project.revision,
-            &project.updated_at,
-            body,
-        )?;
-        let features = list_features_impl(db, id.clone()).unwrap_or_default();
-        let mut plan = format!("# {} · 规划\n\n", name);
-        for feature in &features {
-            plan.push_str(&format!(
-                "- [{}] {}（步骤 {}/{}，优先级 {}）\n",
-                feature.status, feature.title, feature.step_done, feature.step_total, feature.priority
-            ));
+    // 项目：顶层只按**项目根**分目录，计划一律在 plans/{planId}/ 下。
+    // 旧实现把计划 ID 当成项目目录，导致同一项目出现两份事实、且计划文件夹与项目同级。
+    for project in workspace_project_list_impl(db, None)? {
+        let project_id = project.id.clone();
+        let active_plan: Option<String> = db.with_read(|conn| {
+            Ok(conn
+                .query_row(
+                    "SELECT active_plan_id FROM workspace_projects WHERE id = ?1",
+                    rusqlite::params![project_id],
+                    |r| r.get::<_, Option<String>>(0),
+                )
+                .ok()
+                .flatten())
+        })?;
+        let plans =
+            db.with_read(|conn| crate::project_hub::service::list_plan_summaries(conn, &project_id))?;
+        let summary = super::service::ProjectSummary {
+            id: project.id.clone(),
+            name: project.name.clone(),
+            kind: project.kind.clone(),
+            status: project.status.clone(),
+            description: project.note.clone(),
+            root_path: project.root_path.clone(),
+            root_exists: project.root_exists,
+            active_plan_id: active_plan.clone(),
+            plan_count: plans.len() as i64,
+            updated_at: project.updated_at.clone(),
+            revision: 0,
+            feature_total: 0,
+            feature_done: 0,
+            task_total: project.task_link_count,
+            item_total: project.item_count,
+        };
+        let mut body = format!(
+            "# {}\n\n- project_id: `{}`\n- kind: {}\n- status: {}\n- root_path: `{}`\n- active_plan_id: `{}`\n- plans: {}\n- items: {}\n- linked_tasks: {}\n- updated_at: {}\n\n",
+            summary.name,
+            summary.id,
+            summary.kind,
+            summary.status,
+            project.root_path,
+            active_plan.as_deref().unwrap_or("-"),
+            plans.len(),
+            summary.item_total,
+            summary.task_total,
+            summary.updated_at
+        );
+        if !project.note.trim().is_empty() {
+            body.push_str(&format!("## 说明\n\n{}\n", project.note));
         }
         write(
-            &format!("projects/{id}/plans/current.md"),
-            "plan",
-            &id,
-            project.revision,
-            &project.updated_at,
-            plan,
+            &format!("projects/{project_id}/project.md"),
+            "project",
+            &project_id,
+            0,
+            &summary.updated_at,
+            body,
         )?;
-        let milestones = list_milestones_impl(db, id.clone()).unwrap_or_default();
+
+        for plan in &plans {
+            let features = list_features_impl(db, plan.id.clone()).unwrap_or_default();
+            let mut text = format!("# {} · {}\n\n", project.name, plan.name);
+            text.push_str(&format!(
+                "- plan_id: `{}`\n- project_id: `{}`\n- status: {}\n- active: {}\n- revision: {}\n\n",
+                plan.id, project_id, plan.status, plan.is_active, plan.revision
+            ));
+            for feature in &features {
+                text.push_str(&format!(
+                    "- [{}] {}（步骤 {}/{}，优先级 {}）\n",
+                    feature.status,
+                    feature.title,
+                    feature.step_done,
+                    feature.step_total,
+                    feature.priority
+                ));
+            }
+            write(
+                &format!("projects/{project_id}/plans/{}/plan.md", plan.id),
+                "plan",
+                &project_id,
+                plan.revision,
+                &plan.updated_at,
+                text,
+            )?;
+        }
+        // 兼容指针：一个版本周期内保留，内容明确写出真实 planId，避免被当成项目实体。
+        if let Some(active) = active_plan.as_deref() {
+            let text = format!(
+                "# {} · 当前计划\n\n- plan_id: `{active}`\n- 详见 `plans/{active}/plan.md`\n",
+                project.name
+            );
+            write(
+                &format!("projects/{project_id}/plans/current.md"),
+                "plan",
+                &project_id,
+                0,
+                &summary.updated_at,
+                text,
+            )?;
+        }
+        let milestones = active_plan
+            .as_deref()
+            .and_then(|plan_id| list_milestones_impl(db, plan_id.to_string()).ok())
+            .unwrap_or_default();
         if !milestones.is_empty() {
-            let mut text = format!("# {} · 里程碑\n\n", name);
+            let mut text = format!("# {} · 里程碑\n\n", project.name);
             for milestone in &milestones {
                 text.push_str(&format!(
                     "- {}（功能 {}/{}，目标 {}）\n",
@@ -282,11 +355,11 @@ pub fn export_all(db: &Db, row: &workspace::WorkspaceRow) -> AppResult<ExportRep
                 ));
             }
             write(
-                &format!("projects/{id}/architecture/milestones.md"),
+                &format!("projects/{project_id}/architecture/milestones.md"),
                 "plan",
-                &id,
-                project.revision,
-                &project.updated_at,
+                &project_id,
+                0,
+                &summary.updated_at,
                 text,
             )?;
         }
@@ -294,52 +367,21 @@ pub fn export_all(db: &Db, row: &workspace::WorkspaceRow) -> AppResult<ExportRep
             db,
             &local,
             super::context::ContextRequest {
-                project_id: Some(id.clone()),
+                project_id: Some(project_id.clone()),
                 format: Some("markdown".into()),
                 ..Default::default()
             },
         ) {
             write(
-                &format!("projects/{id}/context.md"),
+                &format!("projects/{project_id}/context.md"),
                 "context",
-                &id,
-                project.revision,
-                &project.updated_at,
+                &project_id,
+                0,
+                &summary.updated_at,
                 ctx.markdown,
             )?;
         }
     }
-    for project in workspace_project_list_impl(db, None)? {
-        let summary = super::service::ProjectSummary {
-            id: project.id.clone(),
-            name: project.name.clone(),
-            kind: "workspace".into(),
-            status: project.status.clone(),
-            description: project.note.clone(),
-            updated_at: project.updated_at.clone(),
-            revision: 0,
-            feature_total: 0,
-            feature_done: 0,
-            task_total: project.task_link_count,
-            item_total: project.item_count,
-        };
-        let mut body = format!(
-            "# {}\n\n- id: `{}`\n- kind: workspace\n- status: {}\n- root_path: `{}`\n- items: {}\n- linked_tasks: {}\n- updated_at: {}\n\n",
-            summary.name, summary.id, summary.status, project.root_path, summary.item_total, summary.task_total, summary.updated_at
-        );
-        if !project.note.trim().is_empty() {
-            body.push_str(&format!("## 说明\n\n{}\n", project.note));
-        }
-        write(
-            &format!("projects/{}/project.md", summary.id),
-            "project",
-            &summary.id,
-            0,
-            &summary.updated_at,
-            body,
-        )?;
-    }
-
     // 任务
     let mut filter = TaskFilter {
         status: Some("all".into()),

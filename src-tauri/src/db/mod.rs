@@ -2170,6 +2170,11 @@ CREATE INDEX idx_sec_audit_cat ON security_audit_log(category, created_at);
     // v86.1 可靠性修复（v88）：操作状态版本（前端乱序判定）+ 租约扫描索引。
     // 纯新增列/索引，不改 v86 既有列语义。
     crate::agent_access::schema::MIGRATION_88,
+    // 统一项目身份（v90）：能力白名单扩展 projects.create / projects.write。
+    // 只重建 mcp_agent_capabilities 的 CHECK 并逐行复制旧授权，不新增默认授权。
+    crate::agent_access::schema::MIGRATION_90,
+    // 统一项目身份（v91）：授权表外键从计划改到项目根，历史计划先补根再映射。
+    crate::agent_access::schema::MIGRATION_91,
 ];
 
 /// 历史测试数据的保守回填（幂等）。

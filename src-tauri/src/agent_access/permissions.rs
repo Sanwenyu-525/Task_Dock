@@ -144,6 +144,7 @@ fn capability_scoped_by_project(capability: Capability) -> bool {
     matches!(
         capability,
         Capability::ProjectsRead
+            | Capability::ProjectsWrite
             | Capability::PlansRead
             | Capability::DecisionsRead
             | Capability::DecisionsWrite
@@ -293,26 +294,59 @@ pub fn task_project(conn: &Connection, task_id: &str) -> AppResult<Option<String
     Ok(row)
 }
 
-/// 项目是否存在于两个既有项目体系之一。
+/// 项目存在性判定（统一身份）：接受项目根 ID **或** 计划 ID。
+///
+/// 返回值语义已收敛：
+/// - `Some("project")` = 传入的是项目根（`workspace_projects.id`）；
+/// - `Some("plan")` = 传入的是计划 ID，且能解析到项目根（授权按项目根判定）；
+/// - `None` = 不存在，或旧计划缺项目链（调用方需在事务内补建后再判定）。
+///
+/// 旧的 `"planning"` / `"workspace"` 取值不再返回：那会让同一项目被当成两个实体。
 pub fn project_exists(conn: &Connection, project_id: &str) -> AppResult<Option<&'static str>> {
-    let planning: Option<i64> = conn
-        .query_row(
-            "SELECT 1 FROM planning_projects WHERE id = ?1",
-            rusqlite::params![project_id],
-            |r| r.get(0),
-        )
-        .ok();
-    if planning.is_some() {
-        return Ok(Some("planning"));
+    match crate::project_hub::service::resolve_project_ref(conn, project_id)? {
+        Some(crate::project_hub::service::ProjectRef::Project(_)) => Ok(Some("project")),
+        Some(crate::project_hub::service::ProjectRef::Plan { .. }) => Ok(Some("plan")),
+        None => Ok(None),
     }
-    let workspace: Option<i64> = conn
-        .query_row(
-            "SELECT 1 FROM workspace_projects WHERE id = ?1",
-            rusqlite::params![project_id],
-            |r| r.get(0),
-        )
-        .ok();
-    Ok(workspace.map(|_| "workspace"))
+}
+
+/// 把「项目 ID 或计划 ID」统一解析为项目根 ID。
+///
+/// 授权、操作记录、上下文装配一律使用项目根；计划 ID 只作为入参兼容。
+pub fn resolve_project_root(conn: &Connection, id: &str) -> AppResult<Option<String>> {
+    crate::project_hub::service::resolve_project_root(conn, id)
+}
+
+/// 创建成功后的自动授权：**只覆盖刚创建的项目根**。
+///
+/// 绝不写全局授权（`resource_id=''` 是禁止项），也**不再写计划 ID**：
+/// `mcp_agent_grants.project_id` 的外键在 v91 已指向 `workspace_projects(id)`，
+/// 计划级授权既过不了外键，也会让「计划授权跨项目生效」重新出现。
+/// 旧调用方传计划 ID 时由 [`resolve_project_root`] 在判定前解析，不需要重复授权。
+pub fn grant_created_project(db: &Db, agent_row_id: &str, project_id: &str) -> AppResult<()> {
+    db.with_transaction(|conn| grant_created_project_in_conn(conn, agent_row_id, project_id))
+}
+
+/// 事务内版本：MCP/CLI 已持有写事务时调用，避免嵌套事务与写锁自锁。
+pub fn grant_created_project_in_conn(
+    conn: &Connection,
+    agent_row_id: &str,
+    project_id: &str,
+) -> AppResult<()> {
+    if project_id.trim().is_empty() {
+        return Err(AppError::Validation("自动授权缺少项目 ID".into()));
+    }
+    conn.execute(
+        "INSERT OR IGNORE INTO mcp_agent_grants (id, agent_row_id, project_id, created_at)
+         VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![
+            uuid::Uuid::new_v4().to_string(),
+            agent_row_id,
+            project_id,
+            crate::agents::now_iso()
+        ],
+    )?;
+    Ok(())
 }
 
 /// 统一错误：被拒绝时携带的能力名，便于客户端提示「去 UI 授权」。

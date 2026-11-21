@@ -4921,6 +4921,60 @@ export interface ProjectHubCreateInput {
   capabilities?: ProjectHubCreateCapabilityInput[];
 }
 
+/**
+ * 统一项目创建（Workbench 快速创建 / ProjectHub 高级创建 / CLI / MCP / REST 共用）。
+ *
+ * `directoryMode` 三态互斥：`metadata_only` 只建元数据；`attach_existing` 关联已有目录
+ * （允许离线，不允许是文件）；`create_new` 由后端创建目录，父目录必须存在、目标必须不存在。
+ */
+export type ProjectDirectoryMode = "metadata_only" | "attach_existing" | "create_new";
+
+export type ProjectAgentAccessPolicy =
+  | "none"
+  | "creator_project"
+  | "creator_project_and_plan";
+
+export interface ProjectCreateInput extends ProjectHubCreateInput {
+  directoryMode?: ProjectDirectoryMode;
+  devProjectId?: string | null;
+  note?: string | null;
+  planName?: string | null;
+  agentAccessPolicy?: ProjectAgentAccessPolicy;
+}
+
+/** 计划摘要：`id` 是计划 ID，`projectId` 才是项目根。 */
+export interface ProjectPlanSummary {
+  id: string;
+  projectId: string;
+  name: string;
+  description: string;
+  status: string;
+  targetDate: string | null;
+  isActive: boolean;
+  archived: boolean;
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectWorkspaceView {
+  projectId: string;
+  rootPath: string;
+  rootExists: boolean;
+  devProjectId: string | null;
+  provisioningStatus: string;
+}
+
+export interface ProjectCreateResult {
+  /** false = 幂等重放，返回既有结果。 */
+  created: boolean;
+  project: ProjectHubProjectSummary;
+  activePlan: ProjectPlanSummary;
+  workspace: ProjectWorkspaceView;
+  /** metadata_only | attached | attached_offline | created */
+  provisioningStatus: string;
+}
+
 /** 可绑定资源候选：能力是「能不能做」，资源是「有没有可调用的东西」。 */
 export interface ProjectHubResourceCandidate {
   kind: string;

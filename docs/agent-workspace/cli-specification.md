@@ -166,3 +166,21 @@ taskdock sync resolve <conflict_id> --resolution db|file|dismiss [--json]
 
 CLI 写成功后，UI 通过既有事件机制刷新（CLI 是独立进程，无法 emit Tauri 事件 → UI 在
 `agent-activity` 轮询/页面激活时刷新；文档明确该限制，不做假实时）。
+
+## `taskdock project create`（2026-11-21）
+
+```text
+taskdock project create --name <名称> [--kind general] [--description ...] [--goal ...]
+                        [--target-date YYYY-MM-DD] [--template ID]
+                        [--root <绝对目录>]
+                        [--dir-mode metadata_only|attach_existing|create_new]
+                        [--request-id ID] [--json]
+```
+
+- 身份：本机人类（默认）或 `TASKDOCK_AGENT_TOKEN`；Agent 身份必须有 `projects.create`
+  （全局能力）且 scope=`project_rw`，否则返回 `FORBIDDEN`；
+- `--dir-mode` 缺省：给了 `--root` 按 `attach_existing`，否则 `metadata_only`；
+  `create_new` 必须显式指定，父目录必须存在、目标必须不存在；
+- 输出（`--json`）：`{ created, project{id,...}, activePlan{id,...}, workspace{...}, provisioningStatus }`；
+- 幂等：`--request-id` 相同且参数相同返回原结果（`created=false`），参数不同返回 `CONFLICT`；
+- Agent 创建成功后自动获得**该项目根**的授权，不扩大为全局。

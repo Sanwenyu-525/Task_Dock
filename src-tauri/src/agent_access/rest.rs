@@ -85,7 +85,8 @@ pub const ROUTES: &[(&str, &str, &str)] = &[
     ("GET", "/api/v1/status", "系统与工作空间状态"),
     ("GET", "/api/v1/manifest", "Agent 工作空间 manifest"),
     ("GET", "/api/v1/openapi.json", "本 API 的 OpenAPI 描述"),
-    ("GET", "/api/v1/projects", "项目列表（规划项目 + 工作空间项目）"),
+    ("GET", "/api/v1/projects", "项目列表（每个项目根一行，含 activePlanId）"),
+    ("POST", "/api/v1/projects", "创建项目（需 projects.create）"),
     ("GET", "/api/v1/projects/{id}", "项目详情"),
     ("GET", "/api/v1/projects/{id}/status", "项目状态与下一步"),
     ("GET", "/api/v1/tasks", "任务列表（支持 status/search/limit/offset）"),
@@ -1663,6 +1664,44 @@ fn parse_body<T: serde::de::DeserializeOwned>(body: &[u8]) -> AppResult<T> {
 /// 统一分发。`guard` 为事务内写守卫：有幂等占位时是 `RequestCacheGuard`，
 /// 否则是 `NoGuard`。泛型而非 `&dyn`，是为了让「引用可跨线程」在编译期成立
 /// （spawn 的后台执行 future 必须 `Send`）。
+/// `POST /api/v1/projects` 请求体。
+///
+/// 与 IPC/MCP/CLI 共用同一创建服务；这里只做字段搬运与默认值，不含业务规则。
+#[derive(serde::Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+struct RestCreateProject {
+    #[serde(default, alias = "requestId")]
+    client_request_id: Option<String>,
+    name: String,
+    kind: Option<String>,
+    description: Option<String>,
+    goal: Option<String>,
+    target_date: Option<String>,
+    template_id: Option<String>,
+    root_path: Option<String>,
+    directory_mode: Option<String>,
+    dev_project_id: Option<String>,
+    note: Option<String>,
+    plan_name: Option<String>,
+    #[serde(default)]
+    initial_plan: Option<RestInitialPlan>,
+}
+
+#[derive(serde::Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+struct RestInitialPlan {
+    #[serde(default)]
+    goals: Vec<crate::project_hub::service::CreateGoalInput>,
+    #[serde(default)]
+    phases: Vec<crate::project_hub::service::CreatePhaseInput>,
+    #[serde(default)]
+    features: Vec<crate::project_hub::service::CreateFeatureInput>,
+    #[serde(default)]
+    tasks: Vec<crate::project_hub::service::CreateTaskInput>,
+    #[serde(default)]
+    capabilities: Vec<crate::project_hub::service::CreateCapabilityInput>,
+}
+
 async fn dispatch<G>(
     state: &RestState,
     principal: &Principal,
@@ -1712,6 +1751,61 @@ where
                 q_off(query),
             )?;
             Ok((serde_json::to_value(items)?, Some(page)))
+        }
+        ("POST", ["projects"]) => {
+            // 创建是独立能力；scope=project_rw 不隐含创建权。
+            perms::require(db, principal, Capability::ProjectsCreate, "")?;
+            let input: RestCreateProject = parse_body(body)?;
+            let mode = match input.directory_mode.as_deref().map(str::trim) {
+                None | Some("") => crate::project_hub::creation::DirectoryMode::default_for(
+                    input.root_path.as_deref().unwrap_or_default(),
+                ),
+                Some(raw) => crate::project_hub::creation::DirectoryMode::parse(raw)
+                    .ok_or_else(|| {
+                        AppError::Validation(format!("未知的 directoryMode：{raw}"))
+                    })?,
+            };
+            if mode == crate::project_hub::creation::DirectoryMode::CreateNew {
+                // REST 是 Agent 接口：不代任何客户端创建目录（目录必须由人类在 UI/CLI 明确确认）。
+                return Err(AppError::Validation(
+                    "REST 不支持 directoryMode=create_new；请由人类在 UI 或 CLI 创建目录".into(),
+                ));
+            }
+            let draft = input.initial_plan.unwrap_or_default();
+            let request = crate::project_hub::creation::CreateProjectRequest {
+                client_request_id: input.client_request_id.unwrap_or_default(),
+                name: input.name,
+                kind: input.kind.unwrap_or_else(|| "general".into()),
+                description: input.description.unwrap_or_default(),
+                goal: input.goal.unwrap_or_default(),
+                target_date: input.target_date,
+                template_id: input.template_id,
+                root_path: input.root_path,
+                directory_mode: mode,
+                dev_project_id: input.dev_project_id,
+                note: input.note,
+                plan_name: input.plan_name,
+                plan_description: None,
+                plan_status: None,
+                draft: crate::project_hub::creation::InitialPlanDraft {
+                    goals: draft.goals,
+                    phases: draft.phases,
+                    features: draft.features,
+                    tasks: draft.tasks,
+                    capabilities: draft.capabilities,
+                },
+                agent_access_policy:
+                    crate::project_hub::creation::AgentAccessPolicy::CreatorProjectAndPlan,
+            };
+            let created = crate::project_hub::creation::create(db, request)?;
+            if let Some(row_id) = principal.agent_row_id.as_deref() {
+                perms::grant_created_project(
+                    db,
+                    row_id,
+                    &created.project.id,
+                )?;
+            }
+            Ok((serde_json::to_value(&created)?, None))
         }
         ("GET", ["projects", _, "status"]) => {
             let id = seg(1);

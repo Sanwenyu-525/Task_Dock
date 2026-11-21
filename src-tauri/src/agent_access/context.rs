@@ -352,12 +352,20 @@ fn resolve_context_scope(
     let mut scope = ContextScope::default();
     // 一次请求只读一次授权范围：项目进入资格、项目元数据、规划目标共用同一份判定。
     let reads = perms::authorized_reads(db, principal)?;
-    let explicit_project = req
+    // 计划 ID 先反解析到项目根：上下文、授权、文件协议都锚定同一个 ID。
+    let explicit_project = match req
         .project_id
         .as_deref()
         .map(str::trim)
         .filter(|v| !v.is_empty())
-        .map(str::to_string);
+        .map(str::to_string)
+    {
+        Some(id) => Some(
+            db.with_read(|conn| crate::project_hub::service::resolve_project_root(conn, &id))?
+                .unwrap_or(id),
+        ),
+        None => None,
+    };
     scope.task_id = req.task_id.as_deref().unwrap_or_default().trim().to_string();
     let task_projects: Vec<String> = if scope.task_id.is_empty() {
         Vec::new()

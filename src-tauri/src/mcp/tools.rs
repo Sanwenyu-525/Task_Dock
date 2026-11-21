@@ -169,11 +169,15 @@ pub fn tool_defs() -> &'static [ToolDef] {
         },
         ToolDef {
             name: "taskdock_create_project",
-            description: "创建用户项目（scope=project_rw 即可）。创建后自动授予本 Agent 该项目的写授权。",
+            description: "创建项目（需要 projects.create 能力 + scope=project_rw）。返回 canonical projectId 与 activePlanId；只自动授予本 Agent 刚创建的项目，不扩大为全局权限。",
             input_schema: schema(
                 json!({
-                    "name": { "type": "string", "maxLength": 100 },
-                    "description": { "type": "string", "maxLength": 2000 },
+                    "name": { "type": "string", "maxLength": 120 },
+                    "kind": { "type": "string", "description": "项目类型：general/novel/game/ai_comic/development（默认 general）" },
+                    "description": { "type": "string", "maxLength": 4000 },
+                    "goal": { "type": "string", "maxLength": 2000 },
+                    "template_id": { "type": "string", "description": "模板 ID（只登记，不展开）" },
+                    "root_path": { "type": "string", "description": "已有工作目录（绝对路径）；不存在时登记为离线，不会创建目录" },
                     "target_date": { "type": "string", "description": DATE_DESC },
                     "requestId": request_id_prop(),
                 }),
@@ -470,8 +474,17 @@ fn ensure_grant(
             ctx.agent.scope.as_str()
         )));
     }
-    let granted =
+    // 计划 ID 先反解析到项目根：授权挂在项目根上，计划级授权不能跨项目生效。
+    let root = crate::project_hub::service::resolve_project_root(conn, project_id)
+        .map_err(ToolError::Failed)?;
+    let mut granted =
         auth::has_project_grant(conn, &ctx.agent.row_id, project_id).map_err(ToolError::Failed)?;
+    if !granted {
+        if let Some(root) = root.as_deref() {
+            granted = auth::has_project_grant(conn, &ctx.agent.row_id, root)
+                .map_err(ToolError::Failed)?;
+        }
+    }
     if granted {
         Ok(())
     } else {
@@ -842,35 +855,70 @@ fn call(
                     agent.scope.as_str()
                 )));
             }
-            let input = ProjectInput {
-                name: require_str(args, "name")?,
+            // 创建是独立能力：project_rw 只代表「可写」，不代表「可新建项目」。
+            let can_create = crate::mcp::permissions::has_global(
+                conn,
+                &agent.row_id,
+                crate::mcp::permissions::Capability::ProjectsCreate,
+            )?;
+            if !can_create {
+                return Err(ToolError::Authz(
+                    "权限不足：需要 projects.create。请在 Task Dock「能力中心 → Agent 接入」中显式授予"
+                        .into(),
+                ));
+            }
+            // 统一创建服务：项目根 + 初始计划同事务；返回 canonical projectId。
+            // Agent 只能「关联已有目录」，不能创建新目录（目录创建必须由人类在 UI 确认）。
+            let root_path = arg_str(args, "root_path").map(str::to_string);
+            let mode = crate::project_hub::creation::DirectoryMode::default_for(
+                root_path.as_deref().unwrap_or_default(),
+            );
+            let request = crate::project_hub::creation::CreateProjectRequest {
+                client_request_id: arg_str(args, "requestId").unwrap_or_default().to_string(),
+                name: require_str(args, "name")?.to_string(),
+                kind: arg_str(args, "kind").unwrap_or("general").to_string(),
                 description: arg_str(args, "description").unwrap_or_default().to_string(),
-                status: None,
+                goal: arg_str(args, "goal").unwrap_or_default().to_string(),
                 target_date: arg_str(args, "target_date").map(str::to_string),
+                template_id: arg_str(args, "template_id").map(str::to_string),
+                root_path,
+                directory_mode: mode,
+                dev_project_id: None,
+                note: None,
+                plan_name: None,
+                plan_description: None,
+                plan_status: None,
+                draft: Default::default(),
+                agent_access_policy:
+                    crate::project_hub::creation::AgentAccessPolicy::CreatorProjectAndPlan,
             };
-            let p = crate::commands::planning::create_project_tx(conn, input)?;
-            // 创建者自动获得该项目授权，便于同一 Agent 继续推进（见交付报告）
-            conn.execute(
-                "INSERT OR IGNORE INTO mcp_agent_grants (id, agent_row_id, project_id, created_at)
-                     VALUES (?1, ?2, ?3, ?4)",
-                rusqlite::params![
-                    uuid::Uuid::new_v4().to_string(),
-                    agent.row_id,
-                    p.id,
-                    crate::agents::now_iso()
-                ],
-            )
-            .map_err(AppError::from)?;
-            let revision = p.revision;
-            let id = p.id.clone();
-            let value = serde_json::to_value(&p).map_err(AppError::from)?;
+            let created = crate::project_hub::creation::create_with_conn(conn, request)?;
+            // 自动授权只作用于刚创建的项目根（+ 该计划 ID 兼容），绝不扩大为全局权限。
+            crate::agent_access::permissions::grant_created_project_in_conn(
+                conn,
+                &agent.row_id,
+                &created.project.id,
+            )?;
+            let revision = created.active_plan.revision;
+            let value = serde_json::json!({
+                // 旧字段 `id` 保留，但语义已修正为项目根 ID（不再是计划 ID）。
+                "id": created.project.id,
+                "projectId": created.project.id,
+                "planId": created.active_plan.id,
+                "activePlanId": created.active_plan.id,
+                "project": created.project,
+                "activePlan": created.active_plan,
+                "workspace": created.workspace,
+                "provisioningStatus": created.provisioning_status,
+                "created": created.created,
+            });
             Ok(outcome(
                 value,
                 "project",
-                id.clone(),
+                created.project.id.clone(),
                 Some(PlanningChanged {
                     kind: "project",
-                    project_id: Some(id),
+                    project_id: Some(created.project.id),
                     feature_id: None,
                     revision: Some(revision),
                 }),

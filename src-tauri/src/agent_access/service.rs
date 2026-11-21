@@ -46,23 +46,14 @@ pub fn data_dir() -> PathBuf {
 // ── 项目 ─────────────────────────────────────────────────────────
 
 #[derive(Clone, Debug, Serialize)]
-pub struct ProjectSummary {
-    pub id: String,
-    pub name: String,
-    /// planning | workspace
-    pub kind: String,
-    pub status: String,
-    pub description: String,
-    pub updated_at: String,
-    pub revision: i64,
-    pub feature_total: i64,
-    pub feature_done: i64,
-    pub task_total: i64,
-    pub item_total: i64,
-}
-
-#[derive(Clone, Debug, Serialize)]
 pub struct ProjectDetail {
+    /// 项目根 ID（canonical）。
+    pub project_id: String,
+    /// 本次返回的功能/里程碑所属计划（可能来自入参计划 ID）。
+    pub plan_id: Option<String>,
+    pub active_plan_id: Option<String>,
+    /// 该项目的全部计划（含归档）。
+    pub plans: Vec<crate::project_hub::service::ProjectPlanSummary>,
     pub summary: ProjectSummary,
     pub project: Value,
     pub milestones: Vec<PlanningMilestone>,
@@ -75,6 +66,8 @@ pub struct ProjectDetail {
 #[derive(Clone, Debug, Serialize)]
 pub struct ProjectStatus {
     pub project_id: String,
+    pub plan_id: Option<String>,
+    pub active_plan_id: Option<String>,
     pub name: String,
     pub kind: String,
     pub status: String,
@@ -86,43 +79,81 @@ pub struct ProjectStatus {
     pub revision: i64,
 }
 
-fn planning_summary(project: &PlanningProject) -> ProjectSummary {
-    ProjectSummary {
-        id: project.id.clone(),
-        name: project.name.clone(),
-        kind: "planning".into(),
-        status: project.status.clone(),
-        description: project.description.clone(),
-        updated_at: project.updated_at.clone(),
-        revision: project.revision,
-        feature_total: project.stats.feature_total,
-        feature_done: project.stats.feature_completed,
-        task_total: 0,
-        item_total: 0,
-    }
+/// 统一项目摘要：`id` 恒为项目根，计划只作为 `activePlanId` 出现。
+///
+/// 旧的 `kind=planning|workspace` 不再返回：那是两个「伪实体」，同一项目会出现两行。
+#[derive(Clone, Debug, Serialize)]
+pub struct ProjectSummary {
+    pub id: String,
+    pub name: String,
+    /// 项目类型（general / novel / game / ai_comic / development）
+    pub kind: String,
+    pub status: String,
+    pub description: String,
+    pub root_path: String,
+    pub root_exists: bool,
+    pub active_plan_id: Option<String>,
+    pub plan_count: i64,
+    pub updated_at: String,
+    pub revision: i64,
+    pub feature_total: i64,
+    pub feature_done: i64,
+    pub task_total: i64,
+    pub item_total: i64,
 }
 
-fn workspace_summary(db: &Db, project: &WorkspaceProject) -> AppResult<ProjectSummary> {
+fn project_summary(db: &Db, project: &WorkspaceProject) -> AppResult<ProjectSummary> {
     let (counter, counter_at, _) = db.with_read(|conn| {
         store::read_revision(conn, "project", &project.id)
     })?;
     let revision = store::effective_revision(counter, &counter_at, &project.updated_at);
+    let counts = db.with_read(|conn| {
+        let row = conn.query_row(
+            "SELECT
+               (SELECT COUNT(*) FROM planning_projects WHERE workspace_project_id = ?1),
+               (SELECT COUNT(*) FROM planning_features f
+                  JOIN planning_projects p ON p.id = f.project_id
+                 WHERE p.workspace_project_id = ?1),
+               (SELECT COUNT(*) FROM planning_features f
+                  JOIN planning_projects p ON p.id = f.project_id
+                 WHERE p.workspace_project_id = ?1 AND f.status = 'completed'),
+               (SELECT active_plan_id FROM workspace_projects WHERE id = ?1)
+             ",
+            rusqlite::params![project.id],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )?;
+        Ok(row)
+    })?;
     Ok(ProjectSummary {
         id: project.id.clone(),
         name: project.name.clone(),
-        kind: "workspace".into(),
+        kind: project.kind.clone(),
         status: project.status.clone(),
         description: project.note.clone(),
+        root_path: project.root_path.clone(),
+        root_exists: project.root_exists,
+        active_plan_id: counts.3,
+        plan_count: counts.0,
         updated_at: project.updated_at.clone(),
         revision,
-        feature_total: 0,
-        feature_done: 0,
+        feature_total: counts.1,
+        feature_done: counts.2,
         task_total: project.task_link_count,
         item_total: project.item_count,
     })
 }
 
-/// 合并两个既有项目体系（不新建第三套项目表）。
+/// 项目列表：**每个项目根一行**，计划不再作为独立项目出现。
+///
+/// `kind` 参数保留兼容：`planning` / `workspace` 是旧调用方的伪类型，按「全部项目」处理；
+/// 其他值按项目类型过滤（general / novel / ...）。
 pub fn list_projects(
     db: &Db,
     principal: &Principal,
@@ -133,21 +164,25 @@ pub fn list_projects(
 ) -> AppResult<(Vec<ProjectSummary>, Page)> {
     perms::require(db, principal, Capability::ProjectsRead, "")?;
     let keyword = q.map(|v| v.trim().to_lowercase()).filter(|v| !v.is_empty());
+    let kind_filter = kind
+        .map(str::trim)
+        .filter(|v| !v.is_empty() && *v != "planning" && *v != "workspace");
     let mut out: Vec<ProjectSummary> = Vec::new();
-    if kind.is_none() || kind == Some("planning") {
-        for project in list_projects_impl(db, Some(true))? {
-            out.push(planning_summary(&project));
+    for project in workspace_project_list_impl(db, None)? {
+        let summary = project_summary(db, &project)?;
+        if let Some(kind) = kind_filter {
+            if summary.kind != kind {
+                continue;
+            }
         }
-    }
-    if kind.is_none() || kind == Some("workspace") {
-        for project in workspace_project_list_impl(db, None)? {
-            out.push(workspace_summary(db, &project)?);
+        if let Some(keyword) = &keyword {
+            if !summary.name.to_lowercase().contains(keyword)
+                && !summary.description.to_lowercase().contains(keyword)
+            {
+                continue;
+            }
         }
-    }
-    if let Some(k) = keyword {
-        out.retain(|p| {
-            p.name.to_lowercase().contains(&k) || p.description.to_lowercase().contains(&k)
-        });
+        out.push(summary);
     }
     out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then(b.id.cmp(&a.id)));
     let total = out.len() as u32;
@@ -157,61 +192,110 @@ pub fn list_projects(
     Ok((out[start..end].to_vec(), page))
 }
 
-pub fn get_project(db: &Db, principal: &Principal, id: &str) -> AppResult<ProjectDetail> {
-    perms::require(db, principal, Capability::ProjectsRead, id)?;
-    let kind = db.with_read(|conn| perms::project_exists(conn, id))?;
-    match kind {
-        Some("planning") => {
-            let project = db.with_read(|conn| load_project_tx(conn, id))?;
-            let milestones = list_milestones_impl(db, id.to_string())?;
-            let features = list_features_impl(db, id.to_string())?;
-            let activity = activity_page_impl(db, id.to_string(), None, Some(20), Some(0))?
-                .items;
-            Ok(ProjectDetail {
-                summary: planning_summary(&project),
-                project: serde_json::to_value(&project)?,
-                milestones,
-                features,
-                items: Vec::new(),
-                tasks: Vec::new(),
-                activity,
-            })
+/// 解析合法项目根；旧计划缺项目根时在事务内补建（与 v78 迁移同一规则）。
+fn resolve_or_repair_project(db: &Db, id: &str) -> AppResult<Option<(String, Option<String>)>> {
+    let resolved = db.with_read(|conn| crate::project_hub::service::resolve_project_ref(conn, id))?;
+    match resolved {
+        Some(crate::project_hub::service::ProjectRef::Project(project_id)) => {
+            Ok(Some((project_id, None)))
         }
-        Some("workspace") => {
-            let project = workspace_project_get_impl(db, id)?;
-            let items = workspace_item_list_impl(db, id)?;
-            let links = workspace_task_link_list_impl(db, id)?;
-            Ok(ProjectDetail {
-                summary: workspace_summary(db, &project)?,
-                project: serde_json::to_value(&project)?,
-                milestones: Vec::new(),
-                features: Vec::new(),
-                items: links
-                    .iter()
-                    .map(|l| json!({ "kind": "task_link", "task_id": l.task_id, "title": l.title }))
-                    .chain(
-                        items
-                            .iter()
-                            .map(|i| serde_json::to_value(i).unwrap_or(Value::Null)),
-                    )
-                    .collect(),
-                tasks: links
-                    .iter()
-                    .map(|l| {
-                        json!({
-                            "task_id": l.task_id,
-                            "title": l.title,
-                            "status": l.status,
-                            "priority": l.priority,
-                            "due_at": l.due_at,
-                        })
-                    })
-                    .collect(),
-                activity: Vec::new(),
-            })
+        Some(crate::project_hub::service::ProjectRef::Plan {
+            plan_id,
+            project_id,
+        }) => Ok(Some((project_id, Some(plan_id)))),
+        None => {
+            let repaired = db.with_transaction(|conn| {
+                crate::project_hub::service::ensure_project_for_plan_tx(conn, id)
+            });
+            match repaired {
+                Ok(project_id) => Ok(Some((project_id, Some(id.to_string())))),
+                Err(AppError::Validation(_)) | Err(AppError::NotFound(_)) => Ok(None),
+                Err(error) => Err(error),
+            }
         }
-        _ => Err(AppError::NotFound(format!("项目不存在: {id}"))),
     }
+}
+
+pub fn get_project(db: &Db, principal: &Principal, id: &str) -> AppResult<ProjectDetail> {
+    let id = id.trim();
+    if id.is_empty() {
+        return Err(missing_arg("project_id"));
+    }
+    let (project_id, requested_plan) = resolve_or_repair_project(db, id)?
+        .ok_or_else(|| AppError::NotFound(format!("项目不存在: {id}")))?;
+    // 授权一律按项目根判定：计划 ID 只是入参兼容，不能成为跨项目授权的入口。
+    perms::require(db, principal, Capability::ProjectsRead, &project_id)?;
+
+    let project = workspace_project_get_impl(db, &project_id)?;
+    let active_plan_id: Option<String> = db.with_read(|conn| {
+        conn.query_row(
+            "SELECT active_plan_id FROM workspace_projects WHERE id = ?1",
+            rusqlite::params![project_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(AppError::from)
+    })?;
+    let plans = db.with_read(|conn| crate::project_hub::service::list_plan_summaries(conn, &project_id))?;
+    let plan_id = requested_plan
+        .or_else(|| {
+            plans
+                .iter()
+                .find(|plan| plan.is_active && !plan.archived)
+                .map(|plan| plan.id.clone())
+        })
+        .or_else(|| plans.first().map(|plan| plan.id.clone()));
+
+    let (milestones, features, activity) = match plan_id.as_deref() {
+        Some(plan_id) => {
+            let milestones = list_milestones_impl(db, plan_id.to_string())?;
+            let features = list_features_impl(db, plan_id.to_string())?;
+            let activity = activity_page_impl(db, plan_id.to_string(), None, Some(20), Some(0))?
+                .items;
+            (milestones, features, activity)
+        }
+        None => (Vec::new(), Vec::new(), Vec::new()),
+    };
+    let links = workspace_task_link_list_impl(db, &project_id)?;
+    let items = workspace_item_list_impl(db, &project_id)?;
+    let mut project_value = serde_json::to_value(&project)?;
+    if let Some(object) = project_value.as_object_mut() {
+        object.insert("projectId".into(), json!(project_id));
+        object.insert("activePlanId".into(), json!(active_plan_id));
+        object.insert("planCount".into(), json!(plans.len()));
+    }
+    Ok(ProjectDetail {
+        project_id: project_id.clone(),
+        plan_id: plan_id.clone(),
+        active_plan_id: active_plan_id.clone(),
+        plans,
+        summary: project_summary(db, &project)?,
+        project: project_value,
+        milestones,
+        features,
+        items: links
+            .iter()
+            .map(|l| json!({ "kind": "task_link", "task_id": l.task_id, "title": l.title }))
+            .chain(
+                items
+                    .iter()
+                    .map(|i| serde_json::to_value(i).unwrap_or(Value::Null)),
+            )
+            .collect(),
+        tasks: links
+            .iter()
+            .map(|l| {
+                json!({
+                    "task_id": l.task_id,
+                    "title": l.title,
+                    "status": l.status,
+                    "priority": l.priority,
+                    "due_at": l.due_at,
+                })
+            })
+            .collect(),
+        activity,
+    })
 }
 
 pub fn project_status(db: &Db, principal: &Principal, id: &str) -> AppResult<ProjectStatus> {
@@ -219,67 +303,40 @@ pub fn project_status(db: &Db, principal: &Principal, id: &str) -> AppResult<Pro
     let mut blocked = Vec::new();
     let mut next_steps = Vec::new();
     let mut progress = 0i64;
-    let counts = if detail.summary.kind == "planning" {
-        let features = &detail.features;
-        let mut by_status = std::collections::BTreeMap::<String, i64>::new();
-        for f in features {
-            *by_status.entry(f.status.clone()).or_insert(0) += 1;
-            if f.status == "blocked" {
-                blocked.push(json!({ "feature_id": f.id, "title": f.title, "priority": f.priority }));
-            }
-            if f.status != "completed" && f.status != "paused" {
-                for step in &f.steps {
-                    if !step.done {
-                        next_steps.push(format!("{} / {}", f.title, step.title));
-                    }
+    let mut by_status = std::collections::BTreeMap::<String, i64>::new();
+    for feature in &detail.features {
+        *by_status.entry(feature.status.clone()).or_insert(0) += 1;
+        if feature.status == "blocked" {
+            blocked.push(json!({ "feature_id": feature.id, "title": feature.title, "priority": feature.priority }));
+        }
+        if feature.status != "completed" && feature.status != "paused" {
+            for step in &feature.steps {
+                if !step.done {
+                    next_steps.push(format!("{} / {}", feature.title, step.title));
                 }
             }
         }
-        if !features.is_empty() {
-            let done = by_status.get("completed").copied().unwrap_or(0);
-            progress = done * 100 / features.len() as i64;
-        }
-        json!({
-            "features": by_status,
-            "milestones": detail.milestones.len(),
-        })
-    } else {
-        let items = &detail.items;
-        let mut by_status = std::collections::BTreeMap::<String, i64>::new();
-        for item in items {
-            let status = item
-                .get("status")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-                .to_string();
-            *by_status.entry(status.clone()).or_insert(0) += 1;
-            if status == "blocked" {
-                blocked.push(item.clone());
-            }
-            if status != "done" && status != "archived" {
-                if let Some(title) = item.get("title").and_then(|v| v.as_str()) {
-                    next_steps.push(title.to_string());
-                }
-            }
-        }
-        let done = by_status.get("done").copied().unwrap_or(0);
-        if !items.is_empty() {
-            progress = done * 100 / items.len() as i64;
-        }
-        json!({
-            "items": by_status,
-            "linked_tasks": detail.tasks.len(),
-        })
-    };
+    }
+    if !detail.features.is_empty() {
+        let done = by_status.get("completed").copied().unwrap_or(0);
+        progress = done * 100 / detail.features.len() as i64;
+    }
     next_steps.truncate(20);
-    let status = detail.summary.status.clone();
     Ok(ProjectStatus {
-        project_id: detail.summary.id.clone(),
+        project_id: detail.project_id.clone(),
+        plan_id: detail.plan_id.clone(),
+        active_plan_id: detail.active_plan_id.clone(),
         name: detail.summary.name.clone(),
         kind: detail.summary.kind.clone(),
-        status,
+        status: detail.summary.status.clone(),
         progress_percent: progress,
-        counts,
+        counts: json!({
+            "features": by_status,
+            "milestones": detail.milestones.len(),
+            "plans": detail.plans.len(),
+            "tasks": detail.tasks.len(),
+            "items": detail.summary.item_total,
+        }),
         blocked,
         next_steps,
         updated_at: detail.summary.updated_at.clone(),
@@ -728,9 +785,14 @@ fn task_project_id(db: &Db, task_id: &str) -> String {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct PlanView {
+    /// 计划 ID（`planning_projects.id`）。
+    pub id: String,
+    /// 所属项目根 ID（`workspace_projects.id`）——授权与上下文一律用它。
     pub project_id: String,
     pub name: String,
     pub status: String,
+    pub is_active: bool,
+    pub archived: bool,
     pub target_date: Option<String>,
     pub revision: i64,
     pub updated_at: String,
@@ -740,15 +802,15 @@ pub struct PlanView {
     pub progress_percent: i64,
 }
 
-fn plan_from_project(
+fn plan_view_from_plan(
     db: &Db,
-    project: PlanningProject,
+    summary: crate::project_hub::service::ProjectPlanSummary,
     with_activity: bool,
 ) -> AppResult<PlanView> {
-    let milestones = list_milestones_impl(db, project.id.clone())?;
-    let features = list_features_impl(db, project.id.clone())?;
+    let milestones = list_milestones_impl(db, summary.id.clone())?;
+    let features = list_features_impl(db, summary.id.clone())?;
     let activity = if with_activity {
-        activity_page_impl(db, project.id.clone(), None, Some(30), Some(0))?.items
+        activity_page_impl(db, summary.id.clone(), None, Some(30), Some(0))?.items
     } else {
         Vec::new()
     };
@@ -759,12 +821,15 @@ fn plan_from_project(
         done * 100 / features.len() as i64
     };
     Ok(PlanView {
-        project_id: project.id,
-        name: project.name,
-        status: project.status,
-        target_date: project.target_date,
-        revision: project.revision,
-        updated_at: project.updated_at,
+        id: summary.id,
+        project_id: summary.project_id,
+        name: summary.name,
+        status: summary.status,
+        is_active: summary.is_active,
+        archived: summary.archived,
+        target_date: summary.target_date,
+        revision: summary.revision,
+        updated_at: summary.updated_at,
         milestones,
         features,
         activity,
@@ -772,6 +837,31 @@ fn plan_from_project(
     })
 }
 
+fn plan_view_from_legacy_project(
+    db: &Db,
+    project: PlanningProject,
+    with_activity: bool,
+) -> AppResult<PlanView> {
+    let project_id = db.with_read(|conn| {
+        crate::project_hub::service::resolve_project_root(conn, &project.id)
+    })?;
+    let summary = crate::project_hub::service::ProjectPlanSummary {
+        id: project.id,
+        project_id: project_id.unwrap_or_default(),
+        name: project.name,
+        description: project.description,
+        status: project.status,
+        target_date: project.target_date,
+        is_active: true,
+        archived: false,
+        revision: project.revision,
+        created_at: project.created_at,
+        updated_at: project.updated_at,
+    };
+    plan_view_from_plan(db, summary, with_activity)
+}
+
+/// 计划列表（独立于项目列表）。`projectId` 可传项目根或计划 ID 过滤。
 pub fn list_plans(
     db: &Db,
     principal: &Principal,
@@ -779,16 +869,32 @@ pub fn list_plans(
     limit: u32,
     offset: u32,
 ) -> AppResult<(Vec<PlanView>, Page)> {
-    perms::require(db, principal, Capability::PlansRead, project_id.unwrap_or(""))?;
+    let filter_root = match project_id.map(str::trim).filter(|v| !v.is_empty()) {
+        Some(id) => Some(
+            db.with_read(|conn| crate::project_hub::service::resolve_project_root(conn, id))?
+                .ok_or_else(|| AppError::NotFound(format!("项目不存在: {id}")))?,
+        ),
+        None => None,
+    };
+    perms::require(
+        db,
+        principal,
+        Capability::PlansRead,
+        filter_root.as_deref().unwrap_or(""),
+    )?;
     let mut plans = Vec::new();
-    match project_id {
-        Some(id) => {
-            let project = db.with_read(|conn| load_project_tx(conn, id))?;
-            plans.push(plan_from_project(db, project, false)?);
+    match filter_root {
+        Some(root) => {
+            let summaries = db.with_read(|conn| {
+                crate::project_hub::service::list_plan_summaries(conn, &root)
+            })?;
+            for summary in summaries {
+                plans.push(plan_view_from_plan(db, summary, false)?);
+            }
         }
         None => {
-            for project in list_projects_impl(db, Some(false))? {
-                plans.push(plan_from_project(db, project, false)?);
+            for project in list_projects_impl(db, Some(true))? {
+                plans.push(plan_view_from_legacy_project(db, project, false)?);
             }
         }
     }
@@ -802,22 +908,60 @@ pub fn list_plans(
 /// 当前计划：优先 `in_progress`，其次 `planning`；都没有则返回 None（不猜）。
 pub fn current_plan(db: &Db, principal: &Principal) -> AppResult<Option<PlanView>> {
     perms::require(db, principal, Capability::PlansRead, "")?;
-    let projects = list_projects_impl(db, Some(false))?;
-    let pick = projects
-        .iter()
-        .find(|p| p.status == "in_progress")
-        .or_else(|| projects.iter().find(|p| p.status == "planning"))
-        .cloned();
-    match pick {
-        Some(project) => Ok(Some(plan_from_project(db, project, true)?)),
+    let plans = db.with_read(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT p.id FROM planning_projects p
+             WHERE p.archived = 0
+             ORDER BY CASE p.status WHEN 'in_progress' THEN 0 WHEN 'planning' THEN 1 ELSE 2 END,
+                      p.updated_at DESC
+             LIMIT 1",
+        )?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    })?;
+    match plans.first() {
+        Some(plan_id) => {
+            let summary =
+                db.with_read(|conn| crate::project_hub::service::load_plan_summary(conn, plan_id))?;
+            Ok(Some(plan_view_from_plan(db, summary, true)?))
+        }
         None => Ok(None),
     }
 }
 
-pub fn get_plan(db: &Db, principal: &Principal, project_id: &str) -> AppResult<PlanView> {
-    perms::require(db, principal, Capability::PlansRead, project_id)?;
-    let project = db.with_read(|conn| load_project_tx(conn, project_id))?;
-    plan_from_project(db, project, true)
+/// 计划详情：入参可以是计划 ID，也可以是项目根（取 active 计划）。
+pub fn get_plan(db: &Db, principal: &Principal, id: &str) -> AppResult<PlanView> {
+    let (root, plan_hint) = match db
+        .with_read(|conn| crate::project_hub::service::resolve_project_ref(conn, id))?
+    {
+        Some(crate::project_hub::service::ProjectRef::Project(root)) => (root, None),
+        Some(crate::project_hub::service::ProjectRef::Plan {
+            plan_id,
+            project_id,
+        }) => (project_id, Some(plan_id)),
+        None => return Err(AppError::NotFound(format!("项目/计划不存在: {id}"))),
+    };
+    perms::require(db, principal, Capability::PlansRead, &root)?;
+    let plan_id = match plan_hint {
+        Some(plan_id) => plan_id,
+        None => {
+            let summaries = db
+                .with_read(|conn| crate::project_hub::service::list_plan_summaries(conn, &root))?;
+            summaries
+                .iter()
+                .find(|plan| plan.is_active && !plan.archived)
+                .or_else(|| summaries.first())
+                .map(|plan| plan.id.clone())
+                .ok_or_else(|| AppError::NotFound("项目没有计划".into()))?
+        }
+    };
+    let summary =
+        db.with_read(|conn| crate::project_hub::service::load_plan_summary(conn, &plan_id))?;
+    plan_view_from_plan(db, summary, true)
 }
 
 // ── 知识库 ───────────────────────────────────────────────────────

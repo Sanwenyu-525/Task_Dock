@@ -270,16 +270,35 @@ impl OperationResult {
 
     /// 从业务返回值（含 `id` / `revision`）提取真实资源指针。
     pub fn from_value(kind: &str, value: &serde_json::Value) -> Self {
-        let id = value
-            .get("id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let revision = value.get("revision").and_then(|v| v.as_i64());
+        let pick = |key: &str| {
+            value
+                .get(key)
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .filter(|v| !v.is_empty())
+        };
+        let project_id = pick("projectId").or_else(|| pick("project_id"));
+        // 项目创建结果没有顶层 `id`：资源 ID 直接取项目根，不能用标题或计划 ID 顶替。
+        let id = pick("id")
+            .or_else(|| project_id.clone())
+            .unwrap_or_default();
+        let revision = value
+            .get("revision")
+            .and_then(|v| v.as_i64())
+            .or_else(|| {
+                value
+                    .get("activePlan")
+                    .and_then(|plan| plan.get("revision"))
+                    .and_then(|v| v.as_i64())
+            });
         Self {
             resource_kind: Some(kind.to_string()),
             resource_id: if id.is_empty() { None } else { Some(id) },
-            project_id: None,
+            project_id: project_id.or_else(|| {
+                (kind == "project")
+                    .then(|| pick("id"))
+                    .flatten()
+            }),
             revision,
             detail: None,
         }
@@ -1495,6 +1514,8 @@ pub fn describe_rest_write(method: &str, path: &str) -> Option<(&'static str, &'
         ("POST", "knowledge") => ("knowledge.create", "knowledge"),
         ("PATCH", "knowledge") => ("knowledge.update", "knowledge"),
         ("POST", "decisions") => ("decision.create", "decision"),
+        // 项目创建是独立操作：结果必须能落到项目根 ID（不是计划 ID）。
+        ("POST", "projects") => ("project.create", "project"),
         ("POST", "handoffs") => ("handoff.create", "handoff"),
         ("POST", "reports") => ("report.create", "report"),
         ("POST", "imports") => ("import.decide", "import"),

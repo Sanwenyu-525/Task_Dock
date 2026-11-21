@@ -19,6 +19,8 @@ const bridge = vi.hoisted(() => ({
   devProjectList: vi.fn(),
   workspaceSetActiveProject: vi.fn(),
   workspaceProjectSave: vi.fn(),
+  // 统一项目创建（工作台快速创建走同一个服务）。
+  projectCreate: vi.fn(),
   onWorkbenchNavigate: vi.fn(),
   workbenchTakeNav: vi.fn(),
   workbenchNavAck: vi.fn(),
@@ -180,7 +182,7 @@ describe("WorkbenchShell", () => {
     // 宽度档位：md(520)，三行表单在窄窗内换行而不横向溢出。
     expect(dialog.classList.contains("size-md")).toBe(true);
     const rootInput = within(dialog).getByRole("textbox", {
-      name: "工作目录（可空）",
+      name: "工作目录",
     }) as HTMLInputElement;
 
     const pickButton = within(dialog)
@@ -205,9 +207,10 @@ describe("WorkbenchShell", () => {
     fireEvent.change(within(dialog).getByRole("textbox", { name: "项目名称" }), {
       target: { value: "离线项目" },
     });
-    fireEvent.change(within(dialog).getByRole("textbox", { name: "工作目录（可空）" }), {
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "工作目录" }), {
       target: { value: "D:\\Missing" },
     });
+    // 输入路径时自动切到「关联已有目录」（不会自动切到 create_new）。
     fireEvent.click(within(dialog).getByRole("button", { name: "确认" }));
 
     // 目录不存在不是硬错误：先给出确认，取消则中止本次创建。
@@ -217,7 +220,7 @@ describe("WorkbenchShell", () => {
     await waitFor(() =>
       expect(screen.queryByRole("dialog", { name: "工作目录不存在" })).toBeNull(),
     );
-    expect(bridge.workspaceProjectSave).not.toHaveBeenCalled();
+    expect(bridge.projectCreate).not.toHaveBeenCalled();
     // 新建项目弹层仍在，用户可以修改路径后重试。
     expect(screen.getByRole("dialog", { name: "新建项目" })).toBeTruthy();
 
@@ -229,8 +232,8 @@ describe("WorkbenchShell", () => {
     );
     const reconfirm = await screen.findByRole("dialog", { name: "工作目录不存在" });
     fireEvent.click(within(reconfirm).getByRole("button", { name: "仍然保存" }));
-    await waitFor(() => expect(bridge.workspaceProjectSave).toHaveBeenCalledTimes(1));
-    expect(bridge.workspaceProjectSave.mock.calls[0][0]).toMatchObject({
+    await waitFor(() => expect(bridge.projectCreate).toHaveBeenCalledTimes(1));
+    expect(bridge.projectCreate.mock.calls[0][0]).toMatchObject({
       rootPath: "D:\\Missing",
     });
   });

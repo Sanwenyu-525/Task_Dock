@@ -31,6 +31,9 @@ pub const CAPABILITIES: &[&str] = &[
     "context.read",
     "handoffs.read",
     "handoffs.write",
+    // v90：项目创建与项目写。创建是全局能力（项目尚不存在），必须显式授予。
+    "projects.create",
+    "projects.write",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,6 +54,8 @@ pub enum Capability {
     ContextRead,
     HandoffsRead,
     HandoffsWrite,
+    ProjectsCreate,
+    ProjectsWrite,
 }
 
 impl Capability {
@@ -72,6 +77,8 @@ impl Capability {
             Capability::ContextRead => "context.read",
             Capability::HandoffsRead => "handoffs.read",
             Capability::HandoffsWrite => "handoffs.write",
+            Capability::ProjectsCreate => "projects.create",
+            Capability::ProjectsWrite => "projects.write",
         }
     }
 
@@ -93,6 +100,8 @@ impl Capability {
             "context.read" => Capability::ContextRead,
             "handoffs.read" => Capability::HandoffsRead,
             "handoffs.write" => Capability::HandoffsWrite,
+            "projects.create" => Capability::ProjectsCreate,
+            "projects.write" => Capability::ProjectsWrite,
             _ => return None,
         })
     }
@@ -105,14 +114,21 @@ impl Capability {
                 | Capability::KnowledgeWrite
                 | Capability::DecisionsWrite
                 | Capability::HandoffsWrite
+                | Capability::ProjectsCreate
+                | Capability::ProjectsWrite
         )
     }
 
     /// 作用域必须为全局的能力（逐资源授权对列表类查询无意义）。
+    ///
+    /// `projects.create` 也在其中：项目还没有 ID，逐资源授权无法表达「可以创建」。
     pub fn global_only(self) -> bool {
         matches!(
             self,
-            Capability::SkillsRead | Capability::ContextRead | Capability::WorkspaceRead
+            Capability::SkillsRead
+                | Capability::ContextRead
+                | Capability::WorkspaceRead
+                | Capability::ProjectsCreate
         )
     }
 }
@@ -164,6 +180,20 @@ fn project_exists(conn: &Connection, resource_id: &str) -> AppResult<bool> {
     Ok(found.is_some())
 }
 
+/// 以项目为资源范围的能力（与 `resource_exists` 的项目分支保持一致）。
+fn project_scoped(capability: Capability) -> bool {
+    matches!(
+        capability,
+        Capability::ProjectsRead
+            | Capability::ProjectsWrite
+            | Capability::PlansRead
+            | Capability::DecisionsRead
+            | Capability::DecisionsWrite
+            | Capability::HandoffsRead
+            | Capability::HandoffsWrite
+    )
+}
+
 fn resource_exists(conn: &Connection, capability: Capability, resource_id: &str) -> AppResult<bool> {
     if resource_id.is_empty() {
         return Ok(true);
@@ -175,10 +205,12 @@ fn resource_exists(conn: &Connection, capability: Capability, resource_id: &str)
         Capability::KnowledgeRead | Capability::KnowledgeWrite => {
             ("SELECT 1 FROM knowledge_bases WHERE id = ?1", "知识库")
         }
-        Capability::WorkspaceRead | Capability::SkillsRead | Capability::ContextRead => {
-            return Ok(true)
-        }
+        Capability::WorkspaceRead
+        | Capability::SkillsRead
+        | Capability::ContextRead
+        | Capability::ProjectsCreate => return Ok(true),
         Capability::ProjectsRead
+        | Capability::ProjectsWrite
         | Capability::PlansRead
         | Capability::DecisionsRead
         | Capability::DecisionsWrite
@@ -249,6 +281,18 @@ pub fn grant(
     })?;
     let resource_id = resource_id.trim();
     check_resource(capability, resource_id)?;
+    // 项目型能力的资源范围统一存项目根：计划 ID 只是入参写法，不能成为授权键。
+    let resource_id = if resource_id.is_empty() || !project_scoped(capability) {
+        resource_id.to_string()
+    } else {
+        db.with_read(|conn| {
+            Ok(
+                crate::project_hub::service::resolve_project_root(conn, resource_id)?
+                    .unwrap_or_else(|| resource_id.to_string()),
+            )
+        })?
+    };
+    let resource_id = resource_id.as_str();
     let now = crate::agents::now_iso();
     db.with_conn(|conn| {
         let exists: bool = conn.query_row(

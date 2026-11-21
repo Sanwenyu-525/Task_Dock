@@ -347,11 +347,11 @@ fn validate_root_path(raw: Option<String>) -> AppResult<String> {
     if root_path.chars().count() > MAX_PATH_CHARS {
         return Err(AppError::Validation("项目路径过长".into()));
     }
-    if root_path.chars().any(|c| c.is_control()) {
-        return Err(AppError::Validation("项目路径含非法控制字符".into()));
-    }
-    if !Path::new(root_path).is_absolute() {
-        return Err(AppError::Validation("项目路径必须是绝对路径".into()));
+    // 路径策略唯一来源：拒绝 UNC / `\\?\` / 盘符相对 / 非法字符（与创建服务同一口径）。
+    if let Some(reason) = crate::project_hub::service::root_path_violation(root_path) {
+        return Err(AppError::Validation(
+            crate::project_hub::service::root_path_error(reason),
+        ));
     }
     Ok(root_path.to_string())
 }

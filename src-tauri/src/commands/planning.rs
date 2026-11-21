@@ -670,36 +670,69 @@ pub fn planning_list_projects(
     list_projects_impl(&db, include_archived)
 }
 
-pub fn create_project_tx(
+/// 规划入口的创建结果：项目根与计划 ID 同时返回。
+///
+/// `plan` 是旧版 `planning_create_project` 的返回结构（计划视图）；`project_id` /
+/// `active_plan_id` 是统一契约，调用方不得再拿 `plan.id` 当项目 ID 使用。
+#[derive(serde::Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateProjectOutcome {
+    pub project_id: String,
+    pub active_plan_id: String,
+    pub plan: PlanningProject,
+    pub active_plan: crate::project_hub::service::ProjectPlanSummary,
+}
+
+/// 统一创建（事务内）：项目根 + 初始计划 + 规划数据同事务。
+pub fn create_project_outcome_tx(
     conn: &Connection,
     input: ProjectInput,
-) -> AppResult<PlanningProject> {
+) -> AppResult<CreateProjectOutcome> {
     let name = check_name(&input.name, "项目", 100)?;
     let description = check_text(&input.description, "项目描述", 2000)?;
     let status = input.status.as_deref().unwrap_or("planning");
     check_status(status, PROJECT_STATUSES, "项目")?;
     let target_date = normalize_date(&input.target_date)?;
-    // 兼容适配器：项目根（workspace_projects）与计划容器（planning_projects）同一事务创建，
-    // 不再产生「只有计划、没有项目」的孤立数据。
-    let (_, plan_id) = crate::project_hub::service::insert_project_root_tx(
-        conn,
-        &crate::project_hub::service::CreateProjectRootInput {
-            name: name.clone(),
-            kind: "general".into(),
-            description: description.clone(),
-            goal: String::new(),
-            target_date,
-            root_path: None,
-            dev_project_id: None,
-            note: Some(description.clone()),
-            template_id: None,
-            plan_name: Some(name),
-            plan_description: Some(description),
-            plan_status: Some(status.to_string()),
-            plan_sort_order: None,
-        },
-    )?;
-    load_project_tx(conn, &plan_id)
+    let planned_goal = crate::project_hub::creation::CreateProjectRequest {
+        client_request_id: String::new(),
+        name: name.clone(),
+        kind: "general".into(),
+        description: description.clone(),
+        goal: String::new(),
+        target_date,
+        template_id: None,
+        root_path: None,
+        directory_mode: crate::project_hub::creation::DirectoryMode::MetadataOnly,
+        dev_project_id: None,
+        note: Some(description.clone()),
+        plan_name: Some(name),
+        plan_description: Some(description),
+        plan_status: Some(status.to_string()),
+        draft: Default::default(),
+        agent_access_policy: crate::project_hub::creation::AgentAccessPolicy::None,
+    };
+    let created = crate::project_hub::creation::create_with_conn(conn, planned_goal)?;
+    let plan = load_project_tx(conn, &created.active_plan.id)?;
+    Ok(CreateProjectOutcome {
+        project_id: created.project.id,
+        active_plan_id: created.active_plan.id.clone(),
+        plan,
+        active_plan: created.active_plan,
+    })
+}
+
+pub fn create_project_tx(
+    conn: &Connection,
+    input: ProjectInput,
+) -> AppResult<PlanningProject> {
+    Ok(create_project_outcome_tx(conn, input)?.plan)
+}
+
+pub fn create_project_outcome_impl(
+    db: &Db,
+    input: ProjectInput,
+) -> AppResult<CreateProjectOutcome> {
+    db.with_transaction(|conn| create_project_outcome_tx(conn, input))
 }
 
 pub fn create_project_impl(db: &Db, input: ProjectInput) -> AppResult<PlanningProject> {

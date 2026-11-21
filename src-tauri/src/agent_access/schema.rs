@@ -489,6 +489,114 @@ CREATE INDEX IF NOT EXISTS idx_agent_ops_lease
 "#,
 );
 
+/// v90：能力白名单扩展「项目创建 / 项目写」。
+///
+/// SQLite 无法原地修改 CHECK，按 v73/v75/v76 的既有做法重建并逐行复制旧授权。
+/// **不新增默认授权**：创建项目必须由用户在「Agent 接入」里显式勾选，
+/// `scope=project_rw` 不等于可以创建项目。
+pub const MIGRATION_90: (i64, &str) = (
+    90,
+    r#"
+CREATE TABLE mcp_agent_capabilities_v90 (
+  id TEXT PRIMARY KEY NOT NULL,
+  agent_row_id TEXT NOT NULL REFERENCES mcp_agents(id) ON DELETE CASCADE,
+  capability TEXT NOT NULL CHECK (capability IN (
+    'projects.read','projects.create','projects.write',
+    'tasks.read','tasks.write','plans.read',
+    'knowledge.read','knowledge.write','decisions.read','decisions.write',
+    'context.read','handoffs.read','handoffs.write','skills.read',
+    'notes.read','notes.write','workflows.read','workspace.read'
+  )),
+  resource_id TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  UNIQUE (agent_row_id, capability, resource_id)
+);
+INSERT INTO mcp_agent_capabilities_v90(id, agent_row_id, capability, resource_id, created_at)
+SELECT id, agent_row_id, capability, resource_id, created_at FROM mcp_agent_capabilities;
+DROP TABLE mcp_agent_capabilities;
+ALTER TABLE mcp_agent_capabilities_v90 RENAME TO mcp_agent_capabilities;
+CREATE INDEX idx_mcp_caps_agent ON mcp_agent_capabilities(agent_row_id, capability);
+"#,
+);
+
+/// v91：把项目授权表的外键从「计划」改到「项目根」。
+///
+/// 为什么必须改：`mcp_agent_grants.project_id` 原本 `REFERENCES planning_projects(id)`，
+/// 而统一身份后授权目标是 `workspace_projects(id)`；在外键开启时写入项目根会直接失败。
+/// 迁移先为「有授权但缺项目根」的历史计划补建根（与 v78 / `ensure_project_for_plan_tx`
+/// 同一规则：同 ID 优先），再重建表并逐行映射，**不丢任何有效授权**。
+pub const MIGRATION_91: (i64, &str) = (
+    91,
+    r#"
+-- 1) 有授权但缺项目根的历史计划：同 ID 补建项目根。
+INSERT INTO workspace_projects
+  (id, name, kind, status, root_path, dev_project_id, note, created_at, updated_at,
+   description, goal, target_date, active_plan_id)
+SELECT p.id, p.name, 'general',
+       CASE WHEN p.archived = 1 OR p.status = 'completed' THEN 'archived' ELSE 'active' END,
+       '', NULL, p.description, p.created_at, p.updated_at, p.description, '', p.target_date, NULL
+FROM planning_projects p
+WHERE EXISTS (SELECT 1 FROM mcp_agent_grants g WHERE g.project_id = p.id)
+  AND NOT EXISTS (SELECT 1 FROM workspace_projects w WHERE w.id = p.id);
+
+-- 2) 计划归属与 active 指针：只在缺失时补，不覆盖既有选择。
+UPDATE planning_projects
+SET workspace_project_id = id, is_active = 1
+WHERE id IN (SELECT project_id FROM mcp_agent_grants)
+  AND (workspace_project_id IS NULL OR workspace_project_id = '');
+
+UPDATE workspace_projects
+SET active_plan_id = (
+  SELECT p.id FROM planning_projects p
+  WHERE p.workspace_project_id = workspace_projects.id AND p.is_active = 1
+  ORDER BY p.created_at LIMIT 1
+)
+WHERE active_plan_id IS NULL
+  AND EXISTS (
+    SELECT 1 FROM planning_projects p
+    WHERE p.workspace_project_id = workspace_projects.id AND p.is_active = 1
+  );
+
+-- 3) 能力授权的资源范围同样归一到项目根（旧数据可能按计划 ID 授权）。
+--    只在能解析出项目根时改写；UNIQUE 冲突用 OR IGNORE，已有根授权优先保留。
+UPDATE OR IGNORE mcp_agent_capabilities
+SET resource_id = (
+  SELECT trim(p.workspace_project_id) FROM planning_projects p
+  WHERE p.id = mcp_agent_capabilities.resource_id
+)
+WHERE capability IN ('projects.read','projects.write','plans.read',
+                     'decisions.read','decisions.write','handoffs.read','handoffs.write')
+  AND resource_id <> ''
+  AND EXISTS (
+    SELECT 1 FROM planning_projects p
+    WHERE p.id = mcp_agent_capabilities.resource_id
+      AND p.workspace_project_id IS NOT NULL
+      AND trim(p.workspace_project_id) <> ''
+  );
+
+-- 4) 重建授权表：外键指向项目根，删除项目即级联清理授权。
+CREATE TABLE mcp_agent_grants_v91 (
+  id TEXT PRIMARY KEY NOT NULL,
+  agent_row_id TEXT NOT NULL REFERENCES mcp_agents(id) ON DELETE CASCADE,
+  project_id TEXT NOT NULL REFERENCES workspace_projects(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL,
+  UNIQUE (agent_row_id, project_id)
+);
+INSERT OR IGNORE INTO mcp_agent_grants_v91 (id, agent_row_id, project_id, created_at)
+SELECT g.id,
+       g.agent_row_id,
+       COALESCE(NULLIF(trim(p.workspace_project_id), ''), g.project_id),
+       g.created_at
+FROM mcp_agent_grants g
+LEFT JOIN planning_projects p ON p.id = g.project_id
+WHERE COALESCE(NULLIF(trim(p.workspace_project_id), ''), g.project_id)
+      IN (SELECT id FROM workspace_projects);
+DROP TABLE mcp_agent_grants;
+ALTER TABLE mcp_agent_grants_v91 RENAME TO mcp_agent_grants;
+CREATE INDEX idx_mcp_agent_grants_project ON mcp_agent_grants(project_id);
+"#,
+);
+
 #[cfg(test)]
 mod tests {
     use crate::db::Db;

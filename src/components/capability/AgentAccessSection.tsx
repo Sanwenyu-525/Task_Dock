@@ -75,6 +75,9 @@ const WRITE_CAPABILITIES = new Set([
   "knowledge.write",
   "decisions.write",
   "handoffs.write",
+  // 创建项目是独立写能力：scope=project_rw 不隐含创建权，必须单独勾选。
+  "projects.create",
+  "projects.write",
 ]);
 
 const CAPABILITY_FAMILIES: readonly { key: string; label: string }[] = [

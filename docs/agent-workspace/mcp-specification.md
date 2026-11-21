@@ -121,3 +121,13 @@ MCP 客户端 ──stdio──▶ taskdock.exe --mcp-server ──HTTP 127.0.0.
 
 **限制**：上述 MCP 验收运行在 `TASKDOCK_TEST_HEADLESS=1` 下，绕过了主窗口栈溢出；正常桌面启动
 仍未通过，不能据此宣称 UI/安装包验收通过。
+
+## `taskdock_create_project`（2026-11-21 收敛）
+
+- 授权：`scope=project_rw` **且** 显式持有 `projects.create`；缺一即 `AUTHZ`，不再「有 scope 就能建」；
+- 入参：`name`（必填）、`kind`、`description`、`goal`、`template_id`、`root_path`、`target_date`、
+  `requestId`；`root_path` 只登记已有目录（不存在登记为离线），**不创建目录**；
+- 返回（破坏性修正）：`id` 从「计划 ID」改为**项目根 ID**，并新增
+  `projectId` / `planId` / `activePlanId` / `project` / `activePlan` / `workspace` / `provisioningStatus`；
+- 授权：创建者只获得刚创建项目根的 grant（`mcp_agent_grants.project_id` v91 外键指向项目根）；
+- 幂等：`requestId` 命中同一摘要时返回原结果，参数不同返回冲突；审计 entity 指向项目根。

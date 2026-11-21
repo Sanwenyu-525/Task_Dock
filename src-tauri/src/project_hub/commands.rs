@@ -41,6 +41,104 @@ pub async fn project_hub_get_project(
         .map_err(|error| background_error("项目读取失败", error))?
 }
 
+// ── 统一项目创建（UI 快速创建） ──────────────────────────────────────
+
+/// 快速创建请求：只描述「用户选了什么」，不重复任何业务规则。
+#[derive(serde::Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct InitialPlanCommand {
+    #[serde(default)]
+    pub goals: Vec<super::service::CreateGoalInput>,
+    #[serde(default)]
+    pub phases: Vec<super::service::CreatePhaseInput>,
+    #[serde(default)]
+    pub features: Vec<super::service::CreateFeatureInput>,
+    #[serde(default)]
+    pub tasks: Vec<super::service::CreateTaskInput>,
+    #[serde(default)]
+    pub capabilities: Vec<super::service::CreateCapabilityInput>,
+}
+
+#[derive(serde::Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectCreateCommand {
+    #[serde(default)]
+    pub client_request_id: String,
+    pub name: String,
+    pub kind: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub goal: String,
+    pub target_date: Option<String>,
+    pub template_id: Option<String>,
+    pub root_path: Option<String>,
+    /// metadata_only | attach_existing | create_new；缺省按「有路径 = 关联已有」推断。
+    pub directory_mode: Option<String>,
+    pub dev_project_id: Option<String>,
+    pub note: Option<String>,
+    pub plan_name: Option<String>,
+    #[serde(default)]
+    pub initial_plan: Option<InitialPlanCommand>,
+    /// none | creator_project | creator_project_and_plan（本机人类创建时忽略）。
+    pub agent_access_policy: Option<String>,
+}
+
+/// 统一创建入口：工作台快速创建与「另存为项目」都走这里。
+///
+/// 目录初始化可能涉及磁盘 IO（`create_new`），必须离开 UI 主线程。
+#[tauri::command]
+pub async fn project_create(
+    db: State<'_, Arc<Db>>,
+    input: ProjectCreateCommand,
+) -> AppResult<super::creation::ProjectCreateResult> {
+    let mode = match input.directory_mode.as_deref().map(str::trim) {
+        None | Some("") => super::creation::DirectoryMode::default_for(
+            input.root_path.as_deref().unwrap_or_default(),
+        ),
+        Some(raw) => super::creation::DirectoryMode::parse(raw).ok_or_else(|| {
+            AppError::Validation(format!(
+                "未知的 directoryMode：{raw}（允许 metadata_only | attach_existing | create_new）"
+            ))
+        })?,
+    };
+    let policy = match input.agent_access_policy.as_deref().map(str::trim) {
+        None | Some("") => super::creation::AgentAccessPolicy::None,
+        Some(raw) => super::creation::AgentAccessPolicy::parse(raw).ok_or_else(|| {
+            AppError::Validation(format!("未知的 agentAccessPolicy：{raw}"))
+        })?,
+    };
+    let draft = input.initial_plan.unwrap_or_default();
+    let request = super::creation::CreateProjectRequest {
+        client_request_id: input.client_request_id,
+        name: input.name,
+        kind: input.kind,
+        description: input.description,
+        goal: input.goal,
+        target_date: input.target_date,
+        template_id: input.template_id,
+        root_path: input.root_path,
+        directory_mode: mode,
+        dev_project_id: input.dev_project_id,
+        note: input.note,
+        plan_name: input.plan_name,
+        plan_description: None,
+        plan_status: None,
+        draft: super::creation::InitialPlanDraft {
+            goals: draft.goals,
+            phases: draft.phases,
+            features: draft.features,
+            tasks: draft.tasks,
+            capabilities: draft.capabilities,
+        },
+        agent_access_policy: policy,
+    };
+    let db = db.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || super::creation::create(db.as_ref(), request))
+        .await
+        .map_err(|error| background_error("项目创建失败", error))?
+}
+
 #[tauri::command]
 pub async fn project_hub_create_project(
     db: State<'_, Arc<Db>>,
@@ -138,7 +236,7 @@ pub async fn project_hub_resource_validate(
 pub struct WorkspacePathStatus {
     /// empty / invalid / offline / not-directory / inaccessible / ok
     pub status: String,
-    /// invalid 时给出原因：not-absolute / illegal-char
+    /// invalid 时给出原因：not-absolute / unc / illegal-char
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -171,40 +269,18 @@ impl WorkspacePathStatus {
     }
 }
 
-/// Windows 绝对路径：盘符 `X:\`（或 `X:/`）或 UNC `\\`。与 `clean_root_path` 一致，
-/// 只接受绝对路径，不接受盘符相对路径（`C:foo`）与普通相对路径。
-fn is_absolute_workspace_path(text: &str) -> bool {
-    let bytes = text.as_bytes();
-    let drive_absolute = bytes.len() >= 3
-        && bytes[0].is_ascii_alphabetic()
-        && bytes[1] == b':'
-        && (bytes[2] == b'\\' || bytes[2] == b'/');
-    drive_absolute || text.starts_with("\\\\")
-}
-
-/// 去掉盘符后检查非法字符（`<>:"|?*` 与控制字符）：这些字符无法在 Windows 创建目录。
-fn has_illegal_workspace_chars(text: &str) -> bool {
-    let rest = if text.as_bytes().get(1) == Some(&b':') {
-        &text[2..]
-    } else {
-        text
-    };
-    rest.chars().any(|c| {
-        c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*')
-    })
-}
-
 /// 工作目录校验执行体（纯函数，便于单测）。
+///
+/// 路径策略由 [`service::root_path_violation`] 唯一定义：只接受本地绝对路径，
+/// 拒绝 UNC（`\\server\share`）、`\\?\` 扩展路径、盘符相对路径与非法字符。
+/// 本函数只补充文件系统事实，不重复实现第二套语法规则。
 pub fn workspace_path_check_impl(raw: &str) -> WorkspacePathStatus {
     let text = raw.trim();
     if text.is_empty() {
         return WorkspacePathStatus::none("empty");
     }
-    if !is_absolute_workspace_path(text) {
-        return WorkspacePathStatus::invalid("not-absolute");
-    }
-    if has_illegal_workspace_chars(text) {
-        return WorkspacePathStatus::invalid("illegal-char");
+    if let Some(reason) = service::root_path_violation(text) {
+        return WorkspacePathStatus::invalid(reason);
     }
     match std::fs::metadata(text) {
         Ok(meta) if meta.is_dir() => WorkspacePathStatus::with_path("ok", text),
