@@ -46,6 +46,7 @@ pub fn data_dir() -> PathBuf {
 // ── 项目 ─────────────────────────────────────────────────────────
 
 #[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProjectDetail {
     /// 项目根 ID（canonical）。
     pub project_id: String,
@@ -64,6 +65,7 @@ pub struct ProjectDetail {
 }
 
 #[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProjectStatus {
     pub project_id: String,
     pub plan_id: Option<String>,
@@ -83,6 +85,7 @@ pub struct ProjectStatus {
 ///
 /// 旧的 `kind=planning|workspace` 不再返回：那是两个「伪实体」，同一项目会出现两行。
 #[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProjectSummary {
     pub id: String,
     pub name: String,
@@ -784,6 +787,7 @@ fn task_project_id(db: &Db, task_id: &str) -> String {
 // ── 规划 ─────────────────────────────────────────────────────────
 
 #[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PlanView {
     /// 计划 ID（`planning_projects.id`）。
     pub id: String,
