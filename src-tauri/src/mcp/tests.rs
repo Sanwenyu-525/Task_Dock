@@ -1788,3 +1788,93 @@ fn task_context_uses_project_binding_and_skills() {
     );
     assert_eq!(cross.message, missing.message);
 }
+
+// ── Agent 操作生命周期（v86）──────────────────────────────────────
+
+/// 写工具：一次真实写入只产生一条 committed 操作；幂等重放不新建操作。
+#[test]
+fn write_tool_records_single_operation_and_replay_creates_none() {
+    let db = memdb();
+    let (agent, _) = make_agent(&db, "op-agent", "project_rw");
+    let ctx = ctx_for(&db, &agent);
+
+    let created = call_ok(
+        &ctx,
+        "taskdock_create_project",
+        json!({ "name": "操作项目", "requestId": "req-op-lifecycle" }),
+    );
+    let project_id = created["id"].as_str().unwrap().to_string();
+
+    let query = crate::agent_access::operations::OperationQuery {
+        agent_id: Some("op-agent".into()),
+        resource_kind: Some("project".into()),
+        ..Default::default()
+    };
+    let (ops, page) = crate::agent_access::operations::list(&db, &query).unwrap();
+    assert_eq!(page.total, 1, "一次写入只能有一条操作记录: {ops:?}");
+    assert_eq!(ops[0].status, crate::agent_access::operations::OperationStatus::Committed);
+    assert_eq!(ops[0].interface, "mcp");
+    assert_eq!(ops[0].action, "taskdock_create_project");
+    assert_eq!(ops[0].resource_id, project_id);
+    assert!(ops[0].finished_at.is_some());
+
+    // 幂等重放：同 request_id + 同参数 → 返回原结果，不产生第二条操作。
+    let replayed = call_ok(
+        &ctx,
+        "taskdock_create_project",
+        json!({ "name": "操作项目", "requestId": "req-op-lifecycle" }),
+    );
+    assert_eq!(replayed["id"], created["id"]);
+    let (ops_after, page_after) = crate::agent_access::operations::list(&db, &query).unwrap();
+    assert_eq!(page_after.total, 1, "重放不得创建新操作: {ops_after:?}");
+}
+
+/// 写工具业务冲突：操作收敛为 conflict，且不残留 running。
+#[test]
+fn write_tool_conflict_marks_operation_conflict() {
+    let db = memdb();
+    let p = create_project_impl(&db, proj_input("冲突项目")).unwrap();
+    let f = create_feature_impl(
+        &db,
+        p.id.clone(),
+        crate::commands::planning::FeatureInput {
+            title: "冲突功能".into(),
+            description: String::new(),
+            acceptance_criteria: String::new(),
+            status: None,
+            priority: None,
+            milestone_id: None,
+            target_date: None,
+        },
+    )
+    .unwrap();
+    let (agent, _) = make_agent(&db, "op-conflict", "project_rw");
+    auth::grant_project(&db, &agent.row_id, &p.id).unwrap();
+    let ctx = ctx_for(&db, &agent);
+
+    let payload = tool_err_payload(
+        &ctx,
+        "taskdock_update_feature",
+        json!({
+            "feature_id": f.id,
+            "title": "新标题",
+            "expected_revision": 99,
+        }),
+    );
+    assert_eq!(payload["error"], "CONFLICT");
+
+    let query = crate::agent_access::operations::OperationQuery {
+        agent_id: Some("op-conflict".into()),
+        ..Default::default()
+    };
+    let (ops, _) = crate::agent_access::operations::list(&db, &query).unwrap();
+    let op = ops.first().expect("冲突也应留下操作记录");
+    assert_eq!(op.status, crate::agent_access::operations::OperationStatus::Conflict);
+    assert_eq!(op.error_code, "CONFLICT");
+    let active = crate::agent_access::operations::active(
+        &db,
+        &crate::agent_access::operations::ActiveFilter::default(),
+    )
+    .unwrap();
+    assert!(active.iter().all(|item| item.id != op.id), "冲突后不得残留 running");
+}

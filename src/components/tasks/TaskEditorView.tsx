@@ -17,6 +17,7 @@ import {
 import {
   clipboardTaskLinks,
   clipboardUnlinkTask,
+  fetchTask,
   listTaskLinks,
   linkTaskAgent,
   snoozeReminder,
@@ -42,6 +43,10 @@ import { useTabGuard } from "../../lib/tabGuard";
 import AppPicker from "../navigation/AppPicker";
 import { TargetAvatar } from "../navigation/TargetMenu";
 import { DateTimePicker, NumberInput, Select } from "../ui";
+import {
+  AgentOperationHighlight,
+} from "../agents/operations/AgentOperationHighlight";
+import { useResourceOperations } from "../agents/operations/useResourceOperations";
 
 const WEEKDAYS = ["一", "二", "三", "四", "五", "六", "日"];
 const MONTHLY_NTH_LABELS = ["一", "二", "三", "四", "五"];
@@ -105,16 +110,23 @@ export default function TaskEditorView({ task, defaultCategory, onClose }: TaskE
   const clipboardLinkVersion = useUiStore((s) => s.clipboardLinkVersion);
 
   const isCreate = task === null;
+  /**
+   * 表单基准：初始为打开时的任务快照；「重新加载远端数据」后替换为最新快照。
+   * 用 state 而不是直接读 prop，避免远端刷新悄悄改变 `initial` 把用户输入判成
+   * 「未修改」，也避免重新加载后仍显示「未保存」。
+   */
+  const [baselineTask, setBaselineTask] = useState<Task | null>(task);
+  const baseline = baselineTask ?? task;
   const initial = {
-    title: task?.title ?? "",
-    description: task?.description ?? "",
-    priority: task?.priority ?? 2,
-    category: task?.category ?? defaultCategory ?? "",
-    tagsText: (task?.tags ?? []).join(", "),
-    due: toLocalInputValue(task?.due_at),
-    remind: toLocalInputValue(task?.remind_at),
-    advance: task?.advance_minutes ?? 0,
-    recurrence: recurrenceKey(task?.recurrence ?? null),
+    title: baseline?.title ?? "",
+    description: baseline?.description ?? "",
+    priority: baseline?.priority ?? 2,
+    category: baseline?.category ?? defaultCategory ?? "",
+    tagsText: (baseline?.tags ?? []).join(", "),
+    due: toLocalInputValue(baseline?.due_at),
+    remind: toLocalInputValue(baseline?.remind_at),
+    advance: baseline?.advance_minutes ?? 0,
+    recurrence: recurrenceKey(baseline?.recurrence ?? null),
   };
 
   const [title, setTitle] = useState(initial.title);
@@ -181,9 +193,71 @@ export default function TaskEditorView({ task, defaultCategory, onClose }: TaskE
   /** 有未保存修改时，返回入口先在页内确认条上确认，不弹模态。 */
   const [leaveGuard, setLeaveGuard] = useState(false);
 
+  // ── 远端并发保护（v86）──────────────────────────────────────────
+  // 基线 = 打开编辑器时的 updated_at；保存时作为 CAS 基准提交。
+  const baselineRef = useRef<string | null>(task?.updated_at ?? null);
+  /** 远端已更新（Agent 提交成功或保存时检测到冲突）：只提示，不覆盖表单。 */
+  const [remoteUpdated, setRemoteUpdated] = useState(false);
+  /** 该任务上的 Agent 操作：运行中 → 提示「正在修改」；终态 → 提示「已更新」。 */
+  const taskOps = useResourceOperations("task", task?.id ?? undefined);
+  const settledOp = taskOps.operations.find((op) => op.status !== "running");
+  const settledOpId = settledOp?.id ?? "";
+  const settledAt = settledOp?.finishedAt ?? "";
+
   // 同步防重入：状态更新到下一次渲染之间，连点保存不能触发第二次请求。
   const busyRef = useRef(false);
   const aliveRef = useRef(true);
+
+  // 同一任务上的 Agent 操作提交成功后，只设置「远端已更新」提示：
+  // 表单内容原样保留，用户不点保存就不会覆盖任何数据。
+  useEffect(() => {
+    if (!task || !settledOpId) return;
+    const done = Date.parse(settledAt);
+    const base = Date.parse(baselineRef.current ?? "");
+    if (!Number.isNaN(done) && !Number.isNaN(base) && done > base) {
+      setRemoteUpdated(true);
+    }
+  }, [settledOpId, settledAt, task?.id]);
+
+  /** 把一份任务快照灌回表单（重新加载 / 切换到另一条任务）。 */
+  function applyTaskToForm(next: Task) {
+    setTitle(next.title);
+    setDescription(next.description);
+    setPriority(next.priority);
+    setCategory(next.category);
+    setTagsText(next.tags.join(", "));
+    setDue(toLocalInputValue(next.due_at));
+    setRemind(toLocalInputValue(next.remind_at));
+    setAdvance(next.advance_minutes);
+    setDueTouched(false);
+    setRemindTouched(false);
+    const r = next.recurrence ?? null;
+    setFreq(r ? (r.freq as "daily" | "weekly" | "monthly") : "");
+    setIntervalValue(r?.interval ?? 1);
+    setWeekdays(r?.by_weekday ?? []);
+    setMonthday(r?.by_monthday ?? 1);
+    setMonthlyMode("day");
+    setNthPos(Math.min(5, Math.max(1, r?.by_setpos != null && r.by_setpos > 0 ? r.by_setpos : 1)));
+    setNthWeekday(r?.by_weekday[0] ?? 1);
+    setCustomOpen(false);
+    setRuleError("");
+  }
+
+  /** 显式重新加载：丢弃本地草稿（用户主动点击），以远端最新数据为准。 */
+  async function reloadRemote() {
+    if (!task) return;
+    try {
+      const fresh = await fetchTask(task.id);
+      applyTaskToForm(fresh);
+      setBaselineTask(fresh);
+      baselineRef.current = fresh.updated_at;
+      setRemoteUpdated(false);
+      setError(null);
+      showToast("已重新加载远端最新数据", { kind: "success" });
+    } catch (e) {
+      setError(`重新加载失败：${errText(e)}`);
+    }
+  }
 
   useEffect(() => {
     aliveRef.current = true;
@@ -498,13 +572,23 @@ export default function TaskEditorView({ task, defaultCategory, onClose }: TaskE
     busyRef.current = true;
     setBusy(true);
     try {
-      if (task) await update(task.id, input);
+      // 基准 updated_at 一并提交：Agent 并发写入后这里会得到 CONFLICT，
+      // 而不是静默覆盖对方的修改。
+      if (task) await update(task.id, input, baselineRef.current);
       else await create(input);
       // 卸载（如切换页面）后到达的响应不再回调，避免无效更新
       if (aliveRef.current) onClose();
     } catch (e) {
       // 保存失败：保留表单内容，就地显示错误
-      if (aliveRef.current) setError(errText(e));
+      if (aliveRef.current) {
+        const message = errText(e);
+        if (message.includes("CONFLICT") || message.includes("已被其他来源更新")) {
+          setRemoteUpdated(true);
+          setError(`${message}（你的输入已保留）`);
+        } else {
+          setError(message);
+        }
+      }
     } finally {
       busyRef.current = false;
       if (aliveRef.current) setBusy(false);
@@ -617,6 +701,7 @@ export default function TaskEditorView({ task, defaultCategory, onClose }: TaskE
             {isCreate ? "填写任务信息，保存后回到列表。" : "修改任务信息，保存后回到列表。"}
           </p>
         </div>
+        {task ? <AgentOperationHighlight resourceKind="task" resourceId={task.id} /> : null}
         {dirty ? (
           <span className="task-editor-unsaved" role="status">
             未保存
@@ -635,6 +720,26 @@ export default function TaskEditorView({ task, defaultCategory, onClose }: TaskE
               放弃修改
             </button>
           </div>
+        </div>
+      ) : null}
+
+      {task && (taskOps.hasRunning || remoteUpdated) ? (
+        <div className="task-editor-remote" role="status" aria-live="polite">
+          <span className="task-editor-remote-text">
+            {remoteUpdated
+              ? "该任务已被其他来源更新；你的输入已保留，保存时会做版本校验。"
+              : `Agent ${taskOps.running[0]?.agentId ?? ""} 正在修改此任务；你的输入不会被覆盖。`}
+          </span>
+          {remoteUpdated ? (
+            <button
+              type="button"
+              className="btn sm"
+              onClick={() => void reloadRemote()}
+              disabled={busy}
+            >
+              重新加载远端数据
+            </button>
+          ) : null}
         </div>
       ) : null}
 

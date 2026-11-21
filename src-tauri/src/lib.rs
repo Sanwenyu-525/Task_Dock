@@ -693,6 +693,9 @@ pub fn run() {
 
             let handle = app.handle().clone();
 
+            // Agent 操作可视化：事件只做低延迟推送，事实来源始终是数据库。
+            agent_access::operations::init_event_emitter(&handle);
+
             // 投屏控制栏窗口服务：登记 AppHandle，供 vd_start 的伴随窗口线程使用。
             commands::projection_window::init(&handle);
 
@@ -734,6 +737,18 @@ pub fn run() {
             // 一键工作流：把上次异常退出遗留的 running/paused 运行标记为 interrupted
             //（绝不自动重放有副作用的步骤）。
             commands::workflows::recover_on_startup(&db);
+            // Agent 操作可视化：上次进程退出时仍在 running 的操作按租约收敛为
+            // interrupted（绝不伪造 committed），并按保留期清理旧记录。
+            match agent_access::operations::interrupt_stale(&db) {
+                Ok(0) => {}
+                Ok(n) => tracing::warn!("检测到 {n} 个中断的 Agent 操作，已标记 interrupted"),
+                Err(err) => tracing::warn!("Agent 操作恢复失败: {err}"),
+            }
+            if let Err(err) =
+                agent_access::operations::prune(&db, agent_access::operations::RETENTION_DAYS)
+            {
+                tracing::warn!("Agent 操作历史清理失败: {err}");
+            }
             handle.manage(db.clone());
             // 统一音频通知服务（TTS 合成 + 本地缓存）：
             // 缓存目录走 app_cache_dir/audio/tts（验收/便携模式随 TASK_DOCK_DATA_DIR 隔离），
@@ -1316,6 +1331,7 @@ pub fn run() {
             commands::tasks::task_stats,
             commands::tasks::create_task,
             commands::tasks::update_task,
+            commands::tasks::update_task_cas,
             commands::tasks::toggle_task,
             commands::tasks::undo_task_completion,
             commands::tasks::delete_task,
@@ -2133,6 +2149,9 @@ pub fn run() {
             agent_access::commands::agent_access_revoke,
             agent_access::commands::agent_access_context,
             agent_access::commands::agent_access_config_info,
+            agent_access::commands::agent_operations_sync,
+            agent_access::commands::agent_operations_active,
+            agent_access::commands::agent_operations_list,
             // 协作中心（v77）：上下文 / 需求与 Bug / 方案 / 可视化 / 原型 / AI / 审计
             collab::commands::collab_context_get,
             collab::commands::collab_context_overview,

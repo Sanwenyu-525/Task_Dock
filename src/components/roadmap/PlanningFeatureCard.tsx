@@ -28,6 +28,10 @@ import {
 } from "../../lib/bridge";
 import { usePlanningStore } from "../../store/usePlanningStore";
 import { PLANNING_STATUS_TONE } from "./PlanningBits";
+import {
+  AgentOperationHighlight,
+  useAgentOperationSurface,
+} from "../agents/operations/AgentOperationHighlight";
 import { useUiStore } from "../../store/useUiStore";
 import FeatureAgentLinks from "./FeatureAgentLinks";
 
@@ -113,6 +117,8 @@ export function PlanningFeatureCard({
     (s) => s.projects.find((p) => p.id === feature.project_id)?.name ?? "未知项目",
   );
   const showToast = useUiStore((s) => s.showToast);
+  // 只为当前功能订阅 Agent 操作：其他功能变化不会让本卡重渲染。
+  const agentOperation = useAgentOperationSurface("feature", feature.id, feature.project_id);
 
   const [stepTitle, setStepTitle] = useState("");
   const [noteText, setNoteText] = useState("");
@@ -185,7 +191,8 @@ export function PlanningFeatureCard({
 
   return (
     <div
-      className={`task-card planning-card ${leaving ? "is-leaving" : ""}`}
+      className={`task-card planning-card ${leaving ? "is-leaving" : ""} ${agentOperation.surfaceProps.className}`}
+      data-agent-op={agentOperation.surfaceProps["data-agent-op"]}
       data-feature-id={feature.id}
     >
       <button
@@ -206,6 +213,11 @@ export function PlanningFeatureCard({
           {feature.milestone_name && (
             <span className="planning-milestone-chip">{feature.milestone_name}</span>
           )}
+          <AgentOperationHighlight
+            resourceKind="feature"
+            resourceId={feature.id}
+            projectId={feature.project_id}
+          />
           <ChevronDown
             size={15}
             strokeWidth={1.75}

@@ -417,9 +417,111 @@ CREATE INDEX IF NOT EXISTS idx_arc_committed
 "#,
 );
 
+/// v86（Agent 操作可视化）：统一操作生命周期表。
+///
+/// 与 `agent_activity_logs` 的分工：
+/// - 本表是**可变的过程状态**（running 会被更新为终态），一行业务写入对应一行；
+/// - 活动日志仍是**追加式审计**，只增不改。两者用 `request_id` 与资源指针关联，
+///   不把审计表改造成运行状态表。
+///
+/// 约束：
+/// - `resource_id` 在创建前允许为空（新建资源尚未分配 ID），提交后绑定真实 ID；
+/// - `agent_row_id` 仅作弱引用（ON DELETE SET NULL），`agent_id` 是身份快照，
+///   Agent 删除后仍可追溯；
+/// - 不存文件正文、Token、密码或绝对路径，`detail` 由写入方脱敏；
+/// - 资源被删除后本表不级联删除：历史操作保留，前端不再尝试定位已删除资源。
+pub const MIGRATION_86: (i64, &str) = (
+    86,
+    r#"
+CREATE TABLE IF NOT EXISTS agent_operations (
+  id TEXT PRIMARY KEY NOT NULL,
+  agent_row_id TEXT REFERENCES mcp_agents(id) ON DELETE SET NULL,
+  agent_id TEXT NOT NULL DEFAULT '',
+  actor_kind TEXT NOT NULL DEFAULT 'agent'
+    CHECK (actor_kind IN ('agent','local','system')),
+  interface TEXT NOT NULL
+    CHECK (interface IN ('cli','mcp','rest','file','ui','system')),
+  action TEXT NOT NULL,
+  resource_kind TEXT NOT NULL DEFAULT '',
+  resource_id TEXT NOT NULL DEFAULT '',
+  project_id TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'running'
+    CHECK (status IN ('running','committed','failed','conflict','interrupted')),
+  phase TEXT NOT NULL DEFAULT 'started'
+    CHECK (phase IN ('started','writing','finalizing','done')),
+  revision INTEGER,
+  request_id TEXT NOT NULL DEFAULT '',
+  error_code TEXT NOT NULL DEFAULT '',
+  detail TEXT NOT NULL DEFAULT '',
+  started_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  finished_at TEXT,
+  lease_expires_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_agent_ops_status
+  ON agent_operations(status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_ops_resource
+  ON agent_operations(resource_kind, resource_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_ops_project
+  ON agent_operations(project_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_ops_agent
+  ON agent_operations(agent_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_ops_cursor
+  ON agent_operations(updated_at, id);
+"#,
+);
+
 #[cfg(test)]
 mod tests {
     use crate::db::Db;
+    use crate::error::AppError;
+
+    #[test]
+    fn migration_86_creates_operation_lifecycle_table() {
+        let db = Db::open_in_memory().unwrap();
+        db.with_read(|conn| {
+            let sql: String = conn
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='agent_operations'",
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)?;
+            for status in ["running", "committed", "failed", "conflict", "interrupted"] {
+                assert!(sql.contains(status), "状态 CHECK 缺少 {status}");
+            }
+            for phase in ["started", "writing", "finalizing", "done"] {
+                assert!(sql.contains(phase), "阶段 CHECK 缺少 {phase}");
+            }
+            // 索引必须覆盖：状态+时间、资源、项目、Agent、游标。
+            for index in [
+                "idx_agent_ops_status",
+                "idx_agent_ops_resource",
+                "idx_agent_ops_project",
+                "idx_agent_ops_agent",
+                "idx_agent_ops_cursor",
+            ] {
+                let n: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?1",
+                        [index],
+                        |r| r.get(0),
+                    )
+                    .map_err(AppError::from)?;
+                assert_eq!(n, 1, "缺少索引 {index}");
+            }
+            // 非法状态必须被数据库拒绝（不依赖应用层校验）。
+            let rejected = conn.execute(
+                "INSERT INTO agent_operations
+                   (id, agent_id, actor_kind, interface, action, status, phase, started_at, updated_at)
+                 VALUES ('bad', 'a', 'agent', 'mcp', 'task.update', 'success', 'started', 'now', 'now')",
+                [],
+            );
+            assert!(rejected.is_err(), "CHECK 必须拒绝未知状态");
+            Ok(())
+        })
+        .unwrap();
+    }
 
     #[test]
     fn migration_76_creates_agent_access_tables() {

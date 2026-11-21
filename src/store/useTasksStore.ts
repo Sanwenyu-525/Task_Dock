@@ -7,6 +7,7 @@ import {
   taskStats,
   toggleTask,
   updateTask,
+  updateTaskChecked,
   type RecurrenceRuleInput,
   type Task,
   type TaskFilter,
@@ -152,7 +153,7 @@ export const useTasksStore = create<{
     recurrence: RecurrenceRuleInput | null,
     advanceMinutes: number | null,
   ) => Promise<Task>;
-  update: (id: string, input: TaskInput) => Promise<Task>;
+  update: (id: string, input: TaskInput, expectedUpdatedAt?: string | null) => Promise<Task>;
   /**
    * 切换完成状态。`refresh: false` 让调用方把列表刷新推迟到离场动画结束——
    * 后端写入立即提交，只有「何时同步列表」被延后，不能反过来推迟写入。
@@ -288,11 +289,15 @@ export const useTasksStore = create<{
     await get().refresh();
     return t;
   },
-  update: async (id, input) => {
+  update: async (id, input, expectedUpdatedAt) => {
     const op = startOperation("task", "update_task");
     try {
       op.stage("persist");
-      const t = await updateTask(id, input);
+      // 编辑器传入基准 updated_at：Agent 并发修改时由后端返回 CONFLICT，
+      // 绝不静默覆盖远端更新。其他调用方不传则保持旧的整对象更新语义。
+      const t = expectedUpdatedAt
+        ? await updateTaskChecked(id, input, expectedUpdatedAt)
+        : await updateTask(id, input);
       op.success();
       await get().refresh();
       return t;

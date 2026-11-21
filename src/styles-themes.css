@@ -3996,6 +3996,27 @@ textarea:focus {
     gap: 6px;
   }
 
+  /* 远端并发提示：Agent 正在改 / 已被更新。只提示，不自动覆盖用户输入。 */
+  .task-editor-remote {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid color-mix(in srgb, var(--status-running) 32%, transparent);
+    background: color-mix(in srgb, var(--status-running) 8%, transparent);
+    font-size: 11.5px;
+    color: var(--text-primary);
+    overflow-wrap: anywhere;
+  }
+
+  .task-editor-remote-text {
+    flex: 1 1 220px;
+    min-width: 0;
+  }
+
   .task-editor-body {
     display: flex;
     flex-direction: column;

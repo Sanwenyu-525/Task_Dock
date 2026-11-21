@@ -15,6 +15,7 @@ pub mod commands;
 pub mod context;
 pub mod handoff;
 pub mod mcp_tools;
+pub mod operations;
 pub mod permissions;
 pub mod projection;
 pub mod rest;

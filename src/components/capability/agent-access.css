@@ -223,3 +223,9 @@
     display: none;
   }
 }
+
+/* 活动记录结果列：失败必须可辨识，且显示稳定错误码（不展示内部细节）。 */
+.capability-panel .agent-access-failed {
+  color: var(--status-error);
+  font-weight: 600;
+}

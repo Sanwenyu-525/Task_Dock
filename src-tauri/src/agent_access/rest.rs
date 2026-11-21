@@ -41,7 +41,7 @@ use crate::mcp::auth::{self, McpAgentRow};
 use crate::mcp::permissions::Capability;
 
 use super::{
-    context, error_code, handoff, http_status, permissions as perms, service, store,
+    context, error_code, handoff, http_status, operations, permissions as perms, service, store,
     sync as file_sync, workspace, Envelope, Meta, Page, Principal, Source,
 };
 
@@ -835,6 +835,33 @@ impl Drop for PlaceholderRelease {
 ///
 /// 由「迟到完成」模型驱动：请求超时后本任务继续在后台跑（有界宽限期），
 /// 因此占位在后台给出结论前必须保留 —— 否则客户端重试会把业务写入执行两次。
+/// 认证通过后开始一次 REST 写操作。
+///
+/// 幂等重放（缓存命中 Done/Committed）在调用本函数之前就返回了，因此
+/// **不会**为同一次业务写入创建第二条 Operation。
+fn begin_rest_operation(
+    db: &Db,
+    principal: &Principal,
+    method: &hyper::Method,
+    path: &str,
+    request_id: &str,
+) -> Option<operations::AgentOperation> {
+    let (action, kind) = operations::describe_rest_write(method.as_str(), path)?;
+    let target_id = operations::rest_target_id(path);
+    operations::try_start(
+        db,
+        principal,
+        &operations::OperationInput {
+            action,
+            resource_kind: kind,
+            resource_id: &target_id,
+            project_id: "",
+            request_id,
+            detail: "",
+        },
+    )
+}
+
 async fn run_claim_execution(
     state: Arc<RestState>,
     principal: Principal,
@@ -862,6 +889,8 @@ async fn run_claim_execution(
         &claim.fingerprint,
         claim.attempt,
     );
+    // 幂等占位已取得 → 才可能出现真实业务写入；此时开始记录操作。
+    let operation = begin_rest_operation(&state.db, &principal, &method, &path, &request_id);
     let outcome = tokio::time::timeout_at(
         grace_deadline.into(),
         dispatch(&state, &principal, &method, &path, &query, &body, &guard),
@@ -869,6 +898,11 @@ async fn run_claim_execution(
     .await;
     match outcome {
         Ok(Ok((data, page))) => {
+            if let Some(op) = &operation {
+                // 业务已提交：以真实返回对象绑定资源 ID / revision。
+                let result = operations::OperationResult::from_value(&op.resource_kind, &data);
+                let _ = operations::complete(&state.db, &op.id, &result);
+            }
             let meta = meta_of(&principal, &request_id, page);
             let envelope = Envelope::ok(data, meta);
             let value = serde_json::to_value(&envelope).unwrap_or(Value::Null);
@@ -903,6 +937,9 @@ async fn run_claim_execution(
         }
         Ok(Err(err)) => {
             // 失败绝不缓存：释放占位，允许客户端重试。
+            if let Some(op) = &operation {
+                let _ = operations::fail(&state.db, &op.id, &err);
+            }
             let _ = store::cache_fail(
                 &state.db,
                 &claim.row_id,
@@ -1352,6 +1389,7 @@ async fn handle(req: Request<Incoming>, state: Arc<RestState>) -> Response<Full<
         }
         None => {
             // 无幂等占位：超时即取消（事务未提交则随 future drop 回滚）。
+            let operation = begin_rest_operation(&state.db, &principal, &method, &path, &request_id);
             match tokio::time::timeout_at(
                 deadline.into(),
                 dispatch(
@@ -1367,6 +1405,11 @@ async fn handle(req: Request<Incoming>, state: Arc<RestState>) -> Response<Full<
             .await
             {
                 Ok(Ok((data, page))) => {
+                    if let Some(op) = &operation {
+                        let result =
+                            operations::OperationResult::from_value(&op.resource_kind, &data);
+                        let _ = operations::complete(&state.db, &op.id, &result);
+                    }
                     let meta = meta_of(&principal, &request_id, page);
                     let envelope = Envelope::ok(data, meta);
                     let value = serde_json::to_value(&envelope).unwrap_or(Value::Null);
@@ -1377,12 +1420,16 @@ async fn handle(req: Request<Incoming>, state: Arc<RestState>) -> Response<Full<
                     };
                     Ok(Completed { value, status })
                 }
-                Ok(Err(err)) => Err(err),
+                Ok(Err(err)) => {
+                    if let Some(op) = &operation {
+                        let _ = operations::fail(&state.db, &op.id, &err);
+                    }
+                    Err(err)
+                }
                 Err(_) => return timeout_response(&principal, &request_id),
             }
         }
     };
-
     match completed {
         Ok(done) => plain(done.status, done.value, &request_id),
         Err(err) => {

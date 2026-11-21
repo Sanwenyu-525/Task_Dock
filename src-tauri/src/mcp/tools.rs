@@ -32,6 +32,7 @@ use crate::error::{AppError, AppResult};
 use crate::mcp::audit::{self, AuditEntry};
 use crate::mcp::auth::{self, McpAgentRow};
 use crate::mcp::{PlanningChanged, PLANNING_CHANGED_EVENT};
+use crate::agent_access::{operations, Principal, Source};
 
 /// 工具定义（tools/list 暴露；`write` 决定审计/幂等策略与授权层级）。
 pub struct ToolDef {
@@ -1205,7 +1206,54 @@ pub fn run_tool_call(
             Replay(Value),
         }
 
+        // ── 操作生命周期（v86）──
+        // 幂等重放不得创建第二份 Operation：先做一次只读预检（索引命中），
+        // 命中则本次请求不建操作；事务内仍会再校验一次，防并发竞态。
+        let is_replay = if request_id.is_empty() {
+            false
+        } else {
+            ctx.db
+                .with_read(|conn| {
+                    audit::find_replay_entry(conn, &ctx.agent.row_id, name, &request_id)
+                })
+                .map(|found| found.is_some())
+                .unwrap_or(false)
+        };
+        let operation = if is_replay {
+            None
+        } else {
+            operations::try_start(
+                &ctx.db,
+                &Principal::agent(
+                    ctx.agent.row_id.clone(),
+                    ctx.agent.agent_id.clone(),
+                    Source::Mcp,
+                ),
+                &operations::OperationInput {
+                    action: name,
+                    resource_kind: operations::resource_kind_for_tool(name),
+                    resource_id: "",
+                    project_id: "",
+                    request_id: &request_id,
+                    detail: "",
+                },
+            )
+        };
+        let operation_id = operation
+            .as_ref()
+            .map(|op| op.id.clone())
+            .unwrap_or_default();
+        let mut completed_operation: Option<operations::AgentOperation> = None;
+
         let fingerprint = request_fingerprint(args);
+        // 已进入写事务前的真实阶段（UI 显示「正在写入」，不是估算进度）。
+        if !operation_id.is_empty() {
+            let _ = operations::update_phase(
+                &ctx.db,
+                &operation_id,
+                operations::OperationPhase::Writing,
+            );
+        }
         let mut tool_error = None;
         let transaction = ctx.db.with_transaction(|conn| {
             let current_agent = auth::find_active_agent_by_row_id(conn, &ctx.agent.row_id)?;
@@ -1289,6 +1337,27 @@ pub fn run_tool_call(
                         result_json: &result_json,
                     };
                     audit::write(conn, &entry)?;
+                    // 操作完成与业务写入、审计**同一事务**提交：
+                    // 业务回滚时 committed 一并回滚，不会出现「失败却显示成功」。
+                    if !operation_id.is_empty() {
+                        let mut result = operations::OperationResult::new()
+                            .resource(outcome.entity_type, &outcome.entity_id)
+                            .revision(revision);
+                        if let Some(pid) =
+                            outcome.changed.as_ref().and_then(|c| c.project_id.as_deref())
+                        {
+                            result = result.project(pid);
+                        }
+                        match operations::complete_tx(conn, &operation_id, &result) {
+                            Ok(done) => completed_operation = done,
+                            // 操作状态写失败不得回滚已成功的业务写入：保持 running，
+                            // 租约到期后由恢复逻辑收敛为 interrupted。
+                            Err(err) => tracing::warn!(
+                                operation_id = %operation_id,
+                                "MCP 操作完成状态未能随业务提交: {err}"
+                            ),
+                        }
+                    }
                     Ok(WriteResult::Fresh(outcome))
                 }
                 Err(error) => {
@@ -1302,6 +1371,23 @@ pub fn run_tool_call(
             if let ToolError::Failed(app_err) = &error {
                 crate::diagnostics::metrics::record_failure("mcp", "tool_call", app_err);
             }
+            // 业务事务已回滚：操作按真实错误收敛（冲突 → conflict，其余 → failed）。
+            if !operation_id.is_empty() {
+                let app_err = match &error {
+                    ToolError::Authz(message) => AppError::Forbidden(message.clone()),
+                    ToolError::Failed(AppError::Conflict(message)) => {
+                        AppError::Conflict(message.clone())
+                    }
+                    ToolError::Failed(AppError::Validation(message)) => {
+                        AppError::Validation(message.clone())
+                    }
+                    ToolError::Failed(AppError::NotFound(message)) => {
+                        AppError::NotFound(message.clone())
+                    }
+                    ToolError::Failed(other) => AppError::Unavailable(other.user_message()),
+                };
+                let _ = operations::fail(&ctx.db, &operation_id, &app_err);
+            }
             audit_tool_failure(&ctx, name, &request_id, &error)?;
             return tool_error_response(&ctx, error);
         }
@@ -1311,8 +1397,21 @@ pub fn run_tool_call(
             data: Value::Null,
         })?;
         return match result {
-            WriteResult::Replay(value) => Ok(mcp_result(&value, false)),
+            WriteResult::Replay(value) => {
+                if !operation_id.is_empty() {
+                    // 预检后并发竞态退化为重放：如实记录，但绝不重复写业务数据。
+                    let _ = operations::complete(
+                        &ctx.db,
+                        &operation_id,
+                        &operations::OperationResult::new().detail("幂等重放，未重复写入"),
+                    );
+                }
+                Ok(mcp_result(&value, false))
+            }
             WriteResult::Fresh(outcome) => {
+                if let Some(op) = &completed_operation {
+                    operations::notify(op);
+                }
                 if let Some(changed) = outcome.changed {
                     (ctx.emit)(changed);
                 }

@@ -23,6 +23,7 @@ import { EXIT_MS, prefersReducedMotion } from "../../lib/motion";
 import { useTasksStore, taskViewKey } from "../../store/useTasksStore";
 import { useUiStore } from "../../store/useUiStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
+import { AgentOperationHighlight, useAgentOperationSurface } from "../agents/operations/AgentOperationHighlight";
 import { useNavigationStore } from "../../store/useNavigationStore";
 import { formatDue, isOverdue, priorityLabel, describeRecurrence } from "../../lib/format";
 import { navNavigate, resultMessage } from "../../lib/navigation";
@@ -100,6 +101,8 @@ export default function TaskItem({ task, compact, exiting, exitHeight, selected,
   const isCurrentTask =
     useSettingsStore((s) => s.settings?.workbench_current_task ?? "") === task.id;
   const links = useNavigationStore((s) => s.linksByTask[task.id]) ?? [];
+  // Agent 操作高亮：只为这一行订阅，其他行的状态变化不会触发重渲染。
+  const agentOperation = useAgentOperationSurface("task", task.id);
   const [menuOpen, setMenuOpen] = useState(false);
   /** 「+N」目标入口：菜单以它为锚点，不再绝对定位在任务卡内部 */
   const targetMenuAnchorRef = useRef<HTMLButtonElement | null>(null);
@@ -311,7 +314,8 @@ export default function TaskItem({ task, compact, exiting, exitHeight, selected,
     <div
       ref={rowRef}
       data-task-id={task.id}
-      className={`task-card task-item priority-${task.priority} ${task.status} ${isLeaving ? "leaving" : ""}${selected ? " is-selected" : ""}`}
+      className={`task-card task-item priority-${task.priority} ${task.status} ${isLeaving ? "leaving" : ""}${selected ? " is-selected" : ""} ${agentOperation.surfaceProps.className ?? ""}`}
+      data-agent-op={agentOperation.surfaceProps["data-agent-op"]}
       // 离场期间同时隔离鼠标与键盘：inert 让内部控件不可聚焦/不可点击，
       // aria-hidden 让读屏器不再朗读正在退场的条目；结束后由列表交还焦点。
       inert={isLeaving || undefined}
@@ -348,6 +352,9 @@ export default function TaskItem({ task, compact, exiting, exitHeight, selected,
         >
           <span className={`priority-tag p${task.priority}`}>{priorityLabel(task.priority)}</span>
           <span className="task-title">{task.title}</span>
+          {/* Agent 正在修改这一行时，直接在标题行展示身份与状态；
+              不改变行高（inline-flex）、不抢焦点、不拦截点击。 */}
+          <AgentOperationHighlight resourceKind="task" resourceId={task.id} />
         </div>
         {hasMeta && (
           <div className="task-meta">

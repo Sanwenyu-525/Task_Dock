@@ -22,8 +22,8 @@ use crate::mcp::permissions::Capability;
 
 use super::permissions::{self as perms, FileImportDecision, ImportIdentity};
 use super::{
-    forbidden, handoff, service, store, validation, workspace, Identity, ImportGrant, Principal,
-    MAX_IMPORT_BYTES, MAX_SCAN_FILES,
+    forbidden, handoff, operations, service, store, validation, workspace, Identity, ImportGrant,
+    Principal, MAX_IMPORT_BYTES, MAX_SCAN_FILES,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1221,6 +1221,23 @@ pub fn scan(db: &Db, actor: &Principal, row: &workspace::WorkspaceRow) -> AppRes
             &lease.owner,
             lease.attempt,
         );
+        // 受控导入的业务写入：从认领成功后开始记录，DB 提交与归档分开收敛。
+        let operation = operations::try_start(
+            db,
+            &import_principal,
+            &operations::OperationInput {
+                action: if kind.ends_with(".create") {
+                    "import.create"
+                } else {
+                    "import.apply"
+                },
+                resource_kind: kind.split('.').next().unwrap_or("import"),
+                resource_id: "",
+                project_id: "",
+                request_id: "",
+                detail: &rel,
+            },
+        );
         match import_document_guarded(db, &import_principal, &doc, &lease_guard) {
             Ok(message) => {
                 // 租约已在业务事务内置 ok（与业务数据同事务提交），此处无需再收尾。
@@ -1250,7 +1267,8 @@ pub fn scan(db: &Db, actor: &Principal, row: &workspace::WorkspaceRow) -> AppRes
                         },
                     )
                 });
-                if let Err(err) = archive_if_unchanged(&path, &imported_dir, &now, &hash) {
+                let archive_error = archive_if_unchanged(&path, &imported_dir, &now, &hash).err();
+                if let Some(err) = &archive_error {
                     // 业务已成功：不能回滚，也不能让下一轮重复写入（租约已置 ok）。
                     report.messages.push(format!(
                         "{rel}: 已导入但归档失败（{err}）；后续扫描不会重复写入"
@@ -1260,9 +1278,27 @@ pub fn scan(db: &Db, actor: &Principal, row: &workspace::WorkspaceRow) -> AppRes
                         &format!("导入成功但归档失败: {err}"), doc.envelope.base_revision, "",
                     );
                 }
+                if let Some(op) = &operation {
+                    let detail = match &archive_error {
+                        Some(err) => format!("{rel}：{message}；归档失败（{err}），数据库已提交"),
+                        None => format!("{rel}：{message}"),
+                    };
+                    let result = operations::OperationResult::new()
+                        .revision(doc.envelope.base_revision)
+                        .detail(detail);
+                    let result = match doc.envelope.payload.get("task_id").and_then(|v| v.as_str())
+                    {
+                        Some(id) => result.resource(&op.resource_kind, id),
+                        None => result,
+                    };
+                    let _ = operations::complete(db, &op.id, &result);
+                }
             }
             Err(err) => {
                 // 失败：释放租约，文件留在 inbox 允许重试；不得归档、不得写 imported。
+                if let Some(op) = &operation {
+                    let _ = operations::fail(db, &op.id, &err);
+                }
                 store::release_import_lease(db, &row.id, &lease.claim_key, &lease.owner);
                 if let AppError::Conflict(_) = &err {
                     report.conflicts += 1;
@@ -1410,6 +1446,19 @@ pub fn approve_import(
         &request.content_hash,
         IMPORT_LEASE_ACTOR,
     );
+    // 人工审批也是一次受控写入：从「已解析、待认领」开始记录操作。
+    let operation = operations::try_start(
+        db,
+        approver,
+        &operations::OperationInput {
+            action: "import.approve",
+            resource_kind: request.kind.split('.').next().unwrap_or("import"),
+            resource_id: "",
+            project_id: &request.project_id,
+            request_id: &request.id,
+            detail: "",
+        },
+    );
     let owner = lease_owner("approve");
     let claim = store::claim_import_lease(
         db,
@@ -1440,9 +1489,21 @@ pub fn approve_import(
                 &approver.label(),
             )?;
             set_decided_hash(db, &request.id, &request.content_hash)?;
+            if let Some(op) = &operation {
+                let _ = operations::complete(
+                    db,
+                    &op.id,
+                    &operations::OperationResult::new()
+                        .revision(doc.envelope.base_revision)
+                        .detail(format!("相同内容此前已于 {finished_at} 导入，未重复写入")),
+                );
+            }
             return Ok(format!("相同内容此前已于 {finished_at} 导入，未重复写入"));
         }
     };
+    if let Some(op) = &operation {
+        let _ = operations::update_phase(db, &op.id, operations::OperationPhase::Writing);
+    }
     // 与 scan 使用**完全相同**的租约守卫与业务写入路径：
     // 人工批准不是绕过自动导入安全验证的后门。
     let lease_guard = store::ImportLeaseGuard::new(
@@ -1497,11 +1558,37 @@ pub fn approve_import(
                 doc.envelope.base_revision,
                 "",
             );
-            let _ = archive_if_unchanged(&path, &root.join("inbox").join("_imported"), &crate::agents::now_iso(), &hash);
+            // 数据库已提交；文件归档是**后续**动作，失败只如实记入操作详情，
+            // 不改写成业务失败（否则用户会误以为需要重试写入）。
+            let archived = archive_if_unchanged(
+                &path,
+                &root.join("inbox").join("_imported"),
+                &crate::agents::now_iso(),
+                &hash,
+            )
+            .is_ok();
+            if let Some(op) = &operation {
+                let detail = if archived {
+                    format!("人工批准：{message}")
+                } else {
+                    format!("人工批准：{message}；文件归档失败（数据库已提交，不会重复写入）")
+                };
+                let result = operations::OperationResult::new()
+                    .revision(doc.envelope.base_revision)
+                    .detail(detail);
+                let result = match doc.envelope.payload.get("task_id").and_then(|v| v.as_str()) {
+                    Some(id) => result.resource(&op.resource_kind, id),
+                    None => result,
+                };
+                let _ = operations::complete(db, &op.id, &result);
+            }
             Ok(message)
         }
         Err(err) => {
             // 失败：释放租约让后续可重试，请求置 failed（不得置 imported）。
+            if let Some(op) = &operation {
+                let _ = operations::fail(db, &op.id, &err);
+            }
             store::release_import_lease(db, &row.id, &lease.claim_key, &lease.owner);
             set_import_request_status(
                 db,
@@ -1538,7 +1625,26 @@ pub fn reject_import(
     } else {
         reason.trim()
     };
-    set_import_request_status(db, &request.id, "rejected", reason, &approver.label())?;
+    // 拒绝也是需要留痕的操作决定：状态为 failed（error_code=REJECTED），
+    // 不得伪装为成功写入。
+    let operation = operations::try_start(
+        db,
+        approver,
+        &operations::OperationInput {
+            action: "import.reject",
+            resource_kind: request.kind.split('.').next().unwrap_or("import"),
+            resource_id: "",
+            project_id: &request.project_id,
+            request_id: &request.id,
+            detail: "",
+        },
+    );
+    if let Err(err) = set_import_request_status(db, &request.id, "rejected", reason, &approver.label()) {
+        if let Some(op) = &operation {
+            let _ = operations::fail(db, &op.id, &err);
+        }
+        return Err(err);
+    }
     workspace::log_event(
         db,
         &row.id,
@@ -1553,12 +1659,28 @@ pub fn reject_import(
         "",
     );
     let hash = fs::read_to_string(&path).map(|raw| sha256(&raw)).unwrap_or_default();
+    let mut archived = true;
     if !hash.is_empty() {
-        let _ = archive_if_unchanged(
+        archived = archive_if_unchanged(
             &path,
             &root.join("inbox").join("_rejected"),
             &crate::agents::now_iso(),
             &hash,
+        )
+        .is_ok();
+    }
+    if let Some(op) = &operation {
+        let detail = if archived {
+            format!("人工拒绝：{reason}")
+        } else {
+            format!("人工拒绝：{reason}；文件未能移入 _rejected（数据库已记录拒绝）")
+        };
+        let _ = operations::fail_with(
+            db,
+            &op.id,
+            operations::OperationStatus::Failed,
+            "REJECTED",
+            &detail,
         );
     }
     Ok(())

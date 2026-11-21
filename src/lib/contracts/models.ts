@@ -2396,6 +2396,61 @@ export interface PlanningChangedEvent {
   revision?: number;
 }
 
+// ── Agent 操作生命周期（v86）────────────────────────────────────
+// 契约固定为五个状态、四个阶段；不含进度百分比，也不含正文/凭据/绝对路径。
+// 事实来源是数据库（agent_operations），事件只做低延迟推送。
+
+export type AgentOperationStatus =
+  | "running"
+  | "committed"
+  | "failed"
+  | "conflict"
+  | "interrupted";
+
+/** 可验证阶段：由入口在真实节点推进，界面不得据此推算百分比。 */
+export type AgentOperationPhase = "started" | "writing" | "finalizing" | "done";
+
+export type AgentOperationInterface = "cli" | "mcp" | "rest" | "file" | "ui" | "system";
+
+export interface AgentOperation {
+  id: string;
+  /** Agent 身份快照（本机用户为 `local`，未认证文件为 `file:...`）。 */
+  agentId: string;
+  actorKind: "agent" | "local" | "system";
+  interface: AgentOperationInterface;
+  action: string;
+  resourceKind: string;
+  /** 新建资源在提交前为空，成功后绑定真实 ID。 */
+  resourceId: string;
+  projectId: string;
+  status: AgentOperationStatus;
+  phase: AgentOperationPhase;
+  revision?: number;
+  requestId: string;
+  startedAt: string;
+  updatedAt: string;
+  finishedAt?: string;
+  leaseExpiresAt?: string;
+  errorCode: string;
+  detail: string;
+}
+
+/** 复合游标：同一时间戳下用 id 继续分页，不跳行也不重复。 */
+export interface AgentOperationCursor {
+  updatedAt: string;
+  id: string;
+}
+
+export interface AgentOperationSync {
+  operations: AgentOperation[];
+  cursor: AgentOperationCursor | null;
+  activeCount: number;
+  hasMore: boolean;
+}
+
+/** `agent-operation-changed` 事件载荷（与 AgentOperation 同构）。 */
+export type AgentOperationChangeEvent = AgentOperation;
+
 // ── 场景工作区（v0.11，迁移 v38）：可重复进入的预设工作环境 ──
 // 主 Agent 预置契约（Subagent C 按此实现 scenario_* 命令；字段全部 camelCase）。
 

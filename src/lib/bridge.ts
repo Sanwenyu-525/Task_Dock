@@ -2,6 +2,12 @@
 
 import { invokeCommand as invoke } from "./errors";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type {
+  AgentOperation,
+  AgentOperationChangeEvent,
+  AgentOperationCursor,
+  AgentOperationSync,
+} from "./contracts/models";
 
 export * from "./contracts/models";
 import type {
@@ -306,6 +312,12 @@ export const taskStats = () => invoke<TaskStats>("task_stats");
 export const createTask = (input: TaskInput, traceId?: string | null) =>
   invoke<Task>("create_task", { input, traceId: traceId ?? null });
 export const updateTask = (id: string, input: TaskInput) => invoke<Task>("update_task", { id, input });
+/** 带 CAS 的更新：`expectedUpdatedAt` 与任务当前值不一致时后端返回 CONFLICT。 */
+export const updateTaskChecked = (
+  id: string,
+  input: TaskInput,
+  expectedUpdatedAt: string,
+) => invoke<Task>("update_task_cas", { id, input, expectedUpdatedAt });
 export const toggleTask = (id: string) => invoke<Task>("toggle_task", { id });
 export const deleteTask = (id: string) => invoke<void>("delete_task", { id });
 export const undoTaskCompletion = (task: Pick<Task, "id" | "updated_at">) =>
@@ -1465,6 +1477,42 @@ export const onPlanningChanged = (
   cb: (payload: PlanningChangedEvent) => void,
 ): Promise<UnlistenFn> =>
   listen<PlanningChangedEvent>("planning-changed", (e) => cb(e.payload));
+
+// ── Agent 操作生命周期（v86）────────────────────────────────────
+// 事件只承载元数据，前端按 operationId 合并；丢失后由游标同步补齐。
+// 注意：独立 CLI 进程不会发 Tauri 事件，`agentOperationsSync` 是跨进程唯一通道。
+
+export const AGENT_OPERATION_CHANGED_EVENT = "agent-operation-changed";
+
+export const onAgentOperationChanged = (
+  cb: (payload: AgentOperationChangeEvent) => void,
+): Promise<UnlistenFn> =>
+  listen<AgentOperationChangeEvent>(AGENT_OPERATION_CHANGED_EVENT, (e) => cb(e.payload));
+
+/** 游标增量同步：只读取游标之后的变更，不重复全量拉取。 */
+export const agentOperationsSync = (cursor: AgentOperationCursor | null, limit = 50) =>
+  invoke<AgentOperationSync>("agent_operations_sync", { cursor, limit });
+
+export const agentOperationsActive = (params?: {
+  projectId?: string;
+  resourceKind?: string;
+  resourceId?: string;
+  limit?: number;
+}) => invoke<{ items: AgentOperation[]; count: number }>("agent_operations_active", params ?? {});
+
+export const agentOperationsList = (params?: {
+  agentId?: string;
+  resourceKind?: string;
+  status?: string;
+  since?: string;
+  until?: string;
+  limit?: number;
+  offset?: number;
+}) =>
+  invoke<{
+    items: AgentOperation[];
+    page: { limit: number; offset: number; total: number; has_more?: boolean; hasMore?: boolean };
+  }>("agent_operations_list", params ?? {});
 
 
 export const scenarioList = () => invoke<ScenarioSummary[]>("scenario_list", {});

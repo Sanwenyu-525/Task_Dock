@@ -17,7 +17,7 @@ use crate::mcp::auth as mcp_auth;
 use crate::mcp::permissions::Capability;
 
 use super::{
-    context, error_code, handoff, permissions as perms, projection, service, store,
+    context, error_code, handoff, operations, permissions as perms, projection, service, store,
     sync as file_sync, workspace, ActorKind, Envelope, Meta, Page, Principal, Source,
 };
 
@@ -207,6 +207,62 @@ fn resolve_principal(db: &Db) -> AppResult<Principal> {
     Ok(principal)
 }
 
+/// CLI 写命令 → (action, resource_kind)。
+///
+/// 只有真正的写命令才创建操作：读命令不产生「正在修改」状态。
+/// 同一次 CLI 调用只对应一条记录（内部无论调用多少服务函数，都不再新建）。
+fn classify_cli_write(args: &[String]) -> Option<(&'static str, &'static str)> {
+    let group = args.first()?.as_str();
+    let has_subcommand = matches!(
+        group,
+        "project" | "task" | "plan" | "knowledge" | "decision" | "context" | "agent" | "sync"
+    );
+    let sub = if has_subcommand {
+        args.iter().skip(1).find(|a| !a.starts_with("--"))?.as_str()
+    } else {
+        "list"
+    };
+    let third = args
+        .iter()
+        .skip(2)
+        .find(|a| !a.starts_with("--"))
+        .map(String::as_str);
+    let action = match (group, sub, third) {
+        ("task", "create", _) => ("task.create", "task"),
+        ("task", "update", _) => ("task.update", "task"),
+        ("task", "complete", _) => ("task.complete", "task"),
+        ("knowledge", "create", _) => ("knowledge.create", "knowledge"),
+        ("knowledge", "update", _) => ("knowledge.update", "knowledge"),
+        ("decision", "create", _) => ("decision.create", "decision"),
+        ("agent", "handoff", Some("accept")) => ("handoff.accept", "handoff"),
+        ("agent", "handoff", Some("reject")) => ("handoff.reject", "handoff"),
+        ("agent", "handoff", Some("complete")) => ("handoff.complete", "handoff"),
+        ("agent", "handoff", _) => ("handoff.create", "handoff"),
+        ("agent", "report", _) => ("report.create", "report"),
+        ("sync", "init", _) => ("sync.init", "sync"),
+        ("sync", "export", _) => ("sync.export", "sync"),
+        ("sync", "scan", _) => ("sync.scan", "sync"),
+        ("sync", "resolve", _) => ("sync.resolve", "sync"),
+        _ => return None,
+    };
+    Some(action)
+}
+
+/// 从 CLI 输出数据中提取真实资源指针（不猜：只认返回对象里明确存在的字段）。
+fn cli_operation_result(data: &Value) -> operations::OperationResult {
+    let mut result = operations::OperationResult::new();
+    if let Some(id) = data.get("id").and_then(|v| v.as_str()) {
+        result = result.resource("", id);
+    } else if let Some(id) = data
+        .get("handoff")
+        .and_then(|h| h.get("id"))
+        .and_then(|v| v.as_str())
+    {
+        result = result.resource("handoff", id);
+    }
+    result.revision(data.get("revision").and_then(|v| v.as_i64()))
+}
+
 fn open_db() -> AppResult<Db> {
     let path: PathBuf = match std::env::var_os("TASKDOCK_DB_PATH") {
         Some(p) => PathBuf::from(p),
@@ -270,8 +326,27 @@ pub fn main_entry(args: Vec<String>) -> i32 {
     };
 
     let request_id = format!("cli-{}", uuid::Uuid::new_v4().simple());
+    // 认证已完成 → 开始记录操作（读命令不记录）。CLI 在 UI 关闭时照常运行，
+    // 前端通过 SQLite 游标增量感知，不依赖任何桌面端进程。
+    let operation = classify_cli_write(&argv).and_then(|(action, kind)| {
+        operations::try_start(
+            &db,
+            &principal,
+            &operations::OperationInput {
+                action,
+                resource_kind: kind,
+                resource_id: "",
+                project_id: "",
+                request_id: &request_id,
+                detail: "",
+            },
+        )
+    });
     match execute(&db, &principal, &cli, argv) {
         Ok(outcome) => {
+            if let Some(op) = &operation {
+                let _ = operations::complete(&db, &op.id, &cli_operation_result(&outcome.data));
+            }
             let mut meta = Meta::new(&principal, &request_id);
             if let Some(page) = &outcome.page {
                 meta = meta.with_page(page.clone());
@@ -293,6 +368,9 @@ pub fn main_entry(args: Vec<String>) -> i32 {
             0
         }
         Err(err) => {
+            if let Some(op) = &operation {
+                let _ = operations::fail(&db, &op.id, &err);
+            }
             let meta = Meta::new(&principal, &request_id);
             if cli.json {
                 let envelope = Envelope::fail(&err, meta);
@@ -1208,5 +1286,56 @@ pub fn local_readonly(source: Source) -> Principal {
         actor_kind: ActorKind::Human,
         read_only: true,
         ..Principal::local(source)
+    }
+}
+
+#[cfg(test)]
+mod operation_tests {
+    use super::*;
+
+    fn args(raw: &[&str]) -> Vec<String> {
+        raw.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn write_commands_map_to_actions_and_reads_do_not() {
+        // 同一次 CLI 调用只对应一条操作：读命令不产生「正在修改」。
+        assert_eq!(
+            classify_cli_write(&args(&["task", "create", "--title", "x"])),
+            Some(("task.create", "task"))
+        );
+        assert_eq!(
+            classify_cli_write(&args(&["task", "complete", "t1"])),
+            Some(("task.complete", "task"))
+        );
+        assert_eq!(
+            classify_cli_write(&args(&["agent", "handoff", "accept", "h1"])),
+            Some(("handoff.accept", "handoff"))
+        );
+        assert_eq!(
+            classify_cli_write(&args(&["agent", "report", "create", "--summary", "s"])),
+            Some(("report.create", "report"))
+        );
+        assert_eq!(classify_cli_write(&args(&["task", "list"])), None);
+        assert_eq!(classify_cli_write(&args(&["status"])), None);
+        assert_eq!(classify_cli_write(&args(&["knowledge", "search", "kw"])), None);
+    }
+
+    #[test]
+    fn operation_result_uses_only_returned_fields() {
+        let data = serde_json::json!({ "id": "t1", "revision": 3 });
+        let result = cli_operation_result(&data);
+        assert_eq!(result.resource_id.as_deref(), Some("t1"));
+        assert_eq!(result.revision, Some(3));
+
+        let handoff = serde_json::json!({ "handoff": { "id": "h1" } });
+        assert_eq!(
+            cli_operation_result(&handoff).resource_id.as_deref(),
+            Some("h1")
+        );
+
+        // 无法识别时保持空目标，不猜测 ID。
+        let unknown = serde_json::json!({ "message": "ok" });
+        assert!(cli_operation_result(&unknown).resource_id.is_none());
     }
 }

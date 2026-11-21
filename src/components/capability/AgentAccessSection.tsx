@@ -9,6 +9,7 @@
 //! - 文件导入默认「待批准」，本机用户逐条批准后才写入业务表。
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { AgentOperationTimeline } from "../agents/operations/AgentOperationTimeline";
 import {
   Activity,
   ArrowLeftRight,
@@ -601,7 +602,16 @@ export default function AgentAccessSection() {
       ) : null}
 
       {tab === "activity" ? (
-        <div className="cap-card">
+        <>
+          {/* 实时操作：统一 store 驱动（运行中 + 最近结束），点击可定位真实资源。 */}
+          <div className="cap-card">
+            <div className="cap-card-title">{t("agent.col.action")} · Agent 实时操作</div>
+            <AgentOperationTimeline
+              limit={8}
+              emptyHint="当前没有运行中或最近的 Agent 操作"
+            />
+          </div>
+          <div className="cap-card">
           {activity.length === 0 ? (
             <EmptyState title={t("agent.empty.activity")} hint={t("agent.empty.activityHint")} />
           ) : (
@@ -628,16 +638,26 @@ export default function AgentAccessSection() {
                       {short(pick(item, "resourceId", "resource_id"), 24)}
                     </td>
                     <td>
-                      {text(pick(item, "status")) === "ok"
-                        ? t("agent.state.ok")
-                        : text(pick(item, "status")) || "-"}
+                      {/* 活动记录只有 success 布尔值与 errorCode；此前读 status
+                          导致永远显示 “-”，这里按真实字段展示结果与失败原因。 */}
+                      {pick(item, "success") === false ? (
+                        <span className="agent-access-failed">
+                          {t("agent.state.failed")}
+                          {text(pick(item, "errorCode", "error_code"))
+                            ? ` · ${text(pick(item, "errorCode", "error_code"))}`
+                            : ""}
+                        </span>
+                      ) : (
+                        t("agent.state.ok")
+                      )}
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           )}
-        </div>
+          </div>
+        </>
       ) : null}
 
       {tab === "handoffs" ? (

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ExternalLink, Link2, Loader2, Unlink } from "lucide-react";
+import { ExternalLink, History, Link2, Loader2, Unlink } from "lucide-react";
 
 import {
   planningListFeatureAgentLinks,
@@ -8,9 +8,13 @@ import {
 } from "../../lib/bridge";
 import { formatRelative, AGENT_STATE_LABELS } from "../../lib/format";
 import { useUiStore } from "../../store/useUiStore";
+import { AgentOperationTimeline } from "../agents/operations/AgentOperationTimeline";
+import { useResourceOperations } from "../agents/operations/useResourceOperations";
 
 export default function FeatureAgentLinks({ featureId }: { featureId: string }) {
   const [items, setItems] = useState<PlanningAgentFeatureLink[]>([]);
+  // 同一功能上的 Agent 操作（运行中 + 最近结束），点击「定位」回到功能卡片。
+  const featureOperations = useResourceOperations("feature", featureId).operations;
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
@@ -141,6 +145,14 @@ export default function FeatureAgentLinks({ featureId }: { featureId: string }) 
             );
           })}
         </ul>
+      )}
+      {featureOperations.length > 0 && (
+        <div className="agent-op-inline-block">
+          <h4>
+            <History size={13} aria-hidden="true" /> 最近 Agent 操作
+          </h4>
+          <AgentOperationTimeline items={featureOperations} limit={5} />
+        </div>
       )}
     </section>
   );

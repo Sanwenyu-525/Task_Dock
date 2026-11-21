@@ -1732,3 +1732,64 @@ fn revoked_token_returns_401() {
     assert_eq!(value["error"]["code"], json!("UNAUTHORIZED"));
     let _ = rest::stop();
 }
+
+// ── Agent 操作生命周期（v86）──────────────────────────────────────
+
+/// REST 真实写入：操作与业务数据一致，资源 ID 来自提交后的返回值。
+#[test]
+fn rest_write_records_committed_operation_with_real_resource_id() {
+    let _serial = serial();
+    let _ = rest::stop();
+    let db = Arc::new(db());
+    let (_, agent_id, token) = writable_agent(&db, "op-rest");
+    let port = start_rest(&db);
+
+    let body = r#"{"title":"REST 操作记录"}"#.as_bytes();
+    let (status, _, text) = post(port, "/api/v1/tasks", &token, body, None);
+    assert_eq!(status, 201, "写入应成功: {text}");
+    let value: Value = serde_json::from_str(&text).expect("JSON 信封");
+    let task_id = value["data"]["id"].as_str().expect("任务 ID").to_string();
+
+    let query = super::operations::OperationQuery {
+        agent_id: Some(agent_id),
+        ..Default::default()
+    };
+    let (ops, page) = super::operations::list(&db, &query).unwrap();
+    assert_eq!(page.total, 1, "一次 REST 写入只应有一条操作: {ops:?}");
+    assert_eq!(ops[0].interface, "rest");
+    assert_eq!(ops[0].action, "task.create");
+    assert_eq!(ops[0].status, super::operations::OperationStatus::Committed);
+    assert_eq!(ops[0].resource_id, task_id, "必须绑定真实资源 ID");
+    assert!(ops[0].revision.is_some(), "完成时应记录 revision");
+    let _ = rest::stop();
+}
+
+/// 参数错误：操作收敛为 failed，不得停留在 running。
+#[test]
+fn rest_validation_error_marks_operation_failed() {
+    let _serial = serial();
+    let _ = rest::stop();
+    let db = Arc::new(db());
+    let (_, agent_id, token) = writable_agent(&db, "op-rest-fail");
+    let port = start_rest(&db);
+
+    let body = r#"{"title":""}"#.as_bytes();
+    let (status, _, text) = post(port, "/api/v1/tasks", &token, body, None);
+    assert_eq!(status, 400, "空标题应校验失败: {text}");
+
+    let query = super::operations::OperationQuery {
+        agent_id: Some(agent_id),
+        ..Default::default()
+    };
+    let (ops, _) = super::operations::list(&db, &query).unwrap();
+    let op = ops.first().expect("失败也应留下操作记录");
+    assert_eq!(op.status, super::operations::OperationStatus::Failed);
+    assert_eq!(op.error_code, "VALIDATION");
+    let active = super::operations::active(
+        &db,
+        &super::operations::ActiveFilter::default(),
+    )
+    .unwrap();
+    assert!(active.iter().all(|item| item.id != op.id));
+    let _ = rest::stop();
+}

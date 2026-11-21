@@ -113,6 +113,8 @@ interface GlobalSearchState {
   openResult: (item: GlobalSearchResult) => void;
   /** 目标模块消费定位意图后调用（清除意图）。 */
   consumeLocate: () => void;
+  /** 通用一次性定位意图（Agent 操作记录等来源复用同一通道）。 */
+  requestLocate: (intent: Omit<GlobalSearchLocateIntent, "token">) => void;
   /** 胶囊「最近暂存」跳转完整暂存架并定位条目（复用同一 pendingLocate 通道）。 */
   requestShelfLocate: (id: string, kind: string) => void;
   /** 从 Agent 会话跳转到规划功能详情。 */
@@ -640,6 +642,14 @@ export const useGlobalSearchStore = create<GlobalSearchState>((set, get) => ({
   },
 
   consumeLocate: () => set({ pendingLocate: null }),
+
+  requestLocate: (intent) =>
+    set((s) => ({
+      pendingLocate: {
+        ...intent,
+        token: (s.pendingLocate?.token ?? 0) + 1,
+      },
+    })),
 
   requestShelfLocate: (id, kind) =>
     set({

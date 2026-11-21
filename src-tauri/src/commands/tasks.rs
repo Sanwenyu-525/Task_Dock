@@ -638,6 +638,47 @@ pub fn update_task(db: State<'_, Arc<Db>>, id: String, input: TaskInput) -> AppR
     update_task_inner(&db, &id, input)
 }
 
+/// UI 编辑用的乐观并发更新：`expected_updated_at` 与任务当前 `updated_at`
+/// 不一致时返回 `CONFLICT`，**不写库**。
+///
+/// 为什么单独开命令而不是改 `update_task`：`update_task` 被既有调用方共用，
+/// 加必填参数会改变所有调用点语义；这里保持旧入口不变，只给编辑器提供 CAS。
+/// 校验与写入在**同一个事务**内，避免「校验通过后被别的写入插队」。
+#[tauri::command]
+pub fn update_task_cas(
+    db: State<'_, Arc<Db>>,
+    id: String,
+    input: TaskInput,
+    expected_updated_at: Option<String>,
+) -> AppResult<Task> {
+    update_task_cas_inner(&db, &id, input, expected_updated_at.as_deref())
+}
+
+/// CAS 更新的可测试核心（命令层只做参数转换）。
+pub fn update_task_cas_inner(
+    db: &Db,
+    id: &str,
+    input: TaskInput,
+    expected_updated_at: Option<&str>,
+) -> AppResult<Task> {
+    let expected = expected_updated_at
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    db.with_transaction(|conn| {
+        if let Some(expected) = expected.as_deref() {
+            let current = get_task_in_conn(conn, id)?;
+            if current.updated_at != expected {
+                return Err(AppError::Conflict(format!(
+                    "任务已被其他来源更新（当前 updated_at={}，提交基准 {expected}）；请重新加载后再保存",
+                    current.updated_at
+                )));
+            }
+        }
+        update_task_in_conn(conn, id, input)
+    })
+}
+
 /// 更新核心：规则更新、任务更新及必要的提醒重建在同一个事务内。
 /// 旧实现先删旧规则再更新任务（错误被 `let _ =` 吞掉），中途失败会让
 /// ON DELETE SET NULL 静默吃掉任务的重复规则。
@@ -1518,6 +1559,44 @@ mod tests {
 
     fn db() -> Db {
         Db::open_in_memory().unwrap()
+    }
+
+    #[test]
+    fn cas_update_rejects_stale_baseline_and_accepts_current() {
+        let db = db();
+        let t = create(&db, "原题", None, None);
+        let current = get_task(&db, &t.id).unwrap();
+
+        // 过期基准 → CONFLICT，且业务数据零改动。
+        let err = update_task_cas_inner(
+            &db,
+            &t.id,
+            TaskInput { title: "被拒绝".into(), ..Default::default() },
+            Some("2000-01-01T00:00:00+00:00"),
+        )
+        .unwrap_err();
+        assert!(matches!(err, AppError::Conflict(_)), "应为冲突: {err:?}");
+        assert_eq!(get_task(&db, &t.id).unwrap().title, "原题");
+
+        // 正确基准 → 正常更新。
+        let updated = update_task_cas_inner(
+            &db,
+            &t.id,
+            TaskInput { title: "新题".into(), ..Default::default() },
+            Some(&current.updated_at),
+        )
+        .unwrap();
+        assert_eq!(updated.title, "新题");
+
+        // 不传基准 → 保持旧入口的整对象更新语义。
+        let forced = update_task_cas_inner(
+            &db,
+            &t.id,
+            TaskInput { title: "无基准".into(), ..Default::default() },
+            None,
+        )
+        .unwrap();
+        assert_eq!(forced.title, "无基准");
     }
 
     #[test]

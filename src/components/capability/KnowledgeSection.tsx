@@ -51,6 +51,7 @@ import {
 import { errorMessage } from "../../lib/errors";
 import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
 import { useLocale } from "../../hooks/useLocale";
+import { AgentOperationHighlight } from "../agents/operations/AgentOperationHighlight";
 import {
   ConfirmDialog,
   Dialog,
@@ -691,6 +692,8 @@ export default function KnowledgeSection() {
                           {t(`cap.doc.status.${doc.status}` as "cap.doc.status.indexed")}
                         </StatusBadge>
                         <span className="cap-ellipsis">{doc.title}</span>
+                        {/* Agent 正在写入该文档时展示来源与状态；布局不变。 */}
+                        <AgentOperationHighlight resourceKind="knowledge" resourceId={doc.id} />
                       </span>
                       <span className="cap-list-meta">
                         {sourceLabel(t, doc.sourceKind)} ·{" "}

@@ -391,3 +391,62 @@ pub fn agent_access_config_info(db: State<'_, Arc<Db>>) -> AppResult<Value> {
         "remote_allowed": false,
     }))
 }
+
+// ── Agent 操作生命周期（v86）─────────────────────────────────────
+//
+// 前端只保留一个游标：启动时全量恢复运行中操作，随后用 `agent_operations_sync`
+// 增量补齐。独立 CLI 进程没有 Tauri 事件，因此数据库游标是跨进程的唯一真源。
+
+/// 游标增量同步（跨进程 CLI 与事件丢失恢复）。
+#[tauri::command]
+pub fn agent_operations_sync(
+    db: State<'_, Arc<Db>>,
+    cursor: Option<super::operations::OperationCursor>,
+    limit: Option<u32>,
+) -> AppResult<super::operations::OperationSync> {
+    super::operations::sync_since(&db, cursor.as_ref(), limit.unwrap_or(50))
+}
+
+/// 当前运行中的操作（支持项目 / 资源过滤，数量受限）。
+#[tauri::command]
+pub fn agent_operations_active(
+    db: State<'_, Arc<Db>>,
+    project_id: Option<String>,
+    resource_kind: Option<String>,
+    resource_id: Option<String>,
+    limit: Option<u32>,
+) -> AppResult<Value> {
+    let filter = super::operations::ActiveFilter {
+        project_id,
+        resource_kind,
+        resource_id,
+        limit: limit.unwrap_or(20),
+    };
+    let items = super::operations::active(&db, &filter)?;
+    Ok(json!({ "items": items, "count": items.len() }))
+}
+
+/// 历史分页（Agent / 资源类型 / 状态 / 时间范围）。
+#[tauri::command]
+pub fn agent_operations_list(
+    db: State<'_, Arc<Db>>,
+    agent_id: Option<String>,
+    resource_kind: Option<String>,
+    status: Option<String>,
+    since: Option<String>,
+    until: Option<String>,
+    limit: Option<u32>,
+    offset: Option<u32>,
+) -> AppResult<Value> {
+    let query = super::operations::OperationQuery {
+        agent_id,
+        resource_kind,
+        status,
+        since,
+        until,
+        limit: limit.unwrap_or(50),
+        offset: offset.unwrap_or(0),
+    };
+    let (items, page) = super::operations::list(&db, &query)?;
+    Ok(json!({ "items": items, "page": page }))
+}

@@ -153,3 +153,23 @@ CLI / MCP / REST ──▶ service::list_decisions_authorized
 - `RequestCacheGuard` 的 `check/record_operation/complete` 与业务写入同事务：不存在「业务已写、
   提交标记未写」的窗口。
 - 重建只调用授权读取，不产生业务写入。
+
+## 11. 操作生命周期与可视化（v86）
+
+四入口的写入统一挂到 `agent_access::operations`（表 `agent_operations`，迁移 v86）：
+
+```text
+start(running) ──▶ writing ──▶ committed（MCP 与业务同事务；其他入口在提交返回后）
+      │                │
+      │                ├──▶ failed / conflict（业务回滚或版本冲突）
+      └────────────────┴──▶ interrupted（租约过期、结果不可确定）
+```
+
+- 事实来源是数据库；`agent-operation-changed` 事件只降低延迟，前端只保留一个游标做增量同步，
+  独立 CLI 进程因此也能被感知。
+- 终态不可回退；`interrupted → committed` 是唯一例外（业务确实提交了）。
+- 与 `planning-changed` 职责分离：前者刷业务数据，后者展示操作过程。
+- `agent_activity_logs` 仍是追加式审计，不被改造成运行状态表。
+
+细节（事件契约、资源关联、故障恢复、权限与测试）见
+[`operation-visualization.md`](operation-visualization.md)。
