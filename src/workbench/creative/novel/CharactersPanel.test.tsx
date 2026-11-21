@@ -26,6 +26,21 @@ const api = vi.hoisted(() => ({
 vi.mock("./ipc", () => api);
 
 import { CharactersPanel } from "./CharactersPanel";
+import type { NovelCharacter, NovelCharacterRelation } from "./types";
+
+/** 可控 Promise：精确控制 resolve/reject 时机，不依赖随机延时。 */
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+type CharacterListResult = { characters: NovelCharacter[] };
+type RelationListResult = { relations: NovelCharacterRelation[] };
 
 const base = {
   projectId: "p1",
@@ -165,6 +180,10 @@ describe("CharactersPanel", () => {
     await waitFor(() => {
       expect(onNotice).toHaveBeenCalledWith("ok", expect.stringContaining("新人物"));
     });
+    // 保存后应选中刚创建的人物并打开其表单。
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("新人物")).toBeTruthy();
+    });
   });
 
   it("有数据但未选择时右侧展示选择提示且不带创建按钮", async () => {
@@ -252,5 +271,223 @@ describe("CharactersPanel", () => {
       expect(screen.getByRole("alert").textContent).toContain("网络异常");
     });
     expect(onNotice).toHaveBeenCalledWith("error", expect.stringContaining("网络异常"));
+  });
+
+  // ── 3.1 并发隔离 ──────────────────────────────────────────────────────
+
+  it("搜索请求未返回时点击人物，搜索仍能完成", async () => {
+    const onNotice = vi.fn();
+    render(<CharactersPanel {...base} archived={false} onNotice={onNotice} />);
+    await screen.findByText("林雷");
+    expect(screen.getByText("艾米")).toBeTruthy();
+
+    // 搜索请求挂起；此时点击人物发出的关系请求使用独立代次，不应作废它。
+    const searchList = deferred<CharacterListResult>();
+    api.novelCharacterList.mockImplementationOnce(() => searchList.promise);
+    fireEvent.change(screen.getByLabelText("搜索人物"), { target: { value: "林" } });
+    await waitFor(() => {
+      expect(api.novelCharacterList).toHaveBeenCalledTimes(2);
+    });
+
+    screen.getByText("林雷").click();
+    expect(await screen.findByText(/挚友/)).toBeTruthy();
+
+    // 搜索结果后到仍被采用，关系也不被搜索请求取消。
+    searchList.resolve({ characters: [charA] });
+    await waitFor(() => {
+      expect(screen.queryByText("艾米")).toBeNull();
+    });
+    expect(screen.getByText(/挚友/)).toBeTruthy();
+    expect(screen.getByDisplayValue("林雷")).toBeTruthy();
+  });
+
+  it("两个列表请求逆序返回，只采用最新", async () => {
+    render(<CharactersPanel {...base} archived={false} onNotice={vi.fn()} />);
+    await screen.findByText("林雷");
+
+    const d1 = deferred<CharacterListResult>();
+    const d2 = deferred<CharacterListResult>();
+    api.novelCharacterList
+      .mockImplementationOnce(() => d1.promise)
+      .mockImplementationOnce(() => d2.promise);
+
+    fireEvent.change(screen.getByLabelText("搜索人物"), { target: { value: "A" } });
+    await waitFor(() => {
+      expect(api.novelCharacterList).toHaveBeenCalledTimes(2);
+    });
+    fireEvent.change(screen.getByLabelText("搜索人物"), { target: { value: "B" } });
+    await waitFor(() => {
+      expect(api.novelCharacterList).toHaveBeenCalledTimes(3);
+    });
+
+    // 后发的先返回、先发的后返回。
+    d2.resolve({ characters: [charB] });
+    await waitFor(() => {
+      expect(screen.queryByText("林雷")).toBeNull();
+    });
+    d1.resolve({ characters: [charA] });
+    await waitFor(() => {
+      expect(screen.queryByText("林雷")).toBeNull();
+      expect(screen.getByText("艾米")).toBeTruthy();
+    });
+  });
+
+  it("两个关系请求逆序返回，只采用当前人物关系", async () => {
+    render(<CharactersPanel {...base} archived={false} onNotice={vi.fn()} />);
+    await screen.findByText("林雷");
+
+    const dA = deferred<RelationListResult>();
+    const dB = deferred<RelationListResult>();
+    api.novelCharacterRelationList
+      .mockImplementationOnce(() => dA.promise)
+      .mockImplementationOnce(() => dB.promise);
+
+    screen.getByText("林雷").click();
+    await waitFor(() => {
+      expect(api.novelCharacterRelationList).toHaveBeenCalledWith("p1", "ca");
+    });
+    screen.getByText("艾米").click();
+    await waitFor(() => {
+      expect(api.novelCharacterRelationList).toHaveBeenCalledWith("p1", "cb");
+    });
+
+    // 后发的先返回，先发的后返回。
+    dB.resolve({ relations: [{ ...relation, description: "最新关系" }] });
+    expect(await screen.findByText(/最新关系/)).toBeTruthy();
+    dA.resolve({ relations: [{ ...relation, description: "旧关系" }] });
+
+    await waitFor(() => {
+      expect(screen.queryByText(/旧关系/)).toBeNull();
+    });
+    expect(screen.getByText(/最新关系/)).toBeTruthy();
+  });
+
+  it("关系请求失败不影响人物列表", async () => {
+    const onNotice = vi.fn();
+    api.novelCharacterRelationList.mockRejectedValueOnce(new Error("关系异常"));
+    render(<CharactersPanel {...base} archived={false} onNotice={onNotice} />);
+    await screen.findByText("林雷");
+
+    screen.getByText("林雷").click();
+
+    await waitFor(() => {
+      expect(onNotice).toHaveBeenCalledWith("error", expect.stringContaining("关系读取失败"));
+    });
+    // 列表未被关系失败取消（编辑器标题也含「林雷」，用列表行按钮定位）。
+    expect(screen.getByRole("button", { name: /林雷/ })).toBeTruthy();
+    expect(screen.getByText("艾米")).toBeTruthy();
+    expect(screen.queryByText("人物列表读取失败，请在左侧重试。")).toBeNull();
+  });
+
+  it("人物列表请求失败不影响关系请求", async () => {
+    const onNotice = vi.fn();
+    render(<CharactersPanel {...base} archived={false} onNotice={onNotice} />);
+    await screen.findByText("林雷");
+
+    const rel = deferred<RelationListResult>();
+    api.novelCharacterRelationList.mockImplementationOnce(() => rel.promise);
+    screen.getByText("林雷").click();
+    await waitFor(() => {
+      expect(api.novelCharacterRelationList).toHaveBeenCalledWith("p1", "ca");
+    });
+
+    // 搜索让列表失败；关系请求已在途，不应被列表失败取消。
+    api.novelCharacterList.mockRejectedValueOnce(new Error("列表异常"));
+    fireEvent.change(screen.getByLabelText("搜索人物"), { target: { value: "林" } });
+    await waitFor(() => {
+      expect(screen.getByRole("alert").textContent).toContain("列表异常");
+    });
+
+    rel.resolve({ relations: [relation] });
+    expect(await screen.findByText(/挚友/)).toBeTruthy();
+    expect(screen.getByRole("alert").textContent).toContain("列表异常");
+  });
+
+  it("切换项目后旧请求返回不能污染新项目", async () => {
+    const onNotice = vi.fn();
+    const p1 = deferred<CharacterListResult>();
+    api.novelCharacterList.mockImplementationOnce(() => p1.promise);
+    const { rerender } = render(
+      <CharactersPanel {...base} projectId="p1" archived={false} onNotice={onNotice} />,
+    );
+    await waitFor(() => {
+      expect(api.novelCharacterList).toHaveBeenCalledWith("p1", null);
+    });
+
+    api.novelCharacterList.mockResolvedValueOnce({ characters: [charB] });
+    rerender(<CharactersPanel {...base} projectId="p2" archived={false} onNotice={onNotice} />);
+    expect(await screen.findByText("艾米")).toBeTruthy();
+
+    // 旧项目响应最后返回，必须因项目切换作废而被丢弃。
+    p1.resolve({ characters: [charA] });
+    await waitFor(() => {
+      expect(screen.queryByText("林雷")).toBeNull();
+    });
+    expect(screen.getByText("艾米")).toBeTruthy();
+  });
+
+  // ── 3.2 搜索条件保持 ──────────────────────────────────────────────────
+
+  it("搜索失败后重试保留关键词", async () => {
+    render(<CharactersPanel {...base} archived={false} onNotice={vi.fn()} />);
+    await screen.findByText("林雷");
+
+    api.novelCharacterList
+      .mockRejectedValueOnce(new Error("搜索失败"))
+      .mockResolvedValue({ characters: [charA] });
+    fireEvent.change(screen.getByLabelText("搜索人物"), { target: { value: "林" } });
+    await waitFor(() => {
+      expect(screen.getByRole("alert").textContent).toContain("搜索失败");
+    });
+
+    screen.getByRole("button", { name: "重试" }).click();
+    await waitFor(() => {
+      expect(api.novelCharacterList).toHaveBeenLastCalledWith("p1", "林");
+    });
+    expect(await screen.findByText("林雷")).toBeTruthy();
+  });
+
+  it("搜索状态下编辑人物，刷新后仍保留筛选", async () => {
+    render(<CharactersPanel {...base} archived={false} onNotice={vi.fn()} />);
+    await screen.findByText("林雷");
+
+    fireEvent.change(screen.getByLabelText("搜索人物"), { target: { value: "林" } });
+    await waitFor(() => {
+      expect(api.novelCharacterList).toHaveBeenCalledWith("p1", "林");
+    });
+
+    screen.getByText("林雷").click();
+    await screen.findByDisplayValue("林雷");
+
+    const updated = { ...charA, name: "林雷改" };
+    api.novelCharacterSave.mockResolvedValue({ character: updated });
+    fireEvent.change(screen.getByLabelText("姓名"), { target: { value: "林雷改" } });
+    screen.getByRole("button", { name: "保存人物" }).click();
+
+    await waitFor(() => {
+      expect(api.novelCharacterList).toHaveBeenLastCalledWith("p1", "林");
+    });
+    expect(screen.getByDisplayValue("林雷改")).toBeTruthy();
+  });
+
+  it("搜索状态下删除人物，刷新后仍保留筛选", async () => {
+    render(<CharactersPanel {...base} archived={false} onNotice={vi.fn()} />);
+    await screen.findByText("林雷");
+
+    fireEvent.change(screen.getByLabelText("搜索人物"), { target: { value: "林" } });
+    await waitFor(() => {
+      expect(api.novelCharacterList).toHaveBeenCalledWith("p1", "林");
+    });
+
+    screen.getByText("林雷").click();
+    await screen.findByDisplayValue("林雷");
+
+    screen.getByRole("button", { name: "删除人物" }).click();
+    const confirm = await screen.findByRole("button", { name: "再次点击确认删除" });
+    confirm.click();
+
+    await waitFor(() => {
+      expect(api.novelCharacterList).toHaveBeenLastCalledWith("p1", "林");
+    });
   });
 });

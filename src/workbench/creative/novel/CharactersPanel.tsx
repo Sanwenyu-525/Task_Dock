@@ -67,42 +67,74 @@ export function CharactersPanel({ projectId, archived, onNotice }: CreativeModul
   const [relationDesc, setRelationDesc] = useState("");
   const [relationBusy, setRelationBusy] = useState(false);
 
-  const seqRef = useRef(0);
+  // 卸载保护：最先声明，确保卸载时两个代次都作废，在途回调不再写已卸载组件。
+  const mountedRef = useRef(true);
+  // 人物列表与关系列表各自独立代次，避免一条在途请求作废另一条。
+  const characterListSeqRef = useRef(0);
+  const relationListSeqRef = useRef(0);
   const detailRef = useRef<HTMLDivElement>(null);
+
+  // 卸载保护 effect 必须最先声明。
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      characterListSeqRef.current += 1;
+      relationListSeqRef.current += 1;
+    };
+  }, []);
 
   // 切换人物或新建时回到表单顶部，避免继承上一条的滚动位置。
   useEffect(() => {
     detailRef.current?.scrollTo?.({ top: 0 });
   }, [selectedId, creating]);
 
-  const loadCharacters = useCallback(
-    async (keyword?: string | null) => {
-      const token = ++seqRef.current;
-      setLoading(true);
-      try {
-        const result = await novelCharacterList(projectId, keyword ?? null);
-        if (token !== seqRef.current) return;
-        setCharacters(result.characters ?? []);
-        setLoadError(null);
-      } catch (error) {
-        if (token !== seqRef.current) return;
-        setLoadError(errorText(error));
-      } finally {
-        if (token === seqRef.current) setLoading(false);
-      }
-    },
-    [projectId],
-  );
+  // 项目切换/首次挂载：作废旧项目在途请求，清空与新项目无关的状态。
+  // 必须声明在加载 effect 之前：先作废旧代次再发新请求。
+  useEffect(() => {
+    // 作废旧项目在途请求；清空与新项目无关的状态。
+    characterListSeqRef.current += 1;
+    relationListSeqRef.current += 1;
+    setCharacters([]);
+    setRelations([]);
+    setSelectedId(null);
+    setCreating(false);
+    setDraft(EMPTY_DRAFT);
+    setLoadError(null);
+    setSaveError(null);
+    setDeleteArmed(false);
+    setRelationTarget("");
+    setRelationDesc("");
+    setLoading(true);
+  }, [projectId]);
+
+  // 统一搜索刷新路径：关键词只从 search 派生，不接收参数，任何调用点都带当前筛选。
+  const loadCurrentCharacters = useCallback(async () => {
+    const keyword = search.trim() || null;
+    const token = ++characterListSeqRef.current;
+    setLoading(true);
+    try {
+      const result = await novelCharacterList(projectId, keyword);
+      if (!mountedRef.current || token !== characterListSeqRef.current) return;
+      setCharacters(result.characters ?? []);
+      setLoadError(null);
+    } catch (error) {
+      if (!mountedRef.current || token !== characterListSeqRef.current) return;
+      setLoadError(errorText(error));
+    } finally {
+      if (mountedRef.current && token === characterListSeqRef.current) setLoading(false);
+    }
+  }, [projectId, search]);
 
   const loadRelations = useCallback(
     async (characterId: string) => {
-      const token = ++seqRef.current;
+      const token = ++relationListSeqRef.current;
       try {
         const result = await novelCharacterRelationList(projectId, characterId);
-        if (token !== seqRef.current) return;
+        if (!mountedRef.current || token !== relationListSeqRef.current) return;
         setRelations(result.relations ?? []);
       } catch (error) {
-        if (token !== seqRef.current) return;
+        if (!mountedRef.current || token !== relationListSeqRef.current) return;
         onNotice("error", `关系读取失败：${errorText(error)}`);
       }
     },
@@ -110,8 +142,8 @@ export function CharactersPanel({ projectId, archived, onNotice }: CreativeModul
   );
 
   useEffect(() => {
-    void loadCharacters(search.trim() || null);
-  }, [loadCharacters, search]);
+    void loadCurrentCharacters();
+  }, [loadCurrentCharacters]);
 
   function selectCharacter(character: NovelCharacter) {
     setCreating(false);
@@ -176,7 +208,7 @@ export function CharactersPanel({ projectId, archived, onNotice }: CreativeModul
     try {
       const result = await novelCharacterSave(projectId, draft, selectedId);
       onNotice("ok", selectedId ? "人物已更新" : `已新建人物「${result.character.name}」`);
-      await loadCharacters();
+      await loadCurrentCharacters();
       selectCharacter(result.character);
     } catch (error) {
       setSaveError(errorText(error));
@@ -197,7 +229,7 @@ export function CharactersPanel({ projectId, archived, onNotice }: CreativeModul
       await novelCharacterDelete(selectedId);
       onNotice("ok", "人物已删除");
       resetDetail(false);
-      await loadCharacters();
+      await loadCurrentCharacters();
     } catch (error) {
       onNotice("error", `删除人物失败：${errorText(error)}`);
     } finally {
@@ -288,7 +320,7 @@ export function CharactersPanel({ projectId, archived, onNotice }: CreativeModul
               </button>
             </div>
 
-            {loadError && <LoadError message={loadError} onRetry={() => void loadCharacters()} />}
+            {loadError && <LoadError message={loadError} onRetry={() => void loadCurrentCharacters()} />}
             {listState === "loading" && <p className="novel-muted">加载中…</p>}
 
             {listState === "ready" && (
