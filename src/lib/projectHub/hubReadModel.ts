@@ -101,10 +101,13 @@ function featureStatus(value: string): FeatureProgressInput["status"] {
 }
 
 /**
- * 阶段状态：先看功能，再看任务，最后才落到「未开始」。
- * - 阶段有功能：功能全部完成 → completed；
- * - 阶段无功能但有任务：任务全部完成 → completed；
- * - 两者都没有：pending（待评估，不是 0%）。
+ * 阶段状态：与 `calculatePhaseProgress` **同一规则**（单一事实来源）。
+ * - 阶段有功能或交付物：功能全部 completed **且** 交付物全部 accepted → completed；
+ * - 阶段无功能/交付物但有任务：任务全部 completed → completed；
+ * - 三者都没有：pending（待评估，不是 0%）。
+ *
+ * 不允许「功能全完成就算阶段完成」而进度条又要求交付物验收——那会让
+ * 当前阶段状态与阶段完成率互相矛盾。
  */
 export function buildPhaseSummaries(snapshot: HubSnapshotLike): PhaseSummary[] {
   const ordered = [...snapshot.phases].sort((left, right) => left.sortOrder - right.sortOrder);
@@ -112,13 +115,16 @@ export function buildPhaseSummaries(snapshot: HubSnapshotLike): PhaseSummary[] {
 
   return ordered.map((phase) => {
     const features = snapshot.features.filter((feature) => feature.milestoneId === phase.id);
+    const deliverables = snapshot.deliverables.filter((item) => item.phaseId === phase.id);
     const tasks = snapshot.tasks.filter((task) => task.phaseId === phase.id);
 
     let completed = false;
     let hasUnit = false;
-    if (features.length > 0) {
+    if (features.length > 0 || deliverables.length > 0) {
       hasUnit = true;
-      completed = features.every((feature) => feature.status === "completed");
+      completed =
+        features.every((feature) => feature.status === "completed") &&
+        deliverables.every((item) => item.status === "accepted");
     } else if (tasks.length > 0) {
       hasUnit = true;
       completed = tasks.every((task) => task.status === "completed");

@@ -279,12 +279,16 @@ describe("项目中枢面板", () => {
     };
     const link: ProjectHubResourceLink = {
       id: "link-1",
+      // 归属当前项目才展示「解除」；共享关联只允许创建者解除。
+      projectId: "p-a",
+      scope: "project",
       capabilityId: "cap-1",
       capabilityName: "结构设计",
       resourceKind: "knowledge",
       resourceId: "kb-1",
       label: "项目资料",
       availability: "available",
+      detail: "数据库记录存在",
       lastCheckedAt: null,
       createdAt: "2026-11-20T00:00:00Z",
     };

@@ -5,7 +5,7 @@
 //! 不把功能塞进设置页；MCP Server 端管理仍在设置页，这里只做统一总览与外部 Server。
 
 import { useState } from "react";
-import { BookOpen, FlaskConical, LibraryBig, Layers3, Plug, Users } from "lucide-react";
+import { ArrowUpRight, BookOpen, FlaskConical, LibraryBig, Layers3, Plug } from "lucide-react";
 import WorkbenchPageHeader from "../../workbench/WorkbenchPageHeader";
 import { useLocale } from "../../hooks/useLocale";
 import type { MessageKey } from "../../i18n";
@@ -14,10 +14,15 @@ import SkillsSection from "./SkillsSection";
 import McpServersSection from "./McpServersSection";
 import ContextSection from "./ContextSection";
 import RecipesSection from "./RecipesSection";
-import AgentAccessSection from "./AgentAccessSection";
+import { useUiStore } from "../../store/useUiStore";
 import "./capability.css";
 
-type SectionId = "knowledge" | "skills" | "mcp" | "context" | "recipes" | "agent";
+/**
+ * 能力中心只保留**全局可复用能力资源**：知识库 / Skill / MCP / 上下文 / 配方。
+ * 「Agent 接入与授权」（身份、权限、导入授权、同步、冲突、交接、操作历史、审计）
+ * 不属于能力资源管理，已迁入 Agent 页面；这里只保留一行兼容入口。
+ */
+type SectionId = "knowledge" | "skills" | "mcp" | "context" | "recipes";
 
 const SECTIONS: readonly { id: SectionId; labelKey: MessageKey; icon: typeof BookOpen }[] = [
   { id: "knowledge", labelKey: "cap.tab.knowledge", icon: BookOpen },
@@ -25,12 +30,13 @@ const SECTIONS: readonly { id: SectionId; labelKey: MessageKey; icon: typeof Boo
   { id: "mcp", labelKey: "cap.tab.mcp", icon: Plug },
   { id: "context", labelKey: "cap.tab.context", icon: LibraryBig },
   { id: "recipes", labelKey: "cap.tab.recipes", icon: FlaskConical },
-  { id: "agent", labelKey: "cap.tab.agent", icon: Users },
 ];
 
 export default function CapabilityCenterPanel() {
   const { t } = useLocale();
   const [section, setSection] = useState<SectionId>("knowledge");
+  const setTab = useUiStore((s) => s.setTab);
+  const requestAgentSection = useUiStore((s) => s.requestAgentSection);
 
   return (
     <div className="capability-panel">
@@ -71,7 +77,22 @@ export default function CapabilityCenterPanel() {
         {section === "mcp" ? <McpServersSection /> : null}
         {section === "context" ? <ContextSection /> : null}
         {section === "recipes" ? <RecipesSection /> : null}
-        {section === "agent" ? <AgentAccessSection /> : null}
+      </div>
+      <div className="cap-moved-note" role="note">
+        <div>
+          <strong>{t("cap.agent.movedTitle")}</strong>
+          <p>{t("cap.agent.movedBody")}</p>
+        </div>
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm"
+          onClick={() => {
+            requestAgentSection("access");
+            setTab("agents");
+          }}
+        >
+          {t("cap.agent.movedAction")} <ArrowUpRight size={13} aria-hidden="true" />
+        </button>
       </div>
     </div>
   );

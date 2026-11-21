@@ -183,6 +183,21 @@
   gap: 10px;
 }
 
+/* 规划编辑复用：内嵌 PlanningWorkspace 必须有界高度，避免与页面滚动容器互相撑高。 */
+.project-hub .ph-embed {
+  display: flex;
+  flex-direction: column;
+  height: min(68vh, 720px);
+  min-height: 420px;
+  padding: 0;
+  overflow: hidden;
+}
+
+.project-hub .ph-embed > .planning-workspace {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
 .project-hub .ph-overview {
   display: grid;
   grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr);

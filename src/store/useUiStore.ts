@@ -205,6 +205,13 @@ export const useUiStore = create<{
   focusAgent: (target: Omit<AgentFocusTarget, "token">) => void;
   clearAgentFocus: () => void;
   /**
+   * Agent 页面分区意图（只消费一次）：能力中心把「接入与授权」迁到 Agent 页面后，
+   * 旧入口点击时用它精确定位，避免用户落地后还要自己找。
+   */
+  agentSectionRequest: { section: "monitor" | "stats" | "onboard" | "access"; token: number } | null;
+  requestAgentSection: (section: "monitor" | "stats" | "onboard" | "access") => void;
+  consumeAgentSection: () => "monitor" | "stats" | "onboard" | "access" | null;
+  /**
    * 工具面板「应用」页发起的一次性配置意图：
    * picker = 打开应用选择器（添加/编辑目标）；manage = 定位到应用管理区。
    * 由设置页消费后清除，避免反复自动弹出。
@@ -419,6 +426,15 @@ export const useUiStore = create<{
       agentFocus: { ...target, token: (s.agentFocus?.token ?? 0) + 1 },
     })),
   clearAgentFocus: () => set({ agentFocus: null }),
+  agentSectionRequest: null,
+  requestAgentSection: (section) =>
+    set((s) => ({ agentSectionRequest: { section, token: (s.agentSectionRequest?.token ?? 0) + 1 } })),
+  consumeAgentSection: () => {
+    const current = get().agentSectionRequest;
+    if (!current) return null;
+    set({ agentSectionRequest: null });
+    return current.section;
+  },
   appConfig: null,
   requestAppConfig: (kind) =>
     set((s) => ({ appConfig: { kind, token: (s.appConfig?.token ?? 0) + 1 } })),

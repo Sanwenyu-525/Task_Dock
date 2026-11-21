@@ -1275,6 +1275,8 @@ pub fn run_tool_call(
             .as_ref()
             .map(|op| op.id.clone())
             .unwrap_or_default();
+        // 租约：`operations::start` 已把本进程操作登记到共享调度器，
+        // 长工具执行期间由它统一续租（不为单次调用创建线程）。
         let mut completed_operation: Option<operations::AgentOperation> = None;
 
         let fingerprint = request_fingerprint(args);

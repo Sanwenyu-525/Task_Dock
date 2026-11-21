@@ -44,6 +44,8 @@ import {
 } from "../../lib/bridge";
 import {
   buildCapabilityInput,
+  buildCreatePayload,
+  buildManualCreatePayload,
   buildPhaseSummaries,
   buildProgressInput,
   calculateCapabilityReadiness,
@@ -60,6 +62,7 @@ import {
 } from "../../lib/projectHub";
 import type { ProjectDraft, ProjectKind } from "../../lib/projectHub/types";
 import { Dialog } from "../ui/Dialog";
+import PlanningWorkspace from "./PlanningWorkspace";
 import "./project-hub.css";
 
 type HubView = "overview" | "planning" | "features" | "capability" | "resources" | "execution";
@@ -128,6 +131,8 @@ export default function ProjectHubPanel({ onOpenPlanning }: ProjectHubPanelProps
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [createMode, setCreateMode] = useState<CreateMode | null>(null);
+  // 规划编辑视图：默认概览；编辑模式复用 PlanningWorkspace，不复制第二套 CRUD。
+  const [planningMode, setPlanningMode] = useState<"summary" | "edit">("summary");
   const loadSeq = useRef(0);
 
   const loadProjects = useCallback(async () => {
@@ -364,17 +369,46 @@ export default function ProjectHubPanel({ onOpenPlanning }: ProjectHubPanelProps
 
           {view === "planning" ? (
             <div className="ph-view">
+              <div className="ph-section-head">
+                <div className="seg-group" role="group" aria-label="规划视图">
+                  <button
+                    className={`seg-btn ${planningMode === "summary" ? "active" : ""}`}
+                    aria-pressed={planningMode === "summary"}
+                    onClick={() => setPlanningMode("summary")}
+                  >
+                    概览
+                  </button>
+                  <button
+                    className={`seg-btn ${planningMode === "edit" ? "active" : ""}`}
+                    aria-pressed={planningMode === "edit"}
+                    onClick={() => setPlanningMode("edit")}
+                  >
+                    编辑阶段与功能
+                  </button>
+                </div>
+                {onOpenPlanning ? (
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => onOpenPlanning(active.planId)}
+                  >
+                    在规划中心打开（兼容入口）
+                  </button>
+                ) : null}
+              </div>
+              {planningMode === "edit" ? (
+                <section className="ph-section ph-embed" aria-label="规划编辑（复用规划工作区）">
+                  {active.planId ? (
+                    <PlanningWorkspace initialProjectId={active.planId} />
+                  ) : (
+                    <p className="ph-muted">项目还没有计划，先在概览里创建计划后再编辑阶段与功能。</p>
+                  )}
+                </section>
+              ) : null}
+              {planningMode === "summary" ? (
+              <>
               <section className="ph-section">
                 <div className="ph-section-head">
                   <h3><Target size={16} /> 目标</h3>
-                  {onOpenPlanning ? (
-                    <button
-                      className="btn btn-ghost btn-sm"
-                      onClick={() => onOpenPlanning(active.planId)}
-                    >
-                      在规划编辑器中打开
-                    </button>
-                  ) : null}
                 </div>
                 {active.goals.length === 0 ? (
                   <p className="ph-muted">还没有目标。可以回到规划编辑器补充，或用自然语言重新规划。</p>
@@ -429,6 +463,8 @@ export default function ProjectHubPanel({ onOpenPlanning }: ProjectHubPanelProps
                   </div>
                 )}
               </section>
+              </>
+              ) : null}
             </div>
           ) : null}
 
@@ -668,16 +704,21 @@ function ResourceView({
               <li key={link.id}>
                 <span className="ph-tag">{resourceKindLabel(link.resourceKind)}</span>
                 <span>{link.label || link.resourceId}</span>
+                {link.scope === "global" ? <span className="ph-tag">共享</span> : null}
                 <span className="ph-muted">
                   {link.capabilityName} · {availabilityLabel(link.availability)}
                   {link.lastCheckedAt ? ` · ${link.lastCheckedAt.slice(0, 10)}` : ""}
+                  {link.detail ? ` · ${link.detail}` : ""}
                 </span>
                 <button className="btn btn-ghost btn-sm" onClick={() => void validate(link.id)}>
                   校验可用性
                 </button>
-                <button className="btn btn-ghost btn-sm" onClick={() => void unlink(link.id)}>
-                  <Unlink size={13} /> 解除
-                </button>
+                {/* 共享关联对其他项目可见，但解除权只属于创建者：不展示注定 403 的按钮。 */}
+                {link.projectId === projectId ? (
+                  <button className="btn btn-ghost btn-sm" onClick={() => void unlink(link.id)}>
+                    <Unlink size={13} /> 解除
+                  </button>
+                ) : null}
               </li>
             ))}
           </ul>
@@ -695,7 +736,7 @@ function ResourceView({
               onChange={(event) => setBindKind(event.target.value)}
               aria-label="资源类型"
             >
-              {["knowledge", "skill", "mcp", "agent"].map((kind) => (
+              {["knowledge", "skill", "mcp", "agent", "workflow"].map((kind) => (
                 <option key={kind} value={kind}>
                   {resourceKindLabel(kind)}
                 </option>
@@ -808,45 +849,8 @@ function CreateProjectDialog({
     setBusy(true);
     setError(null);
     try {
-      const payload: Omit<ProjectHubCreateInput, "clientRequestId"> = {
-        name: value.name.trim(),
-        kind: value.kind,
-        description: value.description,
-        goal: value.goal,
-        targetDate: value.targetDate,
-        templateId: value.templateId,
-        goals: value.goal ? [{ title: value.goal }] : [],
-        phases: value.phases.map((phase) => ({
-          name: phase.title,
-          description: phase.purpose,
-          targetDate: phase.targetDate,
-          startDate: phase.startDate,
-          milestones: phase.milestoneTitles.map((name) => ({ name })),
-        })),
-        features: value.phases.flatMap((phase) =>
-          phase.features.map((feature) => ({
-            title: feature.title,
-            acceptance: feature.acceptance,
-            priority: feature.priority,
-            phaseIndex: value.phases.findIndex((item) => item.id === phase.id),
-          })),
-        ),
-        tasks: value.tasks.map((task) => ({
-          title: task.title,
-          description: "",
-          phaseIndex: value.phases.findIndex((phase) => phase.id === task.phaseId),
-          dueAt: task.dueDate,
-          priority: task.priority === "P0" ? 0 : task.priority === "P1" ? 1 : 3,
-        })),
-        capabilities: value.capabilityRequirements.map((capability) => ({
-          name: capability.name,
-          category: capability.category,
-          necessity: capability.necessity,
-          targetLevel: capability.targetLevel,
-          impact: capability.impact,
-          alternative: capability.alternative,
-        })),
-      };
+      // 唯一转换点：草案 → 载荷（未分配阶段为 null，能力带阶段归属）。
+      const payload = buildCreatePayload(value);
       const signature = requestSignature(payload as Record<string, unknown>);
       const resolved = resolveRequestId(requestIdRef.current, signature, createRequestId);
       requestIdRef.current = resolved.state;
@@ -868,16 +872,11 @@ function CreateProjectDialog({
     setBusy(true);
     setError(null);
     try {
-      const payload: Omit<ProjectHubCreateInput, "clientRequestId"> = {
-        name: manualName.trim(),
+      const payload = buildManualCreatePayload({
+        name: manualName,
         kind: manualKind,
-        goal: manualGoal.trim(),
-        phases: [],
-        features: [],
-        tasks: [],
-        capabilities: [],
-        goals: manualGoal.trim() ? [{ title: manualGoal.trim() }] : [],
-      };
+        goal: manualGoal,
+      });
       const signature = requestSignature(payload as Record<string, unknown>);
       const resolved = resolveRequestId(requestIdRef.current, signature, createRequestId);
       requestIdRef.current = resolved.state;
@@ -1025,6 +1024,14 @@ function CreateProjectDialog({
                 {preview.uncertainties.map((item) => <p key={item.id}>{item.question}{item.blocking ? "（会影响规划）" : ""}</p>)}
               </div>
             ) : null}
+            <div className="ph-uncertain" role="note">
+              <h4>创建后会保存什么</h4>
+              <p>会写入：项目名称 / 类型 / 描述 / 目标 / 目标日期、阶段与里程碑、功能草案（含所属阶段）、初始任务、能力需求（含阶段归属）。</p>
+              <p>
+                本轮<b>不保存</b>：约束 {draft.constraints.length} 条、风险 {draft.risks.length} 条、不确定项{" "}
+                {draft.uncertainties.length} 条、工作空间路径建议。它们只用于本次草案预览，创建后不会出现在数据库里。
+              </p>
+            </div>
             <div className="ph-create-actions">
               <button className="btn btn-primary" onClick={() => void confirmDraft(draft)} disabled={busy}>确认并创建</button>
               <button className="btn btn-ghost" onClick={() => setDraft(null)} disabled={busy}>重新描述</button>

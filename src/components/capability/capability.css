@@ -11,7 +11,7 @@
   min-height: 0;
 }
 
-.capability-panel .cap-tabs {
+:is(.capability-panel, .agent-access) .cap-tabs {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
@@ -21,7 +21,7 @@
   background: var(--surface-sunken, var(--surface-raised));
 }
 
-.capability-panel .cap-tab {
+:is(.capability-panel, .agent-access) .cap-tab {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -34,12 +34,12 @@
   cursor: pointer;
 }
 
-.capability-panel .cap-tab:hover {
+:is(.capability-panel, .agent-access) .cap-tab:hover {
   color: var(--text-primary);
   background: var(--surface-hover, rgba(127, 127, 127, 0.08));
 }
 
-.capability-panel .cap-tab[aria-selected="true"] {
+:is(.capability-panel, .agent-access) .cap-tab[aria-selected="true"] {
   color: var(--text-primary);
   background: var(--surface-raised);
   box-shadow: var(--shadow-base, 0 1px 2px rgba(0, 0, 0, 0.08));
@@ -58,21 +58,21 @@
   min-height: 0;
 }
 
-.capability-panel .cap-section {
+:is(.capability-panel, .agent-access) .cap-section {
   display: flex;
   flex-direction: column;
   gap: 10px;
   min-height: 0;
 }
 
-.capability-panel .cap-toolbar {
+:is(.capability-panel, .agent-access) .cap-toolbar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
 }
 
-.capability-panel .cap-toolbar-spacer {
+:is(.capability-panel, .agent-access) .cap-toolbar-spacer {
   flex: 1 1 auto;
 }
 
@@ -192,7 +192,7 @@
   min-width: 0;
 }
 
-.capability-panel .cap-card {
+:is(.capability-panel, .agent-access) .cap-card {
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -203,7 +203,7 @@
   min-width: 0;
 }
 
-.capability-panel .cap-card-title {
+:is(.capability-panel, .agent-access) .cap-card-title {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -212,7 +212,7 @@
   color: var(--text-primary);
 }
 
-.capability-panel .cap-kv {
+:is(.capability-panel, .agent-access) .cap-kv {
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);
   gap: 4px 10px;
@@ -220,11 +220,11 @@
   color: var(--text-secondary);
 }
 
-.capability-panel .cap-kv dt {
+:is(.capability-panel, .agent-access) .cap-kv dt {
   color: var(--text-tertiary);
 }
 
-.capability-panel .cap-kv dd {
+:is(.capability-panel, .agent-access) .cap-kv dd {
   margin: 0;
   overflow-wrap: anywhere;
 }
@@ -374,7 +374,7 @@
   color: var(--status-danger, #d14343);
 }
 
-.capability-panel .cap-muted {
+:is(.capability-panel, .agent-access) .cap-muted {
   color: var(--text-tertiary);
   font-size: 11px;
 }
@@ -405,4 +405,33 @@
   .capability-panel .cap-stat-row {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+}
+
+/* Agent 页面（v87 迁移）复用同一套基础样式：AgentAccessSection 不再位于
+   .capability-panel 内，若只按旧前缀限定会丢失 flex/gap，页签会挤成一行。
+   用 :is() 同时匹配两个宿主，避免复制一份平行样式。 */
+
+/* 能力中心 → Agent 页面迁移的兼容入口（v87）：一行说明 + 跳转，不占资源 Tab。 */
+.capability-panel .cap-moved-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--surface-sunken, var(--card-face));
+}
+
+.capability-panel .cap-moved-note strong {
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.capability-panel .cap-moved-note p {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--text-muted);
 }

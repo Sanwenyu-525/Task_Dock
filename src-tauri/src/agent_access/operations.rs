@@ -2248,4 +2248,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn operations_table_declares_transient_backup_policy() {
+        // 5.7：操作历史是短期运行状态（租约与执行进程绑定本机），必须显式登记为
+        // 本地瞬时表：导出为空 section、恢复时忽略，恢复旧备份不会留下假 running。
+        assert!(
+            crate::commands::backup::is_local_transient_table("agent_operations"),
+            "agent_operations 必须声明为本地瞬时表"
+        );
+        let rule = crate::commands::backup::table_rule("agent_operations")
+            .expect("agent_operations 必须登记备份策略（否则注册表覆盖测试失败）");
+        assert_eq!(rule.class, "cache");
+        assert_eq!(rule.quick_policy, "none");
+        assert!(rule.extended, "扩展表必须写空 section 以区分空表/缺表");
+    }
 }

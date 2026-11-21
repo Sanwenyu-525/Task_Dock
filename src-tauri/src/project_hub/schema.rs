@@ -300,3 +300,73 @@ WHERE workspace_project_id = '';
 DROP TABLE temp._v78_project_map;
 "#,
 );
+
+/// v87：资源关联项目化。
+///
+/// 背景：v78 的 `capability_resource_links` 只按全局 `capability_id` 关联，
+/// 同一能力被多个项目引用时，A 项目绑定的私有知识库会出现在 B 项目的资源清单里，
+/// B 也能解除/校验 A 的关联——这是真实的跨项目越权。
+///
+/// 修正：关联行记录**归属项目** `project_id` 与**作用域** `scope`：
+/// - `scope='project'`：只有 `project_id` 对应项目能看到、校验、解除；
+/// - `scope='global'`：显式共享的全局资源关联，所有需要该能力的项目可见、可校验，
+///   但只有创建它的项目能解除（不允许 A 解 B 的绑定）。
+///
+/// 迁移策略（不静默丢数据）：
+/// - 既有行按 `project_capability_requirements` 展开为每个项目的项目级关联；
+/// - 没有任何项目需求的历史行保留为显式全局关联（`project_id=''`），
+///   既不被删除，也不冒充某个项目的私有资源。
+pub const MIGRATION_87: (i64, &str) = (
+    87,
+    r#"
+CREATE TABLE capability_resource_links_v87 (
+  id TEXT PRIMARY KEY NOT NULL,
+  project_id TEXT NOT NULL DEFAULT '',
+  scope TEXT NOT NULL DEFAULT 'project' CHECK (scope IN ('project','global')),
+  capability_id TEXT NOT NULL REFERENCES project_capabilities(id) ON DELETE CASCADE,
+  resource_kind TEXT NOT NULL
+    CHECK (resource_kind IN ('knowledge','skill','mcp','agent','tool','template','workflow')),
+  resource_id TEXT NOT NULL,
+  label TEXT NOT NULL DEFAULT '',
+  availability TEXT NOT NULL DEFAULT 'unknown'
+    CHECK (availability IN ('available','partial','unavailable','unknown')),
+  last_checked_at TEXT,
+  created_at TEXT NOT NULL,
+  CHECK ((scope = 'project' AND project_id <> '') OR scope = 'global')
+);
+
+-- 1) 有项目需求的历史关联：按项目展开为项目级关联（id 派生，保证幂等可读）。
+INSERT INTO capability_resource_links_v87
+  (id, project_id, scope, capability_id, resource_kind, resource_id, label,
+   availability, last_checked_at, created_at)
+SELECT l.id || ':' || r.project_id, r.project_id, 'project', l.capability_id,
+       l.resource_kind, l.resource_id, l.label, l.availability, l.last_checked_at, l.created_at
+FROM capability_resource_links l
+JOIN project_capability_requirements r ON r.capability_id = l.capability_id;
+
+-- 2) 没有任何项目需求的历史关联：保留为显式全局共享，不删除。
+INSERT INTO capability_resource_links_v87
+  (id, project_id, scope, capability_id, resource_kind, resource_id, label,
+   availability, last_checked_at, created_at)
+SELECT l.id, '', 'global', l.capability_id, l.resource_kind, l.resource_id,
+       l.label, l.availability, l.last_checked_at, l.created_at
+FROM capability_resource_links l
+WHERE NOT EXISTS (
+  SELECT 1 FROM project_capability_requirements r WHERE r.capability_id = l.capability_id
+);
+
+DROP TABLE capability_resource_links;
+ALTER TABLE capability_resource_links_v87 RENAME TO capability_resource_links;
+
+-- 项目级关联：同一项目内同一能力对同一资源只有一条。
+CREATE UNIQUE INDEX ux_crl_project
+  ON capability_resource_links(project_id, capability_id, resource_kind, resource_id)
+  WHERE scope = 'project';
+-- 全局共享关联：跨项目只有一条（不按项目重复登记）。
+CREATE UNIQUE INDEX ux_crl_global
+  ON capability_resource_links(capability_id, resource_kind, resource_id)
+  WHERE scope = 'global';
+CREATE INDEX idx_crl_project ON capability_resource_links(project_id, capability_id);
+CREATE INDEX idx_crl_kind ON capability_resource_links(resource_kind, resource_id);
+"#,
+);

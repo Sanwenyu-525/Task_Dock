@@ -59,6 +59,7 @@ import AgentStatsView from "./stats/AgentStatsView";
 import { useLocale } from "../../hooks/useLocale";
 import ContextHelpButton from "../help/ContextHelpButton";
 import AgentPlanningLinks from "./AgentPlanningLinks";
+import AgentAccessSection from "../capability/AgentAccessSection";
 import "./agents-layout.css";
 
 // 徽标只描述「接入证据强度」，不把已安装 / 已配置 / 验证通过 / 已连接混为一谈。
@@ -415,7 +416,7 @@ const MONITOR_FILTERS = [
   { id: "all", labelKey: "agent.ui.all" },
 ] as const;
 
-type Section = "monitor" | "stats" | "onboard";
+type Section = "monitor" | "stats" | "onboard" | "access";
 
 /** 扫描状态显式建模：`idle`（未扫）/ `scanning` / `success` / `error`，
  *  不再用 `scan === null` 同时表示「未加载」与「失败」。 */
@@ -527,6 +528,14 @@ export default function AgentPanel() {
   // 定位目标由 App 在收到 notification-navigate 后写入，处理完立即消费清除。
   const agentFocus = useUiStore((s) => s.agentFocus);
   const clearAgentFocus = useUiStore((s) => s.clearAgentFocus);
+  // 能力中心旧入口 → Agent 页面「接入与授权」：一次性意图，消费即清。
+  const agentSectionRequest = useUiStore((s) => s.agentSectionRequest);
+  const consumeAgentSection = useUiStore((s) => s.consumeAgentSection);
+  useEffect(() => {
+    if (!agentSectionRequest) return;
+    const next = consumeAgentSection();
+    if (next) setSection(next);
+  }, [agentSectionRequest, consumeAgentSection]);
   /** 定位未命中次数：通知可能先于快照刷新到达，短暂等待树更新后再放弃 */
   const focusMissRef = useRef(0);
   /** 正在/已经发起后端定位的会话 ID，避免快照每次刷新重复请求 */
@@ -1050,6 +1059,14 @@ export default function AgentPanel() {
               >
                 <PlugZap size={12} /> {tr("agent.ui.onboard")}
               </button>
+              <button
+                className={`agents-rail-item ${section === "access" ? "is-active" : ""}`}
+                role="tab"
+                aria-selected={section === "access"}
+                onClick={() => setSection("access")}
+              >
+                <ShieldQuestion size={12} /> {tr("agent.ui.access")}
+              </button>
             </div>
 
             {section === "monitor" && (
@@ -1097,6 +1114,13 @@ export default function AgentPanel() {
         }
       >
         <div className="agent-main">
+
+      {/* ══ 接入与授权（v87 从能力中心迁入）：身份/权限/导入授权/同步/冲突/交接/审计 ══ */}
+      {section === "access" && (
+        <div className="page-scroll agents-body">
+          <AgentAccessSection />
+        </div>
+      )}
 
       {/* ══ 历史搜索结果（后端分页；与 Agent 名称过滤互不替代）══ */}
       {section === "monitor" && (

@@ -4896,6 +4896,8 @@ export interface ProjectHubCreateCapabilityInput {
   targetLevel?: string;
   impact?: string;
   alternative?: string;
+  /** 所属阶段在 phases 数组中的下标；null = 全项目能力需求（禁止用 -1 之类的哨兵值）。 */
+  phaseIndex?: number | null;
 }
 
 export interface ProjectHubCreateInput {
@@ -4927,12 +4929,18 @@ export interface ProjectHubResourceCandidate {
 
 export interface ProjectHubResourceLink {
   id: string;
+  /** 关联归属项目（scope=global 时是创建者项目）。 */
+  projectId: string;
+  /** project / global：私有绑定或显式共享。 */
+  scope: string;
   capabilityId: string;
   capabilityName: string;
   resourceKind: string;
   resourceId: string;
   label: string;
   availability: string;
+  /** 探测依据（数据库/本地文件/记录状态），不当成「在线可用」的结论。 */
+  detail: string;
   lastCheckedAt: string | null;
   createdAt: string;
 }

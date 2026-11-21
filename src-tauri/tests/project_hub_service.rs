@@ -79,6 +79,7 @@ fn input(request_id: &str) -> CreateProjectInput {
             target_level: "proficient".into(),
             impact: "影响完稿".into(),
             alternative: String::new(),
+            phase_index: None,
         }],
     }
 }
@@ -220,4 +221,88 @@ fn file_database_supports_repeated_create_and_reads() {
     let _ = std::fs::remove_file(&path);
     let _ = std::fs::remove_file(path.with_extension("db-wal"));
     let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}
+
+#[test]
+fn capability_phase_and_unassigned_task_persist_as_null_not_sentinel() {
+    let db = Db::open_in_memory().unwrap();
+    let mut payload = input("req-phase-owner");
+    payload.phases = vec![
+        CreatePhaseInput {
+            name: "阶段一".into(),
+            description: String::new(),
+            target_date: None,
+            start_date: None,
+            milestones: vec![],
+        },
+        CreatePhaseInput {
+            name: "阶段二".into(),
+            description: String::new(),
+            target_date: None,
+            start_date: None,
+            milestones: vec![],
+        },
+    ];
+    payload.features = vec![];
+    payload.tasks = vec![CreateTaskInput {
+        title: "未分阶段任务".into(),
+        description: String::new(),
+        phase_index: None,
+        due_at: None,
+        priority: Some(2),
+    }];
+    payload.capabilities = vec![
+        CreateCapabilityInput {
+            name: "阶段能力".into(),
+            category: "human".into(),
+            necessity: "required".into(),
+            target_level: "basic".into(),
+            impact: String::new(),
+            alternative: String::new(),
+            phase_index: Some(1),
+        },
+        CreateCapabilityInput {
+            name: "全局能力".into(),
+            category: "tool".into(),
+            necessity: "optional".into(),
+            target_level: "basic".into(),
+            impact: String::new(),
+            alternative: String::new(),
+            phase_index: None,
+        },
+    ];
+    let snapshot = create_project(&db, payload).unwrap();
+    let second_phase = snapshot.phases[1].id.clone();
+
+    let phased = snapshot
+        .capabilities
+        .iter()
+        .find(|item| item.name == "阶段能力")
+        .expect("能力需求必须落库");
+    assert_eq!(
+        phased.phase_id.as_deref(),
+        Some(second_phase.as_str()),
+        "能力需求必须保存真实阶段归属"
+    );
+    let global = snapshot
+        .capabilities
+        .iter()
+        .find(|item| item.name == "全局能力")
+        .expect("能力需求必须落库");
+    assert!(global.phase_id.is_none(), "未分配阶段必须是 NULL，不能是哨兵值");
+
+    let task = snapshot
+        .tasks
+        .iter()
+        .find(|item| item.title == "未分阶段任务")
+        .expect("任务必须落库");
+    assert!(task.phase_id.is_none(), "未分阶段任务不得挂到任意阶段");
+    assert_eq!(
+        count(
+            &db,
+            "SELECT COUNT(*) FROM task_plan_links WHERE phase_id = '' AND milestone_id = ''"
+        ),
+        1,
+        "未分阶段任务仍要保留项目级关联"
+    );
 }

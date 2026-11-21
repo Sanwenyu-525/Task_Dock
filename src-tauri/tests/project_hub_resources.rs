@@ -10,7 +10,9 @@
 use task_dock_lib::db::Db;
 use task_dock_lib::error::AppError;
 use task_dock_lib::project_hub::resources::{self, ResourceLinkInput};
-use task_dock_lib::project_hub::service::{create_project, CreateProjectInput};
+use task_dock_lib::project_hub::service::{
+    create_project, CreateCapabilityInput, CreateProjectInput,
+};
 
 fn memdb() -> Db {
     Db::open_in_memory().unwrap()
@@ -37,6 +39,7 @@ fn input(request_id: &str) -> CreateProjectInput {
             target_level: "basic".into(),
             impact: String::new(),
             alternative: String::new(),
+            phase_index: None,
         }],
     }
 }
@@ -218,4 +221,178 @@ fn validate_resource_writes_real_probe_result() {
     let checked = resources::validate(&db, &project_id, &link.id).unwrap();
     assert_eq!(checked.availability, "unavailable");
     assert!(checked.last_checked_at.is_some());
+}
+
+/// 两个项目引用**同一个全局 capability_id**（能力库按 name+category 唯一）：
+/// 资源绑定必须按项目隔离，不能因为共享能力字典就互相看到私有资源。
+fn input_sharing_capability(request_id: &str, capability: &str) -> CreateProjectInput {
+    CreateProjectInput {
+        name: format!("项目-{request_id}"),
+        kind: "general".into(),
+        description: String::new(),
+        goal: "目标".into(),
+        target_date: None,
+        root_path: None,
+        template_id: None,
+        client_request_id: Some(request_id.into()),
+        goals: vec![],
+        phases: vec![],
+        features: vec![],
+        tasks: vec![],
+        capabilities: vec![CreateCapabilityInput {
+            name: capability.into(),
+            category: "human".into(),
+            necessity: "required".into(),
+            target_level: "basic".into(),
+            impact: String::new(),
+            alternative: String::new(),
+            phase_index: None,
+        }],
+    }
+}
+
+fn seed_knowledge_with_scope(
+    db: &Db,
+    id: &str,
+    name: &str,
+    project_id: Option<&str>,
+    workspace_id: Option<&str>,
+) {
+    let now = "2026-11-21T00:00:00Z";
+    db.with_conn(|c| {
+        c.execute(
+            "INSERT INTO knowledge_bases
+               (id, name, kind, project_id, workspace_id, created_at, updated_at)
+             VALUES (?1, ?2, 'project', ?3, ?4, ?5, ?5)",
+            rusqlite::params![id, name, project_id, workspace_id, now],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
+fn same_capability_across_projects_keeps_private_resources_isolated() {
+    let db = memdb();
+    let capability = "跨项目共享能力";
+    let project_a = create_project(&db, input_sharing_capability("share-a", capability)).unwrap();
+    let project_b = create_project(&db, input_sharing_capability("share-b", capability)).unwrap();
+    let a_id = project_a.project.id.clone();
+    let b_id = project_b.project.id.clone();
+    let capability_a = project_a.capabilities[0].capability_id.clone();
+    let capability_b = project_b.capabilities[0].capability_id.clone();
+    assert_eq!(
+        capability_a, capability_b,
+        "测试前提：两个项目必须复用同一个全局 capability_id"
+    );
+
+    seed_knowledge_with_scope(&db, "kb-a", "A 的私有知识库", Some(&a_id), None);
+    seed_knowledge_with_scope(&db, "kb-b", "B 的私有知识库", Some(&b_id), None);
+    seed_knowledge_with_scope(&db, "kb-global", "全局知识库", None, None);
+
+    let link_a = resources::link(
+        &db,
+        &a_id,
+        ResourceLinkInput {
+            capability_id: capability_a.clone(),
+            resource_kind: "knowledge".into(),
+            resource_id: "kb-a".into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(link_a.scope, "project");
+    assert_eq!(link_a.project_id, a_id);
+
+    let link_b = resources::link(
+        &db,
+        &b_id,
+        ResourceLinkInput {
+            capability_id: capability_b.clone(),
+            resource_kind: "knowledge".into(),
+            resource_id: "kb-b".into(),
+        },
+    )
+    .unwrap();
+
+    // B 只看到自己的私有绑定，A 的私有知识库不出现在候选或关联里。
+    let b_candidates = resources::candidates(&db, &b_id, Some("knowledge"), None).unwrap();
+    let b_candidate_ids: Vec<String> = b_candidates.iter().map(|item| item.id.clone()).collect();
+    assert!(!b_candidate_ids.contains(&"kb-a".to_string()));
+    assert!(b_candidate_ids.contains(&"kb-b".to_string()));
+    let b_links = resources::links(&db, &b_id).unwrap();
+    assert_eq!(b_links.len(), 1);
+    assert_eq!(b_links[0].id, link_b.id);
+
+    // B 不能解除、也不能校验 A 的私有绑定。
+    let unlink_err = resources::unlink(&db, &b_id, &link_a.id).unwrap_err();
+    assert!(matches!(unlink_err, AppError::Forbidden(_)), "{unlink_err:?}");
+    let validate_err = resources::validate(&db, &b_id, &link_a.id).unwrap_err();
+    assert!(matches!(validate_err, AppError::Forbidden(_)), "{validate_err:?}");
+
+    // A 仍可正常查询、校验、解除。
+    let a_links = resources::links(&db, &a_id).unwrap();
+    assert_eq!(a_links.len(), 1);
+    assert_eq!(a_links[0].id, link_a.id);
+    let checked = resources::validate(&db, &a_id, &link_a.id).unwrap();
+    assert_eq!(checked.availability, "available");
+    resources::unlink(&db, &a_id, &link_a.id).unwrap();
+    assert!(resources::links(&db, &a_id).unwrap().is_empty());
+    // B 的绑定不受 A 解除影响。
+    assert_eq!(resources::links(&db, &b_id).unwrap().len(), 1);
+
+    // 两个项目绑定不同资源互不影响：A 重新绑定 kb-a，B 仍只有 kb-b。
+    resources::link(
+        &db,
+        &a_id,
+        ResourceLinkInput {
+            capability_id: capability_a.clone(),
+            resource_kind: "knowledge".into(),
+            resource_id: "kb-a".into(),
+        },
+    )
+    .unwrap();
+    let a_again = resources::links(&db, &a_id).unwrap();
+    let b_again = resources::links(&db, &b_id).unwrap();
+    assert_eq!(a_again.len(), 1);
+    assert_eq!(b_again.len(), 1);
+    assert_ne!(a_again[0].id, b_again[0].id);
+
+    // 全局资源共享必须显式：A 绑定后 B 可见、可校验，但 B 不能解除。
+    let global_link = resources::link(
+        &db,
+        &a_id,
+        ResourceLinkInput {
+            capability_id: capability_a,
+            resource_kind: "knowledge".into(),
+            resource_id: "kb-global".into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(global_link.scope, "global");
+    let shared = resources::link(
+        &db,
+        &b_id,
+        ResourceLinkInput {
+            capability_id: capability_b,
+            resource_kind: "knowledge".into(),
+            resource_id: "kb-global".into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(shared.id, global_link.id, "全局共享关联跨项目只有一条");
+    assert_eq!(
+        count(
+            &db,
+            "SELECT COUNT(*) FROM capability_resource_links WHERE scope = 'global'"
+        ),
+        1
+    );
+    let b_with_shared = resources::links(&db, &b_id).unwrap();
+    assert!(
+        b_with_shared.iter().any(|link| link.id == global_link.id),
+        "显式共享的全局资源对 B 可见"
+    );
+    assert!(resources::validate(&db, &b_id, &global_link.id).is_ok());
+    let shared_unlink = resources::unlink(&db, &b_id, &global_link.id).unwrap_err();
+    assert!(matches!(shared_unlink, AppError::Forbidden(_)));
 }

@@ -260,6 +260,9 @@ pub struct CreateCapabilityInput {
     pub impact: String,
     #[serde(default)]
     pub alternative: String,
+    /// 阶段归属：`phases` 中的下标；`None` = 全项目能力需求。
+    /// 不接受 -1 之类的哨兵值：未分配阶段必须是 `null`。
+    pub phase_index: Option<usize>,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -455,7 +458,7 @@ fn load_snapshot(conn: &Connection, project_id: &str) -> AppResult<ProjectHubSna
     let milestones = load_milestones(conn, plan_id.as_deref())?;
     let features = load_features(conn, plan_id.as_deref())?;
     let capabilities = load_capabilities(conn, project_id)?;
-    let tasks = load_tasks(conn, project_id)?;
+    let tasks = load_tasks(conn, project_id, plan_id.as_deref())?;
     let deliverables = load_deliverables(conn, project_id)?;
     let events = load_events(conn, project_id)?;
     let risks = derive_risks(&project, &phases, &capabilities, &tasks);
@@ -595,11 +598,15 @@ fn load_capabilities(conn: &Connection, project_id: &str) -> AppResult<Vec<Proje
         "SELECT r.id, c.id, c.name, c.category, c.description, c.mastery,
                 r.necessity, r.target_level, r.assessment_level, r.status, r.impact,
                 r.alternative, r.phase_id,
-                (SELECT COUNT(*) FROM capability_resource_links l WHERE l.capability_id = c.id),
                 (SELECT COUNT(*) FROM capability_resource_links l
-                  WHERE l.capability_id = c.id AND l.availability = 'available'),
+                  WHERE l.capability_id = c.id
+                    AND (l.project_id = r.project_id OR l.scope = 'global')),
                 (SELECT COUNT(*) FROM capability_resource_links l
-                  WHERE l.capability_id = c.id AND l.last_checked_at IS NOT NULL)
+                  WHERE l.capability_id = c.id AND l.availability = 'available'
+                    AND (l.project_id = r.project_id OR l.scope = 'global')),
+                (SELECT COUNT(*) FROM capability_resource_links l
+                  WHERE l.capability_id = c.id AND l.last_checked_at IS NOT NULL
+                    AND (l.project_id = r.project_id OR l.scope = 'global'))
          FROM project_capability_requirements r
          JOIN project_capabilities c ON c.id = r.capability_id
          WHERE r.project_id = ?1
@@ -629,19 +636,33 @@ fn load_capabilities(conn: &Connection, project_id: &str) -> AppResult<Vec<Proje
     rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
 }
 
-fn load_tasks(conn: &Connection, project_id: &str) -> AppResult<Vec<ProjectTaskItem>> {
+fn load_tasks(
+    conn: &Connection,
+    project_id: &str,
+    plan_id: Option<&str>,
+) -> AppResult<Vec<ProjectTaskItem>> {
+    // 阶段/里程碑归属必须与**当前 active 计划**一致：
+    // 多计划共用项目根时，任务行可以来自旧计划（项目级实体保留），
+    // 但阶段/里程碑只有在属于 active 计划时才展示，绝不串到别的计划。
+    let active_plan = plan_id.unwrap_or("");
     let mut stmt = conn.prepare(
         "SELECT t.id, t.title, t.status, t.priority, t.due_at, t.completed_at,
                 (SELECT l.phase_id FROM task_plan_links l
-                  WHERE l.project_id = ?1 AND l.task_id = t.id AND l.phase_id <> '' LIMIT 1),
+                  WHERE l.project_id = ?1 AND l.task_id = t.id AND l.phase_id <> ''
+                    AND l.phase_id IN (SELECT id FROM planning_milestones
+                                        WHERE project_id = ?2 AND kind = 'phase')
+                  LIMIT 1),
                 (SELECT l.milestone_id FROM task_plan_links l
-                  WHERE l.project_id = ?1 AND l.task_id = t.id AND l.milestone_id <> '' LIMIT 1)
+                  WHERE l.project_id = ?1 AND l.task_id = t.id AND l.milestone_id <> ''
+                    AND l.milestone_id IN (SELECT id FROM planning_milestones
+                                            WHERE project_id = ?2 AND kind = 'milestone')
+                  LIMIT 1)
          FROM tasks t
          WHERE t.id IN (SELECT task_id FROM task_plan_links WHERE project_id = ?1)
             OR t.id IN (SELECT task_id FROM workspace_task_links WHERE project_id = ?1)
          ORDER BY CASE t.status WHEN 'pending' THEN 0 ELSE 1 END, t.due_at, t.created_at",
     )?;
-    let rows = stmt.query_map(params![project_id], |r| {
+    let rows = stmt.query_map(params![project_id, active_plan], |r| {
         Ok(ProjectTaskItem {
             id: r.get(0)?,
             title: r.get(1)?,
@@ -848,6 +869,7 @@ struct CleanCapability {
     target_level: String,
     impact: String,
     alternative: String,
+    phase_index: Option<usize>,
 }
 
 fn clean_create(input: &CreateProjectInput) -> AppResult<CleanCreate> {
@@ -972,6 +994,13 @@ fn clean_create(input: &CreateProjectInput) -> AppResult<CleanCreate> {
         .capabilities
         .iter()
         .map(|item| {
+            let phase_index = item.phase_index.filter(|index| *index < phases.len());
+            if item.phase_index.is_some() && phase_index.is_none() {
+                return Err(AppError::Validation(format!(
+                    "能力「{}」所属阶段不存在",
+                    item.name.trim()
+                )));
+            }
             Ok(CleanCapability {
                 name: clean_text(&item.name, "能力名称", MAX_NAME, false)?,
                 category: clean_enum(&item.category, "能力分类", CAPABILITY_CATEGORIES)?,
@@ -979,6 +1008,7 @@ fn clean_create(input: &CreateProjectInput) -> AppResult<CleanCreate> {
                 target_level: clean_enum(&item.target_level, "目标能力水平", LEVELS)?,
                 impact: clean_text(&item.impact, "能力影响", MAX_DESCRIPTION, true)?,
                 alternative: clean_text(&item.alternative, "替代方案", MAX_DESCRIPTION, true)?,
+                phase_index,
             })
         })
         .collect::<AppResult<Vec<_>>>()?;
@@ -1038,6 +1068,7 @@ fn request_digest(clean: &CleanCreate) -> String {
             "targetLevel": capability.target_level,
             "impact": capability.impact,
             "alternative": capability.alternative,
+            "phaseIndex": capability.phase_index,
         })).collect::<Vec<_>>(),
     });
     let mut hasher = Sha256::new();
@@ -1215,11 +1246,15 @@ pub fn create_project(db: &Db, input: CreateProjectInput) -> AppResult<ProjectHu
                  (id, project_id, capability_id, phase_id, necessity, target_level,
                   assessment_level, status, impact, alternative, source, sort_order,
                   created_at, updated_at)
-                 VALUES (?1, ?2, ?3, NULL, ?4, ?5, NULL, 'open', ?6, ?7, ?8, ?9, ?10, ?10)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, 'open', ?7, ?8, ?9, ?10, ?11, ?11)",
                 params![
                     uuid::Uuid::new_v4().to_string(),
                     project_id,
                     capability_id,
+                    capability
+                        .phase_index
+                        .and_then(|index| phase_ids.get(index))
+                        .cloned(),
                     capability.necessity,
                     capability.target_level,
                     capability.impact,
@@ -1895,8 +1930,19 @@ pub fn create_project_plan(db: &Db, input: CreatePlanInput) -> AppResult<String>
             )
             .optional()?
             .ok_or_else(|| AppError::NotFound(format!("工作空间项目不存在: {project_id}")))?;
+        // 名称契约（v87）：项目名称是唯一事实来源，计划名称只是镜像。
+        // 允许省略（默认取项目名），但拒绝独立命名——否则项目重命名时
+        // 要么覆盖用户自定义名称，要么让两处名称长期互相矛盾。
         let name = match input.name {
-            Some(value) => clean_text(&value, "计划名称", MAX_NAME, false)?,
+            Some(value) => {
+                let value = clean_text(&value, "计划名称", MAX_NAME, false)?;
+                if value != project_name {
+                    return Err(AppError::Validation(
+                        "计划名称跟随项目名称，不支持单独命名；请先修改项目名称".into(),
+                    ));
+                }
+                value
+            }
             None => project_name,
         };
         let description = match input.description {
@@ -1950,6 +1996,15 @@ pub fn create_project_plan(db: &Db, input: CreatePlanInput) -> AppResult<String>
 
 /// 删除单个计划：最后一个计划受保护；删除 active 计划时在同一事务内选继任计划。
 /// 项目根永不由本函数删除。
+///
+/// 弱引用处置（同一事务，不静默丢业务数据）：
+/// - `task_plan_links`：删除该计划的阶段/里程碑关联，但先把任务补登到
+///   `workspace_task_links`，保证任务作为项目级实体继续存在；
+/// - `plan_dependencies`：删除指向被删阶段的依赖（依赖本身没有独立业务含义）；
+/// - `project_capability_requirements.phase_id` / `project_deliverables.phase_id`：
+///   **清空阶段归属、保留实体**。交付物与能力需求是项目级业务数据，
+///   不因计划删除而消失；需要继续挂阶段的，由用户在继任计划中重新指定；
+/// - `plan_versions`：保留为历史快照（只读历史，不随计划删除）。
 pub(crate) fn delete_plan_tx(conn: &Connection, plan_id: &str) -> AppResult<()> {
     let plan = load_plan_row(conn, plan_id)?;
     let project_id = plan
@@ -2004,11 +2059,125 @@ pub(crate) fn delete_plan_tx(conn: &Connection, plan_id: &str) -> AppResult<()> 
             )?;
         }
     }
+
+    // ── 计划级弱引用清理（先收集 ID，再按 ID 清理）────────────────────
+    let phase_ids: Vec<String> = {
+        let mut stmt = conn.prepare(
+            "SELECT id FROM planning_milestones WHERE project_id = ?1 AND kind = 'phase'",
+        )?;
+        let rows = stmt.query_map(params![plan_id], |r| r.get::<_, String>(0))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)?
+    };
+    let milestone_ids: Vec<String> = {
+        let mut stmt = conn.prepare(
+            "SELECT id FROM planning_milestones WHERE project_id = ?1 AND kind = 'milestone'",
+        )?;
+        let rows = stmt.query_map(params![plan_id], |r| r.get::<_, String>(0))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)?
+    };
+    let mut preserved_tasks = 0usize;
+    let mut removed_task_links = 0usize;
+    let mut removed_dependencies = 0usize;
+    let mut detached_capabilities = 0usize;
+    let mut detached_deliverables = 0usize;
+    if let Some(project_id) = project_id.as_deref() {
+        // 任务必须继续存在：先把仅靠计划关联的任务补登到项目级关联。
+        for phase_id in &phase_ids {
+            preserved_tasks += conn.execute(
+                "INSERT OR IGNORE INTO workspace_task_links (project_id, task_id, created_at)
+                 SELECT ?1, l.task_id, ?3 FROM task_plan_links l
+                  WHERE l.project_id = ?1 AND l.phase_id = ?2",
+                params![project_id, phase_id, now],
+            )?;
+        }
+        for milestone_id in &milestone_ids {
+            preserved_tasks += conn.execute(
+                "INSERT OR IGNORE INTO workspace_task_links (project_id, task_id, created_at)
+                 SELECT ?1, l.task_id, ?3 FROM task_plan_links l
+                  WHERE l.project_id = ?1 AND l.milestone_id = ?2",
+                params![project_id, milestone_id, now],
+            )?;
+        }
+        // 计划级任务关联整体删除：phase_id / milestone_id 属于被删计划的行。
+        for phase_id in &phase_ids {
+            removed_task_links += conn.execute(
+                "DELETE FROM task_plan_links WHERE project_id = ?1 AND phase_id = ?2",
+                params![project_id, phase_id],
+            )?;
+        }
+        for milestone_id in &milestone_ids {
+            removed_task_links += conn.execute(
+                "DELETE FROM task_plan_links WHERE project_id = ?1 AND milestone_id = ?2",
+                params![project_id, milestone_id],
+            )?;
+        }
+        for phase_id in &phase_ids {
+            removed_dependencies += conn.execute(
+                "DELETE FROM plan_dependencies
+                  WHERE project_id = ?1 AND (phase_id = ?2 OR depends_on_phase_id = ?2)",
+                params![project_id, phase_id],
+            )?;
+        }
+        // 能力需求与交付物：清空阶段归属，保留实体（项目级业务数据）。
+        for phase_id in &phase_ids {
+            detached_capabilities += conn.execute(
+                "UPDATE project_capability_requirements SET phase_id = NULL, updated_at = ?3
+                  WHERE project_id = ?1 AND phase_id = ?2",
+                params![project_id, phase_id, now],
+            )?;
+            detached_deliverables += conn.execute(
+                "UPDATE project_deliverables SET phase_id = NULL, updated_at = ?3
+                  WHERE project_id = ?1 AND phase_id = ?2",
+                params![project_id, phase_id, now],
+            )?;
+        }
+        // 兜底：清理指向「已不属于本项目任何计划」的阶段 ID（历史脏数据）。
+        // 只清能力/交付物的阶段归属；任务关联不动其他计划的行。
+        conn.execute(
+            "UPDATE project_capability_requirements SET phase_id = NULL, updated_at = ?2
+              WHERE project_id = ?1 AND phase_id IS NOT NULL
+                AND phase_id NOT IN (SELECT id FROM planning_milestones
+                                      WHERE project_id IN (SELECT id FROM planning_projects
+                                                            WHERE workspace_project_id = ?1))",
+            params![project_id, now],
+        )?;
+        conn.execute(
+            "UPDATE project_deliverables SET phase_id = NULL, updated_at = ?2
+              WHERE project_id = ?1 AND phase_id IS NOT NULL
+                AND phase_id NOT IN (SELECT id FROM planning_milestones
+                                      WHERE project_id IN (SELECT id FROM planning_projects
+                                                            WHERE workspace_project_id = ?1))",
+            params![project_id, now],
+        )?;
+    }
+
     conn.execute(
         "DELETE FROM planning_projects WHERE id = ?1",
         params![plan_id],
     )?;
     if let Some(project_id) = project_id {
+        conn.execute(
+            "INSERT INTO project_events
+             (id, project_id, kind, actor, summary, payload_json, created_at)
+             VALUES (?1, ?2, 'plan_deleted', 'user', ?3, ?4, ?5)",
+            params![
+                uuid::Uuid::new_v4().to_string(),
+                project_id,
+                format!("删除计划「{}」并清理计划级关联", plan.name),
+                serde_json::json!({
+                    "planId": plan_id,
+                    "phases": phase_ids.len(),
+                    "milestones": milestone_ids.len(),
+                    "tasksPreserved": preserved_tasks,
+                    "taskLinksRemoved": removed_task_links,
+                    "dependenciesRemoved": removed_dependencies,
+                    "capabilitiesDetached": detached_capabilities,
+                    "deliverablesDetached": detached_deliverables,
+                })
+                .to_string(),
+                now
+            ],
+        )?;
         conn.execute(
             "UPDATE workspace_projects SET updated_at = ?2 WHERE id = ?1",
             params![project_id, now],
@@ -2148,6 +2317,137 @@ fn integrity_in_conn(conn: &Connection, project_id: &str) -> AppResult<ProjectIn
         params![project_id],
         |r| r.get(0),
     )?;
+
+    // ── 计划级弱引用完整性（v87）─────────────────────────────────────
+    // 口径：
+    // - 跨项目引用是 blocking：它意味着数据归属被写错（安全/一致性风险）；
+    // - 指向不存在或非当前计划的引用是 warning：任务/交付物实体仍在，
+    //   只是阶段归属需要重新指定，不应当阻塞项目读取。
+    let active_plan = active_plan_id.clone().unwrap_or_default();
+    let task_phase_outside: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM task_plan_links l
+          WHERE l.project_id = ?1 AND l.phase_id <> ''
+            AND NOT EXISTS (SELECT 1 FROM planning_milestones m
+                             WHERE m.id = l.phase_id AND m.project_id = ?2)",
+        params![project_id, active_plan],
+        |r| r.get(0),
+    )?;
+    if task_phase_outside > 0 {
+        warnings.push(format!(
+            "{task_phase_outside} 条任务阶段关联不属于当前计划，将按「未分阶段」展示"
+        ));
+    }
+    let task_milestone_outside: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM task_plan_links l
+          WHERE l.project_id = ?1 AND l.milestone_id <> ''
+            AND NOT EXISTS (SELECT 1 FROM planning_milestones m
+                             WHERE m.id = l.milestone_id AND m.project_id = ?2)",
+        params![project_id, active_plan],
+        |r| r.get(0),
+    )?;
+    if task_milestone_outside > 0 {
+        warnings.push(format!(
+            "{task_milestone_outside} 条任务里程碑关联不属于当前计划，将按「未归属」展示"
+        ));
+    }
+    let cross_project_task_refs: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM task_plan_links l
+           JOIN planning_milestones m ON m.id = l.phase_id
+           JOIN planning_projects p ON p.id = m.project_id
+          WHERE l.project_id = ?1 AND COALESCE(p.workspace_project_id, '') <> ?1",
+        params![project_id],
+        |r| r.get(0),
+    )?;
+    if cross_project_task_refs > 0 {
+        blocking.push(format!(
+            "{cross_project_task_refs} 条任务阶段关联指向其他项目的阶段"
+        ));
+    }
+    let capability_cross_project: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM project_capability_requirements r
+           JOIN planning_milestones m ON m.id = r.phase_id
+           JOIN planning_projects p ON p.id = m.project_id
+          WHERE r.project_id = ?1 AND COALESCE(p.workspace_project_id, '') <> ?1",
+        params![project_id],
+        |r| r.get(0),
+    )?;
+    if capability_cross_project > 0 {
+        blocking.push(format!(
+            "{capability_cross_project} 条能力需求阶段关联指向其他项目的阶段"
+        ));
+    }
+    let deliverable_cross_project: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM project_deliverables d
+           JOIN planning_milestones m ON m.id = d.phase_id
+           JOIN planning_projects p ON p.id = m.project_id
+          WHERE d.project_id = ?1 AND COALESCE(p.workspace_project_id, '') <> ?1",
+        params![project_id],
+        |r| r.get(0),
+    )?;
+    if deliverable_cross_project > 0 {
+        blocking.push(format!(
+            "{deliverable_cross_project} 条交付物阶段关联指向其他项目的阶段"
+        ));
+    }
+    let dangling_capability_phases: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM project_capability_requirements r
+          WHERE r.project_id = ?1 AND r.phase_id IS NOT NULL AND r.phase_id <> ''
+            AND NOT EXISTS (SELECT 1 FROM planning_milestones m WHERE m.id = r.phase_id)",
+        params![project_id],
+        |r| r.get(0),
+    )?;
+    if dangling_capability_phases > 0 {
+        warnings.push(format!(
+            "{dangling_capability_phases} 条能力需求的阶段已不存在（保留实体，阶段归属待重新指定）"
+        ));
+    }
+    let dangling_deliverable_phases: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM project_deliverables d
+          WHERE d.project_id = ?1 AND d.phase_id IS NOT NULL AND d.phase_id <> ''
+            AND NOT EXISTS (SELECT 1 FROM planning_milestones m WHERE m.id = d.phase_id)",
+        params![project_id],
+        |r| r.get(0),
+    )?;
+    if dangling_deliverable_phases > 0 {
+        warnings.push(format!(
+            "{dangling_deliverable_phases} 条交付物的阶段已不存在（保留实体，阶段归属待重新指定）"
+        ));
+    }
+    let dangling_dependencies: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM plan_dependencies d
+          WHERE d.project_id = ?1
+            AND (NOT EXISTS (SELECT 1 FROM planning_milestones m WHERE m.id = d.phase_id)
+              OR NOT EXISTS (SELECT 1 FROM planning_milestones m WHERE m.id = d.depends_on_phase_id))",
+        params![project_id],
+        |r| r.get(0),
+    )?;
+    if dangling_dependencies > 0 {
+        warnings.push(format!("{dangling_dependencies} 条计划阶段依赖指向已不存在的阶段"));
+    }
+    let version_project_mismatch: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM plan_versions v
+          WHERE v.project_id <> ?1
+            AND v.plan_id IN (SELECT id FROM planning_projects WHERE workspace_project_id = ?1)",
+        params![project_id],
+        |r| r.get(0),
+    )?;
+    if version_project_mismatch > 0 {
+        blocking.push(format!(
+            "{version_project_mismatch} 条计划版本的项目归属与计划不一致"
+        ));
+    }
+    let version_missing_plan: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM plan_versions v
+          WHERE v.project_id = ?1
+            AND NOT EXISTS (SELECT 1 FROM planning_projects p WHERE p.id = v.plan_id)",
+        params![project_id],
+        |r| r.get(0),
+    )?;
+    if version_missing_plan > 0 {
+        warnings.push(format!(
+            "{version_missing_plan} 条计划版本属于已删除计划（保留为历史快照）"
+        ));
+    }
 
     Ok(ProjectIntegrityReport {
         project_id: project_id.to_string(),

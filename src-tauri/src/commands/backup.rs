@@ -248,6 +248,8 @@ pub const EXTENDED_TABLES: &[&str] = &[
     "plan_dependencies",
     "task_plan_links",
     "task_capability_links",
+    // Agent 操作可视化（v86/v87）：短期运行状态，见 is_local_transient_table。
+    "agent_operations",
 ];
 
 /// 引入规划中心之前的扩展表集合（v0.7 前的备份没有 registry 头时按此校验完整性，
@@ -1033,6 +1035,9 @@ pub const BACKUP_TABLES: &[BackupTableRule] = &[
     rule!("project_deliverables", "core", "all", 795, &["workspace_projects"], true),
     rule!("plan_versions", "core", "all", 796, &["workspace_projects"], true),
     rule!("project_events", "core", "all", 797, &["workspace_projects"], true),
+    // Agent 操作生命周期（v86）：短期运行状态，跨机恢复无意义（租约/进程绑定本机）。
+    // 导出为空 section、恢复时忽略；恢复后不会留下永远无法收敛的 running 行。
+    rule!("agent_operations", "cache", "none", 9012, &[], true),
     rule!("plan_dependencies", "core", "all", 798, &["workspace_projects"], true),
     rule!(
         "task_plan_links",
@@ -1086,6 +1091,9 @@ pub fn is_local_transient_table(table: &str) -> bool {
             | "recycle_index"
             | "recycle_volume_state"
             | "recycle_restored_metadata"
+            // Agent 操作是短期过程状态：租约与执行进程绑定本机，恢复他机备份后
+            // 旧 running 行永远等不到心跳，只会变成假「运行中」。
+            | "agent_operations"
     )
 }
 

@@ -209,3 +209,81 @@ describe("资源可用性", () => {
     expect(input[0].assessmentLevel).toBeNull();
   });
 });
+
+describe("阶段完成判定与进度计算一致（v87）", () => {
+  const onePhase = {
+    id: "p1",
+    name: "阶段一",
+    description: "",
+    targetDate: null,
+    startDate: null,
+    sortOrder: 0,
+    taskCount: 0,
+    completedTaskCount: 0,
+    featureCount: 0,
+    completedFeatureCount: 0,
+  };
+
+  it("功能全部完成但交付物未验收 → 阶段未完成（状态与百分比同一规则）", () => {
+    const data = snapshot({
+      phases: [onePhase],
+      features: [{ id: "f1", title: "功能", status: "completed", milestoneId: "p1", priority: "P0" }],
+      deliverables: [{ id: "d1", title: "交付物", status: "produced", phaseId: "p1" }],
+    });
+    expect(buildPhaseSummaries(data)[0].status).not.toBe("completed");
+    const progress = calculateProjectProgress(buildProgressInput(data));
+    expect(progress.phases.percent).toBe(0);
+    expect(progress.overall.percent).toBe(50);
+  });
+
+  it("功能与交付物都完成 → 阶段完成、当前阶段为 null", () => {
+    const data = snapshot({
+      phases: [onePhase],
+      features: [{ id: "f1", title: "功能", status: "completed", milestoneId: "p1", priority: "P0" }],
+      deliverables: [{ id: "d1", title: "交付物", status: "accepted", phaseId: "p1" }],
+    });
+    expect(buildPhaseSummaries(data)[0].status).toBe("completed");
+    expect(currentPhaseOf(data)).toBeNull();
+    expect(calculateProjectProgress(buildProgressInput(data)).overall.percent).toBe(100);
+  });
+
+  it("没有功能但有任务：任务全部完成才算完成", () => {
+    const partial = snapshot({
+      phases: [onePhase],
+      features: [],
+      tasks: [
+        { id: "t1", title: "a", status: "completed", dueAt: null, phaseId: "p1" },
+        { id: "t2", title: "b", status: "pending", dueAt: null, phaseId: "p1" },
+      ],
+    });
+    expect(buildPhaseSummaries(partial)[0].status).toBe("active");
+
+    const done = snapshot({
+      phases: [onePhase],
+      features: [],
+      tasks: [{ id: "t1", title: "a", status: "completed", dueAt: null, phaseId: "p1" }],
+    });
+    expect(buildPhaseSummaries(done)[0].status).toBe("completed");
+  });
+
+  it("没有功能也没有任务 → 待评估，不计入分母", () => {
+    const data = snapshot({ phases: [onePhase], features: [], tasks: [], deliverables: [] });
+    expect(buildPhaseSummaries(data)[0].status).toBe("pending");
+    const progress = calculateProjectProgress(buildProgressInput(data));
+    expect(progress.phases.percent).toBeNull();
+    expect(progress.overall.percent).toBeNull();
+  });
+
+  it("只有部分交付物验收 → 阶段仍未完成", () => {
+    const data = snapshot({
+      phases: [onePhase],
+      features: [],
+      deliverables: [
+        { id: "d1", title: "已验收", status: "accepted", phaseId: "p1" },
+        { id: "d2", title: "未验收", status: "planned", phaseId: "p1" },
+      ],
+    });
+    expect(buildPhaseSummaries(data)[0].status).not.toBe("completed");
+    expect(calculateProjectProgress(buildProgressInput(data)).overall.percent).toBe(50);
+  });
+});

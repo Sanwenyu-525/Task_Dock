@@ -20,7 +20,7 @@ use task_dock_lib::db::Db;
 use task_dock_lib::error::AppError;
 use task_dock_lib::project_hub::service::{
     activate_plan, archive_plan, create_project, create_project_plan, delete_plan, delete_project,
-    get_project, list_projects, validate_project_integrity, CreateCapabilityInput, CreateFeatureInput,
+    get_project, get_snapshot, list_projects, validate_project_integrity, CreateCapabilityInput, CreateFeatureInput,
     CreateGoalInput, CreatePhaseInput, CreatePlanInput, CreateProjectInput, CreateProjectRootInput,
     CreateTaskInput, ProjectPatch as RootPatch, ProjectSummary,
 };
@@ -118,6 +118,7 @@ fn rich_input(request_id: &str) -> CreateProjectInput {
             target_level: "proficient".into(),
             impact: "影响完稿".into(),
             alternative: String::new(),
+            phase_index: None,
         }],
     }
 }
@@ -343,12 +344,14 @@ fn planning_archive_project_does_not_archive_project_root() {
 }
 
 /// 建一个同项目、非 active 的计划容器。
-fn create_second_plan(db: &Db, project_id: &str, name: &str) -> String {
+///
+/// v87 名称契约：计划名称跟随项目名称，不支持独立命名；`_label` 只用于调用点可读性。
+fn create_second_plan(db: &Db, project_id: &str, _label: &str) -> String {
     create_project_plan(
         db,
         CreatePlanInput {
             project_id: project_id.to_string(),
-            name: Some(name.to_string()),
+            name: None,
             description: None,
             target_date: None,
             status: None,
@@ -642,7 +645,7 @@ fn activate_plan_switches_flags_and_pointer_atomically() {
         &db,
         CreatePlanInput {
             project_id: project_id.clone(),
-            name: Some("第二计划".into()),
+            name: None,
             description: None,
             target_date: None,
             status: Some("in_progress".into()),
@@ -698,7 +701,7 @@ fn delete_plan_promotes_successor_and_leaves_no_dangling_pointer() {
         &db,
         CreatePlanInput {
             project_id: project_id.clone(),
-            name: Some("第二计划".into()),
+            name: None,
             description: None,
             target_date: None,
             status: None,
@@ -1059,4 +1062,332 @@ fn list_projects_and_workspace_list_stay_consistent() {
     assert_eq!(fetched.active_plan_id.as_deref(), Some(plan.id.as_str()));
     workspace_project_delete_impl(&db, &project_id).unwrap();
     assert!(list_projects(&db).unwrap().is_empty());
+}
+
+// ── 多计划弱引用（v87）──────────────────────────────────────────────
+
+const NOW: &str = "2026-11-21T00:00:00Z";
+
+fn insert_phase(db: &Db, plan_id: &str, id: &str, name: &str) -> String {
+    db.with_conn(|c| {
+        c.execute(
+            "INSERT INTO planning_milestones
+               (id, project_id, name, description, target_date, sort_order, created_at,
+                updated_at, kind, start_date, phase_id)
+             VALUES (?1, ?2, ?3, '', NULL, 0, ?4, ?4, 'phase', NULL, NULL)",
+            rusqlite::params![id, plan_id, name, NOW],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    id.to_string()
+}
+
+fn insert_task_in_phase(db: &Db, project_id: &str, task_id: &str, phase_id: &str) {
+    db.with_conn(|c| {
+        c.execute(
+            "INSERT INTO tasks
+               (id, title, description, priority, status, category, tags, advance_minutes,
+                created_at, updated_at)
+             VALUES (?1, ?1, '', 1, 'pending', '', '[]', 0, ?2, ?2)",
+            rusqlite::params![task_id, NOW],
+        )?;
+        c.execute(
+            "INSERT INTO workspace_task_links (project_id, task_id, created_at)
+             VALUES (?1, ?2, ?3)",
+            rusqlite::params![project_id, task_id, NOW],
+        )?;
+        c.execute(
+            "INSERT INTO task_plan_links (id, task_id, project_id, phase_id, milestone_id, created_at)
+             VALUES (?1, ?2, ?3, ?4, '', ?5)",
+            rusqlite::params![format!("tpl-{task_id}"), task_id, project_id, phase_id, NOW],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+}
+
+fn insert_deliverable(db: &Db, project_id: &str, id: &str, phase_id: &str) {
+    db.with_conn(|c| {
+        c.execute(
+            "INSERT INTO project_deliverables
+               (id, project_id, phase_id, title, kind, status, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?1, 'document', 'planned', ?4, ?4)",
+            rusqlite::params![id, project_id, phase_id, NOW],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+}
+
+fn insert_dependency(db: &Db, project_id: &str, id: &str, phase: &str, depends_on: &str) {
+    db.with_conn(|c| {
+        c.execute(
+            "INSERT INTO plan_dependencies (id, project_id, phase_id, depends_on_phase_id, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![id, project_id, phase, depends_on, NOW],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
+fn deleting_plan_cleans_weak_references_and_keeps_business_entities() {
+    let db = memdb();
+    let snapshot = create_project(&db, rich_input("plan-refs-1")).unwrap();
+    let project_id = snapshot.project.id.clone();
+    let plan_a = snapshot.plan_id.clone().expect("初始计划");
+    let phase_a1 = snapshot.phases[0].id.clone();
+
+    // A 的关联数据：阶段依赖 + 交付物 + 能力阶段归属。
+    insert_phase(&db, &plan_a, "phase-a2", "阶段 A2");
+    insert_dependency(&db, &project_id, "dep-a", "phase-a2", &phase_a1);
+    insert_deliverable(&db, &project_id, "del-a", &phase_a1);
+    db.with_conn(|c| {
+        c.execute(
+            "UPDATE project_capability_requirements SET phase_id = ?2 WHERE project_id = ?1",
+            rusqlite::params![project_id, phase_a1],
+        )?;
+        // 历史版本：计划 A 的快照，删除计划后必须保留。
+        c.execute(
+            "INSERT INTO plan_versions
+               (id, project_id, plan_id, version_no, snapshot_json, source, created_at)
+             VALUES ('ver-a', ?1, ?2, 1, '{}', 'manual', ?3)",
+            rusqlite::params![project_id, plan_a, NOW],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+
+    // 新建计划 B 并激活，在 B 上创建自己的阶段/任务/交付物。
+    let plan_b = create_project_plan(
+        &db,
+        CreatePlanInput {
+            project_id: project_id.clone(),
+            name: None,
+            description: None,
+            target_date: None,
+            status: None,
+            template_id: None,
+            make_active: true,
+        },
+    )
+    .unwrap();
+    let phase_b1 = insert_phase(&db, &plan_b, "phase-b1", "阶段 B1");
+    insert_task_in_phase(&db, &project_id, "task-b1", &phase_b1);
+    insert_deliverable(&db, &project_id, "del-b", &phase_b1);
+
+    // 删除 A（当前 active 是 B，删除非 active 计划）。
+    delete_plan(&db, &plan_a).unwrap();
+
+    // 弱引用清理：A 的阶段依赖、阶段归属全部清空；任务/交付物/项目根保留。
+    assert_eq!(
+        count(&db, "SELECT COUNT(*) FROM plan_dependencies WHERE project_id = 'x' OR id = 'dep-a'"),
+        0,
+        "计划依赖必须随计划删除"
+    );
+    let capability_phase: Option<String> = db
+        .with_conn(|c| {
+            c.query_row(
+                "SELECT phase_id FROM project_capability_requirements WHERE project_id = ?1",
+                rusqlite::params![project_id],
+                |r| r.get(0),
+            )
+            .map_err(AppError::from)
+        })
+        .unwrap();
+    assert!(capability_phase.is_none(), "能力需求保留实体但阶段归属清空");
+    let deliverable_phase: Option<String> = db
+        .with_conn(|c| {
+            c.query_row(
+                "SELECT phase_id FROM project_deliverables WHERE id = 'del-a'",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(AppError::from)
+        })
+        .unwrap();
+    assert!(
+        deliverable_phase.is_none(),
+        "交付物保留实体但阶段归属清空，不得静默删除"
+    );
+    assert_eq!(
+        count(&db, "SELECT COUNT(*) FROM project_deliverables WHERE id = 'del-a'"),
+        1
+    );
+    assert_eq!(
+        count(&db, "SELECT COUNT(*) FROM tasks WHERE id = 'task-b1'"),
+        1,
+        "任务实体必须保留"
+    );
+    assert_eq!(
+        count(&db, "SELECT COUNT(*) FROM workspace_projects"),
+        1,
+        "项目根必须保留"
+    );
+    assert_eq!(
+        count(&db, "SELECT COUNT(*) FROM plan_versions WHERE id = 'ver-a'"),
+        1,
+        "计划历史版本必须保留"
+    );
+
+    // B 的快照只返回 B 自己的阶段关联。
+    let b_snapshot = get_snapshot(&db, &project_id).unwrap();
+    assert_eq!(b_snapshot.plan_id.as_deref(), Some(plan_b.as_str()));
+    assert_eq!(b_snapshot.phases.len(), 1);
+    assert_eq!(b_snapshot.phases[0].id, phase_b1);
+    let b_task = b_snapshot
+        .tasks
+        .iter()
+        .find(|task| task.id == "task-b1")
+        .expect("B 的任务必须可见");
+    assert_eq!(b_task.phase_id.as_deref(), Some(phase_b1.as_str()));
+    // 旧计划遗留任务仍在项目里，但没有阶段归属。
+    let legacy = b_snapshot
+        .tasks
+        .iter()
+        .find(|task| task.title == "写世界观大纲")
+        .expect("A 的任务作为项目级实体保留");
+    assert!(legacy.phase_id.is_none(), "旧阶段不得串到 B");
+
+    // 完整性：无 blocking，且只剩「历史版本属于已删除计划」这类 warning。
+    let report = validate_project_integrity(&db, &project_id).unwrap();
+    assert!(report.ok, "完整性不得有阻塞项: {:?}", report.blocking);
+    assert!(
+        report.warnings.iter().any(|w| w.contains("计划版本")),
+        "计划版本保留必须显式作为 warning: {:?}",
+        report.warnings
+    );
+}
+
+#[test]
+fn deleting_active_plan_switches_to_successor_and_cleans_task_links() {
+    let db = memdb();
+    let snapshot = create_project(&db, rich_input("plan-refs-2")).unwrap();
+    let project_id = snapshot.project.id.clone();
+    let plan_a = snapshot.plan_id.clone().expect("初始计划");
+    let phase_a1 = snapshot.phases[0].id.clone();
+
+    let plan_b = create_project_plan(
+        &db,
+        CreatePlanInput {
+            project_id: project_id.clone(),
+            name: None,
+            description: None,
+            target_date: None,
+            status: None,
+            template_id: None,
+            make_active: false,
+        },
+    )
+    .unwrap();
+    let _phase_b1 = insert_phase(&db, &plan_b, "phase-b2", "阶段 B2");
+
+    // A 仍是 active：删除 A 必须切换到 B 并更新项目指针。
+    delete_plan(&db, &plan_a).unwrap();
+    let pointer: Option<String> = db
+        .with_conn(|c| {
+            c.query_row(
+                "SELECT active_plan_id FROM workspace_projects WHERE id = ?1",
+                rusqlite::params![project_id],
+                |r| r.get(0),
+            )
+            .map_err(AppError::from)
+        })
+        .unwrap();
+    assert_eq!(pointer.as_deref(), Some(plan_b.as_str()));
+
+    // A 阶段的计划级任务关联清空，但任务实体与项目级关联保留。
+    assert_eq!(
+        count(
+            &db,
+            &format!(
+                "SELECT COUNT(*) FROM task_plan_links WHERE project_id = '{project_id}' AND phase_id = '{phase_a1}'"
+            )
+        ),
+        0
+    );
+    assert_eq!(
+        count(&db, "SELECT COUNT(*) FROM tasks WHERE title = '写世界观大纲'"),
+        1
+    );
+    assert_eq!(
+        count(
+            &db,
+            &format!("SELECT COUNT(*) FROM workspace_task_links WHERE project_id = '{project_id}'")
+        ),
+        1
+    );
+
+    // B 阶段不受影响。
+    assert_eq!(
+        count(&db, "SELECT COUNT(*) FROM planning_milestones WHERE id = 'phase-b2'"),
+        1
+    );
+}
+
+#[test]
+fn plan_name_must_mirror_project_name() {
+    let db = memdb();
+    let snapshot = create_project(&db, rich_input("plan-name-1")).unwrap();
+    let project_id = snapshot.project.id.clone();
+
+    // 与项目名一致：允许（旧调用方显式传镜像值时不报错）。
+    let mirrored = create_project_plan(
+        &db,
+        CreatePlanInput {
+            project_id: project_id.clone(),
+            name: Some(snapshot.project.name.clone()),
+            description: None,
+            target_date: None,
+            status: None,
+            template_id: None,
+            make_active: false,
+        },
+    )
+    .unwrap();
+    let stored: String = text(
+        &db,
+        &format!("SELECT name FROM planning_projects WHERE id = '{mirrored}'"),
+    );
+    assert_eq!(stored, snapshot.project.name);
+
+    // 独立命名：拒绝，避免项目重命名时互相矛盾。
+    let error = create_project_plan(
+        &db,
+        CreatePlanInput {
+            project_id: project_id.clone(),
+            name: Some("独立命名的计划".into()),
+            description: None,
+            target_date: None,
+            status: None,
+            template_id: None,
+            make_active: false,
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(error, AppError::Validation(_)), "{error:?}");
+
+    // 项目重命名同步到全部计划名称（唯一事实来源）。
+    task_dock_lib::project_hub::service::update_project(
+        &db,
+        &project_id,
+        RootPatch {
+            name: Some("改名后的项目".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        count(
+            &db,
+            &format!(
+                "SELECT COUNT(*) FROM planning_projects
+                  WHERE workspace_project_id = '{project_id}' AND name = '改名后的项目'"
+            )
+        ),
+        2,
+        "项目重命名必须同步全部计划名称"
+    );
 }

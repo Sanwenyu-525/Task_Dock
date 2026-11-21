@@ -2027,7 +2027,8 @@ mod tests {
             &db,
             crate::project_hub::service::CreatePlanInput {
                 project_id: project_id.clone(),
-                name: Some("第二版计划".into()),
+                // 计划名称是项目名称的镜像：不传即取项目名。
+                name: None,
                 description: None,
                 target_date: None,
                 status: None,
