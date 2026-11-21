@@ -205,7 +205,7 @@ TaskDock 的气质是「安静、可信、可长时间工作的桌面中枢」�
 | ≤420 | 任务候选行改为标题一行、按钮下一行；表单全宽；页面边距 16px |
 | 320 | 不出现横向滚动；标题不逐字换行；关键动作仍可点 |
 
-已实现：`WorkbenchShell` 在 `window.innerWidth <= 560` 时使用 `WORKBENCH_NAV_WIDTH_RAIL` 渲染宽度，不写回用户偏好；任务页在 `@container (max-width:560px)` 下单列；开发工作台候选任务行在 ≤420px 换行。
+已实现：`WorkbenchShell` 在 `window.innerWidth <= 560` 时使用 `WORKBENCH_NAV_WIDTH_RAIL` 渲染宽度，不写回用户偏好；任务页窄窗单列由**命名容器查询** `@container wb-content (max-width:560px)` 触发（同块内所有规则共用一个尺寸依据；无名查询会因 `.tab-content` 的 10px padding 让自身与后代规则切换点错位 20px，2026-11-21 修复）；主窗无 wb-content 容器，由 `@media 640` 按视口兜底；开发工作台候选任务行在 ≤420px 换行。
 
 ## 19. 无障碍
 
@@ -262,6 +262,62 @@ TaskDock 的气质是「安静、可信、可长时间工作的桌面中枢」�
 
 - `styles.css` 仍有 134 处硬编码 hex、`files.css` 63 处；本轮以别名和组件层覆盖为主，未逐条替换。
 - `styles-flat.css` 的旧 Token 仍保留；删除需要单独兼容性评审。
-- 剪贴板、资源、工作流等页面完成 Token 对齐，但未逐页做结构重排；后续按第 20 节矩阵继续。
-- `styles-flat.test.ts` 的 `@container (max-width:520px)` 断言与 HEAD 实现（560px）不一致，属既有失败，已在验收报告标注。
+- 剪贴板、资源、工作流等页面完成 Token 对齐，但未逐页做结构重排；后续按第 20 节矩阵与第 25 节清单继续。
+- ~~`styles-flat.test.ts` 的 `@container (max-width:520px)` 断言与 HEAD 实现（560px）不一致~~
+  2026-11-21 已修复：任务页窄窗阈值随 WorkspaceSplit 分栏统一为 560（2026-11-16 e771295 有意变更，
+  测试漏更）；断言更新为 560 并补边界契约测试（559/560/561 布局由浏览器验收覆盖）。
 - 真实安装包、安装/升级/卸载、Release 性能不在本轮 Dev 功能验收范围。
+
+## 24. 窗口入口样式契约（2026-11-21）
+
+每个 Tauri WebView 入口独立组装 CSS 层；缺层不报构建错误，只会让该窗口的
+Token 取值与主窗分叉（微件窗口曾缺 `styles-tokens.css`，旧语义名停留在
+flat 层旧值，2026-11-21 补齐）。加载矩阵由 `src/styles-entry-contract.test.ts`
+锁死，新增窗口必须在该测试登记：
+
+| 入口 | base | themes | flat | tokens | ui | components | pages | 专用样式 |
+|---|---|---|---|---|---|---|---|---|
+| 主窗 `src/main.tsx` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | workbench / global-search / resource |
+| 工作台 `src/workspace/workspaceEntry.tsx` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | workspace / workbench / global-search / resource |
+| 捕获 `src/capture/main.tsx` | – | ✓ | ✓ | ✓ | ✓ | – | – | styles-capture |
+| 通知 `src/notifications/main.tsx` | – | ✓ | ✓ | ✓ | ✓ | – | – | styles-notifications |
+| 投屏工具栏 `src/toolbar/main.tsx` | – | ✓ | ✓ | ✓ | ✓ | – | – | projection-controls |
+| 桌面微件 `src/widgets/main.tsx` | – | ✓ | ✓ | ✓ | ✓ | – | – | widgets + widgets-desktop |
+
+- 小窗口不加载 base/components/pages 是有意保留：透明 WebView 只需要 Token
+  与控件基元；专用样式自带所需视觉。**themes × flat × tokens 三层全窗口一致**，
+  这是「主题与颜色语义一致」的最低要求。
+- CSS 加载顺序（全窗口统一）：`styles.css` → `styles-themes.css` →
+  `styles-flat.css` → `styles-tokens.css` → `styles-ui.css` → 窗口/页面样式 →
+  `styles-components.css` → `styles-pages.css`（后两者仅主窗/工作台）。
+
+### 24.1 动态页面 CSS 与适配层的层叠规则（重要教训）
+
+FeatureRegistry 的页面代码是动态 import，页面 CSS 随 chunk 在运行时**后插入
+head 尾部**——晚于入口静态导入的一切 CSS。同特异性下「晚插入者生效」，因此：
+
+1. 页面组件的**最终视觉规则必须写在页面自己的 CSS**（workspaceSplit.css /
+   tasks-workspace.css / tasks-layout.css / settings-page.css 等），顺序确定。
+2. `styles-pages.css` 只承载对**静态层**的适配（目标在 styles.css / themes /
+   ui / components / workbench.css，未分层规则压过 `@layer`，顺序稳定）。
+   2026-11-21 起由 `src/styles-pages.test.ts` 守卫：适配层出现动态页面选择器
+   即为死规则，禁止。
+3. 禁止为修复层叠问题把所有页面 CSS 静态导入——破坏按需加载契约。
+
+## 25. 旧页面迁移清单（Semantic Token）
+
+以下页面已完成 Token 对齐（旧名经 tokens 层别名生效），尚未逐页重排；
+新代码必须优先使用 Semantic Token，不得叠加硬编码颜色解决视觉问题：
+
+| 页面 | 现状 | 主要遗留 |
+|---|---|---|
+| 剪贴板 | Token 对齐 | 页面私有 Token 与 v1.0 命名并存 |
+| 资源管理 | Token 对齐 | 未逐页重排 |
+| 收集与暂存 | Token 对齐 | 未逐页重排 |
+| 工作流 | Token 对齐 | 未逐页重排 |
+| 历史 | Token 对齐 | 未逐页重排 |
+| 项目中枢 | Token 对齐 | 未逐页重排 |
+| 能力中心 | Token 对齐 | 未逐页重排 |
+| 保险箱 | Token 对齐 | 未逐页重排 |
+
+迁移按第 21 节顺序执行；每页迁移是独立任务，需单独验收明暗两主题。

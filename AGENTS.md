@@ -88,9 +88,10 @@ Dev 功能验收不推进 Release 状态机、不生成 `buildId`。Release 才�
    不记录正文、完整图片、文件路径或密钥。
 6. **窗口与多显示器**：保留贴边吸附、位置恢复、DPI 换算与多显示器收敛；保存矩形前验证可见性；
    HWND/PID 只作运行时身份，绝不落库。
-7. **UI Token**：预设/明暗/材质正交并落到 `html[data-preset|data-theme|data-material]`；只用语义
-   Token（`styles-themes.css`/`styles-ui.css`）；不写原生 `<select>`、裸 `z-index`，不绕过统一
-   组件层与 overlay 栈。
+7. **UI Token**：预设/明暗/材质正交并落到 `html[data-preset|data-theme|data-material]`；颜色事实源是
+   Design System v1.0 三层 Token（`styles-tokens.css`：Primitive→Semantic→Component，旧名作别名保留），
+   新代码只用语义 Token（`--color-*` 等，规范见 `docs/ui-themes/14-enterprise-design-system.md`）；
+   不写原生 `<select>`、裸 `z-index`，不绕过统一组件层与 overlay 栈。
 8. **异步生命周期**：后台任务、轮询、订阅、定时器必须可取消、有超时、有上限、可回收；不留重复
    监听器或永不停止的轮询。
 9. **兼容性**：DB schema、备份 manifest 版本、命令签名、设置键是公开契约；变更必须说明兼容范围、

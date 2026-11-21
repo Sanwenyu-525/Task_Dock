@@ -20,6 +20,7 @@ import captureCss from "./capture/styles-capture.css?raw";
 import notificationCss from "./notifications/styles-notifications.css?raw";
 import filesCss from "./components/files/files.css?raw";
 import tasksWorkspaceCss from "./components/tasks/tasks-workspace.css?raw";
+import splitCss from "./workbench/workspaceSplit.css?raw";
 
 const repo = process.cwd();
 const read = (path: string): string => readFileSync(join(repo, path), "utf8");
@@ -208,9 +209,25 @@ describe("窄窗任务页回退", () => {
   it("任务工作区启用容器查询，400px 主窗不会留下 122px 任务列", () => {
     const panel = singleBody(tasksWorkspaceCss, ".tasks-panel.tasks-workspace-layout");
     expect(panel).toContain("container-type: inline-size");
-    expect(tasksWorkspaceCss).toContain("@container (max-width: 520px)");
+    // 2026-11-16 起阈值与 WorkspaceSplit 分栏统一为 560；2026-11-21 起必须
+    // 用命名容器 wb-content（无名查询会命中两个不同尺寸依据，见 CSS 头注）。
+    expect(tasksWorkspaceCss).toContain("@container wb-content (max-width: 560px)");
+    expect(tasksWorkspaceCss).not.toContain("@container (max-width: 520px)");
     expect(tasksWorkspaceCss).toContain("@media (max-width: 640px)");
     expect(tasksWorkspaceCss).toContain("grid-template-columns: minmax(0, 1fr)");
+  });
+
+  it("560px 边界契约：同一块内所有规则共用 wb-content 一个尺寸依据", () => {
+    // 命名容器查询：自身规则与后代规则同查 wb-content，切换点不错位。
+    expect(tasksWorkspaceCss).toContain("@container wb-content (max-width: 560px)");
+    // 不允许无名 @container：无名查询对后代规则会命中 .tasks-panel 自己，
+    // 与同块的 wb-content 规则错位（.tab-content 有 10px padding）。
+    expect(tasksWorkspaceCss).not.toMatch(/@container\s+\(/);
+    // WorkspaceSplit 分栏（查自己的 frame 容器）是另一条链路，559/560 分界不变。
+    expect(splitCss).toContain("@container workspace-split (max-width: 559px)");
+    expect(splitCss).toContain("@container workspace-split (min-width: 560px)");
+    // 主窗视口兜底（主窗没有 wb-content 容器，整块 @container 不命中）。
+    expect(tasksWorkspaceCss).toContain("@media (max-width: 640px)");
   });
 });
 

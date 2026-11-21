@@ -20,6 +20,40 @@
   /* 窄窗回退依赖容器查询；没有 container-type 时 @container 永远不会命中，
      400px 主窗会留下 122px 宽的任务列，标题被迫逐字换行。 */
   container-type: inline-size;
+  /* 下面三条卡面规则原在 styles-pages.css（入口静态层）：本文件随 TasksPanel
+     动态 chunk 后插入 head，同特异性下晚插入者生效——适配层的同属性规则
+     全是死规则。2026-11-21 起最终视觉就地维护，见文件尾「工作区卡面」。 */
+  position: relative;
+}
+
+/* ── 工作区卡面（原 styles-pages.css 适配层，2026-11-21 归位）────────
+   任务页左栏是「筛选内容 + 底部提醒」两个网格行；只在 tasks-head 上画卡
+   会停在内容高度，下方留出整块空白。用同列跨两行的伪元素做整列卡面，
+   内容行叠在上层，空态与提醒仍按原布局工作。取值均为 Design System v1.0
+   语义 Token。 */
+.tasks-panel.tasks-workspace-layout::before {
+  content: "";
+  grid-column: 1;
+  grid-row: 2 / 4;
+  z-index: 0;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-card);
+  background: var(--color-bg-surface);
+  pointer-events: none;
+}
+
+.tasks-panel.tasks-workspace-layout > .tasks-head {
+  position: relative;
+  z-index: 1;
+}
+
+/* 左栏里的统计卡改为次级面，避免「卡中卡」都用一个白底。
+   注意统计卡的边框/底色由 tasks-layout.css 的同名规则落值（本文件在
+   tasks-layout 之前加载），此处不再重复声明。 */
+.tasks-panel.tasks-workspace-layout > .task-list {
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-card);
+  background: var(--color-bg-surface);
 }
 
 .tasks-panel.tasks-workspace-layout > .wb-page-header {
@@ -98,8 +132,15 @@
   opacity: 1;
 }
 
-/* 容器查询触发的单列降级：分隔条隐藏，筛选项回到上方，任务列表保持可滚动。 */
-@container (max-width: 560px) {
+/* 容器查询触发的单列降级：分隔条隐藏，筛选项回到上方，任务列表保持可滚动。
+   尺寸依据（2026-11-21 修复）：必须用**命名容器 wb-content**——本文件的无名
+   @container 对「.tasks-panel 自身」的规则查的是祖先容器（wb-content），
+   对「后代」的规则查的是 .tasks-panel 自己；两者之间隔着 .tab-content 的
+   10px padding，无名查询会让两侧在 561–580px 内容宽区间切换点错位 20px
+   （后代已切单列、网格仍是三列，任务列表被压进 236px 侧栏列）。
+   命名查询让同一块内所有规则共用 wb-content 一个尺寸依据；主窗没有
+   wb-content 容器，整块不命中，由下方 @media 640 按视口统一兜底。 */
+@container wb-content (max-width: 560px) {
   .tasks-panel.tasks-workspace-layout {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto auto minmax(0, 1fr) auto;

@@ -87,11 +87,145 @@ describe("WorkspaceSplit", () => {
     fireEvent.pointerDown(separator, { button: 0, pointerId: 7, clientX: 336 });
     expect(document.body.classList.contains("workspace-split-resizing")).toBe(true);
 
+    // 拖拽期只更新视觉宽度，不写 localStorage（避免每次 move 同步持久化）。
     fireEvent.pointerMove(window, { pointerId: 7, clientX: 380 });
     expect(separator.getAttribute("aria-valuenow")).toBe("280");
-    expect(window.localStorage.getItem(KEY)).toBe("280");
+    expect(window.localStorage.getItem(KEY)).toBeNull();
 
-    fireEvent.pointerUp(window, { pointerId: 7, clientX: 380 });
+    fireEvent.pointerMove(window, { pointerId: 7, clientX: 460 });
+    expect(separator.getAttribute("aria-valuenow")).toBe("340");
+    expect(window.localStorage.getItem(KEY)).toBeNull();
+
+    // 松手提交最终值一次。
+    fireEvent.pointerUp(window, { pointerId: 7, clientX: 460 });
+    expect(window.localStorage.getItem(KEY)).toBe("340");
+    expect(document.body.classList.contains("workspace-split-resizing")).toBe(false);
+  });
+
+  it("pointercancel 提交当前草稿并完成清理", () => {
+    const { container } = renderSplit();
+    const frame = container.querySelector(".workspace-split-frame") as HTMLElement;
+    const separator = screen.getByRole("separator");
+    frame.getBoundingClientRect = () =>
+      ({ left: 100, top: 0, width: 800, height: 600, right: 900, bottom: 600, x: 100, y: 0, toJSON: () => ({}) }) as DOMRect;
+
+    fireEvent.pointerDown(separator, { button: 0, pointerId: 7, clientX: 336 });
+    fireEvent.pointerMove(window, { pointerId: 7, clientX: 400 });
+    expect(separator.getAttribute("aria-valuenow")).toBe("300");
+
+    fireEvent.pointerCancel(window, { pointerId: 7 });
+    // 取消策略：与屏幕上的最终视觉一致，提交草稿宽度。
+    expect(window.localStorage.getItem(KEY)).toBe("300");
+    expect(document.body.classList.contains("workspace-split-resizing")).toBe(false);
+    // 会话已终止：迟到事件不再产生效果。
+    fireEvent.pointerMove(window, { pointerId: 7, clientX: 480 });
+    expect(separator.getAttribute("aria-valuenow")).toBe("300");
+  });
+
+  it("window blur 终止拖拽并提交草稿", () => {
+    const { container } = renderSplit();
+    const frame = container.querySelector(".workspace-split-frame") as HTMLElement;
+    const separator = screen.getByRole("separator");
+    frame.getBoundingClientRect = () =>
+      ({ left: 100, top: 0, width: 800, height: 600, right: 900, bottom: 600, x: 100, y: 0, toJSON: () => ({}) }) as DOMRect;
+
+    fireEvent.pointerDown(separator, { button: 0, pointerId: 7, clientX: 336 });
+    fireEvent.pointerMove(window, { pointerId: 7, clientX: 420 });
+
+    fireEvent.blur(window);
+    expect(window.localStorage.getItem(KEY)).toBe("320");
+    expect(document.body.classList.contains("workspace-split-resizing")).toBe(false);
+  });
+
+  it("document visibilitychange(hidden) 终止拖拽，恢复可见不再残留会话", () => {
+    const { container } = renderSplit();
+    const frame = container.querySelector(".workspace-split-frame") as HTMLElement;
+    const separator = screen.getByRole("separator");
+    frame.getBoundingClientRect = () =>
+      ({ left: 100, top: 0, width: 800, height: 600, right: 900, bottom: 600, x: 100, y: 0, toJSON: () => ({}) }) as DOMRect;
+
+    fireEvent.pointerDown(separator, { button: 0, pointerId: 7, clientX: 336 });
+    fireEvent.pointerMove(window, { pointerId: 7, clientX: 412 });
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "hidden",
+    });
+    fireEvent(document, new Event("visibilitychange"));
+    expect(window.localStorage.getItem(KEY)).toBe("312");
+    expect(document.body.classList.contains("workspace-split-resizing")).toBe(false);
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "visible",
+    });
+    fireEvent(document, new Event("visibilitychange"));
+    expect(window.localStorage.getItem(KEY)).toBe("312");
+  });
+
+  it("拖动过程中组件卸载：清理监听与拖拽态，不执行持久化", () => {
+    const { container, unmount } = renderSplit();
+    const frame = container.querySelector(".workspace-split-frame") as HTMLElement;
+    const separator = screen.getByRole("separator");
+    frame.getBoundingClientRect = () =>
+      ({ left: 100, top: 0, width: 800, height: 600, right: 900, bottom: 600, x: 100, y: 0, toJSON: () => ({}) }) as DOMRect;
+
+    fireEvent.pointerDown(separator, { button: 0, pointerId: 7, clientX: 336 });
+    fireEvent.pointerMove(window, { pointerId: 7, clientX: 430 });
+    expect(separator.getAttribute("aria-valuenow")).toBe("330");
+
+    unmount();
+    expect(window.localStorage.getItem(KEY)).toBeNull();
+    expect(document.body.classList.contains("workspace-split-resizing")).toBe(false);
+
+    // 卸载后迟到的 pointer 事件不得再改任何状态。
+    expect(() => fireEvent.pointerUp(window, { pointerId: 7, clientX: 500 })).not.toThrow();
+  });
+
+  it("终止路径重复触发（up 之后再 blur/cancel）幂等，不抛错且只提交一次", () => {
+    const { container } = renderSplit();
+    const frame = container.querySelector(".workspace-split-frame") as HTMLElement;
+    const separator = screen.getByRole("separator");
+    frame.getBoundingClientRect = () =>
+      ({ left: 100, top: 0, width: 800, height: 600, right: 900, bottom: 600, x: 100, y: 0, toJSON: () => ({}) }) as DOMRect;
+
+    fireEvent.pointerDown(separator, { button: 0, pointerId: 7, clientX: 336 });
+    fireEvent.pointerMove(window, { pointerId: 7, clientX: 440 });
+
+    fireEvent.pointerUp(window, { pointerId: 7, clientX: 440 });
+    expect(window.localStorage.getItem(KEY)).toBe("340");
+
+    expect(() => {
+      fireEvent.blur(window);
+      fireEvent.pointerCancel(window, { pointerId: 7 });
+      fireEvent.pointerUp(window, { pointerId: 7, clientX: 500 });
+    }).not.toThrow();
+    expect(window.localStorage.getItem(KEY)).toBe("340");
+    expect(document.body.classList.contains("workspace-split-resizing")).toBe(false);
+  });
+
+  it("已有活跃会话时新的 pointerdown 被忽略，不同 pointerId 的事件互不影响", () => {
+    const { container } = renderSplit();
+    const frame = container.querySelector(".workspace-split-frame") as HTMLElement;
+    const separator = screen.getByRole("separator");
+    frame.getBoundingClientRect = () =>
+      ({ left: 100, top: 0, width: 800, height: 600, right: 900, bottom: 600, x: 100, y: 0, toJSON: () => ({}) }) as DOMRect;
+
+    fireEvent.pointerDown(separator, { button: 0, pointerId: 7, clientX: 336 });
+    // 第二根指针按下：不建立第二个会话。
+    fireEvent.pointerDown(separator, { button: 0, pointerId: 8, clientX: 500 });
+    expect(document.body.classList.contains("workspace-split-resizing")).toBe(true);
+
+    // 指针 8 的移动/抬起不改变指针 7 的会话状态与宽度。
+    fireEvent.pointerMove(window, { pointerId: 8, clientX: 600 });
+    expect(separator.getAttribute("aria-valuenow")).toBe("236");
+    fireEvent.pointerUp(window, { pointerId: 8, clientX: 600 });
+    expect(document.body.classList.contains("workspace-split-resizing")).toBe(true);
+    expect(window.localStorage.getItem(KEY)).toBeNull();
+
+    // 指针 7 正常结束。
+    fireEvent.pointerUp(window, { pointerId: 7, clientX: 336 });
+    expect(window.localStorage.getItem(KEY)).toBe("236");
     expect(document.body.classList.contains("workspace-split-resizing")).toBe(false);
   });
 

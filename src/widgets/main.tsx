@@ -7,9 +7,12 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
-// 顺序与主窗口一致：先主题 Token，再组件样式，最后微件窗口的表面层。
+// 顺序与主窗口一致：先主题 Token，再 flat / Design System v1.0 Token，
+// 组件样式最后微件窗口的表面层。tokens 层负责把旧语义名映射到 v1.0 取值，
+// 缺了它微件窗口的旧 Token 取值会与主窗分叉（2026-11-21 入口契约审计补齐）。
 import "../styles-themes.css";
 import "../styles-flat.css";
+import "../styles-tokens.css";
 // 悬停提示沿用主窗同一套 .ui-tooltip / .ui-popover 基元，不另写一套提示样式。
 import "../styles-ui.css";
 import "../components/widgets/widgets.css";

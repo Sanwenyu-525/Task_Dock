@@ -49,11 +49,18 @@
 }
 
 /* ══ 树形导航（宽/中容器）═════════════════════════════════════════ */
+/* 卡面三件套（padding/边框/白底）原在 styles-pages.css 适配层：本文件随
+   SettingsPanel 动态 chunk 后插入 head，适配层的同属性规则是死规则，
+   2026-11-21 归位到此处维护（取值 = Design System v1.0 语义 Token）。 */
 .settings-panel .settings-nav {
   min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
+  padding: 10px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-card);
+  background: var(--color-bg-surface);
 }
 
 /* 树自身滚动：分类全部展开 + 短窗口时导航栏独立滚动，不挤占页面滚动区。 */
@@ -286,11 +293,17 @@
   overflow-wrap: anywhere;
 }
 
+/* 页面卡片面同上：原 styles-pages.css 适配层死规则，2026-11-21 归位。
+   配置区收进一张卡，内部靠分隔线分组。 */
 .settings-panel .settings-page-body {
   display: flex;
   flex-direction: column;
   gap: 10px;
   min-width: 0;
+  padding: 16px 18px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-card);
+  background: var(--color-bg-surface);
 }
 
 /* 布局模板：标准模板限宽避免长行；列表/诊断模板用满内容宽。 */
@@ -1039,7 +1052,7 @@
     justify-content: flex-start;
   }
 
-  /* 页面卡片内边距在窄容器收一档（styles-pages.css 的 16/18px 是宽屏取值）。 */
+  /* 页面卡片内边距在窄容器收一档（上面的 16/18px 是宽屏取值）。 */
   .settings-panel .settings-page-body {
     padding: 12px;
   }
@@ -1049,4 +1062,70 @@
     white-space: normal;
     overflow-wrap: anywhere;
   }
+}
+
+/* ══ 预设预览卡面（2026-11-21 自 styles-pages.css 归位）══════════════
+   预设预览只作为「主题缩略图」，缩小高度并降饱和；不再用大面积
+   紫/粉渐变抢走设置页的视觉重心。取值均为 Design System v1.0 语义 Token。 */
+.settings-panel .preset-card .preset-preview {
+  height: 36px;
+  filter: saturate(0.62);
+  background: var(--color-bg-surface-secondary);
+}
+
+/* 预览内部的小纸片也走语义面，暗色下不能继续用固定的白纸色。 */
+.settings-panel .preset-card .pp-card {
+  background: var(--color-bg-surface);
+  box-shadow: 0 0 0 1px var(--color-border-default);
+}
+
+.settings-panel .preset-card .pp-rail {
+  background: var(--color-bg-hover);
+  box-shadow: inset 0 0 0 1px var(--color-border-default);
+}
+
+.settings-panel .preset-card.preset-dream-gradient .preset-preview {
+  background: linear-gradient(
+    135deg,
+    var(--color-bg-surface-secondary),
+    var(--color-brand-subtle) 55%,
+    var(--color-bg-hover)
+  );
+}
+
+.settings-panel .preset-card.preset-liquid-glass .preset-preview {
+  background: linear-gradient(
+    135deg,
+    var(--color-bg-surface-secondary),
+    var(--color-brand-subtle) 60%,
+    var(--color-bg-surface-secondary)
+  );
+}
+
+.settings-panel .preset-card.preset-frosted .preset-preview {
+  background: linear-gradient(
+    135deg,
+    var(--color-bg-surface),
+    var(--color-bg-hover) 58%,
+    var(--color-bg-surface-secondary)
+  );
+}
+
+.settings-panel .preset-card.preset-clear .preset-preview {
+  background:
+    repeating-conic-gradient(
+        color-mix(in srgb, var(--color-border-default) 46%, transparent) 0% 25%,
+        color-mix(in srgb, var(--color-bg-surface) 60%, transparent) 0% 50%
+      )
+      0 0 / 10px 10px,
+    linear-gradient(
+      135deg,
+      var(--color-bg-surface-secondary),
+      var(--color-brand-subtle)
+    );
+}
+
+/* 预设卡选中态用品牌色细边，不再额外叠阴影。 */
+.settings-panel .preset-card.active {
+  box-shadow: 0 0 0 1.5px var(--color-brand);
 }

@@ -15,6 +15,13 @@
  *
  * 宽度记忆仍写在 localStorage：窄窗降级只是视觉覆盖，不会回写保存值，
  * 窗口恢复后自动回到用户设定的宽度。
+ *
+ * 卡面视觉（2026-11-21）：本文件被动态加载的页面 chunk 携带（TasksPanel、
+ * ClipboardWorkspace 等都 import WorkspaceSplit），CSS 插入在 head 尾部、
+ * 晚于入口静态导入的 styles-pages.css；同特异性下「谁后插入谁生效」，
+ * 因此分栏卡面的**最终视觉规则必须写在这里**，不能依赖 styles-pages.css
+ * 的静态导入顺序（那套规则对动态页面是死规则）。取值用 Design System v1.0
+ * 语义 Token（styles-tokens.css）。
  */
 
 /* ── 查询容器（只有它声明 container-type）── */
@@ -39,6 +46,10 @@
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+  /* 「筛选栏 + 内容区」收进同一张工作区卡面（Design System v1.0 §9）。 */
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-card);
+  background: var(--color-bg-surface);
 }
 
 .workspace-split.is-single {
@@ -51,13 +62,9 @@
   overflow-y: auto;
   overflow-x: hidden;
   padding: 14px 12px 18px;
-  border-right: 1px solid var(--border-subtle);
-  background:
-    linear-gradient(
-      180deg,
-      color-mix(in srgb, var(--surface-raised) 82%, transparent),
-      color-mix(in srgb, var(--surface-raised) 58%, transparent)
-    );
+  border-right: 1px solid var(--color-border-default);
+  /* 侧栏用 bg-sidebar，靠色阶而不是渐变区分（v1.0 §10：不铺渐变）。 */
+  background: var(--color-bg-sidebar);
 }
 
 .workspace-split__main {
@@ -193,7 +200,8 @@ body.workspace-split-resizing {
     max-height: none;
     padding: 10px 10px 12px;
     border-right: none;
-    border-bottom: 1px solid var(--border-subtle);
+    /* 底部分隔线与右边界同用中性边框（v1.0），不再是旧的 --border-subtle。 */
+    border-bottom: 1px solid var(--color-border-default);
   }
   /* display:none 同时移除 8px 网格列与命中区，不残留不可见拖拽区域。 */
   .workspace-split__resizer {
