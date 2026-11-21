@@ -342,3 +342,20 @@ CLI `task get` revision=3，`task list` 每条含 revision。
 执行结果：11 passed / 0 failed / 0 ignored，exit 0（含新增 4 例，2026-11-21）。
 证据：`tmp/acceptance/agent-handoff-discovery/cargo-test.log`。
 上述自动化测试不代表真实桌面或安装包验收。
+
+## 15. 单任务授权上下文（2026-11-21）
+
+`npm run cargo -- test --lib agent_access::tests_v82_context` 在隔离内存库执行，
+24 passed / 0 failed / 0 ignored，exit 0。新增两例验证：
+
+- 精确任务授权可按真实关联进入目标任务的上下文，保留任务详情及其近期变更。
+  同项目其他任务、项目名称及规划目标仍按各自能力过滤。
+- 无读取授权（含撤销）返回 `FORBIDDEN`，任务和项目不匹配返回 `VALIDATION`。
+- 未关联项目的任务保留独立范围，即使在 200 项候选之外也可凭 ID 取得详情。
+
+单测日志：`tmp/acceptance/agent-task-context/rust.log`。
+
+Dev 端到端复验 64/64，exit 0。用真实 Tauri 命令创建身份、授予 `context.read` 与目标任务的
+`tasks.read`，再由 CLI、MCP stdio 和 REST 读取。同项目未授权任务和错误项目均被拒绝，
+撤销单任务能力后，三个入口立即拒绝目标上下文。原有交接、受控文件导入和鉴权用例同轮通过。
+证据：`tmp/acceptance/agent-task-context/report.md`。未执行 Release 安装包验收。

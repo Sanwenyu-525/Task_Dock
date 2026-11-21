@@ -388,6 +388,128 @@ fn context_read_alone_does_not_unlock_resources() {
     let _ = task_id;
 }
 
+#[test]
+fn exact_task_grant_builds_linked_context_without_project_metadata_or_peers() {
+    let fx = Fixture::new();
+    let (row_id, agent_id) = fx.agent("ctx-exact-linked");
+    fx.grant(&row_id, "context.read", "");
+    fx.project("proj-a");
+    fx.project("proj-b");
+    fx.planning_project("proj-a", "保密项目名称", "in_progress");
+    let feature = fx.feature("proj-a", "保密规划目标", "in_progress");
+    let task = fx.task("发布目标任务", "可以读取的详情", Some("proj-a"));
+    let peer = fx.task("发布同项目保密任务", "", Some("proj-a"));
+    fx.revision("task", &task);
+    fx.revision("task", &peer);
+    fx.grant(&row_id, "tasks.read", &task);
+    let principal = agent_principal(&row_id, &agent_id);
+
+    for project in [None, Some("proj-a".into())] {
+        let ctx = context::build(
+            &fx.db,
+            &principal,
+            ContextRequest {
+                task_id: Some(task.clone()),
+                project_id: project,
+                kinds: vec!["task".into()],
+                ..Default::default()
+            },
+        )
+        .expect("单任务授权可装配目标任务上下文");
+        assert_eq!(ctx.project_id, "proj-a");
+        assert!(ctx.project_name.is_empty());
+        assert!(ctx.objective.contains("发布目标任务"));
+        assert_eq!(ctx.items.len(), 1);
+        assert_eq!(ctx.items[0].source_id, task);
+        assert!(ctx.items[0].summary.contains("可以读取的详情"));
+        assert!(ctx.recent_changes.iter().any(|i| i.source_id == task));
+        assert!(ctx.recent_changes.iter().all(|i| i.source_id == task));
+        let json = context::to_json(&ctx).unwrap().to_string();
+        assert!(!json.contains("保密") && !json.contains(&feature) && !json.contains(&peer));
+        assert!(!ctx.markdown.contains("保密"));
+    }
+
+    let wrong_project = context::build(
+        &fx.db,
+        &principal,
+        ContextRequest {
+            task_id: Some(task.clone()),
+            project_id: Some("proj-b".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error_code(&wrong_project), "VALIDATION");
+
+    // 即使有项目读取权限，也不能用项目授权代替同项目其它任务的读取授权。
+    fx.grant(&row_id, "projects.read", "proj-a");
+    let denied = context::build(
+        &fx.db,
+        &principal,
+        ContextRequest {
+            task_id: Some(peer),
+            project_id: Some("proj-a".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error_code(&denied), "FORBIDDEN");
+
+    mcp_perm::revoke(&fx.db, &row_id, "tasks.read", &task).unwrap();
+    let revoked = context::build(
+        &fx.db,
+        &principal,
+        ContextRequest {
+            task_id: Some(task),
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error_code(&revoked), "FORBIDDEN");
+}
+
+#[test]
+fn exact_unlinked_task_keeps_its_details_beyond_the_candidate_limit() {
+    let fx = Fixture::new();
+    let (row_id, agent_id) = fx.agent("ctx-exact-unlinked");
+    fx.grant(&row_id, "context.read", "");
+    fx.planning_project("default-project", "默认活动项目", "in_progress");
+    fx.grant(&row_id, "projects.read", "default-project");
+    let task = fx.task("独立任务", "独立任务详细内容", None);
+    fx.grant(&row_id, "tasks.read", &task);
+    fx.db
+        .with_conn(|conn| {
+            conn.execute(
+                "WITH RECURSIVE n(i) AS (
+                    SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 200
+                 )
+                 INSERT INTO tasks (id, title, due_at, created_at, updated_at)
+                 SELECT 'filler-' || i, '独立任务干扰项', '2025-01-01T00:00:00Z',
+                        '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z' FROM n",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+    let ctx = build(
+        &fx,
+        &row_id,
+        &agent_id,
+        ContextRequest {
+            task_id: Some(task.clone()),
+            kinds: vec!["task".into()],
+            ..Default::default()
+        },
+    );
+    assert!(ctx.project_id.is_empty());
+    assert_eq!(ctx.items.len(), 1);
+    assert_eq!(ctx.items[0].source_id, task);
+    assert!(ctx.items[0].summary.contains("独立任务详细内容"));
+    assert!(!ctx.markdown.contains("默认活动项目"));
+    assert!(!ctx.markdown.contains("干扰项"));
+}
+
 /// 4) 项目隔离：只返回本项目资源。
 #[test]
 fn context_only_returns_resources_of_requested_project() {

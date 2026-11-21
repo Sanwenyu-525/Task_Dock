@@ -159,6 +159,8 @@ OS 用户或沙箱中；本模块只保证「不因目录可写而越权修改 T
 ### 9.3 Context
 
 - 显式项目必须由至少一项资源读能力覆盖；只持 `context.read` → `FORBIDDEN`。
+- 显式指定已授权任务时，该任务与项目的真实关联可以限定装配范围。同项目其他任务仍需各自的读取授权。
+  无权读取目标任务时返回 `FORBIDDEN`。详见 [任务上下文范围](context-engine.md#73-项目范围)。
 - 项目名称/规划目标分别要求 `projects.read` / `plans.read`；未授权时输出为空，而不是回退全局。
 - 近期活动经 `service::list_activity_authorized` 过滤；未授权内容不进入 Markdown 或 JSON。
 

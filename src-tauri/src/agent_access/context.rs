@@ -330,39 +330,51 @@ fn resolve_context_scope(
         .map(str::trim)
         .filter(|v| !v.is_empty())
         .map(str::to_string);
-    scope.task_id = req.task_id.clone().unwrap_or_default();
+    scope.task_id = req.task_id.as_deref().unwrap_or_default().trim().to_string();
+    let task_projects: Vec<String> = if scope.task_id.is_empty() {
+        Vec::new()
+    } else {
+        db.with_read(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT project_id FROM workspace_task_links WHERE task_id = ?1
+                 ORDER BY created_at DESC, project_id ASC",
+            )?;
+            let rows = stmt.query_map([&scope.task_id], |row| row.get(0))?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
+        })?
+    };
+    let exact_task_read = reads.tasks.allows(&scope.task_id);
 
     scope.project_id = match explicit_project {
         Some(project_id) => {
+            let task_linked = task_projects.contains(&project_id);
+            if !scope.task_id.is_empty() {
+                if !(exact_task_read || task_linked && reads.tasks.allows(&project_id)) {
+                    return Err(perms::denial(Capability::TasksRead));
+                }
+                if !task_linked {
+                    return Err(AppError::Validation("任务未关联到指定项目".into()));
+                }
+            }
             let kind = db.with_read(|conn| perms::project_exists(conn, &project_id))?;
             if kind.is_none() {
                 return Err(AppError::NotFound(format!("项目不存在: {project_id}")));
             }
-            if !project_read_scope_covers(&reads, &project_id) {
+            if !(task_linked && exact_task_read) && !project_read_scope_covers(&reads, &project_id) {
                 return Err(AppError::Forbidden(format!(
                     "Agent 无权访问项目 {project_id}"
                 )));
             }
             project_id
         }
-        None => {
-            // 任务所属项目优先于“当前进行中项目”，避免跨项目拼装上下文。
-            let from_task = if scope.task_id.is_empty() {
-                None
-            } else {
-                db.with_read(|conn| perms::task_project(conn, &scope.task_id))?
-            };
-            match from_task {
-                Some(project_id) => {
-                    if !project_read_scope_covers(&reads, &project_id) {
-                        return Err(AppError::Forbidden(format!(
-                            "Agent 无权访问任务所属项目 {project_id}"
-                        )));
-                    }
-                    project_id
-                }
-                None => resolve_default_project(db, &reads)?,
-            }
+        None if scope.task_id.is_empty() => resolve_default_project(db, &reads)?,
+        None => match task_projects
+            .into_iter()
+            .find(|project| exact_task_read || reads.tasks.allows(project))
+        {
+            Some(project) => project,
+            None if exact_task_read => String::new(),
+            None => return Err(perms::denial(Capability::TasksRead)),
         }
     };
     // 项目元数据（名称）**只认 `projects.read`**：其它资源读能力可以进入项目上下文，
@@ -377,20 +389,13 @@ fn resolve_context_scope(
     scope.objective = req.task.clone().unwrap_or_default();
     let mut objective_is_explicit = !scope.objective.trim().is_empty();
     if !scope.task_id.is_empty() {
-        // 只有具备任务读能力时才解析；否则不回显任务标题（避免越权探测）。
-        if task_readable(db, principal, &scope.task_id, &scope)? {
-            // 授权判定已在上面按「全局 / 精确任务 / 项目内任务」完成，
-            // 这里直接取任务，不再走按 task_id 的通用 require（那会误伤项目级授权）。
-            let task = crate::commands::tasks::get_task(db, &scope.task_id)?;
-            scope.objective = format!("{}（{}，状态 {}）", task.title, task.id, task.status);
-            scope.objective_task = Some(task);
-            objective_is_explicit = true;
-        } else {
-            scope.objective = format!("任务 {}（当前身份无权读取任务详情）", scope.task_id);
-        }
+        let task = crate::commands::tasks::get_task(db, &scope.task_id)?;
+        scope.objective = format!("{}（{}，状态 {}）", task.title, task.id, task.status);
+        scope.objective_task = Some(task);
+        objective_is_explicit = true;
     }
     // 规划目标/功能属于 `plans.read` 的元数据：没有覆盖该项目的规划读取权限时
-    // 不作为 objective 来源（任务 objective 仍由 `task_readable` 决定）。
+    // 不作为 objective 来源。
     if scope.objective.trim().is_empty()
         && !scope.project_id.is_empty()
         && reads.plans.allows(&scope.project_id)
@@ -469,7 +474,7 @@ fn granted_resources(
 /// - `skill`：只支持全局授权（`Capability::SkillsRead` 是 global_only）。
 ///
 /// 三条硬约束：
-/// 1. 项目范围为空时**只认全局授权**——项目级授权不得在无项目上下文中生效；
+/// 1. 无项目时，除经过单任务授权的显式目标外，只接受全局授权；
 /// 2. `ContextRead` 不参与判定（入口能力 ≠ 资源读取能力）；
 /// 3. 任务级授权必须落在「该项目下的任务集合」内，不能拿别的项目的任务凑数。
 fn kind_authorized(
@@ -485,7 +490,7 @@ fn kind_authorized(
     }
     let project_id = scope.project_id.trim();
     if project_id.is_empty() {
-        return Ok(false);
+        return Ok(kind == "task" && scope.objective_task.is_some());
     }
     if resources.iter().any(|r| r == project_id) {
         return Ok(true);
@@ -518,7 +523,9 @@ fn authorized_task_ids(
     }
     let project_id = scope.project_id.trim();
     if project_id.is_empty() {
-        return Ok(Some(HashSet::new()));
+        return Ok(Some(
+            scope.objective_task.iter().map(|task| task.id.clone()).collect(),
+        ));
     }
     let project_tasks = task_ids_for_project(db, project_id);
     let mut allowed = HashSet::new();
@@ -558,31 +565,6 @@ fn authorized_knowledge_base_ids(
     Ok(Some(allowed))
 }
 
-/// 当前任务是否可读：全局授权 / 精确任务授权 /（项目授权且任务确属该项目）。
-fn task_readable(
-    db: &Db,
-    principal: &Principal,
-    task_id: &str,
-    scope: &ContextScope,
-) -> AppResult<bool> {
-    let resources = granted_resources(db, principal, Capability::TasksRead)?;
-    if resources.iter().any(|r| r.trim().is_empty()) {
-        return Ok(true);
-    }
-    if resources.iter().any(|r| r == task_id) {
-        return Ok(true);
-    }
-    let project_id = scope.project_id.trim();
-    if project_id.is_empty() {
-        return Ok(false);
-    }
-    if !resources.iter().any(|r| r == project_id) {
-        return Ok(false);
-    }
-    // 项目级任务授权：任务必须确实挂在该项目下。
-    Ok(task_ids_for_project(db, project_id).contains(task_id))
-}
-
 /// 2) 授权资源类型：显式请求未授权 → 明确报错；默认请求 → 只返回已授权部分。
 fn resolve_authorized_kinds(
     db: &Db,
@@ -590,7 +572,6 @@ fn resolve_authorized_kinds(
     req: &ContextRequest,
     scope: &ContextScope,
 ) -> AppResult<AuthorizedContextKinds> {
-    perms::require(db, principal, Capability::ContextRead, "")?;
     let all = [
         "plan", "task", "knowledge", "decision", "skill", "handoff",
     ];
@@ -718,7 +699,11 @@ fn collect_tasks(
     let linked = task_ids_for_project(db, &scope.project_id);
     let objective_id = scope.objective_task.as_ref().map(|t| t.id.clone());
     let mut candidates: Vec<(Task, i64)> = Vec::new();
-    for task in tasks {
+    // 显式目标已单独读取，不受全局候选列表的 200 条上限影响。
+    let tasks = tasks
+        .into_iter()
+        .filter(|task| objective_id.as_deref() != Some(task.id.as_str()));
+    for task in scope.objective_task.iter().cloned().chain(tasks) {
         let is_objective = objective_id.as_deref() == Some(task.id.as_str());
         // 项目隔离：只保留与该项目弱关联的任务（当前任务除外）。
         if !scope.project_id.is_empty() && !linked.contains(&task.id) && !is_objective {
@@ -1392,6 +1377,7 @@ fn scope_value(
 }
 
 pub fn build(db: &Db, principal: &Principal, req: ContextRequest) -> AppResult<AgentContext> {
+    perms::require(db, principal, Capability::ContextRead, "")?;
     let budget_total = req
         .budget_tokens
         .unwrap_or(DEFAULT_BUDGET)

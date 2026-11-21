@@ -8,7 +8,7 @@
 |---|---|
 | `query` | 自然语言任务描述（可空，空则用项目/任务范围） |
 | `project_id` / `workspace_project_id` | 限定项目 |
-| `task_id` | 限定任务（自动带入其项目/分类/标签） |
+| `task_id` | 以可读任务为目标。自动选择其关联项目，也可显式指定关联项目 |
 | `agent_id` | 当前 Agent 身份（用于过滤其交接与活动） |
 | `kinds` | 需要的内容类型（task/plan/knowledge/decision/skill/handoff/activity） |
 | `budget_tokens` | 可选上限，默认 6000，最大 24000 |
@@ -116,8 +116,17 @@ record_context_access()        只记规模
 ### 7.3 项目范围
 
 - 显式项目：必须存在且 Agent 有权访问（任一读能力在全局或该项目上授权）；
-- 任务项目：任务所属项目优先；无权访问时明确拒绝，不回退全局；
+- 显式任务：`context.read` 和目标任务的读取授权都通过后才装配。单任务授权可沿真实的
+  `workspace_task_links` 进入该任务的上下文。任务关联多个项目时优先使用最近关联的可读项目，
+  同一时间按项目 ID 排序。无项目关联的任务不借用默认项目。
+- 同时传入项目与任务时，两者必须确有关联。目标任务无读取授权返回 `FORBIDDEN`，已授权任务
+  与指定项目不匹配返回 `VALIDATION`。关联只限定装配范围，项目名称、规划和其他任务分别校验权限。
 - 默认项目：只在 Agent 可访问的项目中选择；都不可访问时按「无项目」处理，不取全局数据。
+- 显式目标直接按 ID 纳入候选，不受任务列表的 200 条上限影响。最终输出仍受 token 预算限制。
+
+CLI `context get --task-id`、MCP `taskdock_get_relevant_context` 和 REST `GET /api/v1/context?task_id=…`
+共享上面的判定。请求与响应结构保持兼容。行为收紧涉及显式无权任务和不匹配的项目参数
+（Breaking Change: Yes），调用方应处理 `FORBIDDEN` 和 `VALIDATION`。
 
 ### 7.4 近期变更
 

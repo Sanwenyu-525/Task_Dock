@@ -238,3 +238,11 @@ exit 0（隔离数据目录 `tmp/acceptance/agent-access-v82-20261120-224854/`�
 - 自动化验证：`npm run cargo -- test --lib agent_access::tests_v82_handoff -- --nocapture`
   exit 0，11/11 通过（含新增 4 例）；日志 `tmp/acceptance/agent-handoff-discovery/cargo-test.log`。
   定向差异与文档链接检查通过；未执行桌面与安装包验收。
+
+## 单任务授权上下文（2026-11-21）
+
+- CLI、MCP 与 REST 显式查询目标任务时，可使用已授予的单任务读取权限装配上下文。
+  装配根据真实任务关联选择项目，项目名称、规划和其他任务仍各自鉴权。
+- 校验目标任务与项目的关联。未关联项目的任务保持独立范围，目标超出候选列表上限时仍可按 ID 入选。
+- 上下文 Rust 测试 24/24，实际 Dev 桌面与外部入口复验 64/64，含五项新增任务上下文断言。
+  详见 [context-engine.md](context-engine.md#73-项目范围) 与 [test-plan.md](test-plan.md#15-单任务授权上下文2026-11-21)。

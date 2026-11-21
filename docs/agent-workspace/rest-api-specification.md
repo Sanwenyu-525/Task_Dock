@@ -60,7 +60,7 @@ HTTP 状态映射：`VALIDATION→400`、`UNAUTHORIZED→401`、`FORBIDDEN→403
 | GET | `/api/v1/decisions` | `decisions.read` | `project_id`/`status`/`limit` |
 | GET | `/api/v1/decisions/{id}` | `decisions.read` | 详情 |
 | POST | `/api/v1/decisions` | `decisions.write` | 创建 |
-| GET | `/api/v1/context` | `context.read` | `project_id`/`task_id`/`q`/`budget`/`format` |
+| GET | `/api/v1/context` | `context.read`，指定任务时另需 `tasks.read` | `project`/`task_id`/`task`/`budget`/`format`；任务必须关联指定项目 |
 | GET | `/api/v1/context/search` | `context.read` | 同上，`q` 必填 |
 | POST | `/api/v1/context` | `context.read` | body 里的 scope（避免超长 query） |
 | GET | `/api/v1/agents/handoffs` | `handoffs.read` | `status`/`project`/`limit`/`offset`；省略项目时按授权范围发现，过滤后分页 |
