@@ -24,6 +24,17 @@
 }
 
 /* ── 二级 Tab（设定 / 推进）───────────────────────────────────────── */
+/* 一级入口的导航容器：Tab 按钮组包在 <nav> 里（布局/加载指示是同级操作，不在导航内），
+   换行仍发生在按钮之间，视觉与原来的平铺按钮行一致。 */
+.ws-tab-nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  row-gap: 6px;
+  min-width: 0;
+}
+
 .ws-subtabs {
   display: flex;
   align-items: center;
@@ -406,6 +417,31 @@
 
 .ws-cap-section .ws-cap {
   background: color-mix(in srgb, var(--surface-raised) 60%, transparent);
+}
+
+/* ── 项目设置 · 项目资源卡（空状态收紧）────────────────────────────── */
+/* 空集合 / 筛选为空时不再渲染 16px 内边距的居中大空态，只留一行说明；
+   类型选择、笔记搜索与选择、Agent 会话选择、产物路径、关联按钮、筛选、总数、
+   分页与「当前不可用」失效提示全部保留（分页在有数据时才有意义，控件始终渲染）。 */
+.ws-settings .ws-resources-card {
+  /* 卡片各段之间只留一层间距：head 自身还有 8px margin-bottom，网格 gap 再叠加会变成双倍空档。 */
+  gap: 8px;
+}
+
+.ws-settings .ws-resources-card .ws-card-head {
+  margin-bottom: 0;
+}
+
+.ws-settings .ws-resources-card .ws-resource-add {
+  padding: 7px 8px;
+}
+
+.ws-settings .ws-resources-card .ws-resource-empty {
+  margin: 0;
+  padding: 0 2px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-tertiary);
 }
 
 /* ── 窄内容区降级（容器查询；仅作用于 .ui-page-frame 的后代）──────── */

@@ -490,7 +490,14 @@ export function ProjectResourcesCard({
       </div>
 
       {pageItems.length === 0 ? (
-        <p className="ws-empty" role="status">{loading ? "正在读取资源关联…" : "还没有登记项目资源"}</p>
+        // 空集合/筛选为空只给一行紧凑提示：不放大空态块，也不把读取失败说成「没有数据」。
+        loading || error ? null : (
+          <p className="ws-resource-empty" role="status">
+            {filter === "all"
+              ? "还没有登记项目资源。选好类型后在上方关联笔记、Agent 会话或产物路径，原内容不会被复制。"
+              : "当前筛选下没有资源关联。切回「全部类型」可查看其他资源。"}
+          </p>
+        )
       ) : (
         <ul className="ws-resource-list">
           {pageItems.map((link) => (

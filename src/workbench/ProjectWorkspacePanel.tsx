@@ -11,7 +11,7 @@
 //! `useWorkspaceProjectContext` + `scopeWorkspaceContext`），写操作以点击时的项目
 //! 为目标，切走后不写入新项目。
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { openPath as openSystemPath } from "@tauri-apps/plugin-opener";
 import {
   AlertCircle,
@@ -109,6 +109,33 @@ const STAGE_HINT: Record<WorkspaceKind, string> = {
 
 export type ProjectPanelNoticeKind = "ok" | "error" | "info";
 export type ProjectPanelNavResult = "switched" | "pending" | "blocked";
+
+/**
+ * 导航键盘移动（一级与二级共用）。
+ *
+ * 这里**不是** Tabs 组件：一级入口切换的是分组/模块，二级入口切换组内模块，
+ * 内容区没有 `tabpanel` 语义，所以用普通导航（`<nav>` + `aria-current="page"`）。
+ * 因此不做 roving tabIndex——Tab 仍然逐个经过入口；方向键 / Home / End 只移动
+ * 焦点，激活仍由 Enter / Space 走原生按钮 click（不在此处直接切换，避免误触
+ * 正文 flush 门禁与布局串行写入）。不拦截其他按键。
+ */
+function moveNavFocus(event: KeyboardEvent<HTMLElement>) {
+  const { key } = event;
+  const isArrow = key === "ArrowLeft" || key === "ArrowRight" || key === "ArrowUp" || key === "ArrowDown";
+  if (!isArrow && key !== "Home" && key !== "End") return;
+  const items = Array.from(
+    event.currentTarget.querySelectorAll<HTMLButtonElement>('[data-nav-item="true"]'),
+  ).filter((item) => !item.disabled);
+  if (items.length === 0) return;
+  const index = items.indexOf(document.activeElement as HTMLButtonElement);
+  let next = index < 0 ? 0 : index;
+  if (key === "Home") next = 0;
+  else if (key === "End") next = items.length - 1;
+  else if (index >= 0 && (key === "ArrowRight" || key === "ArrowDown")) next = (index + 1) % items.length;
+  else if (index >= 0) next = (index - 1 + items.length) % items.length;
+  event.preventDefault();
+  items[next]?.focus();
+}
 
 interface AgentSummary {
   running: number;
@@ -1066,30 +1093,37 @@ export default function ProjectWorkspacePanel({
         </div>
       )}
 
-      <div className="ws-tabs ui-toolbar-row" role="tablist" aria-label="工作空间模块">
-        {groupedNav
-          ? navGroups.map((group) => (
-              <button
-                key={group.id}
-                role="tab"
-                aria-selected={activeGroup?.id === group.id}
-                className={`ws-tab ${activeGroup?.id === group.id ? "is-active" : ""}`}
-                onClick={() => switchGroup(group)}
-              >
-                {group.label}
-              </button>
-            ))
-          : modules.map((m) => (
-              <button
-                key={m.id}
-                role="tab"
-                aria-selected={activeModule === m.id}
-                className={`ws-tab ${activeModule === m.id ? "is-active" : ""}`}
-                onClick={() => void switchModule(m.id)}
-              >
-                {m.label}
-              </button>
-            ))}
+      {/* 导航语义：一级是分组（或平铺模块）入口，二级是组内模块入口。
+          选中态用 aria-current="page"；布局按钮是普通操作，独立于导航容器。
+          键盘：Tab 逐个聚焦、Enter/Space 原生激活、方向键/Home/End 移动焦点。 */}
+      <div className="ws-tabs ui-toolbar-row">
+        <nav className="ws-tab-nav" aria-label="工作空间模块" onKeyDown={moveNavFocus}>
+          {groupedNav
+            ? navGroups.map((group) => (
+                <button
+                  key={group.id}
+                  type="button"
+                  data-nav-item="true"
+                  aria-current={activeGroup?.id === group.id ? "page" : undefined}
+                  className={`ws-tab ${activeGroup?.id === group.id ? "is-active" : ""}`}
+                  onClick={() => switchGroup(group)}
+                >
+                  {group.label}
+                </button>
+              ))
+            : modules.map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  data-nav-item="true"
+                  aria-current={activeModule === m.id ? "page" : undefined}
+                  className={`ws-tab ${activeModule === m.id ? "is-active" : ""}`}
+                  onClick={() => void switchModule(m.id)}
+                >
+                  {m.label}
+                </button>
+              ))}
+        </nav>
         {ctx.status === "loading" && (
           <span className="ws-tab-loading"><Loader2 size={12} className="ws-spin" /> 加载中</span>
         )}
@@ -1106,19 +1140,24 @@ export default function ProjectWorkspacePanel({
         </button>
       </div>
       {groupedNav && activeGroup && activeGroup.modules.length > 1 && (
-        <div className="ws-subtabs" role="tablist" aria-label={`${activeGroup.label}子模块`}>
+        <nav
+          className="ws-subtabs"
+          aria-label={`${activeGroup.label}子模块`}
+          onKeyDown={moveNavFocus}
+        >
           {activeGroup.modules.map((m) => (
             <button
               key={m.id}
-              role="tab"
-              aria-selected={activeModule === m.id}
+              type="button"
+              data-nav-item="true"
+              aria-current={activeModule === m.id ? "page" : undefined}
               className={`ws-subtab ${activeModule === m.id ? "is-active" : ""}`}
               onClick={() => void switchModule(m.id)}
             >
               {m.label}
             </button>
           ))}
-        </div>
+        </nav>
       )}
       <ProjectLayoutEditor
         open={layoutEditorOpen}

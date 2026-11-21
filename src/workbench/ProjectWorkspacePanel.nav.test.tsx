@@ -1,10 +1,15 @@
 /**
  * @vitest-environment jsdom
  */
-//! 小说工作空间一级/二级导航（2026-11-20）：
+//! 小说工作空间导航（2026-11-20 分组；2026-11-21 无障碍改造）：
+//! 一级/二级都是**页内导航**，不是 Tabs——`<nav aria-label>` + `aria-current="page"`，
+//! 不再有 `role="tablist"` / `role="tab"` / `aria-selected`。
 //! 七个模块 ID 不删减，只归并为 概览 / 正文 / 设定 / 推进 / 项目设置；
 //! 其他类型保持平铺；模块切换仍统一走 switchModule（含正文 flush 门禁）；
 //! moduleRequest 继续使用原有模块 ID。
+//!
+//! 键盘契约：Tab 逐个聚焦；Enter / Space 由原生按钮 click 激活；
+//! 方向键 / Home / End 只在同一导航容器内移动焦点（循环），不激活模块。
 
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -15,6 +20,12 @@ const bridge = vi.hoisted(() => ({
 
 const flushStore = vi.hoisted(() => ({
   flush: null as null | (() => Promise<boolean>),
+}));
+
+/** 数据层的写入口用 mock 暴露，便于断言「方向键没有触发模块切换/保存」。 */
+const moduleApi = vi.hoisted(() => ({
+  saveModule: vi.fn(),
+  saveLayout: vi.fn(),
 }));
 
 const ctxStore = vi.hoisted(() => {
@@ -74,11 +85,13 @@ vi.mock("../workspace/useWorkspaceProjectContext", async () => {
         ...ctx,
         reload: async () => undefined,
         saveModule: async (module: string) => {
+          moduleApi.saveModule(module);
           const layout = ctxStore.get().layout as Record<string, unknown>;
           ctxStore.set({ ...ctxStore.get(), layout: { ...layout, activeModule: module } });
           return "ok";
         },
         saveLayout: async (layout: Record<string, unknown>) => {
+          moduleApi.saveLayout(layout);
           ctxStore.set({ ...ctxStore.get(), layout });
           return "ok";
         },
@@ -203,8 +216,27 @@ function renderPanel(options?: {
   return view;
 }
 
-function primaryTabs() {
-  return within(screen.getByRole("tablist", { name: "工作空间模块" })).getAllByRole("tab");
+function primaryNav() {
+  return screen.getByRole("navigation", { name: "工作空间模块" });
+}
+
+function primaryItems() {
+  return within(primaryNav()).getAllByRole("button");
+}
+
+function subNav(label: string) {
+  return screen.getByRole("navigation", { name: label });
+}
+
+function currentOf(nav: HTMLElement) {
+  return within(nav)
+    .getAllByRole("button")
+    .filter((item) => item.getAttribute("aria-current") === "page")
+    .map((item) => item.textContent);
+}
+
+function activeModule() {
+  return (ctxStore.get().layout as WorkspaceLayoutConfig).activeModule;
 }
 
 beforeEach(() => {
@@ -219,11 +251,11 @@ beforeEach(() => {
 
 afterEach(() => cleanup());
 
-describe("小说工作空间导航分组", () => {
-  it("一级导航固定五个入口，二级只出现在设定 / 推进", async () => {
+describe("小说工作空间导航分组（页内导航语义）", () => {
+  it("一级导航固定五个入口，且不再使用 Tabs 语义", async () => {
     renderPanel();
     await waitFor(() =>
-      expect(primaryTabs().map((tab) => tab.textContent)).toEqual([
+      expect(primaryItems().map((item) => item.textContent)).toEqual([
         "概览",
         "正文",
         "设定",
@@ -231,38 +263,106 @@ describe("小说工作空间导航分组", () => {
         "项目设置",
       ]),
     );
-    // 概览下没有二级导航
-    expect(screen.queryByRole("tablist", { name: /子模块$/ })).toBeNull();
+    // 不是 Tabs：入口是普通导航按钮，内容区没有 tabpanel。
+    expect(screen.queryByRole("tablist")).toBeNull();
+    expect(screen.queryByRole("tab")).toBeNull();
+    expect(screen.queryByRole("navigation", { name: /子模块$/ })).toBeNull();
+  });
+
+  it("选中态用 aria-current=page：默认概览，切到设定后一级/二级各只有一项", async () => {
+    renderPanel();
+    await waitFor(() => expect(currentOf(primaryNav())).toEqual(["概览"]));
+
+    fireEvent.click(within(primaryNav()).getByRole("button", { name: "设定" }));
+
+    await waitFor(() => expect(currentOf(primaryNav())).toEqual(["设定"]));
+    expect(currentOf(subNav("设定子模块"))).toEqual(["人物"]);
+    expect(activeModule()).toBe("characters");
+  });
+
+  it("一级键盘：方向键/Home/End 只移动焦点并循环，不切换模块", async () => {
+    renderPanel();
+    await waitFor(() => expect(primaryItems()).toHaveLength(5));
+    const nav = primaryNav();
+    const [overview, manuscript, setting, , settings] = primaryItems();
+
+    overview.focus();
+    fireEvent.keyDown(nav, { key: "ArrowRight" });
+    expect(document.activeElement).toBe(manuscript);
+    fireEvent.keyDown(nav, { key: "ArrowRight" });
+    expect(document.activeElement).toBe(setting);
+    fireEvent.keyDown(nav, { key: "ArrowLeft" });
+    expect(document.activeElement).toBe(manuscript);
+    fireEvent.keyDown(nav, { key: "Home" });
+    expect(document.activeElement).toBe(overview);
+    fireEvent.keyDown(nav, { key: "End" });
+    expect(document.activeElement).toBe(settings);
+    // 循环：最后一项继续向右回到第一项。
+    fireEvent.keyDown(nav, { key: "ArrowRight" });
+    expect(document.activeElement).toBe(overview);
+
+    // 方向键只移动焦点：模块与保存都没有变化，正文区也没有出现。
+    expect(activeModule()).toBe("overview");
+    expect(moduleApi.saveModule).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("creative-stub")).toBeNull();
+  });
+
+  it("二级键盘：方向键只移动焦点，Enter/Space 走原生按钮 click 激活", async () => {
+    renderPanel();
+    fireEvent.click(within(primaryNav()).getByRole("button", { name: "设定" }));
+    const nav = await screen.findByRole("navigation", { name: "设定子模块" });
+    await waitFor(() => expect(screen.getByTestId("creative-stub").textContent).toBe("characters"));
+
+    const [characters, worldview] = within(nav).getAllByRole("button");
+    characters.focus();
+    fireEvent.keyDown(nav, { key: "ArrowRight" });
+    expect(document.activeElement).toBe(worldview);
+    // 焦点移动不等于激活。
+    expect(activeModule()).toBe("characters");
+    fireEvent.keyDown(nav, { key: "ArrowLeft" });
+    expect(document.activeElement).toBe(characters);
+
+    // 原生按钮的 Enter / Space 会合成 click；这里直接对焦点元素派发 click，
+    // 走的是同一条 switchModule 路径（含正文 flush 门禁与布局保存）。
+    fireEvent.keyDown(nav, { key: "ArrowRight" });
+    expect(document.activeElement).toBe(worldview);
+    fireEvent.click(document.activeElement as HTMLElement);
+
+    await waitFor(() => expect(screen.getByTestId("creative-stub").textContent).toBe("worldview"));
+    expect(activeModule()).toBe("worldview");
+    expect(moduleApi.saveModule).toHaveBeenCalledWith("worldview");
   });
 
   it("点击设定显示人物/世界观，切换二级模块仍走 saveModule", async () => {
     renderPanel();
-    fireEvent.click((await screen.findByRole("tab", { name: "设定" })) as HTMLElement);
+    fireEvent.click(within(primaryNav()).getByRole("button", { name: "设定" }));
 
-    const subtabs = await screen.findByRole("tablist", { name: "设定子模块" });
-    expect(within(subtabs).getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
+    const subtabs = await screen.findByRole("navigation", { name: "设定子模块" });
+    expect(within(subtabs).getAllByRole("button").map((item) => item.textContent)).toEqual([
       "人物",
       "世界观",
     ]);
     await waitFor(() => expect(screen.getByTestId("creative-stub").textContent).toBe("characters"));
-    expect((ctxStore.get().layout as WorkspaceLayoutConfig).activeModule).toBe("characters");
+    expect(activeModule()).toBe("characters");
+    expect(moduleApi.saveModule).toHaveBeenCalledWith("characters");
 
-    fireEvent.click(within(subtabs).getByRole("tab", { name: "世界观" }));
+    fireEvent.click(within(subtabs).getByRole("button", { name: "世界观" }));
     await waitFor(() => expect(screen.getByTestId("creative-stub").textContent).toBe("worldview"));
-    expect((ctxStore.get().layout as WorkspaceLayoutConfig).activeModule).toBe("worldview");
+    expect(activeModule()).toBe("worldview");
+    expect(currentOf(subtabs)).toEqual(["世界观"]);
   });
 
   it("隐藏人物但保留世界观：设定入口仍显示并直接进入世界观", async () => {
     const layout = { ...defaultLayout(WORKSPACE_PROFILES.novel), hiddenModules: ["characters" as const] };
     renderPanel({ layout });
 
-    expect(primaryTabs().map((tab) => tab.textContent)).toContain("设定");
-    fireEvent.click(screen.getByRole("tab", { name: "设定" }));
+    await waitFor(() => expect(primaryItems().map((item) => item.textContent)).toContain("设定"));
+    fireEvent.click(within(primaryNav()).getByRole("button", { name: "设定" }));
 
     await waitFor(() => expect(screen.getByTestId("creative-stub").textContent).toBe("worldview"));
-    // 只剩一个可见子模块时不再渲染二级条，但入口本身仍然存在
-    expect(screen.queryByRole("tablist", { name: "设定子模块" })).toBeNull();
-    expect(screen.queryByRole("tab", { name: "人物" })).toBeNull();
+    // 只剩一个可见子模块时不再渲染二级条，但入口本身仍然存在。
+    expect(screen.queryByRole("navigation", { name: "设定子模块" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "人物" })).toBeNull();
   });
 
   it("整个分组隐藏后不显示入口", async () => {
@@ -272,28 +372,28 @@ describe("小说工作空间导航分组", () => {
     };
     renderPanel({ layout });
 
-    await waitFor(() => expect(primaryTabs().map((tab) => tab.textContent)).toEqual([
-      "概览",
-      "正文",
-      "推进",
-      "项目设置",
-    ]));
-    expect(screen.queryByRole("tab", { name: "设定" })).toBeNull();
+    await waitFor(() =>
+      expect(primaryItems().map((item) => item.textContent)).toEqual([
+        "概览",
+        "正文",
+        "推进",
+        "项目设置",
+      ]),
+    );
+    expect(screen.queryByRole("button", { name: "设定" })).toBeNull();
   });
 
   it("推进分组下是写作事项 / 任务关联，任务关联沿用原模块 ID", async () => {
     renderPanel();
-    fireEvent.click((await screen.findByRole("tab", { name: "推进" })) as HTMLElement);
+    fireEvent.click(within(primaryNav()).getByRole("button", { name: "推进" }));
 
-    const subtabs = await screen.findByRole("tablist", { name: "推进子模块" });
-    expect(within(subtabs).getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
+    const subtabs = await screen.findByRole("navigation", { name: "推进子模块" });
+    expect(within(subtabs).getAllByRole("button").map((item) => item.textContent)).toEqual([
       "写作事项",
       "任务关联",
     ]);
-    fireEvent.click(within(subtabs).getByRole("tab", { name: "任务关联" }));
-    await waitFor(() =>
-      expect((ctxStore.get().layout as WorkspaceLayoutConfig).activeModule).toBe("links"),
-    );
+    fireEvent.click(within(subtabs).getByRole("button", { name: "任务关联" }));
+    await waitFor(() => expect(activeModule()).toBe("links"));
   });
 
   it("离开正文前必须等 flush：失败则原模块与草稿保留，成功才切换", async () => {
@@ -305,34 +405,42 @@ describe("小说工作空间导航分组", () => {
     await screen.findByTestId("manuscript-stub");
 
     flushStore.flush = vi.fn(async () => false);
-    fireEvent.click(screen.getByRole("tab", { name: "设定" }));
+    fireEvent.click(within(primaryNav()).getByRole("button", { name: "设定" }));
     await waitFor(() => expect(flushStore.flush).toHaveBeenCalled());
-    expect((ctxStore.get().layout as WorkspaceLayoutConfig).activeModule).toBe("manuscript");
+    expect(activeModule()).toBe("manuscript");
     expect(screen.queryByTestId("creative-stub")).toBeNull();
 
     flushStore.flush = vi.fn(async () => true);
-    fireEvent.click(screen.getByRole("tab", { name: "设定" }));
+    fireEvent.click(within(primaryNav()).getByRole("button", { name: "设定" }));
     await waitFor(() => expect(screen.getByTestId("creative-stub").textContent).toBe("characters"));
-    expect((ctxStore.get().layout as WorkspaceLayoutConfig).activeModule).toBe("characters");
+    expect(activeModule()).toBe("characters");
   });
 
-  it("moduleRequest 继续使用原有模块 ID，并落在对应分组", async () => {
+  it("moduleRequest 继续使用原有模块 ID，两级 aria-current 都落在对应入口", async () => {
     renderPanel({ moduleRequest: { token: 1, module: "worldview" } });
 
     await waitFor(() => expect(screen.getByTestId("creative-stub").textContent).toBe("worldview"));
-    expect(screen.getByRole("tab", { name: "设定" }).getAttribute("aria-selected")).toBe("true");
-    expect(screen.getByRole("tab", { name: "世界观" }).getAttribute("aria-selected")).toBe("true");
+    expect(currentOf(primaryNav())).toEqual(["设定"]);
+    expect(currentOf(subNav("设定子模块"))).toEqual(["世界观"]);
   });
 
   it("其他工作空间类型保持平铺导航，没有分组二级条", async () => {
     renderPanel({ kind: "general" });
 
     await waitFor(() =>
-      expect(primaryTabs().map((tab) => tab.textContent)).toEqual(
+      expect(primaryItems().map((item) => item.textContent)).toEqual(
         WORKSPACE_PROFILES.general.modules.map((module) => module.label),
       ),
     );
-    expect(screen.queryByRole("tablist", { name: /子模块$/ })).toBeNull();
-    expect(screen.queryByRole("tab", { name: "设定" })).toBeNull();
+    expect(screen.queryByRole("navigation", { name: /子模块$/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: "设定" })).toBeNull();
+  });
+
+  it("布局按钮是普通操作，位于导航容器之外", async () => {
+    renderPanel();
+    await waitFor(() => expect(primaryNav()).toBeTruthy());
+
+    expect(within(primaryNav()).queryByRole("button", { name: "编辑模块布局" })).toBeNull();
+    expect(screen.getByRole("button", { name: "编辑模块布局" })).toBeTruthy();
   });
 });

@@ -5,7 +5,7 @@
 //! 后端数据口径由 Rust 侧测试保证。
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 const bridge = vi.hoisted(() => ({
   workspaceProjectProgress: vi.fn(),
@@ -77,27 +77,90 @@ describe("ProjectProgressCard", () => {
 });
 
 describe("ProjectResourcesCard", () => {
-  it("没有关联时显示空态", async () => {
-    bridge.workspaceResourceList.mockResolvedValue({ links: [], total: 0, offset: 0, limit: 50, hasMore: false });
+  const emptyPage = { links: [], total: 0, offset: 0, limit: 50, hasMore: false };
+
+  const link = (over: Record<string, unknown> = {}) => ({
+    id: "r1",
+    projectId: "p1",
+    kind: "note" as const,
+    target: "n1",
+    label: "设定草稿",
+    note: "",
+    targetExists: true,
+    createdAt: "2026-11-21T08:00:00+00:00",
+    updatedAt: "2026-11-21T08:00:00+00:00",
+    ...over,
+  });
+
+  it("没有关联时只给一行紧凑说明，不放大空态块", async () => {
+    bridge.workspaceResourceList.mockResolvedValue(emptyPage);
     bridge.notesList.mockResolvedValue([]);
     render(<ProjectResourcesCard projectId="p1" archived={false} />);
 
-    expect(await screen.findByText("还没有登记项目资源")).toBeTruthy();
+    expect(await screen.findByText(/还没有登记项目资源/)).toBeTruthy();
+    // 旧的 16px 内边距居中大空态不再渲染，空态高度只占一行。
+    expect(document.querySelector(".ws-empty")).toBeNull();
     expect(bridge.workspaceResourceList).toHaveBeenCalledWith("p1", null, 0, 50);
   });
 
-  it("读取失败显示错误，不静默清空", async () => {
+  it("空集合仍保留类型选择、搜索、关联、总数与分页入口", async () => {
+    bridge.workspaceResourceList.mockResolvedValue(emptyPage);
+    bridge.notesList.mockResolvedValue([]);
+    render(<ProjectResourcesCard projectId="p1" archived={false} />);
+
+    await screen.findByText(/还没有登记项目资源/);
+    expect(screen.getByRole("combobox", { name: "资源类型" })).toBeTruthy();
+    expect(screen.getByLabelText("搜索笔记")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "关联" })).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: "筛选资源类型" })).toBeTruthy();
+    expect(screen.getByText("共 0 条")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "上一页" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "下一页" })).toBeTruthy();
+  });
+
+  it("筛选无结果时提示与空集合区分，不把筛选说成没有数据", async () => {
+    bridge.workspaceResourceList.mockResolvedValue(emptyPage);
+    bridge.notesList.mockResolvedValue([]);
+    render(<ProjectResourcesCard projectId="p1" archived={false} />);
+    await screen.findByText(/还没有登记项目资源/);
+
+    fireEvent.click(screen.getByRole("combobox", { name: "筛选资源类型" }));
+    fireEvent.click(await screen.findByRole("option", { name: "产物" }));
+
+    expect(await screen.findByText(/当前筛选下没有资源关联/)).toBeTruthy();
+    expect(screen.queryByText(/还没有登记项目资源/)).toBeNull();
+  });
+
+  it("有数据时展示列表、失效提示与分页状态", async () => {
+    bridge.workspaceResourceList.mockResolvedValue({
+      links: [link(), link({ id: "r2", target: "D:\\产物\\报告.pdf", kind: "artifact", label: "报告", targetExists: false })],
+      total: 120,
+      offset: 0,
+      limit: 50,
+      hasMore: true,
+    });
+    bridge.notesList.mockResolvedValue([]);
+    render(<ProjectResourcesCard projectId="p1" archived={false} />);
+
+    expect(await screen.findByText("设定草稿")).toBeTruthy();
+    expect(screen.getByText("当前不可用")).toBeTruthy();
+    expect(screen.getByText(/共 120 条/)).toBeTruthy();
+    expect((screen.getByRole("button", { name: "下一页" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByText(/还没有登记项目资源/)).toBeNull();
+  });
+
+  it("读取失败显示错误，不把失败说成没有数据", async () => {
     bridge.workspaceResourceList.mockRejectedValue(new Error("读取资源失败"));
     bridge.notesList.mockResolvedValue([]);
     render(<ProjectResourcesCard projectId="p1" archived={false} />);
 
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("读取资源失败");
-    expect(screen.getByText("还没有登记项目资源")).toBeTruthy();
+    expect(screen.queryByText(/还没有登记项目资源/)).toBeNull();
   });
 
   it("归档项目只读：不能新增关联", async () => {
-    bridge.workspaceResourceList.mockResolvedValue({ links: [], total: 0, offset: 0, limit: 50, hasMore: false });
+    bridge.workspaceResourceList.mockResolvedValue(emptyPage);
     bridge.notesList.mockResolvedValue([]);
     render(<ProjectResourcesCard projectId="p1" archived />);
 
