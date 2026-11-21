@@ -12,7 +12,9 @@
 //! 方向键 / Home / End 只在同一导航容器内移动焦点（循环），不激活模块。
 
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import globalStyles from "../styles.css?raw";
 
 const bridge = vi.hoisted(() => ({
   agentSnapshot: vi.fn(),
@@ -307,7 +309,8 @@ describe("小说工作空间导航分组（页内导航语义）", () => {
     expect(screen.queryByTestId("creative-stub")).toBeNull();
   });
 
-  it("二级键盘：方向键只移动焦点，Enter/Space 走原生按钮 click 激活", async () => {
+  it("二级键盘：方向键只移动焦点，Enter 真正激活当前按钮", async () => {
+    const user = userEvent.setup();
     renderPanel();
     fireEvent.click(within(primaryNav()).getByRole("button", { name: "设定" }));
     const nav = await screen.findByRole("navigation", { name: "设定子模块" });
@@ -315,22 +318,71 @@ describe("小说工作空间导航分组（页内导航语义）", () => {
 
     const [characters, worldview] = within(nav).getAllByRole("button");
     characters.focus();
-    fireEvent.keyDown(nav, { key: "ArrowRight" });
+    await user.keyboard("{ArrowRight}");
     expect(document.activeElement).toBe(worldview);
-    // 焦点移动不等于激活。
+    // 焦点移动不等于激活：模块与保存都没变化。
     expect(activeModule()).toBe("characters");
-    fireEvent.keyDown(nav, { key: "ArrowLeft" });
+    expect(moduleApi.saveModule).not.toHaveBeenCalledWith("worldview");
+    await user.keyboard("{ArrowLeft}");
     expect(document.activeElement).toBe(characters);
 
-    // 原生按钮的 Enter / Space 会合成 click；这里直接对焦点元素派发 click，
-    // 走的是同一条 switchModule 路径（含正文 flush 门禁与布局保存）。
-    fireEvent.keyDown(nav, { key: "ArrowRight" });
+    // 真正的键盘激活：聚焦世界观后按 Enter（不派发 click）。
+    await user.keyboard("{ArrowRight}");
     expect(document.activeElement).toBe(worldview);
-    fireEvent.click(document.activeElement as HTMLElement);
+    await user.keyboard("{Enter}");
 
     await waitFor(() => expect(screen.getByTestId("creative-stub").textContent).toBe("worldview"));
     expect(activeModule()).toBe("worldview");
     expect(moduleApi.saveModule).toHaveBeenCalledWith("worldview");
+  });
+
+  it("Space 真正激活当前按钮，且不触发重复模块切换", async () => {
+    const user = userEvent.setup();
+    renderPanel();
+    await waitFor(() => expect(primaryItems()).toHaveLength(5));
+    const setting = within(primaryNav()).getByRole("button", { name: "设定" });
+    setting.focus();
+    expect(document.activeElement).toBe(setting);
+
+    // Space 激活：一次按键只切换一次，saveModule 只记一次。
+    await user.keyboard(" ");
+    await waitFor(() => expect(activeModule()).toBe("characters"));
+    await waitFor(() => expect(screen.getByTestId("creative-stub").textContent).toBe("characters"));
+    expect(moduleApi.saveModule).toHaveBeenCalledTimes(1);
+    // 当前项再按 Enter 不应产生第二次切换（switchGroup 对已在组内的入口早退）。
+    await user.keyboard("{Enter}");
+    expect(moduleApi.saveModule).toHaveBeenCalledTimes(1);
+  });
+
+  it("方向键跳过 disabled 入口，Home/End 仍落在可用项", async () => {
+    const user = userEvent.setup();
+    // 归档等场景可能出现禁用入口：这里直接把「正文」置灰验证 moveNavFocus 的过滤。
+    renderPanel();
+    await waitFor(() => expect(primaryItems()).toHaveLength(5));
+    const [overview, manuscript, setting, , settings] = primaryItems();
+    (manuscript as HTMLButtonElement).disabled = true;
+
+    overview.focus();
+    await user.keyboard("{ArrowRight}");
+    // 跳过禁用的「正文」，直接落到「设定」。
+    expect(document.activeElement).toBe(setting);
+    await user.keyboard("{Home}");
+    expect(document.activeElement).toBe(overview);
+    await user.keyboard("{End}");
+    expect(document.activeElement).toBe(settings);
+    expect(activeModule()).toBe("overview");
+  });
+
+  it("焦点环可见：键盘聚焦的导航按钮命中全局 :focus-visible outline 规则", () => {
+    // jsdom 不计算样式，按仓库样式守卫惯例用 ?raw 读原文断言焦点环规则存在。
+    expect(globalStyles).toMatch(/:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\)/);
+    renderPanel();
+    const nav = primaryNav();
+    const first = within(nav).getAllByRole("button")[0];
+    first.focus();
+    expect(document.activeElement).toBe(first);
+    // 导航按钮不是被抑制 outline 的输入控件，也不是 self-closing 元素。
+    expect(first.tagName).toBe("BUTTON");
   });
 
   it("点击设定显示人物/世界观，切换二级模块仍走 saveModule", async () => {

@@ -54,6 +54,10 @@ Task Dock 已有三类容易与「项目」混淆的对象，本功能不替换�
   接入并登记为 `limited`，AI 生成仍为 `planned`。（「人物/世界观未实现」为 B1 阶段历史口径，
   当前状态见 §14.2。）
 
+> 版本口径：本节标题的「迁移 v49；v57 扩展类型，v58 增加小说卷/章」是小说功能引入时的
+> 历史版本，上表只列与本主题相关的表。当前数据库迁移头以 `src-tauri/src/db/mod.rs` 的注册
+> 序列为准（第三轮修复读到 v86，仍由其他任务在推进）；第三轮可靠性修复未新增迁移、未改表结构。
+
 ## 3. 能力声明与「诚实可用」
 
 能力注册表是静态元数据，不是权限系统：
@@ -193,7 +197,7 @@ type WorkspaceCapabilityState = "available" | "limited" | "planned" | "unavailab
 | P0-B | 活跃项目写入所有权、串行 latest-wins、删除/恢复落盘 | 已实现（单测 + Rust 测试） |
 | P1-A | 首渲染项目隔离、写结果隔离、模块保存串行 | 已实现（父组件切换测试） |
 | P1-B | 任务选择器分页与 200 上限提示 | 已实现（hook 测试） |
-| P1-C | Profile/Capability 诚实性审计（`core.layout` 降为 limited） | 已实现（契约测试） |
+| P1-C | Profile/Capability 诚实性审计（`core.layout` 降为 limited） | 已实现（契约测试）；历史状态，当前 `core.layout` 已升为 `available`（见 §13.1 / §14.2） |
 | A1 | 小说项目类型接入：v57 迁移、Rust 类型/命令复用、Profile/图标/首页、备份往返 | 已实现（2026-11-16 复跑：Rust 3/3、Vitest 16/16、`tsc --noEmit` 通过；原生窗口未逐项走查） |
 | B1 | 小说正文与章节：v58 卷/章表、章节 CRUD/自动保存/字数、正文模块 UI、备份往返 | 已实现（2026-11-16 第一轮：Rust 5/5、Vitest 16+4；同日第二轮：串行保存/离开守卫/归档只读/后端 kind+status 门禁，前端 26/26） |
 | P1 | 游戏/漫画阶段模板、产物版本与采用状态、工作流 I/O 跟踪 | 未开始 |
@@ -632,6 +636,10 @@ src-tauri/src/commands/backup.rs           # BACKUP_TABLES / EXTENDED_TABLES 登
 从「七个平铺模块」整理为符合创作流程的工作台：一级入口收敛为五个，设定与推进各有二级 Tab，
 概览/正文/人物/世界观/推进/设置统一空间利用率与视觉层级。
 
+> 术语口径：本节的「Tab / 二级 Tab」是 2026-11-20 第一轮重构时的描述，保留原文。第一轮后
+> 二级入口的 ARIA 语义已在第二轮改为普通页内导航（`nav` + `aria-current`，不再是
+> `role="tab"`），当前口径以 §15.2 为准；七个模块 ID 与五入口结构未变。
+
 ### 14.1 新旧导航对照
 
 | 旧（七个平铺 Tab） | 新（五个一级入口 + 二级 Tab） | 底层模块 ID |
@@ -806,4 +814,50 @@ src-tauri/src/commands/backup.rs           # BACKUP_TABLES / EXTENDED_TABLES 登
   五入口/二级入口、键盘焦点（方向键/Home/End/Enter）、空状态五态、搜索与类型筛选无结果、
   归档只读、隐藏人物后回退世界观、`moduleRequest`、正文切模块前 flush、通用项目平铺导航，
   截图与命令记录见 `tmp/acceptance/novel-workspace-round2/report.md`。
+
+## 16. 第三轮可靠性修复（2026-11-21）
+
+**范围**：第二轮 UI 改造后的三个 P2 可靠性问题——人物列表/关系请求并发竞态、人物搜索条件
+丢失、项目资源卡切换项目未重置筛选。不改 UI 设计、数据库、IPC 签名、模块 ID、`layout_json`
+版本与正文保存机制。
+
+### 16.1 人物请求并发隔离与搜索保持
+
+人物面板（`CharactersPanel.tsx`）原用单个 `seqRef` 同时给列表与关系请求编号，两类请求互相
+作废对方；重试/保存/删除后的刷新调用 `loadCharacters()` 不传关键词，把当前搜索条件清空。
+
+- **独立代次**：`characterListSeqRef` 与 `relationListSeqRef` 分别管理人物列表与关系请求，
+  互不作废；新增 `mountedRef` 在卸载与项目切换时作废全部在途回调，旧请求不能写新项目状态，
+  每个请求的 `loading` 只在代次匹配时结束。
+- **统一刷新路径**：`loadCurrentCharacters()` 不接收参数，关键词恒由 `search.trim() || null`
+  派生；初次加载、搜索变化、重试、保存成功、删除成功全部走它，杜绝「同一业务有时传 null、
+  有时传关键词」。`editorOpen = creating || selectedId !== null` 与五态列表不变（搜索过滤掉
+  当前编辑项不会关闭表单）。
+- 世界观面板不涉及该竞态，未改动。
+
+### 16.2 项目资源卡切换项目状态
+
+`ProjectResourcesCard` 的项目切换 effect 原注释称「重置分页与筛选」，实际漏了 `filter`：
+
+- 补 `setFilter("all")`，连同 `offset=0`、`page/error=null`、`noteId/sessionId/artifactPath/
+  artifactLabel` 与删除确认态全部重置；筛选不跨项目保留，代码与注释一致。
+- `reload()` 的 `generation` 自增移到 `projectId` 空值判断之前，空项目早退也作废旧请求并结束
+  `loading`；旧项目迟到响应因代号过期不能覆盖新项目数据。功能入口（类型选择、搜索、关联、
+  分页、失效提示、归档只读）未裁剪。
+
+### 16.3 导航键盘测试与文档
+
+- `ProjectWorkspacePanel.nav.test.tsx` 的 Enter/Space 用例改用 `@testing-library/user-event`
+  的 `keyboard()` 真实按键激活（不再用 `fireEvent.click` 代替），并补：Space 只切换一次、
+  当前项重复 Enter 不产生第二次保存、方向键跳过 `disabled` 入口、Home/End、焦点环 CSS 守卫
+  （`:focus-visible` outline 规则）。共 15 项。
+- §2 补迁移版本口径说明、§7 标注 `core.layout` 历史状态、§14 标注「Tab」为第一轮术语，
+  均保留原文，仅增加当前状态说明；新增本节记录第三轮修复，不抹掉开发历史。
+
+### 16.4 兼容性
+
+七个 `WorkspaceModuleId`、`WORKSPACE_LAYOUT_VERSION=1`、`layout_json` 结构、隐藏回退、
+正文 flush 门禁、`moduleRequest` 原模块 ID、其他工作空间平铺导航均未改动；能力状态仍以
+`WORKSPACE_CAPABILITIES` 为准（`novel.characters` / `novel.worldview` 为 `limited`，不写
+`available`）。本轮验证结果见 `tmp/acceptance/novel-workspace-round3/report.md`。
   **未验证**：多显示器、系统 DPI 缩放、原生窗口拖拽（尺寸走查使用 CDP 视口仿真）。
