@@ -200,6 +200,9 @@ pub struct ResourceCleanupState {
 impl ResourceCleanupState {
     /// 绑定应用数据根与 TTS 缓存根（与剪贴板/暂存架/备份/语音同一实际目录）。
     pub fn with_roots(root: PathBuf, tts_cache: Option<PathBuf>) -> Self {
+        // 复制暂存账本落在数据根；启动时只做一次「可证明归属」的清理：
+        // 中断的目录复制只报告不删除，详见 `file_workspace::stage`。
+        crate::file_workspace::stage::init_and_recover(&root);
         Self {
             data_root: Some(root),
             tts_cache_root: tts_cache,

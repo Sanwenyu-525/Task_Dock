@@ -7,6 +7,7 @@
 //! - 缓存 LRU 32 条（按路径），只缓存列表载荷不缓存选择状态；
 //! - 切换目录不会出现旧响应覆盖新目录：按路径精确分发，乱序响应只影响对应路径。
 
+import { listen } from "@tauri-apps/api/event";
 import { fsDirSignature, fsListDir, type FsEntry } from "../bridge";
 
 export type { FsEntry as DirEntry };
@@ -106,10 +107,71 @@ export function subscribeDir(
     listeners.set(key, set);
   }
   set.add(listener);
+  ensureDirEventBridge();
   return () => {
     set?.delete(listener);
     if (set && set.size === 0) listeners.delete(key);
   };
+}
+
+/** 后端目录监听事件名（与 `file_workspace::watch::EVENT_DIR_CHANGED` 一致）。 */
+export const DIR_CHANGED_EVENT = "fs-dir-changed";
+
+/** 事件 → 重载的最小间隔：写入风暴时同一目录只重载一次。 */
+const EVENT_RELOAD_MIN_MS = 250;
+
+let dirEventsReady = false;
+let unlistenDirEvents: (() => void) | null = null;
+const lastEventReload = new Map<string, number>();
+
+function sameDir(a: string, b: string): boolean {
+  const norm = (value: string) => value.replace(/[\\/]+$/, "").toLowerCase();
+  return norm(a) === norm(b);
+}
+
+/**
+ * 目录变化事件（`ReadDirectoryChangesW`）→ 只重载**有订阅者**的同一目录。
+ *
+ * 为什么需要：`fs_dir_signature` 只看目录自身的 mtime，外部程序**原地改写文件内容**
+ * 不会改变父目录时间戳，4s 轮询发现不了。事件只负责「立刻重载」，不改变列表来源；
+ * 事件通道不可用时轮询仍然工作（自动降级，不重试建链）。
+ */
+function ensureDirEventBridge(): void {
+  if (dirEventsReady) return;
+  dirEventsReady = true;
+  void listen<{ path?: string }>(DIR_CHANGED_EVENT, (event) => {
+    const changed = event.payload?.path;
+    if (typeof changed !== "string" || changed.length === 0) return;
+    const now = Date.now();
+    const last = lastEventReload.get(changed) ?? 0;
+    if (now - last < EVENT_RELOAD_MIN_MS) return;
+    lastEventReload.set(changed, now);
+    for (const key of [...listeners.keys()]) {
+      if (!listeners.get(key)?.size) continue;
+      const hidden = key.startsWith("h1:");
+      const dirPath = key.slice(3);
+      if (!sameDir(dirPath, changed)) continue;
+      if (!cache.has(key)) continue;
+      loadDir(dirPath, hidden, true);
+      // 同步签名，避免紧接着的轮询把同一次变化再判成「又变了」。
+      void refreshSignature(dirPath, hidden);
+    }
+  })
+    .then((fn) => {
+      unlistenDirEvents = fn;
+    })
+    .catch(() => {
+      // 事件通道不可用：保持轮询路径，允许下次订阅再试。
+      dirEventsReady = false;
+    });
+}
+
+/** 仅供测试：释放事件桥接并清空节流记录。 */
+export function resetDirEventBridgeForTests(): void {
+  unlistenDirEvents?.();
+  unlistenDirEvents = null;
+  dirEventsReady = false;
+  lastEventReload.clear();
 }
 
 /** 加载目录列表（并发去重；force 绕过去重但按序号裁决乱序）。 */

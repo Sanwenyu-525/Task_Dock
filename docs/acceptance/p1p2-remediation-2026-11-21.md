@@ -145,3 +145,61 @@ error: test failed ... exit code: 0xc0000139, STATUS_ENTRYPOINT_NOT_FOUND
 | 3 | 非 Windows 弱身份 | 只有大小 + 修改时间，无文件索引；本项目不发布非 Windows 版本 |
 | 4 | 删除失效的合并粒度 | 每个完成的删除任务最多贡献一次扫描；同时刻并发请求由 `follow_up` 合并为一次补扫 |
 | 5 | 前端 JS 明文不可清零 | 只保证「锁定后不再持有 + 不持久化」 |
+
+---
+
+## P1 批次（2026-11-21 晚）：E 文件系统监听与复制恢复 + F 跨页面批次监控
+
+### E1 目录变更监听（`file_workspace::watch.rs`，新增）
+
+- 缺陷：`dir_signature` 只读目录自身 mtime，外部程序**原地改写文件内容**时父目录
+  mtime 不变，4 秒轮询永远发现不了（P0 报告中标注为「评估后实施」项）。
+- 实现：Windows `ReadDirectoryChangesW`（overlapped + 事件等待，2s 切片复查 TTL）。
+  `fs_dir_signature` 每次调用顺带 `watch::touch()` 续约；`IDLE_TTL_MS=90s` 无问询自动退出；
+  注册表按规范化路径去重（同目录多分栏共用一个线程），`MAX_WATCHERS=48` 超出退回轮询。
+  失败只退化为「无事件」，不影响轮询兜底与 `DIR_MISSING` 判定。
+- 前端：`dirCache.ensureDirEventBridge()` 全局订阅 `fs-dir-changed` 一次；只重载
+  **仍有订阅者**的同名目录（大小写不敏感），250ms 合并抖动；事件后同步签名避免轮询重复触发。
+- 命令层唯一接线点：`commands/file_workspace.rs::fs_dir_signature`（无新增命令、
+  不改 `lib.rs`，与其他会话的共享文件改动隔离）。
+
+### E2 复制暂存账本与崩溃恢复（`file_workspace/stage.rs`，新增）
+
+- 缺陷：`.taskdock-copy-<uuid>` 目录崩溃后无人认领也无从证明归属，既不能清也不能不管。
+- 实现：暂存目录内 `.taskdock-copy.json` 标记（app+版本+id）+ 账本
+  `<data_dir>/copy-stages.json`（原子写）；`StageGuard::finish()`/drop 都清自己的目录并注销；
+  启动恢复挂在 `ResourceCleanupState::with_roots`（不进 `lib.rs`）。
+- 安全边界（测试覆盖）：恢复只清「父目录 = 目标父目录 + 前缀正确 + 标记 id = 账本 id」
+  的目录，且只删 `data`/标记文件、`rmdir` 非空即保留；未知内容（哪怕在我们的暂存目录里）
+  绝不递归删除；账本损坏不删任何东西；目录复制**只报告不清理**
+  （`RecoveryReport.partialDirs`，目标内已有用户文件）。
+
+### F 批次监控可靠性（`useTransferStore.ts`）
+
+- 缺陷：`startBatchMonitor` 的轮询任何一次 IPC 失败即 `stopMonitor()` 永久停止，
+  UI 永远停在「发送中」且无提示。
+- 实现：600ms 起步、2 倍退避至 5s、最多 6 次；窗口隐藏时不做 IPC（2s 复查）；
+  到上限停在 `monitorState="failed"` 并**保留 activeBatch/pending**，批次明细可看、
+  「重新检查」（`retryBatchMonitor`）可手动恢复；终态判定仍只认 `transfer_batch` 返回值，
+  事件只触发刷新（语义未变）。
+
+### F2 资源管理 → 文件工作区定位入口
+
+- 新增唯一入口 `src/lib/filesWorkspace/reveal.ts`（`openDirInFilesWorkspace` /
+  `revealFileInFilesWorkspace`）：活动窗格开新标签 + 可选选中 + `setTab("files")`；
+  被未保存草稿门禁拦下时如实返回 pending/blocked，不假装已打开。
+- `FilesWorkspacePanel.openFilesWorkspacePath` 委托同一实现（语义不变：不切页）。
+- 接入点：资源管理「磁盘空间分析」路径栏按钮 + 大文件行按钮；模块矩阵已从
+  「底层就绪」改判「已接入」。
+- 不静态 import 重页模块（`FilesWorkspacePanel`），避免破坏按需加载分包。
+
+### 测试与验证（本批次）
+
+- Rust（同一测试二进制 `task_dock_lib-02d312750b3bdd1f.exe`，旁挂 `tests.manifest`）：
+  `cargo check --lib` 0 错误；`file_workspace::` 111 通过（含新增 stage 8 项 + watch 3 项）；
+  `fsops::` 45；`resource_cleanup::` 70；`fs_safety` 6；`recycle::` 65（3 ignored 同 P0）；
+  `secure_vault::` 29 —— 全部 0 失败。
+- 前端：`tsc --noEmit` 0 错误；`filesWorkspace` + `useTransferStore` + `transfer` 组件 +
+  `DiskSpaceAnalyzer` 共 **25 文件 262 用例通过**（含新增 `dirCache.watch` 4 项、
+  `reveal` 5 项、批次监控退避 3 项）；`components/files` 32 文件 329 用例通过；
+  `vite build` 成功。

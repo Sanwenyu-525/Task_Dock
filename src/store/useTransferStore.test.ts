@@ -185,3 +185,69 @@ describe("useTransferStore", () => {
     expect(useTransferStore.getState().selection).toEqual([]);
   });
 });
+
+describe("useTransferStore 批次监控退避", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    api.listItems.mockResolvedValue({ items: [], total: 0 });
+    api.getCounts.mockResolvedValue({ total: 0, ready: 0, failed: 0, pinned: 0 });
+  });
+
+  async function startRunningBatch() {
+    api.executeTransfer.mockResolvedValue(batch({ id: "b9", status: "running" }));
+    await useTransferStore.getState().send(["a"], { module: "files", ref: "D://out" });
+    await vi.advanceTimersByTimeAsync(0);
+  }
+
+  it("单次查询失败后按退避继续轮询，而不是永久停止", async () => {
+    api.getBatch.mockRejectedValueOnce(new Error("backend busy"));
+    await startRunningBatch();
+
+    let state = useTransferStore.getState();
+    expect(state.monitorState).toBe("retrying");
+    expect(state.monitorAttempts).toBe(1);
+    // 失败不得清空批次或把它当成完成。
+    expect(state.activeBatch?.id).toBe("b9");
+
+    api.getBatch.mockResolvedValue(batch({ id: "b9", status: "running" }));
+    await vi.advanceTimersByTimeAsync(1300);
+    state = useTransferStore.getState();
+    expect(state.monitorState).toBe("polling");
+    expect(state.monitorError).toBeNull();
+    expect(state.monitorAttempts).toBe(0);
+    expect(api.getBatch).toHaveBeenCalledTimes(2);
+  });
+
+  it("连续失败到上限后停在 failed，并由手动重试恢复", async () => {
+    api.getBatch.mockRejectedValue(new Error("offline"));
+    await startRunningBatch();
+
+    // 6 次失败：600 + 1200 + 2400 + 4800 + 5000 + 5000 的退避窗口。
+    await vi.advanceTimersByTimeAsync(20_000);
+    let state = useTransferStore.getState();
+    expect(state.monitorState).toBe("failed");
+    expect(state.monitorAttempts).toBe(6);
+    expect(state.monitorError).toContain("offline");
+    expect(state.activeBatch?.id).toBe("b9");
+    const callsAfterGiveUp = api.getBatch.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(api.getBatch).toHaveBeenCalledTimes(callsAfterGiveUp);
+
+    api.getBatch.mockResolvedValue(batch({ id: "b9", status: "running" }));
+    useTransferStore.getState().retryBatchMonitor();
+    await vi.advanceTimersByTimeAsync(0);
+    state = useTransferStore.getState();
+    expect(state.monitorState).toBe("polling");
+    expect(state.monitorError).toBeNull();
+  });
+
+  it("终态到达即停止，不会继续查询", async () => {
+    api.getBatch.mockResolvedValue(batch({ id: "b9", status: "completed", ok: 1 }));
+    await startRunningBatch();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(useTransferStore.getState().monitorState).toBe("idle");
+    const calls = api.getBatch.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(api.getBatch).toHaveBeenCalledTimes(calls);
+  });
+});

@@ -58,6 +58,13 @@ interface TransferStore {
   panelMode: PanelMode;
   context: TransferContext;
   activeBatch: TransferBatch | null;
+  /**
+   * 批次轮询状态：`failed` 表示自动重试次数用尽（不是批次失败）。
+   * 界面必须能区分「批次完成」与「状态查不到」，后者提供手动重试。
+   */
+  monitorState: "idle" | "polling" | "retrying" | "failed";
+  monitorError: string | null;
+  monitorAttempts: number;
   pending: { ids: string[]; target: TransferTarget; options: TransferOptions } | null;
   lastRemoved: RemovedSnapshot | null;
   busy: boolean;
@@ -91,6 +98,8 @@ interface TransferStore {
 
   send: (ids: string[], target: TransferTarget, options?: TransferOptions) => Promise<TransferBatch>;
   retry: () => Promise<TransferBatch | null>;
+  /** 批次状态自动轮询放弃后，由用户手动重新开始（不清空 activeBatch）。 */
+  retryBatchMonitor: () => void;
   undo: (batchId: string) => Promise<{ moved: number; ok: boolean; message: string }>;
   setContext: (context: TransferContext) => void;
   handleBatchEvent: (payload: unknown) => void;
@@ -112,44 +121,106 @@ let refreshSeq = 0;
 let monitorTimer: number | null = null;
 let monitorSeq = 0;
 
+/** 批次轮询节奏：600ms 起步，失败按 2 倍退避到 5s，最多 6 次后停在 `failed`。 */
+const MONITOR_BASE_MS = 600;
+const MONITOR_MAX_MS = 5000;
+const MONITOR_MAX_ATTEMPTS = 6;
+/** 窗口隐藏时的复查间隔：不做 IPC，只等回到前台。 */
+const MONITOR_HIDDEN_MS = 2000;
+
 function stopMonitor(): void {
   monitorSeq += 1;
   if (monitorTimer !== null) {
-    window.clearInterval(monitorTimer);
+    window.clearTimeout(monitorTimer);
     monitorTimer = null;
   }
 }
 
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export const useTransferStore = create<TransferStore>()((set, get) => {
-  /** 单一批次监控：send / retry 共用；重复调用会先停掉上一轮。 */
+  /**
+   * 单一批次监控：send / retry 共用；重复调用会先停掉上一轮。
+   *
+   * 失败不再「一次就永久停止」：单次 IPC 失败可能只是后端忙/窗口隐藏，
+   * 按 2 倍退避重试有限次数；真的查不到才停在 `failed` 并保留 activeBatch，
+   * 由用户点「重新检查」再启动（`retryBatchMonitor`）。
+   */
   function startBatchMonitor(batchId: string): void {
     stopMonitor();
     const seq = monitorSeq;
+    let attempts = 0;
+    let delay = MONITOR_BASE_MS;
+
+    const schedule = (ms: number) => {
+      if (seq !== monitorSeq) return;
+      monitorTimer = window.setTimeout(() => {
+        monitorTimer = null;
+        void tick();
+      }, ms);
+    };
+
     const tick = async () => {
       if (seq !== monitorSeq) return;
+      // 窗口不可见时不做 IPC：WebView 定时器不会自动停，但查进度对用户没有意义。
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+        schedule(MONITOR_HIDDEN_MS);
+        return;
+      }
       try {
         const next = await client.getBatch(batchId);
         if (seq !== monitorSeq) return;
-        set({ activeBatch: next });
+        attempts = 0;
+        delay = MONITOR_BASE_MS;
+        set({
+          activeBatch: next,
+          monitorState: "polling",
+          monitorError: null,
+          monitorAttempts: 0,
+        });
         if (TERMINAL.includes(next.status)) {
           stopMonitor();
-          set({ pending: null, lastMessage: next.message });
+          set({ pending: null, lastMessage: next.message, monitorState: "idle" });
           await get().refresh();
+          return;
         }
-      } catch {
-        stopMonitor();
+        schedule(delay);
+      } catch (error) {
+        if (seq !== monitorSeq) return;
+        attempts += 1;
+        if (attempts >= MONITOR_MAX_ATTEMPTS) {
+          stopMonitor();
+          // 不清 activeBatch / pending：批次可能还在跑，只是暂时查不到状态。
+          set({
+            monitorState: "failed",
+            monitorError: messageOf(error),
+            monitorAttempts: attempts,
+          });
+          return;
+        }
+        delay = Math.min(delay * 2, MONITOR_MAX_MS);
+        set({
+          monitorState: "retrying",
+          monitorError: messageOf(error),
+          monitorAttempts: attempts,
+        });
+        schedule(delay);
       }
     };
-    monitorTimer = window.setInterval(() => {
-      void tick();
-    }, 600);
     void tick();
   }
 
   async function refreshBatch(batchId: string): Promise<TransferBatch | null> {
     try {
       const next = await client.getBatch(batchId);
-      set({ activeBatch: next });
+      set({
+        activeBatch: next,
+        monitorState: TERMINAL.includes(next.status) ? "idle" : "polling",
+        monitorError: null,
+        monitorAttempts: 0,
+      });
       if (TERMINAL.includes(next.status)) {
         stopMonitor();
         set({ pending: null, lastMessage: next.message });
@@ -184,6 +255,9 @@ export const useTransferStore = create<TransferStore>()((set, get) => {
       updatedAt: 0,
     },
     activeBatch: null,
+    monitorState: "idle",
+    monitorError: null,
+    monitorAttempts: 0,
     pending: null,
     lastRemoved: null,
     busy: false,
@@ -418,6 +492,13 @@ export const useTransferStore = create<TransferStore>()((set, get) => {
       }
     },
 
+    retryBatchMonitor: () => {
+      const batch = get().activeBatch;
+      if (!batch) return;
+      // 只重启「状态查询」，不重发批次：后端批次记录仍是唯一事实来源。
+      startBatchMonitor(batch.id);
+    },
+
     undo: async (batchId) => {
       const result = await client.undoBatch(batchId);
       await refreshBatch(batchId);
@@ -444,7 +525,14 @@ export const useTransferStore = create<TransferStore>()((set, get) => {
 
     dismissBatch: () => {
       stopMonitor();
-      set({ activeBatch: null, pending: null, lastMessage: null });
+      set({
+        activeBatch: null,
+        pending: null,
+        lastMessage: null,
+        monitorState: "idle",
+        monitorError: null,
+        monitorAttempts: 0,
+      });
     },
   };
 });
@@ -470,5 +558,8 @@ export function resetTransferPanelForTests(): void {
     pending: null,
     lastRemoved: null,
     loaded: false,
+    monitorState: "idle",
+    monitorError: null,
+    monitorAttempts: 0,
   });
 }

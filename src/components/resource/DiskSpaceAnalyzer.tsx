@@ -13,6 +13,7 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
   ExternalLink,
   FolderOpen,
+  FolderSearch,
   FolderUp,
   RefreshCw,
   ScanSearch,
@@ -21,6 +22,11 @@ import {
   resourceDiskAnalyze,
   type ResourceDiskScanReport,
 } from "../../lib/bridge";
+import {
+  openDirInFilesWorkspace,
+  revealFileInFilesWorkspace,
+  type RevealFailure,
+} from "../../lib/filesWorkspace/reveal";
 import { formatBytes } from "../../lib/clipboardUi";
 import { resourceStamp } from "../../lib/resourceTime";
 import { localizedErrorMessage } from "../../i18n/errors";
@@ -54,6 +60,8 @@ export default function DiskSpaceAnalyzer({ defaultPath, embedded = false }: Dis
   /** 失败的目标目录：重试必须重扫真正失败的那一个，而不是当前输入框里的路径。 */
   const [failedTarget, setFailedTarget] = useState<string | null>(null);
   const [revealError, setRevealError] = useState<string | null>(null);
+  /** 「在文件工作区打开」失败原因（与系统资源管理器定位分开报，避免互相覆盖）。 */
+  const [workspaceError, setWorkspaceError] = useState<RevealFailure | null>(null);
   const mountedRef = useRef(false);
   const requestRef = useRef(0);
   /**
@@ -150,6 +158,16 @@ export default function DiskSpaceAnalyzer({ defaultPath, embedded = false }: Dis
     }
   }
 
+  /** 交给文件工作区：目录进目录，文件定位到父目录并选中（只导航，不读内容）。 */
+  function openInWorkspace(target: string, kind: "dir" | "file") {
+    setWorkspaceError(null);
+    const result =
+      kind === "file"
+        ? revealFileInFilesWorkspace(target)
+        : openDirInFilesWorkspace(target);
+    if (!result.ok) setWorkspaceError(result.reason ?? "open-failed");
+  }
+
   const summary = report
     ? t("resource.analysis.summary", {
         bytes: formatBytes(report.totalBytes),
@@ -221,6 +239,16 @@ export default function DiskSpaceAnalyzer({ defaultPath, embedded = false }: Dis
               <FolderUp size={12} aria-hidden="true" /> {t("resource.analysis.up")}
             </button>
           )}
+          <button
+            type="button"
+            className="btn sm"
+            onClick={() => openInWorkspace(path, "dir")}
+            disabled={!path}
+            data-tip={t("resource.analysis.openInWorkspaceHint")}
+          >
+            <FolderSearch size={12} aria-hidden="true" />{" "}
+            {t("resource.analysis.openInWorkspace")}
+          </button>
         </div>
       </div>
 
@@ -395,6 +423,15 @@ export default function DiskSpaceAnalyzer({ defaultPath, embedded = false }: Dis
                         >
                           <ExternalLink size={12} aria-hidden="true" />
                         </button>
+                        <button
+                          type="button"
+                          className="resource-icon-btn"
+                          onClick={() => openInWorkspace(file.path, "file")}
+                          aria-label={t("resource.analysis.openInWorkspace")}
+                          data-tip={t("resource.analysis.openInWorkspaceHint")}
+                        >
+                          <FolderSearch size={12} aria-hidden="true" />
+                        </button>
                       </li>
                     ))}
                   </ul>
@@ -406,6 +443,16 @@ export default function DiskSpaceAnalyzer({ defaultPath, embedded = false }: Dis
               {revealError && (
                 <p className="setting-note resource-cleanup-error" role="status">
                   {t("resource.analysis.revealFailed", { error: revealError })}
+                </p>
+              )}
+              {workspaceError && (
+                <p className="setting-note resource-cleanup-error" role="status">
+                  {t("resource.analysis.openInWorkspaceFailed", {
+                    reason:
+                      workspaceError === "open-failed"
+                        ? t("resource.analysis.openInWorkspaceUnavailable")
+                        : t("resource.analysis.openInWorkspaceBusy"),
+                  })}
                 </p>
               )}
             </>

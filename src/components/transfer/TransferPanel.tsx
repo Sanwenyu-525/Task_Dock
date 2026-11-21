@@ -141,6 +141,8 @@ export default function TransferPanel({ variant, host = "workbench", onClose }: 
   const panel = useTransferStore((s) => s.panel);
   const context = useTransferStore((s) => s.context);
   const activeBatch = useTransferStore((s) => s.activeBatch);
+  const monitorState = useTransferStore((s) => s.monitorState);
+  const monitorError = useTransferStore((s) => s.monitorError);
   const busy = useTransferStore((s) => s.busy);
   const loading = useTransferStore((s) => s.loading);
   const error = useTransferStore((s) => s.error);
@@ -728,6 +730,18 @@ export default function TransferPanel({ variant, host = "workbench", onClose }: 
                 <span style={{ width: `${batchProgress}%` }} />
               </div>
               {activeBatch.message && <p className="tp-batch-msg">{activeBatch.message}</p>}
+              {monitorState === "failed" && (
+                <p className="tp-batch-msg tp-batch-alert" role="alert">
+                  {t("transfer.monitor.failed", { error: monitorError ?? "" })}
+                  <button
+                    type="button"
+                    className="btn sm"
+                    onClick={() => useTransferStore.getState().retryBatchMonitor()}
+                  >
+                    {t("transfer.monitor.retry")}
+                  </button>
+                </p>
+              )}
               <div className="tp-batch-actions">
                 <button type="button" className="btn sm" onClick={() => setBatchDetailOpen(true)}>
                   {t("transfer.batchDetail")}

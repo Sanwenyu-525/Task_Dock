@@ -57,6 +57,9 @@ pub async fn fs_list_dir(
 pub async fn fs_dir_signature(app: AppHandle, path: String) -> AppResult<fw::DirSignature> {
     let path = fw::validate_abs_path(&path)?;
     fw::ensure_not_protected(&path, &protected_dirs(&app))?;
+    // 轮询入口顺带续约目录监听：可见分栏每 4s 一次，隐藏/关闭后 90s 内自行释放。
+    // 监听只负责「有变化就广播」，签名本身仍是轮询兜底（网络盘/API 失败时照常工作）。
+    fw::watch::touch(&app, &path);
     tauri::async_runtime::spawn_blocking(move || fw::dir_signature(&path))
         .await
         .map_err(|e| AppError::Agent(format!("目录签名任务失败: {e}")))

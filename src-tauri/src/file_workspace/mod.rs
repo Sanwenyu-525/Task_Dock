@@ -18,8 +18,10 @@
 pub mod duplicates;
 pub mod identity;
 pub mod preview;
+pub mod stage;
 pub mod thumbnail;
 pub mod volume;
+pub mod watch;
 
 use std::fs;
 use std::os::windows::fs::MetadataExt;
@@ -994,6 +996,9 @@ fn commit_file(src: &Path, dst: &Path, conflict: Conflict) -> std::io::Result<()
 }
 
 /// Stage the copy beside its final destination. Cancel or failed commit never removes a user target.
+///
+/// 暂存目录由 `stage` 账本托管：目录名固定前缀、内含归属标记、账本登记。
+/// 正常结束/失败/取消都清掉；进程被杀时账本条目留下，由启动恢复按标记校验后清理。
 fn copy_file(
     src: &Path,
     dst: &Path,
@@ -1003,28 +1008,28 @@ fn copy_file(
     if cancelled() {
         return Err(transfer_cancelled());
     }
-    let stage_dir = dst.with_file_name(format!(".taskdock-copy-{}", uuid::Uuid::new_v4().simple()));
-    fs::create_dir(&stage_dir).map_err(|e| FsFailure::io("transfer", &e))?;
-    let stage = stage_dir.join("data");
-    let result = match copy_file_to_stage(src, &stage, cancelled) {
+    let guard =
+        stage::begin_file_stage(src, dst).map_err(|e| FsFailure::io("transfer", &e))?;
+    let stage_path = guard.data_path();
+    let result = match copy_file_to_stage(src, &stage_path, cancelled) {
         _ if cancelled() => Err(transfer_cancelled()),
         Err(error) => Err(FsFailure::io("transfer", &error)),
-        Ok(()) => commit_file(&stage, dst, conflict)
+        Ok(()) => commit_file(&stage_path, dst, conflict)
             .map_err(|error| FsFailure::io_ctx("transfer", "目标提交失败", &error)),
     };
     if result.is_err() {
         // Windows may copy the read-only attribute. Only change the operation's own staged file.
         #[cfg(windows)]
-        if let Ok(meta) = stage.metadata() {
+        if let Ok(meta) = stage_path.metadata() {
             let mut permissions = meta.permissions();
             if permissions.readonly() {
                 permissions.set_readonly(false);
-                let _ = fs::set_permissions(&stage, permissions);
+                let _ = fs::set_permissions(&stage_path, permissions);
             }
         }
-        let _ = fs::remove_file(&stage);
     }
-    let _ = fs::remove_dir(&stage_dir);
+    // 无论成功失败都注销账本；目录里若还有未知内容，`finish` 会保留目录与条目。
+    guard.finish();
     result
 }
 
@@ -1263,7 +1268,12 @@ pub fn copy_paths_with_progress(
             continue;
         }
         let outcome = if meta.is_dir() {
-            copy_dir(src, &dst, 0, &mut budget, cancelled, conflict)
+            // 目录复制没有暂存目录：只在账本里留一条中断记录（进程被杀时用于「上次未完成」报告），
+            // 成功/失败/取消都会注销；目标目录内容永不自动清理。
+            let note = stage::note_dir_copy(src, &dst);
+            let result = copy_dir(src, &dst, 0, &mut budget, cancelled, conflict);
+            note.finish();
+            result
         } else {
             copy_file(src, &dst, conflict, cancelled)
         };

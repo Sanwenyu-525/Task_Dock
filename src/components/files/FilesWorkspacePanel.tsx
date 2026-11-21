@@ -127,6 +127,7 @@ import { useWorkbenchPageActive } from "../../lib/windowHost";
 import type { OperationPreview, WorkspaceProject } from "../../lib/bridge";
 import { parentOf, basename, normalizePath } from "../../lib/filesWorkspace/pathUtils";
 import { pickFolder, validateFolderPath, type PickFolderResult } from "../../lib/filesWorkspace/folderPicker";
+import { openDirInFilesWorkspace } from "../../lib/filesWorkspace/reveal";
 import {
   detectTransferConflicts,
   checkSourcesExist,
@@ -2992,9 +2993,9 @@ function FwDragGhost() {
   );
 }
 
-/** 其他模块 / 未来 Agent 的显式入口：在活动窗格打开指定目录（新标签）。 */
+/** 其他模块 / 未来 Agent 的显式入口：在活动窗格打开指定目录（新标签，不切页）。 */
 export function openFilesWorkspacePath(path: string): void {
-  useFilesWorkspaceStore.getState().openPathInActive(path, "newTab");
+  openDirInFilesWorkspace(path, false);
 }
 
 /**
