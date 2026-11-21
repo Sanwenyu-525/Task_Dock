@@ -2162,10 +2162,11 @@ CREATE INDEX idx_sec_audit_cat ON security_audit_log(category, created_at);
     (85, crate::collab::schema::MIGRATION_85),
     // Agent 操作可视化（v86）：统一操作生命周期表（可变过程状态，非审计历史）。
     crate::agent_access::schema::MIGRATION_86,
-    // 项目资源关联项目化（v87）：capability_resource_links 增加归属项目与显式共享作用域，
+    // 项目资源关联项目化（v89）：capability_resource_links 增加归属项目与显式共享作用域，
     // 修复「同一能力被多个项目引用时私有资源互相泄漏」的越权问题。
+    // 编号必须大于已落库的最高版本（v88 已被操作状态版本占用），否则老库会跳过本迁移。
     // DDL 在 project_hub/schema.rs，本文件只登记迁移号。
-    crate::project_hub::schema::MIGRATION_87,
+    crate::project_hub::schema::MIGRATION_89,
     // v86.1 可靠性修复（v88）：操作状态版本（前端乱序判定）+ 租约扫描索引。
     // 纯新增列/索引，不改 v86 既有列语义。
     crate::agent_access::schema::MIGRATION_88,

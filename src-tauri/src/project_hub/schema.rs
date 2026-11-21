@@ -301,7 +301,11 @@ DROP TABLE temp._v78_project_map;
 "#,
 );
 
-/// v87：资源关联项目化。
+/// v89：资源关联项目化。
+///
+/// 编号说明：v88 已被 Agent 操作状态版本（v86.1）占用；本迁移必须**大于**已落库的最高
+/// 版本，否则 `apply_migrations`（只应用 version > current）会跳过它，
+/// 导致老库缺少 `project_id`/`scope` 列。
 ///
 /// 背景：v78 的 `capability_resource_links` 只按全局 `capability_id` 关联，
 /// 同一能力被多个项目引用时，A 项目绑定的私有知识库会出现在 B 项目的资源清单里，
@@ -316,8 +320,8 @@ DROP TABLE temp._v78_project_map;
 /// - 既有行按 `project_capability_requirements` 展开为每个项目的项目级关联；
 /// - 没有任何项目需求的历史行保留为显式全局关联（`project_id=''`），
 ///   既不被删除，也不冒充某个项目的私有资源。
-pub const MIGRATION_87: (i64, &str) = (
-    87,
+pub const MIGRATION_89: (i64, &str) = (
+    89,
     r#"
 CREATE TABLE capability_resource_links_v87 (
   id TEXT PRIMARY KEY NOT NULL,
