@@ -4314,6 +4314,7 @@ export interface FileJobSnapshot {
     | "rename"
     | "delete"
     | "delete_permanent"
+    | "delete_duplicates"
     | "restore"
     | "purge"
     | "empty";
@@ -4347,6 +4348,10 @@ export interface FileJobSnapshot {
   message: string | null;
   /** 系统操作成功但回收站索引写入失败的条数（已标记该卷需要重新对账）。 */
   indexPending?: number;
+  /** 已处理字节数（仅需读内容的任务：哈希 / 复制；其余为 0）。 */
+  bytesDone?: number;
+  /** 本次任务的字节总量；0 表示该任务不提供字节进度。 */
+  bytesTotal?: number;
 }
 
 // ── 知识与 AI 能力中心（v72）────────────────────────────────────────

@@ -466,6 +466,8 @@ sequenceDiagram
 | 明文 JSON 缓冲 | `Zeroizing<Vec<u8>>` | drop 时 | 解密后立即解析，不保留 |
 | 主密码 | `Zeroizing<String>` | drop 时 | 规范化后立即派生 |
 | 恢复密钥字节 | `Zeroizing<[u8; 20]>` | drop 时 | 同上 |
+| 字段明文 `SecretField.value` | `Zeroizing<String>` | drop 时 | 2026-11-21 起；未揭示字段不进入 DTO，drop 即清零 |
+| 复制到剪贴板的文本 | 局部 `String` | 写入后显式 `zeroize()` | 只保留 SHA-256 指纹用于清理比对 |
 
 **不能保证的事**（必须写进评审与文档）：
 1. Rust 编译器/分配器可能在移动、重分配时留下旧副本；
@@ -527,12 +529,34 @@ sequenceDiagram
 
 ### 9.3 锁定后必须做的事（顺序固定）
 
-1. `session.dek = None`（`Zeroizing` drop）
-2. `session.index.clear()`（`Vec<RecordMeta>` 与 `HashMap` 一起清）
-3. `session.pending_copy = None` + 若剪贴板仍是我们写的 → 立即清除
-4. `session.reveal_cache`（若有）清空
-5. 状态置 `Locked{reason}`，写 `vault_audit(lock, reason)`
-6. 广播事件
+实现入口唯一：`VaultState::lock(reason)`（手动 / 空闲 / 后台 / 锁屏 / 休眠 / 窗口隐藏全部汇聚到它）。
+
+1. **同一把写锁内**取出 `session.pending_copy`、`session.generation += 1`、`session.clear(reason)`
+   （DEK 丢弃、索引清空、状态置 `Locked`）；
+2. 会话清空后，把待清除指纹转成独立的 `ScrubTicket` 搬到 `VaultState.scrub`（**不随会话销毁**）；
+3. 剪贴板：先同步尝试一次（非阻塞），忙则后台在 `SCRUB_BUDGET`（5 s）内退避重试；
+4. 删除 `secure-vault.session.json` marker；
+5. 写 `vault_audit(clipboard_clear, ok|skipped|failed, lock_scrub|changed_by_user|write_failed|clipboard_busy)`；
+6. 广播 `vault-locked` 与 `vault-status`（不含任何内容）。
+
+> **更正记录（2026-11-21）**：此前 `VaultSession::clear()` 直接把 `pending_copy` 置空，
+> 但**没有任何代码在锁定时清理系统剪贴板**——30 s 定时任务回来只看到 `token` 已不存在，
+> 返回 `superseded` 后静默放弃。结果是复制密码后立即锁定 / 空闲锁定 / 锁屏锁定，
+> 密码会无限期留在系统剪贴板上（T-CLP-04 实际未通过）。本节第 1–3 步是修复后的真实顺序。
+
+### 9.4 会话世代（epoch）
+
+- `VaultSession.generation: u64`，解锁与锁定各自 `+1`。
+- `require_unlocked()` / `require_writable()` 返回 `(DEK, generation)`；凡是「解密后要把明文交出去」
+  或「要把明文写进剪贴板」的命令，在返回/写入前用 `still_current(generation)` 复核一次。
+- `vault_record_get`：解密在锁外进行，解密后复核世代；失配返回 `VAULT_LOCKED`，明文随
+  `Zeroizing` 丢弃。
+- `vault_copy_secret`：**登记 `pending_copy` 与世代复核在同一把写锁内**。失配时剪贴板里已经有明文，
+  立即按指纹清除；清不掉则登记 `ScrubTicket` 交给后台退避重试，并返回 `VAULT_LOCKED`（不谎称成功）。
+- 前端 `useVaultStore` 另有独立 `epoch`：`resetAfterLock()` 递增，`selectRecord` / `copyField` /
+  `refreshList` 在响应到达时比对；失配直接丢弃（不写 `detail`、不写 `lastCopied`）。
+- 锁定/状态事件订阅挂在 store 模块级（`ensureVaultWatch()`），不再依赖 `VaultPanel` 挂载：
+  面板卸载后锁定同样会清空 store 里的明文。
 
 ---
 
@@ -585,6 +609,32 @@ sequenceDiagram
 - `read_text_for_compare() -> Option<String>`（只读，不写库、不记日志）
 - `write_text_empty_notifying()`（复用现有写路径）
 - 复用 `ACCESS_LOCK` 与自写序列登记，**不新增锁，不新开线程**。
+
+> **实现现状（2026-11-21 收敛）**：不再需要上面两个独立接口。锁定清理与「立即清除」共用
+> `platform::try_scrub_text_if_digest(digest, self_write) -> ScrubOutcome`：一次 `try_lock` 内完成
+> 「读文本 → 比对 SHA-256 → `EmptyClipboard` + 写空文本 → 登记自写序列」，忙则立即返回 `Busy`
+> 而不是等待访问锁。返回值区分 `Cleared / NothingToClear / ContentChanged / Busy / Unavailable`，
+> 调用方据此决定「结束 / 退避重试 / 如实记失败」。
+>
+> 约束仍然成立：Win32 剪贴板访问只在 `clipboard/platform.rs`；保险箱层只传指纹，不碰句柄。
+
+### 10.4 锁定清理的状态机
+
+```
+pending_copy (session)                       scrub ticket (VaultState)
+      │  lock()：同锁内取出 + generation+1 + clear()
+      └──────────────► ScrubTicket{digest, deadline=now+5s}
+                              │
+                    同步试一次（try_lock，非阻塞）
+                    ├─ Cleared / NothingToClear / ContentChanged / Unavailable → 结束（记审计）
+                    └─ Busy → 后台退避 120/300/700/1200/2000 ms
+                              ├─ 任一次终结 → 清票据
+                              └─ 预算耗尽 → 清票据 + audit(clipboard_clear, failed, clipboard_busy)
+```
+
+- 票据带 `digest` + `deadline`；新锁定替换票据后，旧任务在下一轮发现 `digest/deadline` 不匹配即退出，
+  不会清掉别人的内容。
+- 「预算耗尽」只代表**没能证明已清除**，审计里必须如实写 `clipboard_busy`，不能记成功。
 
 ---
 

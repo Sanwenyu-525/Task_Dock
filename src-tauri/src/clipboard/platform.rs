@@ -632,6 +632,24 @@ pub enum WriteOutcome {
     Unverifiable,
 }
 
+/// 「按内容指纹清除」的结果（保险箱锁定清理专用）。
+///
+/// 与 `WriteOutcome` 分开：这里只有「文本指纹仍是我们写的那份」才允许清空，
+/// 且必须区分「可重试的忙」与「已判定为用户新内容」，否则锁定流程会误清或误报。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrubOutcome {
+    /// 指纹一致，已清空并写回空文本。
+    Cleared,
+    /// 剪贴板已空或没有文本格式：无需清除，等同完成。
+    NothingToClear,
+    /// 文本已不是我们写入的那份（用户或其他程序接管）：**不清除**。
+    ContentChanged,
+    /// 访问锁或系统剪贴板被占用：可重试。
+    Busy,
+    /// 读取/写入失败：不可重试，按失败记录。
+    Unavailable,
+}
+
 /// 单次格式写入的结果。
 ///
 /// `effective` 是剪贴板上实际存在的形态（辅助格式失败时已剔除对应字段），
@@ -1017,6 +1035,17 @@ pub fn write_guarded_notifying(
     self_write: &AtomicU32,
 ) -> AppResult<WriteOutcome> {
     imp::write_guarded_notifying(payload, guard, self_write)
+}
+
+/// 仅当剪贴板文本的 SHA-256 指纹等于 `digest` 时清空（非阻塞）。
+///
+/// 供保险箱锁定流程使用：锁定时会话里的清除令牌已被销毁，只剩内容指纹。
+/// 三个约束缺一不可：
+/// - **非阻塞**：绝不等待进程级访问锁（粘贴/采集可能长时间持有），忙就返回 `Busy` 由调用方退避重试；
+/// - **同一次打开内判定并写入**：读指纹与 `EmptyClipboard` 之间不放开剪贴板，其他进程插不进来；
+/// - **指纹不一致绝不清**：用户或别的程序在此期间复制的新内容必须原样保留。
+pub fn try_scrub_text_if_digest(digest: &[u8; 32], self_write: &AtomicU32) -> ScrubOutcome {
+    imp::try_scrub_text_if_digest(digest, self_write)
 }
 
 pub fn snapshot() -> Snapshot {
@@ -2077,6 +2106,16 @@ mod imp {
         ACCESS_LOCK.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// 非阻塞获取访问锁：锁定时清理绝不能被粘贴/采集线程卡住。
+    fn try_lock_access() -> Option<std::sync::MutexGuard<'static, ()>> {
+        match ACCESS_LOCK.try_lock() {
+            Ok(guard) => Some(guard),
+            // 毒化不影响互斥语义：取回内部值继续用，避免一次 panic 让清理永久失效。
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+        }
+    }
+
     /// 调用方必须已持有剪贴板锁；成功时返回写入后的序列号（仍在锁内读取）。
     unsafe fn write_open(payload: &ClipboardPayload) -> AppResult<u32> {
         if EmptyClipboard() == 0 {
@@ -2400,6 +2439,68 @@ mod imp {
             }
             Err(e) => Err(e),
         }
+    }
+
+    /// 按文本指纹清除（保险箱锁定专用，见公开封装处的约束说明）。
+    pub fn try_scrub_text_if_digest(digest: &[u8; 32], self_write: &AtomicU32) -> ScrubOutcome {
+        use sha2::{Digest, Sha256};
+
+        let _access = match try_lock_access() {
+            Some(guard) => guard,
+            None => return ScrubOutcome::Busy,
+        };
+        if !open_clipboard() {
+            return ScrubOutcome::Busy;
+        }
+        let current_text = unsafe { read_text() };
+        let Some(text) = current_text else {
+            unsafe { CloseClipboard() };
+            return ScrubOutcome::NothingToClear;
+        };
+        if Sha256::digest(text.as_bytes()).as_slice() != digest {
+            unsafe { CloseClipboard() };
+            return ScrubOutcome::ContentChanged;
+        }
+        // 指纹一致且仍持有打开的剪贴板：清空并写回空文本。
+        // 清空是不可逆动作，先留住原文本，写空失败时放回去。
+        let original = ClipboardPayload::Text {
+            text,
+            html: None,
+        };
+        let blank = ClipboardPayload::Text {
+            text: String::new(),
+            html: None,
+        };
+        let emptied = unsafe { EmptyClipboard() != 0 };
+        let written = if emptied {
+            unsafe { write_formats(&blank) }
+        } else {
+            Err(AppError::Validation("写入剪贴板失败".into()))
+        };
+        let outcome = match written {
+            Ok(_) => {
+                let seq = unsafe { GetClipboardSequenceNumber() };
+                // 仍在访问锁内登记自写水位：采集线程不会把我们清空后的空文本当成用户复制。
+                note_self_write_watermark(self_write, seq);
+                ScrubOutcome::Cleared
+            }
+            Err(_) => {
+                if emptied {
+                    // 已清空但写空失败：尽量把原文本放回去，避免用户剪贴板凭空消失。
+                    let recovered = unsafe {
+                        EmptyClipboard() != 0 && write_formats(&original).is_ok()
+                    };
+                    if recovered {
+                        tracing::warn!("清空剪贴板失败，已恢复原文本");
+                    } else {
+                        tracing::warn!("清空剪贴板失败，且未能恢复原文本");
+                    }
+                }
+                ScrubOutcome::Unavailable
+            }
+        };
+        unsafe { CloseClipboard() };
+        outcome
     }
 
     pub fn restore_if_own_content(
@@ -3213,6 +3314,10 @@ mod imp {
         _self_write: &AtomicU32,
     ) -> AppResult<WriteOutcome> {
         Err(AppError::Validation("当前平台不支持剪贴板写入".into()))
+    }
+
+    pub fn try_scrub_text_if_digest(_digest: &[u8; 32], _self_write: &AtomicU32) -> ScrubOutcome {
+        ScrubOutcome::Unavailable
     }
 
     pub fn restore_if_own_content(

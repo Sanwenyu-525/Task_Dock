@@ -36,6 +36,7 @@ const JOB_KIND_KEY = {
   rename: "fw.queue.rename",
   delete: "fw.queue.delete",
   delete_permanent: "fw.queue.deletePermanent",
+  delete_duplicates: "fw.queue.deleteDuplicates",
   restore: "fw.queue.restore",
   purge: "fw.queue.purge",
   empty: "fw.queue.empty",

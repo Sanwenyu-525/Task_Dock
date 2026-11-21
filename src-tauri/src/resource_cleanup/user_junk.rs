@@ -1646,6 +1646,8 @@ mod tests {
             failures: Vec::new(),
             message: None,
             index_pending: 0,
+            bytes_done: 0,
+            bytes_total: 0,
         }
     }
 
@@ -1685,7 +1687,9 @@ mod tests {
         let never_synced = stats("ready", 5, 1, 0, 0, 1);
         assert!(recycle_plan_from_stats(Some(&never_synced), now).is_none());
 
-        for state in ["offline", "error", "empty", "scanning"] {
+        // stale = 缓存被显式判定不可信（删除落入回收站、清空结果未核实等），
+        // 必须回退实时遍历，不能继续用索引回答「回收站占用」。
+        for state in ["offline", "error", "empty", "scanning", "stale"] {
             let unusable = stats(state, 5, 1, 0, now, now);
             assert!(
                 recycle_plan_from_stats(Some(&unusable), now).is_none(),

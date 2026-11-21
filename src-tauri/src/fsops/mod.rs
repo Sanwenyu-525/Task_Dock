@@ -100,6 +100,12 @@ pub struct JobSnapshot {
     pub message: Option<String>,
     /// 系统操作成功但索引写入失败的条数（已标记该卷需要重新对账）。
     pub index_pending: usize,
+    /// 已处理字节数（只有需要读内容的阶段才有意义：哈希、复制；其余恒为 0）。
+    ///
+    /// 与 `done/total`（条目数）正交：大文件哈希时条目数长时间不变，只有字节数在动。
+    pub bytes_done: u64,
+    /// 本轮字节总量；0 表示本任务不提供字节进度。
+    pub bytes_total: u64,
 }
 
 struct JobInner {
@@ -612,6 +618,8 @@ fn new_handle(spec: JobSpec) -> JobHandle {
                 failures: Vec::new(),
                 message: spec.message,
                 index_pending: 0,
+                bytes_done: 0,
+                bytes_total: 0,
             }),
             cancel: AtomicBool::new(false),
             executing_cancelable: spec.cancelable,
@@ -855,14 +863,133 @@ pub fn start_delete(
             }
             finish(worker, cancelled);
             emit_progress(app, worker);
+            // 普通删除已进入系统回收站：回收站索引是派生缓存，必须由删除方标记失效，
+            // 否则资源面板会继续用删除前的条目数（最长 10 分钟，见 recycle_plan_from_stats）。
+            // 一次任务只请求一次，卷去重与「扫描中补扫」由 recycle 层保证。
+            // 永久删除不产生回收站条目，不标记。
+            if !permanent && worker.snapshot().ok > 0 {
+                if let Some(service) = app.try_state::<Arc<crate::recycle::RecycleService>>() {
+                    let marked = crate::recycle::note_deleted_paths(app, service.inner(), &paths);
+                    if marked > 0 {
+                        tracing::debug!("删除完成，已标记 {marked} 个卷的回收站索引待对账");
+                    }
+                }
+            }
             emit_job_diagnostic("delete", operation_id.as_deref(), None, worker, started);
         },
     )
 }
 
-/// 复制任务（无链路标识的兼容入口，供工作篮等旧调用方使用）。
-pub fn start_copy(
+/// 重复文件删除任务：先逐文件复核身份（哈希 + 卷/文件索引 + 大小 + 修改时间），
+/// 再把通过复核的路径交给回收站。未通过复核的文件只跳过并报告，绝不默认删除。
+///
+/// 为什么进 fsops 而不是在命令里直接调用：进度、取消、逐项报告与其它文件操作
+/// 共用同一套任务注册表（`fs_jobs` / `fs_job_cancel` / `fs_job_report`），
+/// 避免出现「第二套队列 + 两套进度」。
+pub fn start_delete_duplicates(
     app: &AppHandle,
+    groups: Vec<crate::file_workspace::duplicates::DuplicateDeleteGroup>,
+    operation_id: Option<String>,
+) -> AppResult<JobSnapshot> {
+    let total = groups.iter().map(|group| group.delete_paths.len()).sum();
+    if total == 0 {
+        return Err(AppError::Validation("没有可删除的重复文件".into()));
+    }
+    submit(
+        app,
+        JobSpec {
+            kind: "delete_duplicates",
+            total,
+            message: Some("正在校验文件身份…".into()),
+            cancelable: true,
+        },
+        move |app, worker| {
+            let started = std::time::Instant::now();
+            let protected = protected_dirs(app);
+            // 进度节流：哈希每 4MB/200ms 回调一次，这里再压到 150ms 一次事件，
+            // 避免大文件哈希把 IPC 事件打满。
+            let last_emit = std::cell::Cell::new(std::time::Instant::now());
+            let plan = crate::file_workspace::duplicates::plan(
+                &groups,
+                &protected,
+                &mut |progress| {
+                    worker.update(|state| {
+                        state.bytes_done = progress.bytes_done;
+                        state.bytes_total = progress.bytes_total;
+                    });
+                    if last_emit.get().elapsed() >= std::time::Duration::from_millis(150) {
+                        last_emit.set(std::time::Instant::now());
+                        emit_progress(app, worker);
+                    }
+                },
+                &|| worker.cancel_requested(),
+            );
+
+            let plan = match plan {
+                Ok(plan) => plan,
+                Err(error) => {
+                    let cancelled = worker.cancel_requested();
+                    let (status, code, message) = if cancelled {
+                        ("skipped", "FS_OP_CANCELLED".to_string(), "已取消，未执行".to_string())
+                    } else {
+                        (
+                            "failed",
+                            error.code().to_string(),
+                            error.to_string(),
+                        )
+                    };
+                    for group in &groups {
+                        for path in &group.delete_paths {
+                            record_result(
+                                worker,
+                                JobEntryResult {
+                                    label: label_of(path),
+                                    status: status.into(),
+                                    code: code.clone(),
+                                    message: Some(message.clone()),
+                                },
+                            );
+                        }
+                    }
+                    finish(worker, cancelled);
+                    emit_progress(app, worker);
+                    return;
+                }
+            };
+
+            // 复核阶段的跳过项先入账：用户要能区分「没删」与「删失败」。
+            for skip in &plan.skipped {
+                record_result(
+                    worker,
+                    JobEntryResult {
+                        label: label_of(&skip.path),
+                        status: "skipped".into(),
+                        code: skip.code.to_string(),
+                        message: Some(skip.reason.clone()),
+                    },
+                );
+            }
+            worker.update(|state| {
+                state.phase = "executing".into();
+                state.message = Some("正在提交到回收站…".into());
+            });
+            emit_progress(app, worker);
+
+            let report =
+                crate::file_workspace::duplicates::delete_plan(plan, &protected, operation_id.clone());
+            for entry in &report.entries {
+                record_result(worker, entry_of(entry));
+            }
+            *worker.inner.report.lock().unwrap_or_else(|e| e.into_inner()) = Some(report);
+            finish(worker, worker.cancel_requested());
+            emit_progress(app, worker);
+            emit_job_diagnostic("delete_duplicates", operation_id.as_deref(), None, worker, started);
+        },
+    )
+}
+
+/// 复制任务（无链路标识的兼容入口，供工作篮等旧调用方使用）。
+pub fn start_copy(    app: &AppHandle,
     paths: Vec<String>,
     target_dir: String,
     conflict: String,

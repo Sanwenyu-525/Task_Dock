@@ -93,6 +93,7 @@ enum SyncAdmission {
 }
 
 /// 需要重新对账的一卷：`bin_root` 含用户 SID，只在本模块内部使用，不外发。
+#[derive(Debug)]
 pub struct ReconcileTarget {
     pub bin_root: String,
     pub volume: String,
@@ -172,7 +173,6 @@ impl RecycleService {
     pub fn request_resync(self: &Arc<Self>, app: &AppHandle) -> SyncStatus {
         self.start_sync(app, true)
     }
-
     pub fn sync_status(&self) -> SyncStatus {
         self.status.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
@@ -421,6 +421,67 @@ impl RecycleService {
     }
 }
 
+/// 普通文件删除落入回收站后，把涉及卷标记为「缓存不可信」并请求一次同步。
+///
+/// 为什么必须由删除方触发：`fsops::start_delete` 走 Shell 回收站操作，只写
+/// fsops 任务结果，不碰 `recycle_index`。索引是 SQLite **派生缓存**，不失效就会
+/// 继续用删除前的条目数回答资源面板「回收站占用」，直到用户恰好打开回收站视图
+/// 触发一次同步（最长可陈旧 10 分钟，见 `recycle_plan_from_stats` 的新鲜度窗口）。
+///
+/// 合并语义完全复用既有机制，不新增调度：
+/// - 同卷多次删除：`mark_reconcile_required` 是 `ON CONFLICT DO UPDATE`，重复标记幂等；
+/// - 一次任务删多个卷：先去重再标记，只请求一次同步；
+/// - 扫描进行中：`start_sync` 只登记 `follow_up`，由当前扫描收尾后补跑一次。
+/// 因此这里既不会每个文件触发一次扫描，也不会与正在跑的扫描并发。
+///
+/// 返回成功标记的卷数（0 表示没有可标记的卷，例如网络共享或卷根不存在）。
+pub fn note_deleted_paths(
+    app: &AppHandle,
+    service: &Arc<RecycleService>,
+    paths: &[String],
+) -> usize {
+    let targets = targets_for(paths, volume::bin_root_for_drive);
+    if targets.is_empty() {
+        return 0;
+    }
+    let marked = service.mark_reconcile(&targets);
+    if marked > 0 {
+        // force=false：让 `pending_reconcile` 决定是否绕过 8s 节流；
+        // 正在扫描时只会置 follow_up，不会并发第二个扫描。
+        let _ = service.start_sync(app, false);
+    }
+    marked
+}
+
+/// 路径列表 → 去重后的待对账卷。`resolve` 注入可替换的 bin_root 解析，便于单测。
+///
+/// 不在这里判断「是否真的进了回收站」：调用方只在**有成功删除项**时才调用，
+/// 多标记一卷最多多一次扫描，漏标记才会让统计长期偏小。
+fn targets_for(
+    paths: &[String],
+    resolve: impl Fn(&str) -> Option<std::path::PathBuf>,
+) -> Vec<ReconcileTarget> {
+    let mut by_root: std::collections::HashMap<String, ReconcileTarget> =
+        std::collections::HashMap::new();
+    for raw in paths {
+        let volume = volume::volume_label_of_path(raw);
+        if volume.is_empty() {
+            continue;
+        }
+        let drive_root = volume::drive_root_of(&volume);
+        let Some(bin_root) = resolve(&drive_root) else {
+            continue;
+        };
+        let key = bin_root.to_string_lossy().into_owned();
+        by_root.entry(key.clone()).or_insert(ReconcileTarget {
+            bin_root: key,
+            volume,
+            code: "FS_DELETE".to_string(),
+        });
+    }
+    by_root.into_values().collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -518,5 +579,49 @@ mod tests {
         assert_eq!(stats.items, 0);
         assert_eq!(stats.state, "empty");
         assert_eq!(stats.source, "index");
+    }
+
+    /// 同卷多次删除只产生一个待对账卷：不能一个文件一次扫描。
+    #[test]
+    fn deleted_paths_of_one_volume_collapse_into_one_target() {
+        let paths = vec![
+            r"D:\work\a.txt".to_string(),
+            r"D:\work\sub\b.txt".to_string(),
+            r"d:\other\c.bin".to_string(),
+        ];
+        let targets = targets_for(&paths, |drive| {
+            assert_eq!(drive, r"D:\", "必须先归一成盘符根再解析 bin_root");
+            Some(std::path::PathBuf::from(r"D:\$Recycle.Bin\S-1-5-21-9"))
+        });
+        assert_eq!(targets.len(), 1, "{targets:?}");
+        assert_eq!(targets[0].volume, "D:");
+        assert_eq!(targets[0].code, "FS_DELETE");
+    }
+
+    /// 跨卷删除各自标记，卷名不得串台。
+    #[test]
+    fn deleted_paths_on_multiple_volumes_are_marked_separately() {
+        let paths = vec![
+            r"C:\tmp\a.txt".to_string(),
+            r"D:\tmp\b.txt".to_string(),
+        ];
+        let targets = targets_for(&paths, |drive| {
+            Some(std::path::PathBuf::from(format!(
+                "{}$Recycle.Bin\\S-1",
+                drive
+            )))
+        });
+        assert_eq!(targets.len(), 2, "{targets:?}");
+        let mut volumes: Vec<_> = targets.iter().map(|t| t.volume.as_str()).collect();
+        volumes.sort_unstable();
+        assert_eq!(volumes, vec!["C:", "D:"]);
+    }
+
+    /// 解析不到 bin_root（网络共享 / 卷根不存在）时跳过：不伪造一个假卷去扫描。
+    #[test]
+    fn unresolved_volumes_are_skipped() {
+        let paths = vec![r"\\server\share\dir\a.txt".to_string(), "relative.txt".to_string()];
+        let targets = targets_for(&paths, |_| None);
+        assert!(targets.is_empty(), "{targets:?}");
     }
 }

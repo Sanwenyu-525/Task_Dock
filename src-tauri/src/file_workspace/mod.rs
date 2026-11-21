@@ -15,6 +15,8 @@
 //!
 //! 本模块不依赖 Tauri/前端类型，纯 std + windows，便于单测（临时目录）。
 
+pub mod duplicates;
+pub mod identity;
 pub mod preview;
 pub mod thumbnail;
 pub mod volume;
@@ -2074,6 +2076,25 @@ pub struct FsHashEntry {
     pub error: Option<String>,
 }
 
+/// 一次哈希的进度：按文件（index/total）与按字节（少读大文件时用户能看到动静）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HashProgress {
+    /// 已完成（含失败/跳过）的文件数。
+    pub index: usize,
+    pub total: usize,
+    pub bytes_done: u64,
+    pub bytes_total: u64,
+}
+
+/// 单个文件的哈希结果 + 身份快照。
+///
+/// 两者必须来自**同一个已打开的句柄**：`entry.size` 取句柄属性而不是二次
+/// `fs::metadata(path)`，否则「stat 与 open 之间被替换」会让身份与内容错位。
+pub struct HashedFile {
+    pub entry: FsHashEntry,
+    pub identity: Option<identity::FileIdentity>,
+}
+
 /// 文本预览（只读、按需读取前 N 字节；不把大文件整读进内存）。
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -2190,89 +2211,146 @@ pub fn read_binary_preview(path: &Path, max_bytes: usize) -> AppResult<FsBinaryP
     })
 }
 
+/// 批量 SHA-256（兼容入口：无进度、不可取消）。
 pub fn hash_files(paths: &[String], protected: &[PathBuf]) -> Vec<FsHashEntry> {
+    hash_files_detailed(paths, protected, &mut |_| {}, &|| false)
+        .into_iter()
+        .map(|item| item.entry)
+        .collect()
+}
+
+/// 批量 SHA-256 + 身份快照 + 进度 + 取消。
+///
+/// 与旧实现的区别（都是为了闭合「哈希 → 删除」之间的替换窗口）：
+/// - 先 `File::open`，再从**同一句柄**取身份与大小（不再按路径二次 stat）；
+/// - 返回每个文件的 `FileIdentity`，供删除前复核；
+/// - 每 4MB / 200ms 回调节流一次，大文件不再「看起来卡死」；
+/// - `cancel()` 在文件边界与每 4MB 检查，取消后已算出的条目保留（调用方不会再删除）。
+pub fn hash_files_detailed(
+    paths: &[String],
+    protected: &[PathBuf],
+    progress: &mut dyn FnMut(HashProgress),
+    cancel: &dyn Fn() -> bool,
+) -> Vec<HashedFile> {
     use sha2::{Digest, Sha256};
     use std::io::Read;
 
-    let mut out = Vec::with_capacity(paths.len());
-    for raw in paths.iter().take(MAX_OP_PATHS) {
+    /// 进度回调的节流阈值：按字节或时间，二者先到先发。
+    const EMIT_BYTES: u64 = 4 * 1024 * 1024;
+    const EMIT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
+
+    let total = paths.len().min(MAX_OP_PATHS);
+    // 预先统计总字节用于进度分母：最多 500 次 stat，相对于哈希本身可忽略。
+    // 读不到的条目按 0 计，不影响正确性，只影响进度百分比。
+    let bytes_total: u64 = paths
+        .iter()
+        .take(total)
+        .filter_map(|raw| fs::metadata(raw).ok())
+        .map(|meta| meta.len())
+        .sum();
+
+    let mut out = Vec::with_capacity(total);
+    let mut bytes_done: u64 = 0;
+    for (index, raw) in paths.iter().take(total).enumerate() {
+        if cancel() {
+            break;
+        }
+        let push_error = |out: &mut Vec<HashedFile>, size: Option<u64>, error: String| {
+            out.push(HashedFile {
+                entry: FsHashEntry {
+                    path: raw.clone(),
+                    size,
+                    hash: None,
+                    error: Some(error),
+                },
+                identity: None,
+            });
+        };
         let path = match validate_abs_path(raw) {
             Ok(path) => path,
             Err(e) => {
-                out.push(FsHashEntry {
-                    path: raw.clone(),
-                    size: None,
-                    hash: None,
-                    error: Some(e.to_string()),
-                });
+                push_error(&mut out, None, e.to_string());
+                progress(HashProgress { index: index + 1, total, bytes_done, bytes_total });
                 continue;
             }
         };
         if let Err(e) = ensure_not_protected(&path, protected) {
-            out.push(FsHashEntry {
-                path: raw.clone(),
-                size: None,
-                hash: None,
-                error: Some(e.to_string()),
-            });
-            continue;
-        }
-        let meta = match fs::metadata(&path) {
-            Ok(meta) => meta,
-            Err(e) => {
-                out.push(FsHashEntry {
-                    path: raw.clone(),
-                    size: None,
-                    hash: None,
-                    error: Some(format!("读取属性失败: {e}")),
-                });
-                continue;
-            }
-        };
-        if !meta.is_file() {
-            out.push(FsHashEntry {
-                path: raw.clone(),
-                size: None,
-                hash: None,
-                error: Some("仅支持对文件计算哈希".into()),
-            });
+            push_error(&mut out, None, e.to_string());
+            progress(HashProgress { index: index + 1, total, bytes_done, bytes_total });
             continue;
         }
         let mut file = match fs::File::open(&path) {
             Ok(file) => file,
             Err(e) => {
-                out.push(FsHashEntry {
-                    path: raw.clone(),
-                    size: Some(meta.len()),
-                    hash: None,
-                    error: Some(format!("打开文件失败: {e}")),
-                });
+                push_error(&mut out, None, format!("打开文件失败: {e}"));
+                progress(HashProgress { index: index + 1, total, bytes_done, bytes_total });
                 continue;
             }
         };
+        // 身份与大小都来自这个句柄；后续读取也用同一个句柄。
+        let identity = identity::identity_of_handle(&file).ok();
+        let meta = match file.metadata() {
+            Ok(meta) => meta,
+            Err(e) => {
+                push_error(&mut out, None, format!("读取属性失败: {e}"));
+                progress(HashProgress { index: index + 1, total, bytes_done, bytes_total });
+                continue;
+            }
+        };
+        if !meta.is_file() {
+            push_error(&mut out, Some(meta.len()), "仅支持对文件计算哈希".into());
+            progress(HashProgress { index: index + 1, total, bytes_done, bytes_total });
+            continue;
+        }
+
         let mut hasher = Sha256::new();
         let mut buffer = [0u8; 64 * 1024];
         let mut error = None;
+        let mut cancelled = false;
+        let mut last_emit_bytes = bytes_done;
+        let mut last_emit_at = std::time::Instant::now();
         loop {
             match file.read(&mut buffer) {
                 Ok(0) => break,
-                Ok(n) => hasher.update(&buffer[..n]),
+                Ok(n) => {
+                    hasher.update(&buffer[..n]);
+                    bytes_done = bytes_done.saturating_add(n as u64);
+                    if cancel() {
+                        cancelled = true;
+                        break;
+                    }
+                    if bytes_done - last_emit_bytes >= EMIT_BYTES
+                        || last_emit_at.elapsed() >= EMIT_INTERVAL
+                    {
+                        last_emit_bytes = bytes_done;
+                        last_emit_at = std::time::Instant::now();
+                        progress(HashProgress { index, total, bytes_done, bytes_total });
+                    }
+                }
                 Err(e) => {
                     error = Some(format!("读取失败: {e}"));
                     break;
                 }
             }
         }
-        out.push(FsHashEntry {
-            path: raw.clone(),
-            size: Some(meta.len()),
-            hash: if error.is_some() {
-                None
-            } else {
-                Some(format!("{:x}", hasher.finalize()))
+        if cancelled {
+            // 取消不算失败也不产出哈希：调用方据此中止整批，不删除任何东西。
+            break;
+        }
+        out.push(HashedFile {
+            entry: FsHashEntry {
+                path: raw.clone(),
+                size: Some(meta.len()),
+                hash: if error.is_some() {
+                    None
+                } else {
+                    Some(format!("{:x}", hasher.finalize()))
+                },
+                error,
             },
-            error,
+            identity,
         });
+        progress(HashProgress { index: index + 1, total, bytes_done, bytes_total });
     }
     out
 }

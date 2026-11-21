@@ -49,6 +49,7 @@ import { normalizeError } from "../../lib/errors";
 import { startOperation } from "../../lib/diagnostics";
 import { formatModified, formatSize } from "../../lib/filesWorkspace/fileMeta";
 import { useLocale } from "../../hooks/useLocale";
+import type { MessageKey } from "../../i18n/messages";
 import { useUiStore } from "../../store/useUiStore";
 import { Checkbox } from "../ui/Toggle";
 import { Dialog, ConfirmDialog } from "../ui/Dialog";
@@ -65,6 +66,52 @@ const MAX_CACHED_PAGES = 6;
 /** 孤儿 `$R` 没有可解析的删除时间，用占位符而不是 1970 年伪装成真实数据。 */
 function formatDeleted(ms: number): string {
   return ms > 0 ? formatModified(ms) : "—";
+}
+
+export interface SyncDoneMessage {
+  key: MessageKey;
+  params: Record<string, string | number>;
+  kind: "success" | "warning" | "error" | "info";
+}
+
+/**
+ * `recycle:sync-done` 摘要 → 用户可见结论。
+ *
+ * 四种结果必须分开（旧实现无论成败都弹「同步完成」）：
+ * - 取消：本轮没扫完，统计可能仍陈旧；
+ * - 全部失败：索引没有任何有效更新，列表仍是旧数据；
+ * - 部分失败：成功的卷已更新，失败卷保留旧数据 —— 必须点名卷与错误码，
+ *   否则用户会把「部分」当成「全部」；
+ * - 全部成功。
+ */
+export function syncDoneMessage(
+  summary: Pick<RecycleSyncSummary, "cancelled" | "volumes" | "error">,
+): SyncDoneMessage {
+  const total = summary.volumes.length;
+  if (summary.cancelled) {
+    return { key: "fw.recycle.syncCancelled", params: { count: total }, kind: "info" };
+  }
+  const failed = summary.volumes.filter((volume) => volume.state !== "ok");
+  // 只点名前 3 个卷，避免 toast 被几十个卷名撑爆；总数单独给文案使用。
+  const detail = failed
+    .slice(0, 3)
+    .map((volume) => `${volume.volume}（${volume.errorCode ?? volume.state}）`)
+    .join("、");
+  if (total > 0 && failed.length === total) {
+    return {
+      key: "fw.recycle.syncFailed",
+      params: { detail: detail || (summary.error ?? ""), total: failed.length },
+      kind: "error",
+    };
+  }
+  if (failed.length > 0) {
+    return {
+      key: "fw.recycle.syncPartial",
+      params: { detail, total: failed.length },
+      kind: "warning",
+    };
+  }
+  return { key: "fw.recycle.syncDone", params: { count: total }, kind: "success" };
 }
 
 type SortKey = "deleted" | "size" | "name" | "path" | "volume";
@@ -408,7 +455,8 @@ export default function RecycleWorkspaceView() {
         setDetailSnapshot(null);
         void recycleStats().then((s) => alive && setStats(s));
         void fetchPage(0, { ...query, offset: 0 });
-        showToast(t("fw.recycle.syncDone", { count: summary.volumes.length }), { kind: "success" });
+        const message = syncDoneMessage(summary);
+        showToast(t(message.key, message.params), { kind: message.kind });
       }),
     );
     unlisteners.push(

@@ -8,9 +8,9 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
-use crate::clipboard::platform::{self, ClipboardPayload, WriteGuard, WriteOutcome};
+use crate::clipboard::platform::{self, ClipboardPayload};
 use crate::clipboard::ClipboardRuntime;
 use crate::secure_vault::crypto::aead;
 use crate::secure_vault::crypto::envelope::{self, Envelope, KdfInfo};
@@ -261,18 +261,24 @@ fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
-fn require_unlocked(state: &VaultState) -> Result<Zeroizing<[u8; 32]>, VaultError> {
+/// 返回 `(DEK, 会话世代)`。
+///
+/// 世代必须和 DEK 一起带出：`require_unlocked` 只证明「调用这一刻」是解锁状态，
+/// 解密/写剪贴板都可能在其后发生，返回明文前要用同一世代复核（见 `still_current`）。
+fn require_unlocked(state: &VaultState) -> Result<(Zeroizing<[u8; 32]>, u64), VaultError> {
     let s = state.session.read();
     if s.runtime == RuntimeState::Recovery && s.dek.is_some() {
-        return s.dek_copy().ok_or_else(VaultError::locked);
+        let dek = s.dek_copy().ok_or_else(VaultError::locked)?;
+        return Ok((dek, s.generation));
     }
     if s.runtime != RuntimeState::Unlocked {
         return Err(VaultError::locked());
     }
-    s.dek_copy().ok_or_else(VaultError::locked)
+    let dek = s.dek_copy().ok_or_else(VaultError::locked)?;
+    Ok((dek, s.generation))
 }
 
-fn require_writable(state: &VaultState) -> Result<Zeroizing<[u8; 32]>, VaultError> {
+fn require_writable(state: &VaultState) -> Result<(Zeroizing<[u8; 32]>, u64), VaultError> {
     let s = state.session.read();
     if s.runtime == RuntimeState::Recovery {
         return Err(VaultError::recovery_readonly());
@@ -280,7 +286,17 @@ fn require_writable(state: &VaultState) -> Result<Zeroizing<[u8; 32]>, VaultErro
     if s.runtime != RuntimeState::Unlocked {
         return Err(VaultError::locked());
     }
-    s.dek_copy().ok_or_else(VaultError::locked)
+    let dek = s.dek_copy().ok_or_else(VaultError::locked)?;
+    Ok((dek, s.generation))
+}
+
+/// 会话世代是否仍是 `generation` 且仍处解锁态。
+///
+/// 用于「已经拿到明文/准备写剪贴板」的最后一道复核：锁定发生在这之后，
+/// 结果必须丢弃，而不是照常返回给前端。
+fn still_current(state: &VaultState, generation: u64) -> bool {
+    let s = state.session.read();
+    s.generation == generation && (s.is_unlocked() || s.runtime == RuntimeState::Recovery)
 }
 
 fn session_salt(state: &VaultState) -> Result<[u8; 16], VaultError> {
@@ -744,7 +760,7 @@ pub async fn vault_change_master_password(
     new_password: String,
 ) -> Result<(), VaultError> {
     let _gate = state.unlock_gate.lock().await;
-    let dek = require_unlocked(state.inner())?;
+    let (dek, _) = require_unlocked(state.inner())?;
     validate_master_password(&new_password)?;
     let old_env = state
         .with_store(|s| s.get_envelope("master"))?
@@ -909,7 +925,7 @@ pub fn vault_delete(state: State<'_, Arc<VaultState>>, confirm: String) -> Resul
             "必须逐字输入 DELETE VAULT",
         ));
     }
-    let dek = require_unlocked(state.inner())?;
+    let (dek, _) = require_unlocked(state.inner())?;
     drop(dek);
     {
         let mut s = state.session.write();
@@ -1003,7 +1019,7 @@ pub fn vault_record_get(
     id: String,
     reveal: Option<Vec<String>>,
 ) -> Result<RecordDetailDto, VaultError> {
-    let dek = require_unlocked(state.inner())?;
+    let (dek, generation) = require_unlocked(state.inner())?;
     let salt = session_salt(state.inner())?;
     let rec = state
         .with_store(|s| s.get_record(&id))?
@@ -1013,6 +1029,11 @@ pub fn vault_record_get(
     }
     let meta = decrypt_meta(&dek, &salt, &rec)?;
     let secret = decrypt_secret(&dek, &salt, &rec)?;
+    // 解密发生在锁之外，期间可能已经锁定：返回明文前必须复核世代，
+    // 否则「检查通过 → 解密 → 锁定 → 返回明文」会把明文送到已锁定的界面。
+    if !still_current(state.inner(), generation) {
+        return Err(VaultError::locked());
+    }
     let reveal = reveal.unwrap_or_default();
     let index = state.session.read().index.clone_shallow();
     let last_used = index.usage.get(&id).cloned();
@@ -1026,7 +1047,13 @@ pub fn vault_record_get(
                 label: f.label,
                 kind: f.kind,
                 revealed: shown,
-                value: if shown { f.value } else { String::new() },
+                // 未揭示字段不进入 DTO：`Zeroizing<String>` 在这里 drop 时清零，
+                // 不会把整条记录的明文留在堆上等 GC。
+                value: if shown {
+                    f.value.to_string()
+                } else {
+                    String::new()
+                },
             }
         })
         .collect();
@@ -1060,7 +1087,7 @@ pub async fn vault_record_create(
     draft: RecordDraft,
 ) -> Result<IdRevDto, VaultError> {
     let _gate = state.write_gate.lock().await;
-    let dek = require_writable(state.inner())?;
+    let (dek, _) = require_writable(state.inner())?;
     let salt = session_salt(state.inner())?;
     validate_draft(&draft)?;
     let id = uuid::Uuid::new_v4().to_string();
@@ -1107,7 +1134,7 @@ pub async fn vault_record_update(
     patch: RecordPatch,
 ) -> Result<IdRevDto, VaultError> {
     let _gate = state.write_gate.lock().await;
-    let dek = require_writable(state.inner())?;
+    let (dek, _) = require_writable(state.inner())?;
     let salt = session_salt(state.inner())?;
     let rec = state
         .with_store(|s| s.get_record(&id))?
@@ -1183,7 +1210,7 @@ pub async fn vault_record_delete(
     id: String,
 ) -> Result<(), VaultError> {
     let _gate = state.write_gate.lock().await;
-    let dek = require_writable(state.inner())?;
+    let (dek, _) = require_writable(state.inner())?;
     let salt = session_salt(state.inner())?;
     let rec = state
         .with_store(|s| s.get_record(&id))?
@@ -1207,7 +1234,7 @@ pub async fn vault_record_restore(
     id: String,
 ) -> Result<(), VaultError> {
     let _gate = state.write_gate.lock().await;
-    let dek = require_writable(state.inner())?;
+    let (dek, _) = require_writable(state.inner())?;
     let salt = session_salt(state.inner())?;
     let rec = state
         .with_store(|s| s.get_record(&id))?
@@ -1238,7 +1265,7 @@ pub async fn vault_record_toggle_favorite(
     id: String,
 ) -> Result<bool, VaultError> {
     let _gate = state.write_gate.lock().await;
-    let dek = require_writable(state.inner())?;
+    let (dek, _) = require_writable(state.inner())?;
     let salt = session_salt(state.inner())?;
     let rec = state
         .with_store(|s| s.get_record(&id))?
@@ -1322,7 +1349,7 @@ pub async fn vault_category_create(
     name: String,
 ) -> Result<CategoryDto, VaultError> {
     let _gate = state.write_gate.lock().await;
-    let dek = require_writable(state.inner())?;
+    let (dek, _) = require_writable(state.inner())?;
     let salt = session_salt(state.inner())?;
     let trimmed = name.trim().to_string();
     if trimmed.is_empty() || trimmed.chars().count() > 40 {
@@ -1359,7 +1386,7 @@ pub async fn vault_category_rename(
     name: String,
 ) -> Result<(), VaultError> {
     let _gate = state.write_gate.lock().await;
-    let dek = require_writable(state.inner())?;
+    let (dek, _) = require_writable(state.inner())?;
     let salt = session_salt(state.inner())?;
     let trimmed = name.trim().to_string();
     if trimmed.is_empty() || trimmed.chars().count() > 40 {
@@ -1392,7 +1419,7 @@ pub async fn vault_category_delete(
     confirm_affected: Option<bool>,
 ) -> Result<DeleteCategoryDto, VaultError> {
     let _gate = state.write_gate.lock().await;
-    let dek = require_writable(state.inner())?;
+    let (dek, _) = require_writable(state.inner())?;
     let salt = session_salt(state.inner())?;
     let affected: Vec<String> = {
         let s = state.session.read();
@@ -1461,7 +1488,7 @@ pub async fn vault_tag_create(
     name: String,
 ) -> Result<CategoryDto, VaultError> {
     let _gate = state.write_gate.lock().await;
-    let dek = require_writable(state.inner())?;
+    let (dek, _) = require_writable(state.inner())?;
     let salt = session_salt(state.inner())?;
     let trimmed = name.trim().to_string();
     if trimmed.is_empty() || trimmed.chars().count() > 24 {
@@ -1499,7 +1526,7 @@ pub async fn vault_tag_rename(
     name: String,
 ) -> Result<(), VaultError> {
     let _gate = state.write_gate.lock().await;
-    let dek = require_writable(state.inner())?;
+    let (dek, _) = require_writable(state.inner())?;
     let salt = session_salt(state.inner())?;
     let trimmed = name.trim().to_string();
     if trimmed.is_empty() || trimmed.chars().count() > 24 {
@@ -1526,7 +1553,7 @@ pub async fn vault_tag_delete(
     id: String,
 ) -> Result<DeleteCategoryDto, VaultError> {
     let _gate = state.write_gate.lock().await;
-    let dek = require_writable(state.inner())?;
+    let (dek, _) = require_writable(state.inner())?;
     let salt = session_salt(state.inner())?;
     let affected: Vec<String> = {
         let s = state.session.read();
@@ -1578,7 +1605,7 @@ pub fn vault_settings_set(
     state: State<'_, Arc<VaultState>>,
     settings: LockSettings,
 ) -> Result<(), VaultError> {
-    let dek = require_writable(state.inner())?;
+    let (dek, _) = require_writable(state.inner())?;
     let salt = session_salt(state.inner())?;
     settings.validate()?;
     let store_settings = state.with_store(|s| {
@@ -1611,13 +1638,13 @@ pub fn vault_copy_secret(
     field_id: String,
     clear_after_secs: Option<u16>,
 ) -> Result<CopyReceiptDto, VaultError> {
-    let dek = require_unlocked(state.inner())?;
+    let (dek, generation) = require_unlocked(state.inner())?;
     let salt = session_salt(state.inner())?;
     let rec = state
         .with_store(|s| s.get_record(&record_id))?
         .ok_or_else(VaultError::not_found)?;
     let secret = decrypt_secret(&dek, &salt, &rec)?;
-    let field = secret
+    let mut field = secret
         .fields
         .into_iter()
         .find(|f| f.id == field_id)
@@ -1625,9 +1652,11 @@ pub fn vault_copy_secret(
 
     let rt =
         clipboard_runtime(&state.app).ok_or_else(|| VaultError::io("clipboard:unavailable"))?;
-    let text = field.value;
-    let payload = ClipboardPayload::Text {
-        text: text.clone(),
+    // 移动而不是复制：明文只有一份，写完后显式清零。
+    let text = std::mem::take(&mut *field.value);
+    let digest = sha256(text.as_bytes());
+    let mut payload = ClipboardPayload::Text {
+        text,
         html: None,
     };
     platform::write_payload_notifying(&payload, &rt.self_write)
@@ -1642,11 +1671,45 @@ pub fn vault_copy_secret(
         token: token.clone(),
         record_id: record_id.clone(),
         field_id,
-        digest: sha256(text.as_bytes()),
+        digest,
         expires: Instant::now() + Duration::from_secs(secs),
         clear_after_secs: secs,
     };
-    state.session.write().pending_copy = Some(pending);
+    // 登记票据与世代复核必须在同一把写锁内：否则「复核通过 → 锁定 → 登记」会把
+    // 票据写进已经清空的会话，锁定流程再也看不到它（密码就留在剪贴板上）。
+    let registered = {
+        let mut s = state.session.write();
+        if s.generation == generation && s.is_unlocked() {
+            s.pending_copy = Some(pending);
+            true
+        } else {
+            false
+        }
+    };
+    if let ClipboardPayload::Text { text, .. } = &mut payload {
+        text.zeroize();
+    }
+    if !registered {
+        // 锁定/会话切换发生在解密与写入之间：剪贴板里已经有明文，立刻按指纹清掉。
+        // 清不掉（被其他程序占用）时如实返回错误，不谎称复制成功。
+        use crate::clipboard::platform::{try_scrub_text_if_digest, ScrubOutcome};
+        let cleared = matches!(
+            try_scrub_text_if_digest(&digest, &rt.self_write),
+            ScrubOutcome::Cleared | ScrubOutcome::NothingToClear | ScrubOutcome::ContentChanged
+        );
+        if !cleared {
+            let ticket = crate::secure_vault::session::ScrubTicket {
+                digest,
+                deadline: Instant::now() + crate::secure_vault::SCRUB_BUDGET,
+                attempts: 0,
+            };
+            *state.scrub.lock() = Some(ticket.clone());
+            // 与锁定路径共用同一套退避重试：票据必须有人继续处理，
+            // 否则「清不掉就丢掉票据」等于把明文留在剪贴板上。
+            crate::secure_vault::VaultState::spawn_scrub_retry(state.inner().clone(), ticket);
+        }
+        return Err(VaultError::locked());
+    }
     let _ = mark_used_inner(state.inner(), &record_id);
 
     let st = state.inner().clone();
@@ -1671,13 +1734,47 @@ pub fn vault_clipboard_clear_now(
         .pending_copy
         .as_ref()
         .map(|p| p.token.clone());
-    match token {
-        Some(t) => clear_clipboard_if_unchanged(state.inner(), &t),
-        None => Ok(ClearResultDto {
-            cleared: false,
-            reason: "nothing_pending".to_string(),
-        }),
+    if let Some(t) = token {
+        return clear_clipboard_if_unchanged(state.inner(), &t);
     }
+    // 已锁定：`pending_copy` 随会话清空，但锁定清理票据可能还在预算内重试。
+    // 用户此时点「立即清除」应当立刻再试一次，而不是直接回答 nothing_pending。
+    let ticket = state.scrub.lock().clone();
+    if let Some(ticket) = ticket {
+        let rt = clipboard_runtime(&state.app)
+            .ok_or_else(|| VaultError::io("clipboard:unavailable"))?;
+        use crate::clipboard::platform::{try_scrub_text_if_digest, ScrubOutcome};
+        let outcome = try_scrub_text_if_digest(&ticket.digest, &rt.self_write);
+        if outcome != ScrubOutcome::Busy {
+            *state.scrub.lock() = None;
+        }
+        return Ok(match outcome {
+            ScrubOutcome::Cleared => ClearResultDto {
+                cleared: true,
+                reason: "cleared".to_string(),
+            },
+            ScrubOutcome::NothingToClear => ClearResultDto {
+                cleared: true,
+                reason: "already_empty".to_string(),
+            },
+            ScrubOutcome::ContentChanged => ClearResultDto {
+                cleared: false,
+                reason: "changed_by_user".to_string(),
+            },
+            ScrubOutcome::Busy => ClearResultDto {
+                cleared: false,
+                reason: "unavailable".to_string(),
+            },
+            ScrubOutcome::Unavailable => ClearResultDto {
+                cleared: false,
+                reason: "write_failed".to_string(),
+            },
+        });
+    }
+    Ok(ClearResultDto {
+        cleared: false,
+        reason: "nothing_pending".to_string(),
+    })
 }
 
 // ── 审计 / 备份 ──────────────────────────────────────────────
@@ -1750,7 +1847,7 @@ pub async fn vault_backup_import(
 
 // ── 内部实现 ─────────────────────────────────────────────────
 
-fn clipboard_runtime(app: &AppHandle) -> Option<Arc<ClipboardRuntime>> {
+pub(crate) fn clipboard_runtime(app: &AppHandle) -> Option<Arc<ClipboardRuntime>> {
     app.try_state::<Arc<ClipboardRuntime>>()
         .map(|s| s.inner().clone())
 }
@@ -1989,60 +2086,44 @@ fn clear_clipboard_if_unchanged(
     };
     let rt =
         clipboard_runtime(&state.app).ok_or_else(|| VaultError::io("clipboard:unavailable"))?;
-    let read = platform::read_clipboard(true);
-    let text = match read {
-        platform::ClipboardRead::Content { content, .. }
-            if content.kind == crate::clipboard::KIND_TEXT =>
-        {
-            content.text.clone()
-        }
-        platform::ClipboardRead::Empty(_) => {
-            state.session.write().pending_copy = None;
-            return Ok(ClearResultDto {
-                cleared: true,
-                reason: "already_empty".to_string(),
-            });
-        }
-        _ => {
-            return Ok(ClearResultDto {
-                cleared: false,
-                reason: "unavailable".to_string(),
-            })
-        }
-    };
-    if sha256(text.as_bytes()) != pending.digest {
-        state.session.write().pending_copy = None;
-        return Ok(ClearResultDto {
-            cleared: false,
-            reason: "changed_by_user".to_string(),
-        });
-    }
-    let current = ClipboardPayload::Text { text, html: None };
-    let empty = ClipboardPayload::Text {
-        text: String::new(),
-        html: None,
-    };
-    match platform::write_guarded_notifying(&empty, WriteGuard::Content(&current), &rt.self_write) {
-        Ok(WriteOutcome::Written { .. }) => {
-            state.session.write().pending_copy = None;
+    // 与锁定清理共用同一原语：一次打开内「读指纹 → 比对 → 清空」，
+    // 不再先 read_clipboard 再 write_guarded（那是两次独立打开，中间存在窗口）。
+    use crate::clipboard::platform::{try_scrub_text_if_digest, ScrubOutcome};
+    let outcome = try_scrub_text_if_digest(&pending.digest, &rt.self_write);
+    let result = match outcome {
+        ScrubOutcome::Cleared => {
             let _ = state.with_store(|s| s.audit("clipboard_clear", "ok", None, None));
-            Ok(ClearResultDto {
+            ClearResultDto {
                 cleared: true,
                 reason: "cleared".to_string(),
-            })
+            }
         }
-        Ok(WriteOutcome::SequenceChanged) | Ok(WriteOutcome::Unverifiable) => {
-            state.session.write().pending_copy = None;
-            Ok(ClearResultDto {
-                cleared: false,
-                reason: "changed_before_clear".to_string(),
-            })
-        }
-        Err(_) => Ok(ClearResultDto {
+        ScrubOutcome::NothingToClear => ClearResultDto {
+            cleared: true,
+            reason: "already_empty".to_string(),
+        },
+        ScrubOutcome::ContentChanged => ClearResultDto {
+            cleared: false,
+            reason: "changed_by_user".to_string(),
+        },
+        ScrubOutcome::Busy => ClearResultDto {
+            cleared: false,
+            reason: "unavailable".to_string(),
+        },
+        ScrubOutcome::Unavailable => ClearResultDto {
             cleared: false,
             reason: "write_failed".to_string(),
-        }),
+        },
+    };
+    // 只有「忙」保留票据等下一次机会；其余都是终态，票据必须清掉，
+    // 否则前端会一直显示「已复制」而实际早已失效。
+    if outcome != ScrubOutcome::Busy {
+        let mut s = state.session.write();
+        if s.pending_copy.as_ref().is_some_and(|p| p.token == token) {
+            s.pending_copy = None;
+        }
     }
+    Ok(result)
 }
 
 fn write_crash_marker(state: &VaultState, vault_id: &str) {
@@ -2105,14 +2186,14 @@ mod tests {
                     label: "用户名".to_string(),
                     kind: "text".to_string(),
                     encoding: "utf8".to_string(),
-                    value: "alice".to_string(),
+                    value: Zeroizing::new("alice".to_string()),
                 },
                 SecretField {
                     id: "password".to_string(),
                     label: "密码".to_string(),
                     kind: "password".to_string(),
                     encoding: "utf8".to_string(),
-                    value: "correct horse battery staple".to_string(),
+                    value: Zeroizing::new("correct horse battery staple".to_string()),
                 },
             ],
         }
@@ -2147,7 +2228,7 @@ mod tests {
         let opened_secret = decrypt_secret(&dek, &salt, &rec).unwrap();
         assert_eq!(opened_secret.fields.len(), 2);
         assert_eq!(
-            opened_secret.fields[1].value,
+            opened_secret.fields[1].value.as_str(),
             "correct horse battery staple"
         );
     }

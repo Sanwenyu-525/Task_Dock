@@ -5,6 +5,8 @@
 
 import { create } from "zustand";
 import {
+  onVaultLocked,
+  onVaultStatus,
   vaultApi,
   type VaultAuditEvent,
   type VaultCategory,
@@ -36,6 +38,14 @@ interface VaultStoreState {
   loading: boolean;
   error: string | null;
   lastCopied: { token: string; fieldId: string; clearedAfterSecs: number } | null;
+  /**
+   * 会话世代：`resetAfterLock` 递增。
+   *
+   * 用途是让「锁定之后才返回的异步响应」可以被丢弃。只靠 `resetAfterLock()` 清空
+   * 状态不够——在飞的 `getRecord`/`copySecret` 回来时会把明文/令牌重新写回来
+   * （`T-LOCK-07` 的前端面）。
+   */
+  epoch: number;
 
   refreshStatus: () => Promise<void>;
   refreshList: () => Promise<void>;
@@ -68,6 +78,48 @@ function messageOf(error: unknown): string {
 /** 搜索防抖：避免逐键触发 IPC；锁定后由 resetAfterLock 清空计时器。 */
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
 
+/**
+ * 锁定/状态事件的模块级订阅。
+ *
+ * 为什么不能只放在 `VaultPanel` 里：面板卸载后订阅即被解除，而 store 里可能还留着
+ * 明文详情；此时锁定不会再触发清理，直到下次打开面板才发现。订阅挂在 store 模块上，
+ * 生命周期与窗口一致；幂等，重复调用不会建立第二份监听。
+ */
+let vaultWatch: { dispose: () => void } | null = null;
+
+function ensureVaultWatch(): void {
+  if (vaultWatch) return;
+  const offs: Array<() => void> = [];
+  const handle = { dispose: () => offs.splice(0).forEach((off) => off()) };
+  vaultWatch = handle;
+  void onVaultLocked(() => {
+    // 先递增世代并清空，再刷新状态：任何在飞请求回来都会因世代不符被丢弃。
+    useVaultStore.getState().resetAfterLock();
+    void useVaultStore.getState().refreshStatus();
+  })
+    .then((off) => {
+      if (vaultWatch === handle) offs.push(off);
+      else off();
+    })
+    .catch(() => {
+      // 无 Tauri 运行时（单测）或注册失败：不影响手动锁定路径。
+    });
+  void onVaultStatus(() => {
+    void useVaultStore.getState().refreshStatus();
+  })
+    .then((off) => {
+      if (vaultWatch === handle) offs.push(off);
+      else off();
+    })
+    .catch(() => {});
+}
+
+/** 仅供测试：解除模块级订阅并复位。 */
+export function resetVaultWatchForTests(): void {
+  vaultWatch?.dispose();
+  vaultWatch = null;
+}
+
 export const useVaultStore = create<VaultStoreState>((set, get) => ({
   status: null,
   items: [],
@@ -81,8 +133,10 @@ export const useVaultStore = create<VaultStoreState>((set, get) => ({
   loading: false,
   error: null,
   lastCopied: null,
+  epoch: 0,
 
   refreshStatus: async () => {
+    ensureVaultWatch();
     try {
       const status = await vaultApi.status();
       set({ status, error: null });
@@ -94,6 +148,7 @@ export const useVaultStore = create<VaultStoreState>((set, get) => ({
 
   refreshList: async () => {
     const { filter, query } = get();
+    const epoch = get().epoch;
     set({ loading: true, error: null });
     try {
       const params: Parameters<typeof vaultApi.listRecords>[0] = {
@@ -105,8 +160,11 @@ export const useVaultStore = create<VaultStoreState>((set, get) => ({
       if (filter.kind === "tag") params.tagId = filter.value;
       if (filter.kind === "favorite") params.favoriteOnly = true;
       const items = await vaultApi.listRecords(params);
+      // 锁定/重置之后到达的列表：丢弃，不写回状态。
+      if (get().epoch !== epoch) return;
       set({ items, loading: false });
     } catch (error) {
+      if (get().epoch !== epoch) return;
       set({ loading: false, error: messageOf(error) });
     }
   },
@@ -148,11 +206,16 @@ export const useVaultStore = create<VaultStoreState>((set, get) => ({
   },
 
   selectRecord: async (id, reveal = []) => {
+    const epoch = get().epoch;
     try {
       const detail = await vaultApi.getRecord(id, reveal);
+      // 请求期间发生了锁定：详情可能含明文，必须丢弃（后端也会复核世代，
+      // 但前端这道判断覆盖「后端已返回、锁定事件后到」的顺序）。
+      if (get().epoch !== epoch) return;
       set({ detail, error: null });
       await get().refreshList();
     } catch (error) {
+      if (get().epoch !== epoch) return;
       set({ error: messageOf(error) });
     }
   },
@@ -212,10 +275,18 @@ export const useVaultStore = create<VaultStoreState>((set, get) => ({
   },
 
   copyField: async (recordId, fieldId, clearAfterSecs) => {
+    const epoch = get().epoch;
     try {
       const receipt = await vaultApi.copySecret(recordId, fieldId, clearAfterSecs);
+      if (get().epoch !== epoch) {
+        // 复制成功但随后被锁定：后端锁定流程会按指纹清除；这里再补一次即时清理，
+        // 并**不**把「已复制」令牌写回已锁定的界面。
+        void vaultApi.clearClipboardNow().catch(() => {});
+        return;
+      }
       set({ lastCopied: { ...receipt, fieldId }, error: null });
     } catch (error) {
+      if (get().epoch !== epoch) return;
       set({ error: messageOf(error) });
       throw error;
     }
@@ -262,7 +333,7 @@ export const useVaultStore = create<VaultStoreState>((set, get) => ({
       clearTimeout(searchTimer);
       searchTimer = null;
     }
-    set({
+    set((state) => ({
       items: [],
       detail: null,
       categories: [],
@@ -272,6 +343,10 @@ export const useVaultStore = create<VaultStoreState>((set, get) => ({
       query: "",
       filter: { kind: "all" },
       lastCopied: null,
-    });
+      // 在飞请求会被世代判断丢弃，`loading` 必须同时复位：否则锁定界面会一直转圈。
+      loading: false,
+      // 世代递增必须先于任何后续写入：在飞请求回来时用新世代判断即可丢弃。
+      epoch: state.epoch + 1,
+    }));
   },
 }));

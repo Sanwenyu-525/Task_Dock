@@ -441,6 +441,51 @@
 - 测试/验收：单元（可逆矩阵）+ 原生（移动/重命名撤销，永久删除不可撤销）。
   不得把回收站还原冒充撤销。
 
+### 3.3.1 删除与回收站索引一致性（2026-11-21）
+
+普通文件删除只做一件事：把路径交给 Shell 回收站（`file_workspace::delete_paths`）。
+回收站视图与资源面板读的是 **SQLite 派生索引**（`recycle_index`），索引不会因为 Shell
+删了文件就自动变化，因此删除方必须显式失效：
+
+```
+fsops::start_delete（任务收尾，整批一次）
+  → recycle::note_deleted_paths(app, service, paths)
+      路径 → 卷标签（volume_label_of_path）→ 盘符根（drive_root_of）
+      → bin_root_for_drive() → 按 bin_root 去重
+      → recycle_index::mark_reconcile_required(state='stale', code='FS_DELETE')
+      → RecycleService::start_sync(app, force=false)
+```
+
+- **不新建同步器**：`start_sync` 已有「存在 stale 卷则绕过节流」与「扫描进行中只置
+  `follow_up`、收尾后补扫一次」的合并语义；N 个删除任务最多贡献 N 次扫描，同一时刻的并发
+  请求合并为一次补扫，不会出现扫描风暴。
+- **永久删除不标记**：`permanent=true` 不产生回收站条目。
+- **一次任务只请求一次**：`start_delete` 在 `finish()` 之后聚合整批路径调用，不在每个
+  分批 chunk 后调用。
+- 资源面板不需要改代码：`recycle_plan_from_stats` 只接受 `ready|partial` 且 10 分钟内同步过
+  的索引；卷被标 `stale` 后自动回退有界文件系统遍历（`resource_cleanup/user_junk.rs`）。
+- 同步完成事件按结果分级展示（`RecycleWorkspaceView.syncDoneMessage`）：取消 / 全部失败 /
+  部分失败（点名卷 + 错误码，最多 3 个）/ 全部成功，不再一律弹「同步完成」。
+
+#### 重复文件删除的身份边界（D 组）
+
+`fs_delete_verified_duplicates` 现在是标准 fsops 任务（`delete_duplicates`）：
+
+| 阶段 | 做什么 | 失败语义 |
+|---|---|---|
+| 形状校验 | 组非空、哈希是 64 位 hex、路径绝对且不在受保护目录、保留项不在待删列表 | 整批拒绝（`AppError::Validation`） |
+| 哈希 + 身份快照 | `hash_files_detailed`：先 `File::open`，同一句柄取身份 + 大小 + SHA-256；按文件/按字节进度 | 单文件记 `UNVERIFIABLE` |
+| 内容复核 | 待删项哈希必须等于 `expected_hash`；保留项必须仍等于 `expected_hash` | 待删项 `CONTENT_CHANGED`；保留项变化 → 整组拒绝 |
+| 提交前复核 | `identity::verify_path`：卷序列号 + 文件索引 + 大小 + 修改时间 + 句柄最终路径 | `IDENTITY_CHANGED` / `FILE_GONE` / `UNVERIFIABLE` → 只跳过并报告 |
+| 删除 | `file_workspace::delete_paths(permanent=false)`，只进回收站 | 逐项 `failed` + 稳定错误码 |
+
+- 进度与取消走统一任务通道：`bytesDone/bytesTotal`（哈希阶段）+ `done/total`（条目）；
+  取消经 `fs_job_cancel` 传播，哈希每 4MB 与每个文件边界检查。
+- 前端 `FilesWorkspacePanel.deleteDuplicatePaths`：`registerFileJob` → `finishFileJob`
+  （事件为主、2.5s 轮询兜底、30 分钟上限）→ `fs_job_report` 取逐项结果；任务不可追踪时
+  提示「状态不可追踪，请到回收站确认」并计为未处理，不当作成功。
+- 契约变化：命令返回值从 `FsOpReport` 改为 `JobSnapshot`（逐项结果改由 `fs_job_report` 读取）。
+
 ### 3.4 搜索、筛选、信息与预览
 
 #### FW-SEARCH-001 多目录搜索 `P0` · `PARTIAL`
@@ -947,6 +992,7 @@ P2：9
 | 2026-11-18 | P0 批次 1（r8）：FW-NAV-001/002、FW-FILE-004、FW-INFO-001、FW-SYS-001、FW-OPS-003、FW-SEARCH-001/002 实现；FW-FILE-004 因剪切态视觉/清理入口缺失下调 PARTIAL |
 | 2026-11-19 | R9 缺陷修复：FW-FILE-004 剪切态可见化（订阅/视觉/清理入口，回升 TESTING）；FW-INFO-001 属性空值兜底 + 夹具修复；FW-SYS-001 统一错误出口；FW-OPS-003 预演完整性 + 确认门禁 + 二次验证。新增测试 2 文件，前端 38 文件 / 370 用例、Rust file_workspace 66/66 通过；原生与正式构建待执行 |
 | 2026-11-19 | R10 方案登记（未改代码）：FW-LAYOUT-001 扩展标签会话模型（openedPath/path 分离、tabTitle 取起始目录、duplicateTab 完整复制、空窗格关闭/批量清理、持久化兼容、三层职责边界）；三层数据模型与 UI 修复写入架构/测试/验收文档；本轮尚无实现或测试证据，不产生 PASS |
+| 2026-11-21 | P1/P2 治理（A/C/D）：删除后回收站索引统一失效（`note_deleted_paths`）；重复文件删除改为「身份快照 + 提交前复核 + 跳过并报告」，调度迁入 fsops（`delete_duplicates`，返回值改 `JobSnapshot`）；同步完成事件按结果分级。测试与原生验收证据见 `docs/acceptance/` 对应记录 |
 
 ## 8. R10 产品规则（2026-11-19，权威口径）
 

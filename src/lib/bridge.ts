@@ -2644,7 +2644,7 @@ export const fsDeletePaths = (paths: string[], permanent: boolean, operationId?:
 export const fsDeleteVerifiedDuplicates = (
   groups: VerifiedDuplicateDeleteGroup[],
   operationId?: string,
-) => invoke<FsOpReport>("fs_delete_verified_duplicates", { groups, operationId });
+) => invoke<FileJobSnapshot>("fs_delete_verified_duplicates", { groups, operationId });
 
 export const fsStat = (paths: string[]) => invoke<FsStat[]>("fs_stat", { paths });
 

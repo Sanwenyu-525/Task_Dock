@@ -41,7 +41,7 @@ vi.mock("../../lib/bridge", async () => {
   return { ...bridge, isFileJobTerminal: actual.isFileJobTerminal };
 });
 
-import RecycleWorkspaceView from "./RecycleWorkspaceView";
+import RecycleWorkspaceView, { syncDoneMessage } from "./RecycleWorkspaceView";
 import { useUiStore } from "../../store/useUiStore";
 
 afterEach(() => {
@@ -705,5 +705,61 @@ describe("RecycleWorkspaceView 重开刷新", () => {
     expect(await screen.findByText(/9 项/)).toBeTruthy();
     expect(await screen.findByText("z.txt")).toBeTruthy();
     expect(bridge.recycleStats).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("syncDoneMessage 分级", () => {
+  const volume = (state: string, errorCode: string | null = null) => ({
+    volume: "D:",
+    state,
+    items: 1,
+    added: 1,
+    updated: 0,
+    removed: 0,
+    durationMs: 5,
+    errorCode,
+  });
+  const summary = (over: Partial<RecycleSyncSummary> = {}): RecycleSyncSummary => ({
+    startedMs: 1,
+    finishedMs: 2,
+    durationMs: 1,
+    cancelled: false,
+    volumes: [volume("ok")],
+    error: null,
+    ...over,
+  });
+
+  it("全部成功才报成功", () => {
+    expect(syncDoneMessage(summary())).toEqual({
+      key: "fw.recycle.syncDone",
+      params: { count: 1 },
+      kind: "success",
+    });
+  });
+
+  it("取消不得显示为完成", () => {
+    const message = syncDoneMessage(summary({ cancelled: true }));
+    expect(message.key).toBe("fw.recycle.syncCancelled");
+    expect(message.kind).toBe("info");
+  });
+
+  it("部分失败要点名卷与错误码", () => {
+    const message = syncDoneMessage(
+      summary({ volumes: [volume("ok"), volume("error", "RECYCLE_SCAN_FAILED")] }),
+    );
+    expect(message.key).toBe("fw.recycle.syncPartial");
+    expect(message.kind).toBe("warning");
+    expect(message.params.detail).toContain("D:");
+    expect(message.params.detail).toContain("RECYCLE_SCAN_FAILED");
+    expect(message.params.total).toBe(1);
+  });
+
+  it("全部失败按错误处理，不被当作完成", () => {
+    const message = syncDoneMessage(
+      summary({ volumes: [volume("error", "RECYCLE_OFFLINE"), volume("offline")] }),
+    );
+    expect(message.key).toBe("fw.recycle.syncFailed");
+    expect(message.kind).toBe("error");
+    expect(message.params.total).toBe(2);
   });
 });

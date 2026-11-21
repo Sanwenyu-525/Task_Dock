@@ -38,8 +38,6 @@ import { ConfirmDialog, Dialog, EmptyState, Select, Switch } from "../ui";
 import { errorMessage } from "../../lib/errors";
 import { useWorkbenchPageActive } from "../../lib/windowHost";
 import {
-  onVaultLocked,
-  onVaultStatus,
   vaultApi,
   type VaultCategory,
   type VaultLockSettings,
@@ -152,37 +150,13 @@ function newId(prefix: string): string {
 export default function VaultPanel() {
   const status = useVaultStore((s) => s.status);
   const refreshAll = useVaultStore((s) => s.refreshAll);
-  const refreshStatus = useVaultStore((s) => s.refreshStatus);
-  const resetAfterLock = useVaultStore((s) => s.resetAfterLock);
 
   useEffect(() => {
     void refreshAll();
   }, [refreshAll]);
 
-  useEffect(() => {
-    let disposed = false;
-    let unlistenLock: (() => void) | undefined;
-    let unlistenStatus: (() => void) | undefined;
-    void onVaultLocked(() => {
-      if (disposed) return;
-      resetAfterLock();
-      void refreshStatus();
-    }).then((fn) => {
-      if (disposed) fn();
-      else unlistenLock = fn;
-    });
-    void onVaultStatus(() => {
-      if (!disposed) void refreshStatus();
-    }).then((fn) => {
-      if (disposed) fn();
-      else unlistenStatus = fn;
-    });
-    return () => {
-      disposed = true;
-      unlistenLock?.();
-      unlistenStatus?.();
-    };
-  }, [refreshStatus, resetAfterLock]);
+  // 锁定/状态事件由 `useVaultStore` 的模块级订阅统一处理（面板卸载后仍然生效：
+  // 否则离开页面时锁定，store 里的明文详情不会被清空）。这里只负责首次加载。
 
   if (!status) {
     return (

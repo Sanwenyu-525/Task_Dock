@@ -97,8 +97,28 @@ pub struct SecretField {
     /// utf8 | base64（私钥等按原始字节保存）
     #[serde(default = "default_encoding")]
     pub encoding: String,
-    #[serde(default)]
-    pub value: String,
+    /// 字段明文。用 `Zeroizing<String>` 而不是裸 `String`：
+    /// 解密后的整条记录（含未被揭示的字段）在离开作用域时自动清零，
+    /// 避免「取一条记录、只显示一个字段」把其余明文长期留在堆上。
+    /// 这不等于能清除前端 JS 堆、操作系统或其它进程已持有的副本。
+    #[serde(default, with = "zeroizing_string")]
+    pub value: Zeroizing<String>,
+}
+
+/// `Zeroizing<String>` 的 serde 适配：JSON 契约仍是普通字符串。
+///
+/// `zeroize` 1.9 没有 serde feature，手写四行比引入新依赖更可控。
+mod zeroizing_string {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use zeroize::Zeroizing;
+
+    pub fn serialize<S: Serializer>(value: &Zeroizing<String>, ser: S) -> Result<S::Ok, S::Error> {
+        value.as_str().serialize(ser)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(de: D) -> Result<Zeroizing<String>, D::Error> {
+        String::deserialize(de).map(Zeroizing::new)
+    }
 }
 
 fn default_encoding() -> String {
@@ -198,6 +218,19 @@ pub struct PendingCopy {
     pub clear_after_secs: u64,
 }
 
+/// 锁定后的剪贴板清理票据。
+///
+/// 必须独立于 `VaultSession`：`clear()` 会丢弃会话里的一切，但系统剪贴板上的
+/// 明文只能靠这份指纹判断「是否仍是我们写的那份」，票据跟着会话一起消失，
+/// 就等于把密码永久留在剪贴板上。
+#[derive(Debug, Clone)]
+pub struct ScrubTicket {
+    pub digest: [u8; 32],
+    /// 重试截止时间（墙钟无关，纯进程内计时）。
+    pub deadline: Instant,
+    pub attempts: u8,
+}
+
 pub struct VaultSession {
     pub runtime: RuntimeState,
     pub dek: Option<Zeroizing<[u8; 32]>>,
@@ -211,6 +244,12 @@ pub struct VaultSession {
     pub pending_copy: Option<PendingCopy>,
     pub last_lock_reason: Option<LockReason>,
     pub fail_count: u32,
+    /// 会话世代：解锁与锁定各自递增。
+    ///
+    /// 用途是让「检查通过之后才发生的锁定」能被发现：在飞请求在返回明文/写剪贴板前
+    /// 比对快照世代，失配即丢弃结果。没有它，`require_unlocked()` 只能证明入口那一刻
+    /// 是解锁的。
+    pub generation: u64,
 }
 
 impl Default for VaultSession {
@@ -228,6 +267,7 @@ impl Default for VaultSession {
             pending_copy: None,
             last_lock_reason: None,
             fail_count: 0,
+            generation: 0,
         }
     }
 }
@@ -236,7 +276,6 @@ impl VaultSession {
     pub fn is_unlocked(&self) -> bool {
         self.runtime == RuntimeState::Unlocked
     }
-
     pub fn dek_copy(&self) -> Option<Zeroizing<[u8; 32]>> {
         self.dek.as_ref().map(|d| {
             let mut out = [0u8; 32];
@@ -264,6 +303,33 @@ impl VaultSession {
         self.vault_id.clear();
         self.vault_salt = [0u8; 16];
     }
+
+    /// 锁定的原子步骤：取出待清除的剪贴板票据、推进世代、清空会话。
+    ///
+    /// 三件事必须在**同一把写锁内**完成：
+    /// - 只取 pending 不清空 → 读取线程仍能用旧 DEK 解密；
+    /// - 只清空不取 pending → 票据随会话消失，剪贴板上的密码再没人处理；
+    /// - 不推进世代 → 在飞请求无法判断「我拿到的 DEK 已经作废」。
+    pub fn lock_now(&mut self, reason: LockReason) -> LockTransition {
+        if !self.is_unlocked() && self.vault_id.is_empty() {
+            return LockTransition::Ignored;
+        }
+        let pending = self.pending_copy.take();
+        self.generation = self.generation.wrapping_add(1);
+        self.clear(reason);
+        LockTransition::Locked { pending }
+    }
+}
+
+/// `lock_now` 的结果：区分「本来就锁着」与「真的锁了一次」。
+#[derive(Debug)]
+pub enum LockTransition {
+    /// 未解锁且没有库：调用方不应广播事件或做清理。
+    Ignored,
+    Locked {
+        /// 仍在剪贴板上、需要按指纹清理的票据（若有）。
+        pending: Option<PendingCopy>,
+    },
 }
 
 #[cfg(test)]
@@ -282,6 +348,67 @@ mod tests {
         let mut invalid = settings;
         invalid.reveal_secs = 0;
         assert!(invalid.validate().is_err());
+    }
+
+    fn copy_pending() -> PendingCopy {
+        PendingCopy {
+            token: "t-1".into(),
+            record_id: "r1".into(),
+            field_id: "password".into(),
+            digest: [7u8; 32],
+            expires: Instant::now() + std::time::Duration::from_secs(30),
+            clear_after_secs: 30,
+        }
+    }
+
+    /// T-CLP-04 的前置条件：锁定时必须把剪贴板票据**交出来**，而不是随会话丢弃。
+    #[test]
+    fn lock_now_hands_out_pending_copy_before_clearing() {
+        let mut s = VaultSession::default();
+        s.runtime = RuntimeState::Unlocked;
+        s.dek = Some(Zeroizing::new([1u8; 32]));
+        s.vault_id = "vault-1".into();
+        s.pending_copy = Some(copy_pending());
+        let generation = s.generation;
+
+        let transition = s.lock_now(LockReason::Manual);
+        match transition {
+            LockTransition::Locked { pending } => {
+                let pending = pending.expect("锁定时必须交出待清除票据");
+                assert_eq!(pending.token, "t-1");
+                assert_eq!(pending.digest, [7u8; 32]);
+            }
+            LockTransition::Ignored => panic!("解锁中的会话必须真正锁定"),
+        }
+        assert!(s.dek.is_none());
+        assert!(s.pending_copy.is_none(), "会话里不能再留着票据");
+        assert_eq!(s.generation, generation.wrapping_add(1));
+        assert_eq!(s.runtime, RuntimeState::Locked);
+    }
+
+    /// 未解锁且没有库：视为无效锁定，不得推进世代（否则会误伤在飞请求的判定）。
+    #[test]
+    fn lock_now_ignores_already_locked_session_without_vault() {
+        let mut s = VaultSession::default();
+        let generation = s.generation;
+        assert!(matches!(s.lock_now(LockReason::Idle), LockTransition::Ignored));
+        assert_eq!(s.generation, generation);
+    }
+
+    /// 字段明文用 `Zeroizing<String>`：JSON 契约必须仍是普通字符串，旧数据可直接反序列化。
+    #[test]
+    fn secret_field_json_contract_is_unchanged() {
+        let field = SecretField {
+            id: "password".into(),
+            label: "密码".into(),
+            kind: "password".into(),
+            encoding: "utf8".into(),
+            value: Zeroizing::new("s3cret".to_string()),
+        };
+        let json = serde_json::to_value(&field).unwrap();
+        assert_eq!(json["value"], serde_json::json!("s3cret"));
+        let back: SecretField = serde_json::from_value(json).unwrap();
+        assert_eq!(back.value.as_str(), "s3cret");
     }
 
     #[test]

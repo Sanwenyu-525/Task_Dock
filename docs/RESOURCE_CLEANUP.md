@@ -336,3 +336,24 @@
 | D 盘 A 条目 | D 盘 B 恢复 | 允许 |
 
 `ClaimsGuard::drop` 统一调用 `release_job`，覆盖正常结束、取消、失败与 panic 展开。`Scheduler` 用 `catch_unwind` 捕获执行体 panic，把任务收尾为 failed（`"任务执行体异常中止"`），而不是让 worker 线程静默消失、占用声明永久残留。
+## 2026-11-21 普通删除后的索引失效（P1 一致性）
+
+清空与批量回收已有失效路径；本轮补上**普通文件删除**（进回收站）这条缺口。
+
+- 背景：`fsops::start_delete` → `file_workspace::delete_paths` 只调用 Shell 回收站，
+  不写 `recycle_index`。索引是派生缓存，删除后不会自行变化，资源面板在 10 分钟新鲜度窗口内
+  会继续使用**偏小**的旧统计（`recycle_plan_from_stats` 只检查 `ready|partial` 与
+  `last_sync_ms` 是否在 10 分钟内）。
+- 修复：`recycle::note_deleted_paths(app, service, paths)` 由 `start_delete` 在任务收尾
+  **整批调用一次**：
+  1. 路径 → 卷标签 → 盘符根 → `bin_root_for_drive()` → 按 `bin_root` 去重；
+  2. `mark_reconcile_required(state='stale', code='FS_DELETE')`；
+  3. `start_sync(force=false)`：存在 stale 卷会绕过节流；扫描进行中只置 `follow_up`，
+     由当前扫描收尾后补扫一次。
+- 永久删除（`permanent=true`）不产生回收站条目，不标记。
+- 资源面板无需改动：卷被标 stale 后 `recycle_plan_from_stats` 直接返回 `None`，
+  自动回退有界文件系统遍历，并如实展示 `dataAsOf`。
+- 未做：按文件增量更新索引（仍以整卷对账为准）。理由是不读取 `$I` 头部就无法证明条目元数据，
+  伪造增量条目会让「恢复」指向错误的原始路径。
+- 已知边界：删除任务与清空任务并发时，两者各自标记 stale；扫描与清空由 `cache_gate` 互斥，
+  不会出现「扫描覆盖清空结果」。最终仍以各卷 `$I`/`$R` 的真实状态为准。

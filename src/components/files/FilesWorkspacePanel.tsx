@@ -77,6 +77,7 @@ import {
 import {
   finishFileJob,
   registerFileJob,
+  reportFromJob,
   waitForFileJob,
 } from "../../lib/filesWorkspace/fileJobs";
 import {
@@ -1187,21 +1188,34 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
       startQueueOperation({ id: op.id, effect: "delete", total: paths.length });
       try {
         op.stage("ipc");
-        const report = await withFileOperationSlot(() => fsDeleteVerifiedDuplicates(groups, op.id));
+        // 后端现在是标准 fsops 任务：先拿快照，再等终态（事件为主、轮询兜底），
+        // 取消走 `fs_job_cancel`，与复制/移动/删除完全一致。
+        const snapshot = await withFileOperationSlot(() =>
+          fsDeleteVerifiedDuplicates(groups, op.id),
+        );
+        registerFileJob(snapshot);
+        const { job, report } = await finishFileJob(snapshot.id);
         invalidateDirs(dirs);
-        finishQueueOperation(op.id, report);
-        const failedPaths = report.entries
+        if (!job) {
+          // 任务已不可追踪：绝不能当成成功，也不能清掉源选择。
+          finishQueueOperation(op.id, null, "任务状态不可追踪");
+          showToast(t("fw.duplicates.deleteUnknown"), { kind: "error" });
+          return { ok: 0, failed: paths.length, failedPaths: paths };
+        }
+        const finalReport = report ?? reportFromJob(job);
+        finishQueueOperation(op.id, finalReport);
+        const failedPaths = finalReport.entries
           .filter((entry) => entry.status !== "ok")
           .map((entry) => entry.source);
         if (failedPaths.length > 0) {
           showToast(
-            t("fw.duplicates.deletePartial", { ok: report.ok, failed: failedPaths.length }),
+            t("fw.duplicates.deletePartial", { ok: finalReport.ok, failed: failedPaths.length }),
             { kind: "error" },
           );
         } else {
-          showToast(t("fw.duplicates.deleted", { count: report.ok }), { kind: "success" });
+          showToast(t("fw.duplicates.deleted", { count: finalReport.ok }), { kind: "success" });
         }
-        return { ok: report.ok, failed: failedPaths.length, failedPaths };
+        return { ok: finalReport.ok, failed: failedPaths.length, failedPaths };
       } catch (e) {
         if (!isLogged(e as object)) op.fail(e, { stage: "ipc" });
         finishQueueOperation(op.id, null, errorMessage(e));
