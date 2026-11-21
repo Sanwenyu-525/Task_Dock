@@ -459,8 +459,11 @@ impl CaptureSink {
             tracing::debug!("剪贴板跳过：{}", reason);
             return ProcessOutcome::Skipped;
         }
+        let started = Instant::now();
         match store::record_capture(&self.db, &self.root, &content, &config.settings) {
             Ok(out) => {
+                // 按「一次入库捕获」聚合一次耗时；不逐条落诊断日志，高频复制只进有界聚合。
+                crate::diagnostics::metrics::record_duration_async("clipboard", "capture", started);
                 tracing::debug!(
                     "剪贴板记录：kind={} size={} created={} grouped={}",
                     out.item.kind,
@@ -481,6 +484,7 @@ impl CaptureSink {
                 }
             }
             Err(e) => {
+                crate::diagnostics::metrics::record_failure("clipboard", "capture", &e);
                 tracing::warn!("剪贴板入库失败（内容未记录）: {}", e);
                 ProcessOutcome::Failed
             }

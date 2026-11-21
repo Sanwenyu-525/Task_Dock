@@ -2,7 +2,11 @@
 //
 // 安全边界：页面代码不直接使用本文件，统一走 src/lib/safeLog.ts（脱敏 + 级别过滤 +
 // 有界内存缓冲）。原生不可用（旧构建 / 非 Android / 单测）时 requireOptionalNativeModule
-// 返回 null，safeLog.ts 按静默降级处理：只写内存缓冲，绝不抛错、绝不导致崩溃。
+// 返回 null，safeLog.ts 按静默降级处理，绝不抛错、绝不导致崩溃。
+//
+// 注意：原生模块的注册可能晚于 JS 模块首次加载（bridgeless / 首帧启动竞态）。
+// 因此提供 getTaskDockLogger() 供日志入口按条懒解析；不能只在模块顶层解析一次，
+// 否则首个进程会永久拿到 null，启动日志与后续日志都不会进文件。
 import { NativeModule, requireOptionalNativeModule } from "expo-modules-core";
 
 export interface TaskDockLoggerNative extends NativeModule {
@@ -15,8 +19,19 @@ export interface TaskDockLoggerNative extends NativeModule {
   flush(): Promise<boolean>;
 }
 
-const native = requireOptionalNativeModule<TaskDockLoggerNative>("TaskDockLogger");
+let cachedNative: TaskDockLoggerNative | null = null;
 
-export const taskDockLoggerAvailable = native != null;
+/** 懒解析原生模块；首次未注册时返回 null，后续调用会重试直到可用。 */
+export function getTaskDockLogger(): TaskDockLoggerNative | null {
+  if (cachedNative != null) return cachedNative;
+  try {
+    cachedNative = requireOptionalNativeModule<TaskDockLoggerNative>("TaskDockLogger");
+  } catch {
+    cachedNative = null;
+  }
+  return cachedNative;
+}
 
-export default native;
+export const taskDockLoggerAvailable = getTaskDockLogger() != null;
+
+export default getTaskDockLogger();

@@ -1,10 +1,12 @@
 # 日志系统第二阶段（logging-phase2）Dev 功能验收报告
 
 - 报告日期：2026-11-20（UTC+8）
-- 运行模式：**Dev 功能验收（Debug 模块级定向测试 + 静态检查）**；本报告**不是** Release 正式验收，
-  不产生 buildId、不推进任务状态机。
-- 工作目录：`D:\Develop\task_dock`；Git HEAD：`5b6c671`；共享工作区存在其他任务在途未提交/
-  未跟踪改动，本报告结论仅覆盖第二阶段声明路径，不代其他任务下结论。
+- 运行模式：**Dev 功能验收（Debug 模块级定向测试 + 静态检查）+ Android 真机功能验收**；
+  本报告**不是** Release 正式验收，不产生 buildId、不推进任务状态机。Android 最终安装的是当前
+  工作树构建的临时 arm64 Release 包，不是集成快照产物。
+- 工作目录：`D:\Develop\task_dock`；Git HEAD：收尾测试时为 `5b6c671`；运行期外部定时提交推进至
+  `fc1c629`（非本任务操作），共享工作区约 89 条在途未提交/未跟踪改动，本报告结论仅覆盖第二阶段
+  声明路径，不代其他任务下结论。
 - 验收依据：`AGENTS.md` §2/§7、`docs/architecture/logging-current-state.md`、
   `logging-capability-matrix.md`、`unified-observability-design.md`、`docs/DIAGNOSTICS.md`、
   `tmp/acceptance/logging-phase2/interfaces.md`（冻结契约）。
@@ -53,7 +55,9 @@
 - 初稿未启动 `npm run tauri dev`；2026-11-20 17:36 补做隔离 Dev 实例（数据目录
   `tmp/debug/logging-phase2-dev4`，CDP 9223），真实 WebView2 / Win32 窗口链路已部分走查
   （诊断中心，§8.3）；其他页面链路仍未走查。
-- 未连接 Android 真机或模拟器（`adb devices` 为空，无 emulator 环境）。
+- Android 真机已连接并完成验收：vivo V2323A / Android 16 / API 36 / `arm64-v8a`；
+  详见 §8.4 与 `final/android-device.md`。设备沙盒文件级证据在 Debug 变体取得，最终 Release 变体
+  非 debuggable，只复核了启动与数据保留。
 
 ### 3.2 D: 盘 ENOSPC 事故与恢复（如实记录）
 
@@ -68,6 +72,10 @@
 - `metrics/report.md`、`trace-wiring/report.md` 未写入仓库 `tmp/acceptance/logging-phase2/`，
   兜底副本在会话工作区（§11）；本报告数字已与仓库内原始日志交叉核对。
 - 恢复后未对被删除的 `target/debug` 做全量重建；后续全量 `cargo test` 前需重新增量编译。
+- **同日晚再次出现 0 字节可用**（Android 最终 Release 构建阶段）：首次 R8/lint 因 ENOSPC 失败；
+  清理本任务可再生的 Android `intermediates`（约 1.37 GB）与旧 Dev 数据后恢复约 3.2 GB，最终
+  arm64 Release 构建成功（5m15s）。未删除用户文件、他人缓存或验收证据。为避免继续占满 D:，
+  Release 构建显式跳过 `lintVitalRelease`/`lintRelease`；本报告未把 lint 计为通过项。
 
 ### 3.3 环境阻塞项（ENVIRONMENT BLOCKED，非本任务缺陷）
 
@@ -101,12 +109,18 @@
 | 14 | `vitest run` 弹层定位回归 | E | 0 | 3 文件 51 passed（positioning 36 + PointerMenu 8 + Popover.edge 7） | `diagnostics-ui/positioning-test.log` |
 | 15 | `vitest run` shelf store | T | 0 | 2 文件 52 passed，1.21s | `trace-wiring/vitest-shelf-store.log` |
 | 16 | `vitest run` Agent/胶囊组件 | T | 0 | 4 文件 130 passed，24.31s | `trace-wiring/vitest-agent-components.log` |
-| 17 | Gradle 定向 `:logger:testDebugUnitTest` Kotlin 单测 | A | 0 | BUILD SUCCESSFUL；27 用例（SafeLogTest 15 / FileLogSinkTest 12），failures=0 errors=0；机器可读结果在模块 `build/test-results/` | `android-logger/gradle-test-9.txt`；`report.md` §3.1；本报告 §8.2 复跑 |
-| 18 | `vitest run` `apps/mobile` `safeLog.test.ts`（定向） | A | 0 | 1 文件 13 passed，3.21s | `android-logger/js-safeLog-final.txt` |
+| 17 | Gradle 定向 `:logger:testDebugUnitTest` Kotlin 单测 | A | 0 | BUILD SUCCESSFUL；**28 用例**（SafeLogTest 16 / FileLogSinkTest 12），failures=0 errors=0；机器可读结果在模块 `build/test-results/` | `android-safelog-kotlin-test.log`；`TEST-*.xml`；`final/android-device.md` §3.1 |
+| 18 | `vitest run` `apps/mobile` `safeLog.test.ts`（定向） | A | 0 | 1 文件 **14 passed**，2.98s | `android-safelog-js-test.log` |
 | 19 | `vitest run` `apps/mobile` 全量 | A | 0 | 86 文件 926 passed，59.81s | `android-logger/js-all-tests.txt` |
-| 20 | `tsc --noEmit`（`apps/mobile`） | A | 0 | 无类型错误（日志 0 字节，无报错输出） | `android-logger/tsc-noemit.txt`；`report.md` §3.1 |
+| 20 | `tsc --noEmit`（`apps/mobile`） | A | 0 | 无类型错误（日志 0 字节，无报错输出） | `android-typecheck.log`；`android-logger/tsc-noemit.txt` |
 | 21 | `cargo test --lib mcp`（既有套件对照） | F | 0* | 71 passed / **1 failed**：`tool_defs_are_complete_and_unique`（taskdock_collab_create_issue 缺并发能力 token，MCP 工具 schema 在途问题，**非本任务引入**）；0 ignored（2530 filtered），37.73s | `metrics/test-mcp.log`；`metrics/report.md` §4.1 |
 | 22 | 其它既有套件前台对照（agents::pipeline 31 / mobile_sync::sync 17 / commands::clipboard 6 / recycle 42 过 1 ignored / global_search 18 / clipboard:: 260 过 1 ignored） | F | — | 前台控制台通过；落盘日志受 ENOSPC 阻塞，仅作既有基线参照，不作为本任务新增断言证据 | `metrics/` 目录控制台记录；`metrics/report.md` §4.2 |
+| 23 | Android arm64 Release 构建 `assembleRelease -PreactNativeArchitectures=arm64-v8a --no-daemon -x lintVitalRelease -x lintRelease` | 主智能体 | 0 | BUILD SUCCESSFUL in 5m15s；APK 33,513,751 B，SHA256 `B3D6C6F2…9BEECE` | `final/android-build-release-final.log` |
+| 24 | `adb install -r app-release.apk` | 主智能体 | 0 | Success；`firstInstallTime=2026-11-17 13:55:41` 不变，`lastUpdateTime=2026-11-20 19:33:28` | `final/android-device.md` §2 |
+| 25 | `adb shell am start -W -n dev.taskdock.mobile/.MainActivity`（停止 Metro、移除 reverse） | 主智能体 | 0 | `COLD`，`TotalTime=623ms`；Logcat `I app: 应用启动`（19:33:41，PID 32410） | `final/android-device.md` §4；`android-device-release/` |
+| 26 | 真机脱敏探针（含 metadata 键名凭据） | 主智能体 | — | 修复前 `password=P@ssw0rd` 泄漏；修复后 `password/token/api_key/email=[redacted]`、`path=[path]`、nested 丢弃；原始敏感串 0 命中 | `final/android-device.md` §3.1 |
+| 27 | 真机轮转 15,000 条（3×5,000，480 字符） | 主智能体 | — | 始终 3 文件；总量 6,092,322 B；`app.1=2,097,693`、`app.2=2,097,649`、`app.log=1,893,528` | `final/android-device.md` §3.2 |
+| 28 | `adb shell am crash dev.taskdock.mobile` | 主智能体 | — | 生成 `crash-20261120-183856-11044.txt`（650 B，10 帧），无敏感路径；重启恢复 | `final/android-device.md` §3.3 |
 
 \* 退出码按既有失败用例判定；该失败与第二阶段改动无关。
 
@@ -122,12 +136,18 @@
     `MAX_FILE_HARD_BYTES=4MB`、`MAX_FILES=3`、`RETENTION_MS=7d`、
     `MAX_PENDING_LOGS=256`、`HIGH_PRIORITY_RESERVED=32`；分级配额丢弃；轮转降级指数退避
     （5 s 起翻倍、封顶 60 s、位移上限 10）；`writeFailures` / `droppedCount` 及分级计数。
-  - `LoggerModule.kt`：原生侧先脱敏，Logcat 与文件共用同一份结果；metadata 白名单重序列化。
+  - `LoggerModule.kt`：原生侧先脱敏，Logcat 与文件共用同一份结果；metadata 白名单重序列化；
+    `write` 入口幂等 `FileLogSink.init`（修复 Expo 模块注册晚于首帧时的启动日志丢失）。
+  - `SafeLog.kt`：唯一日志入口；tag 归一 + 调用方匿名化；统一走 `FileLogSink`；
+    新增 `SENSITIVE_METADATA_KEY`，键名型凭据值统一 `[redacted]`（真机 P1 修复）。
   - `CrashHandler.kt`：install 幂等；崩溃线程同步写文件；委托原 handler；5 文件/7 天清理。
 - `apps/mobile/src/lib/safeLog.ts`：JS 统一入口（trace/debug/info/warn/error）；`REDACT_RULES`
-  与 Kotlin `RULES` 同序同规则。
+  与 Kotlin `RULES` 同序同规则；`SENSITIVE_METADATA_KEY` 与 Kotlin 同步；原生 sink 改为按条
+  `getTaskDockLogger()` 懒解析，不在模块顶层固化 null。
+- `apps/mobile/modules/logger/index.ts`：`getTaskDockLogger()` 懒解析/缓存，供启动首帧后原生模块
+  注册完成时接管。
 - 既有 Kotlin 静默吞异常修复：`ClipboardModule.kt:63`、`Ed25519Ops.kt:59,78` 改 `SafeLog.e`，
-  保持原行为。
+  保持原行为；同时补齐两文件的 `SafeLog` import（否则 Release 编译失败）。
 
 ### 5.2 Trace（C / T）
 
@@ -188,14 +208,16 @@
   授权段脱敏、50k 行封顶 5000；13 用例通过 + 大日志样本 1 用例通过。
 - **诊断中心组件与弹层定位**：29 个诊断中心用例、51 个弹层定位用例通过；三视图与导出预览
   对话框在组件层确认。
-- **Android 单测层**：Kotlin 27 用例、JS 定向 13 用例、JS 全量 86 文件 926 用例通过；
-  双侧脱敏规则对照用例通过；`tsc --noEmit` 退出码 0。
+- **Android 单测层 + 真机功能层**：Kotlin **28** 用例、JS 定向 **14** 用例、JS 全量 86 文件
+  926 用例通过；双侧脱敏规则对照用例通过；`tsc --noEmit` 退出码 0。真机（vivo V2323A /
+  Android 16）验证脱敏、轮转/三文件上限、崩溃文件、启动日志与覆盖安装保留数据（§8.4）。
 - **静态检查**：`typecheck` 退出码 0；`cargo check --lib` 退出码 0，无新增阻断。
 
 ### 6.2 已实现未验证（代码存在，运行时未取证）
 
-- Android 真机/模拟器运行：Expo Module 实例化、JS→原生 IPC 端到端、生产 HandlerThread
-  分发、真机落盘与跨天清理、崩溃文件实际写出。
+- ~~Android 真机/模拟器运行~~ **已真机验证（范围限定）**：Expo Module 实例化、JS→原生 IPC、
+  原生 HandlerThread 分发、真机落盘/轮转/崩溃文件均已取证；未覆盖 Release 包内文件内容直接读取
+  （非 debuggable、无 root）、7 天跨天清理与不同厂商 ROM（§8.4）。
 - Dev 视觉矩阵（部分）：诊断中心三视图、安全审计来源状态、导出预览与取消已在 Dev 实测；
   trace 在 WebView2 端到端、320/400 窄窗、深浅主题、液态玻璃可读性、命中区、
   键盘/Escape 焦点顺序仍未全量走查（§8.3 边界）。
@@ -225,8 +247,10 @@
 
 - 整 `cargo test --lib`：被在途未跟踪文件 `tests_v82_rest.rs` 语法错误阻塞（ENVIRONMENT
   BLOCKED，非本任务缺陷）。
-- Release 正式验收：安装包生成、安装/升级/卸载、签名与更新、生产资源加载、正式性能基线，
-  均未执行；无 buildId。
+- **Release 正式验收**：安装包生成、安装/升级/卸载、签名与更新、生产资源加载、正式性能基线，
+  均未按集成流程执行，无 buildId。收尾阶段已用当前工作树构建并真机安装了临时 arm64 Release
+  APK（33,513,751 B，SHA256 `B3D6C6F2…9BEECE`），只验证冷启动 623 ms、启动日志与覆盖安装保留
+  数据；**不是**集成快照构建，不能作为正式 Release 结论。
 - 性能基准脚本与阈值校准（M13）：未执行；阈值为候选值。
 - 桌面端真实磁盘满/权限不足/文件占用故障注入（M14 桌面部分）：未执行；Android 文件占用降级
   有 JVM 用例覆盖。
@@ -276,7 +300,7 @@
 | 检查 | 结果 |
 |---|---|
 | Trace 接线补齐 | `create_task`（store→bridge→Rust）、`open_agent_session` 三处、工作区 copy/move（命令→fsops worker→终态诊断）已接通；`trace_wiring_tests` 16 passed |
-| Android 硬上限恢复 | `writeLine` 硬上限分支退避到期先 rotate；新增 JVM 用例；Kotlin 27 passed（SafeLog 15 / FileLogSink 12） |
+| Android 硬上限恢复 | `writeLine` 硬上限分支退避到期先 rotate；新增 JVM 用例；当时 Kotlin 27 passed（SafeLog 15 / FileLogSink 12）；后续新增 metadata 键名用例后为 28（SafeLog 16） |
 | 既有测试修正 | diagnostics 两条轮转用例：隐私截断导致 1024 阈值不再触发（改 400）；恢复里程碑需第二个 flush 屏障 |
 | `npm run typecheck` | 退出码 0（`final/typecheck.log`） |
 | `cargo check --lib` | 退出码 0，36.82 s，36 条既有警告（`final/cargo-check.log`） |
@@ -296,7 +320,8 @@
 - `mcp::` 唯一失败 `taskdock_collab_create_issue` 缺并发令牌字段，属其他任务在途 schema，
   非本任务引入；其余 71 例通过。
 
-**仍未执行**：Android 真机/模拟器、Dev 完整视觉矩阵（320/400 窄窗、深浅主题、焦点顺序）、
+**截至 §8.2 仍未执行（后由 §8.4 完成 Android 真机）**：Android 真机/模拟器、Dev 完整视觉矩阵
+（320/400 窄窗、深浅主题、焦点顺序）、
 Release 正式验收、命令模块指标运行时聚合、整库 `cargo test --lib`（被其他任务阻塞）。
 
 ### 8.3 Dev 诊断中心真实窗口验收（2026-11-20 17:36–17:42）
@@ -315,15 +340,35 @@ UI 验收。完整记录见 `tmp/acceptance/logging-phase2/final/dev-ui.md`，�
 
 **边界**：该次为「当前前端工作树 + 16:54 Debug Rust 二进制」的混合 Dev 运行，不是干净快照；
 仅覆盖诊断中心三视图、审计来源状态、导出预览/取消、startup 单次入账。Android 真机、320/400
-窄窗、深浅主题矩阵、键盘/Escape 焦点顺序、导出确认后的原生保存与实际文件内容均未执行。
+窄窗、深浅主题矩阵、键盘/Escape 焦点顺序、导出确认后的原生保存与实际文件内容均未执行
+（Android 真机后由 §8.4 完成）。
+
+### 8.4 Android 真机功能验收（2026-11-20 18:20–19:33）
+
+完整记录、命令与证据见 `tmp/acceptance/logging-phase2/final/android-device.md`。
+
+| 项 | 实测结果 |
+|---|---|
+| 设备 | vivo V2323A，Android 16 / API 36，`arm64-v8a`；`dev.taskdock.mobile` v0.1.20（68） |
+| 构建 | 全 ABI Release 在 x86 链接 OOM（ENVIRONMENT BLOCKED）；改 arm64 后先暴露 `ClipboardModule.kt` / `Ed25519Ops.kt` 漏 `SafeLog` import（编译失败，已修）；最终 `BUILD SUCCESSFUL in 5m15s`，APK 33,513,751 B / SHA256 `B3D6C6F2…9BEECE` |
+| 安装 | `adb install -r` 成功；`firstInstallTime=2026-11-17 13:55:41` 多次覆盖不变；最终 `lastUpdateTime=19:33:28`；UI 仍显示 5 条任务（含 `desk_sync_1`） |
+| 脱敏 | 真机发现 metadata 键名型凭据泄漏（`password=P@ssw0rd`），修复后 `password/token/api_key/email=[redacted]`、`path=[path]`、nested 丢弃；Logcat/文件一致；原始敏感串 0 命中 |
+| 轮转 | 15,000 条（3×5,000）后仅 3 文件；`app.1=2,097,693`、`app.2=2,097,649`、`app.log=1,893,528`，总量 6,092,322 B；最旧一代被替换 |
+| 崩溃 | `am crash` 生成 `crash-20261120-183856-11044.txt`（650 B，10 帧），无敏感路径；重启恢复 |
+| 启动日志 | Debug 修复后冷启动 18:52:54（PID 17984），Logcat 与 `app.log` 均有「应用启动」；此前失败由 Metro CI 模式加载旧 JS bundle 解释（模块 961 缺 `getTaskDockLogger`），`--clear` 重启后闭环 |
+| 最终 Release | 停 Metro、清 reverse 后冷启动 `COLD/623ms`；Logcat `19:33:41 I app: 应用启动`；`run-as` 拒绝（非 debuggable、无 root），文件内容未直接复核 |
+
+**边界**：Release 文件级内容、7 天跨天清理、低电量/后台限制、不同厂商 ROM 未测；最终 APK 是
+工作树临时 Release，不是集成快照，不能替代正式 Release 验收。
 
 ## 9. 遗留风险
 
 1. **全量回归缺口**：整 `cargo test --lib` 阻塞解除后，需重跑全量并复核本阶段各模块无回归；
    当前结论不覆盖阻塞文件及其牵连链路。
-2. **真机/完整 Dev 矩阵未取证**：Android 端到端未执行；桌面诊断中心三视图、审计来源状态、
-   导出预览/取消已 Dev 实测（§8.3），但 320/400 窄窗、主题矩阵、通知/剪贴板/焦点等原生
-   通道仍未全量走查；上线前须按 `docs/ACCEPTANCE_ROUTING.md` 原生通道验收。
+2. **真机/完整 Dev 矩阵未全覆盖**：Android 端已完成真机功能验收（§8.4），但 Release 包内文件
+   内容、7 天清理、低电量/后台限制与不同 ROM 未覆盖；桌面诊断中心三视图、审计来源状态、
+   导出预览/取消已 Dev 实测（§8.3），320/400 窄窗、主题矩阵、通知/剪贴板/焦点等原生通道仍未
+   全量走查；上线前须按 `docs/ACCEPTANCE_ROUTING.md` 原生通道验收。
 3. **阈值与基线**：慢操作阈值、p95 样本窗口、导出体积/耗时数字均来自 Debug 测试二进制，
    不能外推为 Release 性能结论；正式基线须在干净构建工作区采样。
 4. **审计源扩展**：personalHub 接线后需补适配层用例与前端联调；vault 解锁态需真实会话复核。
@@ -332,22 +377,27 @@ UI 验收。完整记录见 `tmp/acceptance/logging-phase2/final/dev-ui.md`，�
 
 ## 10. 结论
 
-**Dev 功能验收：通过（范围限定）。Release 正式验收与 Android 真机运行验收未执行。**
+**Dev 功能验收：通过（范围限定）；Android 真机功能验收：通过（范围限定）；Release 正式验收：未执行。**
 
-- 八项需求均有代码落地与真实模块级证据：Android 原生脱敏/有界队列/轮转降级（27 Kotlin +
-  13 JS 用例）、跨端 Trace（mobile_sync 90、trace_wiring 16、前端定向 258）、安全审计适配
-  （16）、指标聚合（diagnostics 套件内 14）、导出预览（query 定向 13）、诊断中心与弹层
-  （80 组件用例）；`typecheck`、`cargo check --lib`、`arch:guard` 退出码均为 0。
+- 八项需求均有代码落地与真实模块级证据：Android 原生脱敏/有界队列/轮转降级（**28 Kotlin +
+  14 JS** 用例，真机脱敏/轮转/崩溃/启动/覆盖安装已取证）、跨端 Trace（mobile_sync 90、
+  trace_wiring 16、前端定向 258）、安全审计适配（16）、指标聚合（diagnostics 套件内 14）、
+  导出预览（query 定向 13）、诊断中心与弹层（80 组件用例）；`typecheck`、`cargo check --lib`、
+  `arch:guard` 退出码均为 0。
 - 诊断中心已在真实 Debug 桌面实例补做 Dev 验收（§8.3）：三视图、安全审计四来源状态、导出
   预览与取消不落盘、性能窗口语义与 startup 单次入账均实测；`dev-ui.md` 与截图已归档。
-- **边界**：Android 真机/模拟器、Dev 完整视觉矩阵（320/400 窄窗、深浅主题、焦点顺序；
-  三视图/导出预览已实测）、Release 安装包/升级/签名/生产资源加载、命令模块指标运行时
-  聚合均**未执行**；startup 已 Dev 实测单次 3879 ms，但只是 Debug 样本，不是正式性能基线；
-  `span_id` 体系与 personalHub 审计源按设计延期；工作流执行链路 trace 未接（P2-1）。这些
-  边界不构成本轮代码验收的失败，但**不能**被表述为已验收。
+- Android 真机验收（§8.4）：vivo V2323A / Android 16；脱敏（含 metadata 键名凭据 P1 修复）、
+  15,000 条轮转仅 3 文件/总量 6,092,322 B、崩溃文件 650 B、Debug 启动日志落盘、最终 Release
+  冷启动 623 ms + 启动日志、覆盖安装保留 SQLite/5 条任务。
+- **边界**：Release 包内文件内容（非 debuggable、无 root）、7 天跨天清理、低电量/后台限制与
+  不同厂商 ROM 未测；Dev 完整视觉矩阵（320/400 窄窗、深浅主题、焦点顺序；三视图/导出预览已
+  实测）、Release 正式安装包/升级/签名/生产资源加载、命令模块指标运行时聚合均**未按集成流程
+  执行**；startup 已 Dev 实测单次 3879 ms，但只是 Debug 样本，不是正式性能基线；`span_id` 体系
+  与 personalHub 审计源按设计延期；工作流执行链路 trace 未接（P2-1）。这些边界不构成本轮代码
+  与真机功能验收的失败，但**不能**被表述为正式 Release 已验收。
 - 其余在途任务造成的全量测试失败（前端 29 例、`mcp` 1 例、整库 cargo 测试被未跟踪文件阻塞）
   已单列，不计入本任务结论。
-- 本结论**不构成**安装包、升级/卸载、签名、生产资源加载或正式性能结论；Release 验收须在
+- 本结论**不构成**正式安装包、升级/卸载、签名、生产资源加载或正式性能结论；Release 验收须在
   集成快照构建的安装包上重新进行。
 
 ### 10.1 初次结论（2026-11-20 子任务收尾时，已被 §10 更正）
@@ -365,15 +415,18 @@ UI 验收。完整记录见 `tmp/acceptance/logging-phase2/final/dev-ui.md`，�
   完成 Android 硬上限恢复修复与定向复验，并把兜底报告归位；全量前端对照与 Rust 定向测试
   已在 `final/` 留存证据。
 - 补充（2026-11-20 17:42）：主智能体随后完成 Dev 诊断中心真实窗口验收（§8.3），上条
-  「Dev 实例真实窗口链路未走查」不再成立；初次结论保留为历史记录。
+  「Dev 实例真实窗口链路未走查」不再成立；Android 真机验收随后由 §8.4 完成。初次结论保留为
+  历史记录。
 
 ## 11. 证据路径清单
 
 仓库内证据（`D:\Develop\task_dock\tmp\acceptance\logging-phase2\`）：
 
 - `interfaces.md` — 冻结契约
-- `android-logger/report.md`；`gradle-test-9.txt`（BUILD SUCCESSFUL）；`js-all-tests.txt`
-  （86 文件 / 926 passed）；`js-safeLog-final.txt`（13 passed）；`tsc-noemit.txt`
+- `android-logger/report.md`；`gradle-test-9.txt`（历史 BUILD SUCCESSFUL）；`js-all-tests.txt`
+  （86 文件 / 926 passed）；`js-safeLog-final.txt`（历史 13 passed）；`tsc-noemit.txt`；
+  **最新**：`final/android-safelog-kotlin-test.log`（28 用例，SafeLog 16 / FileLogSink 12）、
+  `final/android-safelog-js-test.log`（14 passed）、`final/android-typecheck.log`
 - `trace-id/report.md`；`cargo-test-mobile-sync.txt`（90 passed）；`cargo-test-trace.txt`
   （5 passed）；`frontend-diagnostics-test.txt`（40 passed）；`mobile-sync-test.txt`（30 passed）
 - `security-audit/report.md`；`cargo-test-3.log`（16 passed）
@@ -392,6 +445,9 @@ UI 验收。完整记录见 `tmp/acceptance/logging-phase2/final/dev-ui.md`，�
   `arch-guard.log`、`kotlin-test.log`、两份 `TEST-*.xml`、`test-manifest.xml`
 - `final/dev-ui.md` + `final/dev-ui/`：Dev 诊断中心真实窗口验收记录与截图
   （runtime / security / performance / export-preview-default / export-preview-audit / nav-custom）
+- `final/android-device.md` + `final/android-device/`（Debug 真机工作台截图/层级）、
+  `final/android-device-release/`（最终 Release 工作台截图/层级）、
+  `final/android-build-release-final.log`（最终 arm64 Release 构建，5m15s）
 
 文档产出：
 

@@ -1,6 +1,7 @@
 import "../styles.css";
 import "../styles-themes.css";
 import "../styles-flat.css";
+import "../styles-tokens.css";
 import "../styles-ui.css";
 // 资源管理页专属样式（2026-11-14 CSS 拆分后唯一入口）：工作台窗口同样承载
 // 资源管理页，缺失会导致该页在 workspace 窗口整页无样式（真机验收实测）。
@@ -8,6 +9,9 @@ import "../styles-resource.css";
 import "./workspace.css";
 import "../workbench/workbench.css";
 import "../components/global-search/global-search.css";
+import "../styles-components.css";
+// 页面级适配层在页面 CSS 之后加载：统一工作区分栏、筛选栏、设置卡面。
+import "../styles-pages.css";
 
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";

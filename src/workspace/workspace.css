@@ -61,31 +61,61 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 10px;
-  border: 1px solid var(--ws-border);
-  background: var(--ws-surface);
-  color: var(--ws-text);
-  border-radius: 8px;
-  font-size: 13px;
+  min-height: var(--btn-height);
+  padding: 0 12px;
+  border: 1px solid var(--btn-secondary-border);
+  background: var(--btn-secondary-face);
+  color: var(--btn-secondary-text);
+  border-radius: var(--radius-control);
+  font-size: var(--font-size-secondary);
+  font-weight: var(--font-weight-medium);
   cursor: pointer;
 }
 
-.ws-btn:hover { background: color-mix(in srgb, var(--ws-accent) 8%, var(--ws-surface)); }
-.ws-btn:disabled { opacity: 0.5; cursor: default; }
-.ws-btn-primary { background: var(--ws-accent); color: #fff; border-color: var(--ws-accent); }
+.ws-btn:hover:not(:disabled) {
+  background: var(--btn-secondary-face-hover);
+  border-color: var(--btn-secondary-border-hover);
+  color: var(--color-text-primary);
+}
+/* 禁用不走透明度：半透明会留下「浅色主按钮 + 白字」的伪可点击观感。 */
+.ws-btn:disabled {
+  opacity: 1;
+  cursor: not-allowed;
+  background: var(--btn-disabled-face);
+  border-color: var(--btn-disabled-border);
+  color: var(--btn-disabled-text);
+}
+.ws-btn-primary {
+  background: var(--btn-primary-face);
+  color: var(--btn-primary-text);
+  border-color: var(--btn-primary-face);
+}
+.ws-btn-primary:hover:not(:disabled) {
+  background: var(--btn-primary-face-hover);
+  border-color: var(--btn-primary-face-hover);
+  color: var(--btn-primary-text);
+}
 
 .ws-input, .ws-textarea {
   width: 100%;
-  padding: 6px 8px;
-  border: 1px solid var(--ws-border);
-  background: var(--ws-surface);
-  color: var(--ws-text);
+  min-height: var(--control-height);
+  padding: 0 10px;
+  border: 1px solid var(--field-border);
+  background: var(--field-bg);
+  color: var(--color-text-primary);
   border-radius: var(--radius-control);
-  font-size: 13px;
+  font-size: var(--font-size-secondary);
   box-sizing: border-box;
 }
 
-.ws-textarea { min-height: 80px; resize: vertical; }
+.ws-input:focus,
+.ws-textarea:focus {
+  outline: none;
+  border-color: var(--field-border-focus);
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.14);
+}
+
+.ws-textarea { min-height: 80px; padding: 8px 10px; resize: vertical; }
 
 .ws-project-item {
   padding: 8px;
@@ -125,15 +155,28 @@
   min-width: 0;
 }
 .ws-tab {
-  padding: 6px 10px;
-  border: 1px solid var(--ws-border);
-  background: transparent;
-  border-radius: 8px;
+  padding: 0 12px;
+  min-height: var(--btn-height);
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--btn-secondary-border);
+  background: var(--btn-secondary-face);
+  border-radius: var(--radius-control);
   cursor: pointer;
-  font-size: 13px;
-  color: var(--ws-text);
+  font-size: var(--font-size-secondary);
+  color: var(--btn-secondary-text);
 }
-.ws-tab.is-active { background: var(--ws-accent); color: #fff; border-color: var(--ws-accent); }
+.ws-tab:hover { background: var(--btn-secondary-face-hover); border-color: var(--btn-secondary-border-hover); }
+.ws-tab.is-active {
+  background: var(--color-brand-subtle);
+  color: var(--color-brand-text);
+  border-color: var(--color-brand-subtle);
+  font-weight: 600;
+}
+.ws-tab.is-active:hover {
+  background: var(--color-brand-subtle);
+  border-color: var(--color-brand-subtle);
+}
 
 .ws-empty { color: var(--ws-muted); font-size: 13px; padding: 16px; text-align: center; }
 

@@ -198,6 +198,27 @@ describe("createSafeLog metadata 白名单", () => {
     expect(metadata?.path).toBe("[path]");
   });
 
+  it("键名本身是凭据类别时，值一律脱敏", () => {
+    const { sink, rec } = recordingSink();
+    const log = createSafeLog({ sink, now: () => 1000 });
+    log.warn("sync", "结果", {
+      password: "P@ssw0rd",
+      token: "abc123",
+      api_key: "raw-api-key",
+      key: 123456,
+      authorization: "Bearer secret",
+      note: "password:hunter2",
+    } as unknown as SafeLogMetadata);
+
+    const metadata = parseMetadata(rec.entries[0]);
+    expect(metadata?.password).toBe("[redacted]");
+    expect(metadata?.token).toBe("[redacted]");
+    expect(metadata?.api_key).toBe("[redacted]");
+    expect(metadata?.key).toBe("[redacted]");
+    expect(metadata?.authorization).toBe("[redacted]");
+    expect(metadata?.note).toBe("[redacted]");
+  });
+
   it("空 metadata / 全丢弃时 sink 收到 null", () => {
     const { sink, rec } = recordingSink();
     const log = createSafeLog({ sink, now: () => 1000 });

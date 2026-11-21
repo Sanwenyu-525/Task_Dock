@@ -10,7 +10,7 @@
 //   「类型/大小/耗时/结果码」类最小化基本值字段，超限截断、非基本值丢弃；
 // - JS 侧有界内存缓冲（默认 500 条，滚动丢弃最旧），并桥接原生 sink 写文件；
 // - 原生不可用/异常时**静默降级**：绝不抛错、绝不导致 App 崩溃。
-import taskDockLogger, { type TaskDockLoggerNative } from "../../modules/logger";
+import { getTaskDockLogger } from "../../modules/logger";
 
 export type SafeLogLevel = "trace" | "debug" | "info" | "warn" | "error";
 
@@ -68,6 +68,11 @@ const MAX_METADATA_VALUE_CHARS = 96;
 const MAX_METADATA_KEYS = 8;
 const MAX_KEY_CHARS = 32;
 
+// metadata 键名本身就是凭据类别时（password/token/key/...），不能再把值当普通字符串处理：
+// 无论值类型，统一落 [redacted]，与消息文本的凭据规则保持一致（原生 SafeLog.kt 同一张表）。
+const SENSITIVE_METADATA_KEY =
+  /^(?:authorization|token|password|passwd|secret|api[_-]?key|apikey|auth|sig|key)$/i;
+
 export interface CreateSafeLogOptions {
   /** 原生 sink；null = 静默降级（只写内存缓冲）。 */
   sink?: SafeLogSink | null;
@@ -121,6 +126,10 @@ export function createSafeLog(options: CreateSafeLogOptions = {}): SafeLog {
       // 截断后撞键的后续条目丢弃；被丢弃的非基本值也不占名额。
       if (Object.prototype.hasOwnProperty.call(out, key)) continue;
       if (Object.keys(out).length >= MAX_METADATA_KEYS) break;
+      if (SENSITIVE_METADATA_KEY.test(key)) {
+        out[key] = "[redacted]";
+        continue;
+      }
       if (typeof rawValue === "string") {
         out[key] = sanitizeText(rawValue, MAX_METADATA_VALUE_CHARS);
       } else if (typeof rawValue === "number") {
@@ -190,13 +199,24 @@ export function createSafeLog(options: CreateSafeLogOptions = {}): SafeLog {
 }
 
 /**
- * 生产单例：sink 取本地原生模块 modules/logger（不可用为 null → 静默降级）。
- * 原生模块 OnCreate 在首次访问时安装 CrashHandler 并初始化 FileLogSink，
- * 因此 App.tsx 的顶层 import 就是崩溃处理器的安装时机。
+ * 生产单例：sink 懒解析本地原生模块 modules/logger（不可用/未注册时静默降级）。
+ * 原生模块的注册可能晚于 JS 首次加载，不能把模块单例固化在模块顶层；每次写日志
+ * 重新 get 一次，模块可用后自动接管。OnCreate 仍负责安装 CrashHandler 与文件 sink。
  */
+const lazyNativeSink: SafeLogSink = {
+  write(level, tag, message, metadataJson) {
+    getTaskDockLogger()?.write(level, tag, message, metadataJson);
+  },
+  async flush() {
+    const native = getTaskDockLogger();
+    if (!native) return true;
+    return native.flush();
+  },
+};
+
 export const safeLog: SafeLog = createSafeLog({
-  sink: (taskDockLogger as TaskDockLoggerNative | null) ?? null,
+  sink: lazyNativeSink,
 });
 
 /** 判定原生 sink 是否可用（诊断/测试辅助；不可用时 flush 恒为 true）。 */
-export const safeLogNativeAvailable = taskDockLogger != null;
+export const safeLogNativeAvailable = getTaskDockLogger() != null;

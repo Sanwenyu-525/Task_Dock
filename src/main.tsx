@@ -1,7 +1,3 @@
-import React from "react";
-import ReactDOM from "react-dom/client";
-import App from "./App";
-import ErrorBoundary from "./components/ErrorBoundary";
 import { installGlobalErrorHandlers } from "./lib/globalErrors";
 import { installNativeDragBridge } from "./lib/dragCursorSession";
 import { installStartupConsistencyChecks } from "./lib/consistencyChecks";
@@ -12,6 +8,9 @@ import { bootFail, bootStage } from "./boot/bootProtocol";
 import "./styles.css";
 import "./styles-themes.css";
 import "./styles-flat.css";
+// Design System v1（2026-11-20）：Token 层必须在 flat 之后、组件层之前。
+// 只覆盖取值与新增语义名，不承担结构样式；顺序见文件头注。
+import "./styles-tokens.css";
 import "./styles-ui.css";
 import "./styles-resource.css";
 // 主窗与工作台共用同一套页面页头（WorkbenchPageHeader → .wb-page-header/.wb-ph-*）。
@@ -19,6 +18,10 @@ import "./styles-resource.css";
 // 图标缩成 19px、动作区整行下沉、标题与按钮错位（2026-11-15 真机截图实测）。
 import "./workbench/workbench.css";
 import "./components/global-search/global-search.css";
+// 公共组件默认视觉放最后：需要压过 base/theme 层的旧按钮/徽标取值。
+import "./styles-components.css";
+// 页面级适配层在页面 CSS 之后加载：统一工作区分栏、筛选栏、设置卡面。
+import "./styles-pages.css";
 
 // 启动协议阶段信号（tmp/acceptance/startup-experience-v1/BOOT_PROTOCOL.md §3）：
 // main.tsx 模块开始执行。只记时间不写诊断；此前的异常由 index.html 看门狗捕获。
@@ -37,22 +40,15 @@ installStartupConsistencyChecks();
 // 必须在首次渲染前完成，否则 `FeatureView` 会拿到「未注册」。
 installFeatureRegistry();
 
-try {
-  ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-    <React.StrictMode>
-      <ErrorBoundary scope="主窗口">
-        <App />
-      </ErrorBoundary>
-    </React.StrictMode>,
-  );
-} catch (e) {
-  // createRoot/render 同步抛错：React 无法接管，按协议 §3 通知看门狗进入 error
-  // 态（写一次 UI_BOOT_FATAL），随后原样抛出交给全局错误处理，不吞异常。
-  bootFail({
-    stage: "mounted",
-    message: e instanceof Error ? e.message : String(e),
-  });
-  throw e;
-}
-// render() 同步调用已发起（React 已提交第一帧，可能仍是设置加载门）→ mounted 阶段。
-bootStage("mounted");
+// 主窗 React 挂载放在独立模块里动态加载：入口本身不 import App/React，
+// 避免页面 chunk 复用共享模块时连带执行 createRoot（多入口构建踩坑记录见 mainApp.tsx）。
+void import("./mainApp").then(
+  ({ mountMainWindow }) => mountMainWindow(),
+  (e: unknown) => {
+    bootFail({
+      stage: "mounted",
+      message: e instanceof Error ? e.message : String(e),
+    });
+    throw e;
+  },
+);

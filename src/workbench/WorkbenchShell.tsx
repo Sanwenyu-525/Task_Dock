@@ -2385,10 +2385,9 @@ export default function WorkbenchShell() {
               placeholder={t("workbench.noProject")}
               ariaLabel={t("workbench.projectsTitle")}
               size="sm"
-              // 顶栏左侧的项目入口：菜单左缘与触发器对齐，宽度下限 240px，
-              // 靠近右缘时由定位核心收敛，不会被窗口裁掉。
+              // 顶栏左侧的项目入口：菜单与触发器等宽（180px），不再额外加宽；
+              // 左缘对齐，长项目名在内部省略，靠近右缘时由定位核心收敛。
               align="start"
-              menuMinWidth={240}
             />
           </div>
           <div className="wb-topbar-actions">

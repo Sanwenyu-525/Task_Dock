@@ -696,7 +696,7 @@ apps/mobile/modules/logger/android/.../FileLogSink.kt ← 新增
 | M7 配对/信任/鉴权审计 + `security_audit_log` | 独立审计存储 | **落地**：主库 `security_audit_log` 经适配层真接入；两段式清理沿用；启动路径不调用 prune |
 | M8 统一审计视图 | 诊断中心安全审计标签页 | **落地（Rust 适配层 + 前端组件级）**；四源状态显式标注；`personalHub` 未接线（§11.2） |
 | M9 诊断包预览 + 确认 | 预览 → 确认 → 导出 | **落地**：只读预览 + 显式授权勾选 + 取消不落地（§11.5） |
-| M10 Android SafeLog + CrashHandler + FileLogSink | 沙盒滚动文件 + 脱敏 + 崩溃捕获 | **落地（JVM/JS 单测级）**；真机/模拟器运行验收未执行（§11.6） |
+| M10 Android SafeLog + CrashHandler + FileLogSink | 沙盒滚动文件 + 脱敏 + 崩溃捕获 | **落地并经真机验证（范围限定）**：vivo V2323A / Android 16 验证脱敏、15,000 条轮转（3 文件/6,092,322 B）、崩溃文件、启动日志；最终临时 Release 冷启动 623 ms、覆盖安装保留数据（§11.6） |
 | M12 诊断中心交互增强 | 三视图、Trace 展示 | **部分落地**：三视图（运行诊断/安全审计/性能分析）完成；Trace 搜索、设备筛选、暂停刷新、滚动保持未在本阶段完成 |
 | M13 性能基准脚本与阈值校准 | 可复现基准 + 阈值固化 | **未执行**：阈值仍为候选值；无 Release 基线、无 CPU/内存采样 |
 | M14 故障注入测试套件 | 磁盘满/权限/占用注入 | **部分**：Android 文件占用降级有 JVM 用例；桌面端真实磁盘满/权限注入未执行 |
@@ -792,9 +792,12 @@ apps/mobile/modules/logger/android/.../FileLogSink.kt ← 新增
 - 容量与背压常量：单文件软目标 2 MB、归档 3 个、总量 ≤6 MB、保留 7 天；活动文件硬上限 4 MB；
   队列 `MAX_PENDING_LOGS=256`、高级别预留 `HIGH_PRIORITY_RESERVED=32`；分级丢弃与退避策略
   详见 `logging-current-state.md` §10.3。
-- **未验证项**：真机/模拟器运行（环境无 emulator、`adb devices` 为空）；Expo Module 实例化与
-  JS→原生 IPC 端到端链路；生产 `HandlerThread/Handler` 分发路径（测试经 `LogDispatcher` 接缝
-  注入手动队列）。Release 专属项（安装包、升级/卸载、签名、生产资源加载）未执行。
+- **验证状态（2026-11-20 真机回填）**：vivo V2323A / Android 16 / arm64 已完成 Debug 文件级
+  验收：脱敏（含 metadata 键名凭据 P1 修复）、15,000 条轮转仅 3 文件/6,092,322 B、崩溃文件
+  650 B（10 帧、无敏感路径）、启动日志落盘；最终临时 Release 冷启动 623 ms、覆盖安装保留
+  SQLite/5 条任务。**未覆盖**：Release 包内文件内容（非 debuggable、无 root）、7 天跨天清理、
+  低电量/后台限制、不同 ROM；正式 Release 专属项（集成快照、安装/升级/卸载、签名、生产资源
+  加载、正式性能基线）仍未执行。详见 `tmp/acceptance/logging-phase2/final/android-device.md`。
 
 ### 11.7 仍未决 / 阻塞项
 
@@ -805,4 +808,6 @@ apps/mobile/modules/logger/android/.../FileLogSink.kt ← 新增
   （36 条既有警告，无新增阻断性错误）。
 - **D: 盘 ENOSPC 事故**：当日 D: 盘写满至 0 字节，主智能体删除可再生构建产物
   `src-tauri/target/debug`（约 8.0 GB）后恢复约 7.0 GB；部分定向套件仅前台控制台通过，
-  落盘复测为环境阻塞记录。基准脚本、真机走查、Release 验收须在磁盘充足且阻塞解除后补做。
+  落盘复测为环境阻塞记录。Android 最终 Release 构建前再次出现 0 字节可用，清理本任务可再生的
+  Android `intermediates`（约 1.37 GB）与旧 Dev 数据后恢复约 3.2 GB，构建成功。基准脚本、
+  完整视觉走查、正式 Release 验收须在磁盘充足且阻塞解除后补做。

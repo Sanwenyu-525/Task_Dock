@@ -3,7 +3,8 @@
 - 报告日期：2026-11-20（UTC+8）
 - 运行模式：**Dev 功能验收（Debug 测试二进制 + 模块级定向测试）**；本报告**不给出**正式性能
   基线结论，无 Release 构建、无 buildId。
-- 工作目录：`D:\Develop\task_dock`；Git HEAD：`5b6c671`；共享工作区含其他任务在途改动。
+- 工作目录：`D:\Develop\task_dock`；Git HEAD：收尾测试时为 `5b6c671`；运行期外部定时提交推进至
+  `fc1c629`（非本任务操作），共享工作区约 89 条在途改动。
 - 检查依据：`AGENTS.md` §5.3（性能结论必须附可复核条件）、§7 报告口径；
   `unified-observability-design.md` §4.5；`DIAGNOSTICS.md` §25.2；
   `interfaces.md` §3.2（指标汇总契约）/§3.3（导出预览契约）。
@@ -40,7 +41,8 @@
 
 - Windows 本地 PC；Debug 构建；初稿未启动 `npm run tauri dev` 长驻实例；17:36 补做隔离 Dev
   实例（数据目录 `tmp/debug/logging-phase2-dev4`，CDP 9223，运行期 HEAD `7cc15d1`、dirty 154，
-  Rust 二进制为 16:54 构建）；无 Android 真机/模拟器。
+  Rust 二进制为 16:54 构建）；Android 真机 vivo V2323A / Android 16 / arm64 已用于日志容量与
+  Release 冷启动复核（§5.7）。
 - **D: 盘 ENOSPC 事故**：当日 D: 盘写满至 0 字节，主智能体删除可再生构建产物
   `src-tauri/target/debug`（约 8.0 GB）后恢复约 7.0 GB；部分既有套件复测仅前台控制台通过，
   落盘日志为阻塞记录。详见总报告 §3.2。
@@ -141,16 +143,30 @@
 启动性能基线，也不代表命令模块指标已逐项验证。证据见 `final/dev-ui.md` 与
 `final/dev-ui/performance.png`。
 
+### 5.7 Android 真机日志容量与启动（2026-11-20）
+
+- 设备：vivo V2323A / Android 16 / API 36 / `arm64-v8a`；Debug 变体读沙盒文件，最终 Release
+  变体只复核启动与数据保留。
+- 容量/轮转：三批、每批 5,000 条、消息 480 字符、每 100 条 flush。三批后
+  `app.1=2,097,693`、`app.2=2,097,649`、`app.log=1,893,528`，总量 **6,092,322 B**；始终只有
+  3 个文件，`rotate-probe3` 在 `app.2` 0 条、`app.1` 1,532 条，最旧一代被替换。快速 15,000 条
+  写入未崩溃、未观察到 UI 阻塞。
+- 启动：最终 Release 停 Metro、移除 `adb reverse` 后冷启动
+  `LaunchState=COLD`、`TotalTime=623ms`；Logcat `19:33:41 I app: 应用启动`。
+- **口径**：容量数字是文件字节数，不是吞吐/延迟基准；没有记录 15,000 条的墙钟耗时、CPU/RSS、
+  低电量或后台限制。623 ms 是单次 Release 冷启动样本，不能作为正式启动性能基线。
+- 证据：`final/android-device.md` §3.2、§4；`final/android-build-release-final.log`。
+
 ## 6. 未验证 / 证据不足项
 
 | 项 | 状态 | 原因 |
 |---|---|---|
-| Release 正式性能基线（启动耗时、p50/p95、CPU/内存稳态） | **未执行** | 未出 Release 安装包；无干净构建工作区采样；无开/关日志对照基准脚本（M13 未执行） |
+| Release 正式性能基线（启动耗时、p50/p95、CPU/内存稳态） | **未执行（正式口径）** | 已出当前工作树临时 Release APK 并测单次冷启动 623 ms，但非集成快照、无 buildId；无干净构建工作区采样；无开/关日志对照基准脚本（M13 未执行） |
 | 阈值校准 | **证据不足** | 阈值表为设计候选值，未在真实负载上校准；偏松/偏紧未知 |
 | 长驻运行内存与 CPU 曲线 | **未执行** | 未做长驻采样；指标注册表淘汰行为仅由单测断言，无运行期内存占用证据 |
 | 命令模块指标入账运行时表现 | **已实现未验证** | file/resource/recycle/clipboard/sync/agent/mcp 模块内无指标断言用例；harness 编译通过 |
 | 桌面 startup（first_ready）埋点 | **已 Dev 验证（单次样本）** | 阈值表就位；`lib.rs` 起点与 `notify_ui_ready` 首次收尾已接线；Dev 实例实测 3879 ms / P95 3879 ms / 慢操作 1；正式 Release 基线未执行 |
-| Android 日志写入性能与容量行为 | **已实现未验证** | JVM 单测覆盖队列/轮转/降级逻辑；真机写入吞吐、文件实际体积、7 天清理未取证 |
+| Android 日志写入性能与容量行为 | **容量/轮转已真机验证；吞吐未计时** | 15,000 条后仅 3 文件、总量 6,092,322 B，最旧一代被替换；未记录墙钟耗时/CPU/RSS；7 天清理未测（§5.7） |
 | 大日志在真实用户数据目录下的导出耗时/体积 | **证据不足** | 样本为合成日志；真实历史日志分布、重复行与 metadata 体积未测 |
 | 整库性能相关回归 | **ENVIRONMENT BLOCKED** | `tests_v82_rest.rs` 阻塞整 `cargo test --lib` |
 
@@ -185,8 +201,9 @@
 
 ## 8. 遗留风险
 
-1. **Debug 数字不可外推**：810.97ms / 1.29 MiB 来自 Debug 合成日志；Release 优化、真实日志
-   分布与磁盘缓存条件下数字会变化，发布前须在干净构建工作区重测。
+1. **Debug/单次 Release 数字不可外推**：810.97ms / 1.29 MiB 来自 Debug 合成日志，623 ms 来自
+   单次 Release 冷启动；Release 优化、真实日志分布与磁盘缓存条件下数字会变化，发布前须在干净
+   构建工作区重测。
 2. **内存有界性待长驻验证**：256 指纹 / 64 样本窗口为代码约束；长驻运行的实际 RSS 与淘汰
    频率需采样确认，不得凭单测宣称「无泄漏」。
 3. **阈值误报/漏报**：候选阈值未校准；上线后应结合慢操作 WARN 事件分布回调阈值表。
@@ -197,7 +214,7 @@
 
 ## 9. 结论
 
-**证据不足（正式性能基线）；模块级指标聚合与有界性部分通过。**
+**证据不足（正式性能基线）；模块级指标聚合、导出有界性与 Android 日志容量部分通过（范围限定）。**
 
 - **部分通过的部分**：指标聚合模型、容量淘汰、异步计时与 Drop 兜底、阈值触发边界、导出/扫描
   有界性，有 14 个 metrics 用例、13 个 query 用例与大日志合成样本的定向证据；窗口口径
@@ -205,8 +222,11 @@
 - **Dev 实测补充**：诊断中心「性能分析」页显示数据窗口「进程启动以来」，
   `startup/first_ready` 3879 ms / P95 3879 ms / 慢操作 1 / 失败率 0% / 次数 1，
   `resource/snapshot` 220 ms；只证明埋点真实入账，单次 Debug 样本不构成基线。
-- **证据不足的部分**：Release 启动耗时、p50/p95、CPU/内存稳态、阈值校准、长驻内存曲线、
-  真机/真实数据目录表现均未执行；现有数字来自 Debug 测试二进制，不构成正式性能结论。
+- **Android 真机补充**：15,000 条后 3 文件/6,092,322 B/最旧一代被替换；最终 Release 单次冷启动
+  623 ms。只证明容量约束与启动可用，不是吞吐/CPU/RSS/正式启动基线。
+- **证据不足的部分**：Release 正式启动耗时、p50/p95、CPU/内存稳态、阈值校准、长驻内存曲线、
+  真机写入吞吐与 7 天清理未执行；现有数字来自 Debug 测试二进制或单次 Release 样本，不构成
+  正式性能结论。
 - 后续补做条件：集成快照 Release 构建 → 干净构建工作区 → 隔离数据目录 → 记录二进制
   sha256/工具链/机器空闲状态/样本数 → 开/关日志对照基准 → 按 `docs/TESTING.md` 与
   `docs/PERFORMANCE_*.md` 留痕。
@@ -216,6 +236,8 @@
 仓库内（`D:\Develop\task_dock\tmp\acceptance\logging-phase2\`）：
 
 - `final/dev-ui.md`；`final/dev-ui/performance.png`（Dev 性能分析三视图与 startup 入账）
+- `final/android-device.md` §3.2/§4（Android 轮转容量与 Release 冷启动）；`final/android-device/`、
+  `final/android-device-release/`；`final/android-build-release-final.log`
 - `metrics/test-metrics.log`（14 passed）；`metrics/test-mcp.log`（71 passed / 1 既有
   failed）；`metrics/` 目录其它控制台记录；**`report.md` 兜底副本**：
   `C:\Users\ASUS\AppData\Local\DoubaoWork\User Data\Profile 1\.doubaowork\agent_mode\workspace\.sessions\38455111763599362\agents\s_000tJuwvV4g\report.md`

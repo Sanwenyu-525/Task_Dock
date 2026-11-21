@@ -11,6 +11,7 @@
 // - 指纹固定为 SHA-256(raw 32B public key) 的小写 hex 前 32 字符（契约 §1）。
 package dev.taskdock.modules.deviceidentity
 
+import dev.taskdock.modules.logger.SafeLog
 import java.security.MessageDigest
 import java.security.SecureRandom
 import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters

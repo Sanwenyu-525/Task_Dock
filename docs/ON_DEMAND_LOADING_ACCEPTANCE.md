@@ -37,7 +37,7 @@
 | --- | --- |
 | `src/workbench/WorkbenchShell.tsx` | 14 个 `lazy()` + 6 个静态页面 → 统一 `RouteSlot feature="page:*"`；导航 hover/focus 预加载；受限空闲预加载 |
 | `src/components/FullView.tsx` | Agent/行动/剪贴板/收集与暂存/设置 → `FeatureView`（任务页保留同步加载）；导航 hover/focus 预加载 |
-| `src/main.tsx`、`src/workspace/main.tsx` | 渲染前 `installFeatureRegistry()`（只登记元数据） |
+| `src/main.tsx`、`src/workspace/workspaceEntry.tsx` | 渲染前 `installFeatureRegistry()`（只登记元数据） |
 | `src/components/diagnostics/DiagnosticsCenterPanel.tsx` | 健康概览后插入按需加载分区 |
 | `src/components/settings/MobileSyncSection.tsx` | 设备/文件轮询改为页面可见才建立（原只看 `document.hidden`，切页后在后台继续 3s/15s 轮询） |
 | `src/components/mobile/VirtualDisplaySection.tsx` | 设备/会话轮询（1–3s）与工具链重试改为页面可见才建立 |

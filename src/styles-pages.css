@@ -1,0 +1,226 @@
+/* ════════════════════════════════════════════════════════════════
+   TaskDock Design System · 页面级适配层（v1.0，2026-11-20）
+   ════════════════════════════════════════════════════════════════
+   只收敛「页面工作区」这一层的共同骨架：页面内容与页面背景的层次、
+   侧栏/筛选栏的表面、设置页分组卡面、旧预设预览的装饰强度。
+
+   为什么独立成文件：页面 CSS 都是未分层文件，必须在它们之后加载才能
+   稳定覆盖；本文件也不放进 @layer，避免被未分层的页面规则反压。
+   只写跨页面结构，不碰具体业务组件内部布局。
+   ════════════════════════════════════════════════════════════════ */
+
+/* ── 页面工作区分栏：整体是一张安静的白卡 ────────────────────────
+   原来 Sidebar 与 Main 各自铺白/渐变，页面像一整块无边白板；现在用
+   1px 中性边框 + 12px 圆角把「筛选栏 + 内容区」收进同一张工作区卡面，
+   Sidebar 改用 bg-sidebar，靠色阶而不是渐变区分。 */
+.workspace-split {
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-card);
+  background: var(--color-bg-surface);
+}
+
+.workspace-split__sidebar {
+  border-right-color: var(--color-border-default);
+  background: var(--color-bg-sidebar);
+}
+
+/* 极窄窗口侧栏折到顶部时，底部分隔线同样用中性边框。 */
+@container workspace-split (max-width: 559px) {
+  .workspace-split__sidebar {
+    border-bottom-color: var(--color-border-default);
+  }
+}
+
+/* ── 任务页：筛选栏也是一张卡，不再悬空在页面背景上 ─────────────
+   任务页左栏是「筛选内容 + 底部提醒」两个网格行；只在 tasks-head 上画卡
+   会停在内容高度，下方留出整块空白。这里用同列跨两行的伪元素做整列卡面，
+   内容行叠在上层，空态与提醒仍按原布局工作。 */
+.tasks-panel.tasks-workspace-layout {
+  position: relative;
+}
+
+.tasks-panel.tasks-workspace-layout::before {
+  content: "";
+  grid-column: 1;
+  grid-row: 2 / 4;
+  z-index: 0;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-card);
+  background: var(--color-bg-surface);
+  pointer-events: none;
+}
+
+.tasks-panel.tasks-workspace-layout > .tasks-head {
+  position: relative;
+  z-index: 1;
+  padding: 12px;
+}
+
+/* 左栏里的统计卡改为次级面，避免「卡中卡」都用一个白底。 */
+.tasks-panel.tasks-workspace-layout .overview-card {
+  border-color: var(--color-border-default);
+  background: var(--color-bg-surface-secondary);
+  box-shadow: none;
+}
+
+/* 任务列表保持主卡面；补 1px 边框，与筛选栏形成同级层次。 */
+.tasks-panel.tasks-workspace-layout > .task-list {
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-card);
+  background: var(--color-bg-surface);
+}
+
+/* ── 设置页：配置区收进一张卡，内部靠分隔线分组 ───────────────── */
+.settings-panel .settings-nav {
+  padding: 10px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-card);
+  background: var(--color-bg-surface);
+}
+
+.settings-panel .settings-page-body {
+  padding: 16px 18px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-card);
+  background: var(--color-bg-surface);
+}
+
+.settings-panel .settings-page-head {
+  padding: 0 2px 10px;
+}
+
+/* 设置页的分组标题与说明拉开层级，不再与控件同重。 */
+.settings-panel .settings-page-title {
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.settings-panel .settings-page-desc {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+/* 预设预览只作为「主题缩略图」，缩小高度并降饱和；不再用大面积
+   紫/粉渐变抢走设置页的视觉重心。 */
+.preset-card .preset-preview {
+  height: 36px;
+  filter: saturate(0.62);
+  background: var(--color-bg-surface-secondary);
+}
+
+/* 预览内部的小纸片也走语义面，暗色下不能继续用固定的白纸色。 */
+.preset-card .pp-card {
+  background: var(--color-bg-surface);
+  box-shadow: 0 0 0 1px var(--color-border-default);
+}
+
+.preset-card .pp-rail {
+  background: var(--color-bg-hover);
+  box-shadow: inset 0 0 0 1px var(--color-border-default);
+}
+
+.preset-card.preset-dream-gradient .preset-preview {
+  background: linear-gradient(
+    135deg,
+    var(--color-bg-surface-secondary),
+    var(--color-brand-subtle) 55%,
+    var(--color-bg-hover)
+  );
+}
+
+.preset-card.preset-liquid-glass .preset-preview {
+  background: linear-gradient(
+    135deg,
+    var(--color-bg-surface-secondary),
+    var(--color-brand-subtle) 60%,
+    var(--color-bg-surface-secondary)
+  );
+}
+
+.preset-card.preset-frosted .preset-preview {
+  background: linear-gradient(
+    135deg,
+    var(--color-bg-surface),
+    var(--color-bg-hover) 58%,
+    var(--color-bg-surface-secondary)
+  );
+}
+
+.preset-card.preset-clear .preset-preview {
+  background:
+    repeating-conic-gradient(
+        color-mix(in srgb, var(--color-border-default) 46%, transparent) 0% 25%,
+        color-mix(in srgb, var(--color-bg-surface) 60%, transparent) 0% 50%
+      )
+      0 0 / 10px 10px,
+    linear-gradient(
+      135deg,
+      var(--color-bg-surface-secondary),
+      var(--color-brand-subtle)
+    );
+}
+
+/* 预设卡选中态用品牌色细边，不再额外叠阴影。 */
+.preset-card.active {
+  box-shadow: 0 0 0 1.5px var(--color-brand);
+}
+
+/* ── 极窄工作台：候选任务行改为「优先级 + 标题」一行、操作按钮下一行 ──
+   320px 窗口里内容区只有 ~248px，原来的三列会把任务标题压成两个字；
+   任务标题是主信息，必须优先完整可读，按钮让位到第二行。 */
+@media (max-width: 420px) {
+  .wb-pick-list .wb-row {
+    flex-wrap: wrap;
+    align-items: flex-start;
+    row-gap: 6px;
+  }
+
+  .wb-pick-list .wb-row .priority-tag {
+    order: 1;
+  }
+
+  .wb-pick-list .wb-row-main {
+    order: 2;
+    flex: 1 1 calc(100% - 44px);
+    min-width: 0;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    line-height: 1.45;
+  }
+
+  .wb-pick-list .wb-row > .btn {
+    order: 3;
+    margin-left: 30px;
+  }
+}
+
+/* ── 确认弹窗的危险主操作：实心红，和「取消」形成明确层级 ─────────
+   列表里的 `.btn.danger` 仍是轻量描边；只在确认弹窗内把最终确认按钮
+   升级为实心危险色，避免整页删除入口都变成红块。 */
+.ui-dialog .btn.danger {
+  background: var(--btn-danger-face);
+  border-color: var(--btn-danger-face);
+  color: var(--btn-danger-text);
+}
+
+.ui-dialog .btn.danger:hover:not(:disabled) {
+  background: var(--btn-danger-face-hover);
+  border-color: var(--btn-danger-face-hover);
+  color: var(--btn-danger-text);
+}
+
+/* ── Agent 关注态：从整行染色改为左侧 2px 语义色条 ───────────────
+   等待介入/失败是真实状态，但整行 6% 橙/红在浅色面上仍像错误横幅；
+   保留状态点与文字，行本身恢复中性，仅用 2px 条提示扫视路径。 */
+.tree-agent.attention-waiting .tree-agent-row,
+.tree-session.attention-waiting > .tree-row {
+  background: transparent;
+  box-shadow: inset 2px 0 0 var(--status-waiting);
+}
+
+.tree-agent.attention-failed .tree-agent-row,
+.tree-session.attention-failed > .tree-row {
+  background: transparent;
+  box-shadow: inset 2px 0 0 var(--status-error);
+}

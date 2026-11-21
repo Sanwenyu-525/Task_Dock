@@ -177,8 +177,8 @@
   --layout-window-floor-h: 480px;
   /* 顶栏空间分配（窗口 chrome 专用；页面内容不要引用） */
   --layout-topbar-height: 56px;
-  --layout-topbar-context-w: 210px;
-  --layout-topbar-context-min: 150px;
+  --layout-topbar-context-w: 180px;
+  --layout-topbar-context-min: 132px;
   --layout-search-min: 132px;
   /* 全局搜索几何（与 `src/lib/layoutMetrics.ts` 的 SEARCH_METRICS 一致，
      `layoutMetrics.test.ts` 校验）。字段与结果面板分开：字段不挤压顶栏控件，
@@ -19162,7 +19162,7 @@ body.nav-reorder-dragging {
 .wb-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 10px;
+  gap: 14px;
   align-items: start;
 }
 
@@ -19170,7 +19170,9 @@ body.nav-reorder-dragging {
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-card);
   background: var(--surface-raised);
-  padding: 14px 16px 15px;
+  /* Design System v1：卡片 16/18 内距 + 实白面。原先 14/16 + 半透明白
+     让卡片在浅灰渐变窗上「发白、发虚」，与背景分不开。 */
+  padding: 16px 18px 16px;
   min-width: 0;
 }
 
@@ -19179,7 +19181,7 @@ body.nav-reorder-dragging {
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
-  margin-bottom: 10px;
+  margin-bottom: 12px;
 }
 
 .wb-section-title {
@@ -19187,8 +19189,9 @@ body.nav-reorder-dragging {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 13px;
-  font-weight: 650;
+  font-size: var(--font-size-card-title);
+  line-height: var(--line-height-card-title);
+  font-weight: var(--font-weight-card-title);
   color: var(--text-primary);
   white-space: nowrap;
 }

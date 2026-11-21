@@ -43,7 +43,7 @@ const singleBody = (css: string, selector: string): string => bodiesOf(css, sele
 describe("入口加载顺序", () => {
   it("主窗/工作台/捕获/通知入口都加载 styles-flat，且位于模块样式之前", () => {
     const main = read("src/main.tsx");
-    const workspace = read("src/workspace/main.tsx");
+    const workspace = read("src/workspace/workspaceEntry.tsx");
     const capture = read("src/capture/main.tsx");
     const notification = read("src/notifications/main.tsx");
 

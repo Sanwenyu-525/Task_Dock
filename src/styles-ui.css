@@ -387,6 +387,9 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* `<button>` 的 UA 样式默认 text-align:center，会让标签在自己的弹性盒里居中。
+     选择器值必须左对齐（与下拉选项同一基线），hint/caret 仍靠右。 */
+  text-align: start;
 }
 
 .ui-select-caret {

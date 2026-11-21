@@ -381,8 +381,8 @@ Android 端、配对/远控审计、性能指标、跨进程 Trace、Panic 捕�
 ## 8. 未执行 / 无法验证的检查（诚实声明）
 
 > **本表是审计当时（2026-11-19）的状态快照**；第二阶段收尾已真实执行 `typecheck`、`cargo check`、
-> Rust/Kotlin/前端定向测试与一次 Dev 诊断中心实测，进展见 §10.4 与
-> `docs/acceptance/logging-phase2-acceptance-report.md` §8.2/§8.3；未执行项以验收报告为准。
+> Rust/Kotlin/前端定向测试、一次 Dev 诊断中心实测与 Android 真机验收，进展见 §10.4/§10.7 与
+> `docs/acceptance/logging-phase2-acceptance-report.md` §8.2/§8.3/§8.4；未执行项以验收报告为准。
 
 | 项 | 状态 | 原因 |
 |---|---|---|
@@ -449,7 +449,7 @@ grep -rn "console\.(log|error|warn|info|debug)(" src --include=*.ts --include=*.
 
 | 2026-11-19 缺口 | 第二阶段状态 | 复核依据（证据路径） |
 |---|---|---|
-| Android 无日志体系（B-07/B-08/C-14/D-09/E-16/J-07/K-17） | **已实现未验证**：`SafeLog.kt` / `FileLogSink.kt` / `LoggerModule.kt` / `CrashHandler.kt` 已落地 `apps/mobile/modules/logger/android/src/main/java/dev/taskdock/modules/logger/`；JVM 单测与 JS 单测真实通过；**真机/模拟器运行验收未执行**（环境无 emulator、`adb devices` 为空） | `android-logger/report.md`；Kotlin 27 用例（SafeLogTest 15 / FileLogSinkTest 12）、JS 定向 13、JS 全量 926（86 文件），`tsc --noEmit` 退出码 0 |
+| Android 无日志体系（B-07/B-08/C-14/D-09/E-16/J-07/K-17） | **已实现且真机验证（范围限定）**：`SafeLog.kt` / `FileLogSink.kt` / `LoggerModule.kt` / `CrashHandler.kt` 已落地 `apps/mobile/modules/logger/android/src/main/java/dev/taskdock/modules/logger/`；JVM/JS 单测与真机（vivo V2323A / Android 16）文件级验收通过：脱敏（含 metadata 键名凭据修复）、15,000 条轮转仅 3 文件/6,092,322 B、崩溃文件 650 B、Debug 启动日志落盘、最终 Release 冷启动 623 ms 且覆盖安装保留数据。Release 包内文件内容（非 debuggable/无 root）、7 天清理、低电量/不同 ROM 未覆盖 | `android-logger/report.md`；`final/android-device.md`；Kotlin **28**（SafeLog 16 / FileLogSink 12）、JS 定向 **14**、JS 全量 926（86 文件），`tsc --noEmit` 退出码 0 |
 | `trace_id` 跨端链路（G-04/G-13/G-14） | **已实现且已验证（模块级）**：`DiagnosticEvent.trace_id` 已入契约（`diagnostics/mod.rs:226`），`validate_external_id` 16 位小写 hex 校验；mobile_sync pull/push 会话级共享；前端 `startTracedOperation`；shelf addPaths/runFileOp、`create_task`、`open_agent_session` 三处、工作区 copy/move 已端到端接通（16 个 trace_wiring 用例通过）。**Dev 真机端到端未执行**；工作流执行链路仍未挂 trace（P2-1） | `trace-id/report.md`（mobile_sync 90 passed、diagnostics::trace 5 passed、前端 diagnostics.test.ts 40 passed、移动端 sync 4 文件 30 passed）；`trace-wiring/report.md`（trace_wiring 16 passed、tasks 45 passed、agent/胶囊组件 130 passed） |
 | `span_id` 阶段级标识（G-05） | **延期**：当前只有 `operation_id` + `trace_id`；`new_span_id()` 生成函数存在但事件结构未引入 span 字段。理由与将来字段约定见 §10.4 | `trace-id/report.md` §5 |
 | 统一安全审计视图（F-06/F-16） | **已实现且已验证（Rust 适配层 + Dev 实测）**：`security_audit/adapter.rs` 四源统一投影、合并排序分页、来源覆盖状态；16 个 `security_audit` 用例通过；Dev 实测四源状态（审计日志/MCP `无事件`、保险库 `未解锁`、个人中枢 `未接入`）。`personalHub` 源 **notWired（延期接线）**；vault 解锁态真实 `VaultState` 路径未在真机验证 | `security-audit/report.md`；`final/dev-ui.md` §3.1 |
@@ -461,7 +461,9 @@ grep -rn "console\.(log|error|warn|info|debug)(" src --include=*.ts --include=*.
 
 - **Android 原生日志无脱敏绕过**：`LoggerModule.write` 先在原生侧独立清洗 tag/message/metadata，
   Logcat 与 `FileLogSink` **共用同一份脱敏结果**，不依赖 JS 已脱敏前提；metadata 解析失败只丢
-  metadata、不丢整条日志。Kotlin `RULES` 与 JS `REDACT_RULES` 同序同规则，双侧各有对照矩阵用例。
+  metadata、不丢整条日志。metadata 键名本身是凭据类别（`password/token/api_key/...`）时值统一
+  `[redacted]`；Kotlin/JS 双侧 `SENSITIVE_METADATA_KEY` 同步。Kotlin `RULES` 与 JS
+  `REDACT_RULES` 同序同规则，双侧各有对照矩阵用例；真机探针已复测。
 - **trace_id 只做诊断关联**：绝不参与认证/授权/设备信任判断；`authenticate_device`、MCP token
   校验路径不读取 trace；非法外部 trace（大写/非 hex/长度不符/空串）丢弃并重新生成，不报错、
   不透传。测试 `trace_value_does_not_change_authentication_outcome` 验证无效令牌 + 携带 traceId
@@ -482,6 +484,11 @@ grep -rn "console\.(log|error|warn|info|debug)(" src --include=*.ts --include=*.
 | 分级丢弃 | TRACE/DEBUG/INFO 占低级别槽位（总量 − 预留），WARN/ERROR 独立预留配额；队列满优先丢低级别，按 trace/debug/info/warn/error/other 分别计数 + `droppedCount` 总量；未初始化/已关闭/dispatcher 拒绝均静默丢弃计数，绝不阻塞调用线程、绝不抛错崩溃 |
 | 轮转降级 | rename/移动失败进入降级：`rotateFailures` 连续失败计数（恢复成功后清零）用于 `rotateBackoff` 5 s 起翻倍、封顶 60 s（位移上限 10）；退避窗口内不重复 rename；每条 `writeLine` 与 `flushWriter` 都是恢复检查点（无常驻轮询定时器），**硬上限分支在退避到期时也会先尝试 rotate**，文件可用后由下一条写入自动恢复 |
 
+真机实测（2026-11-20，vivo V2323A / Android 16）：三批 15,000 条后仅 3 个文件
+（`app.1=2,097,693`、`app.2=2,097,649`、`app.log=1,893,528`），总量 **6,092,322 B**；
+`rotate-probe3` 在 `app.2` 0 条、`app.1` 1,532 条，最旧一代被替换。详见
+`tmp/acceptance/logging-phase2/final/android-device.md` §3.2。
+
 ### 10.4 延期项与将来约定
 
 - **span_id 完整 Span 体系（延期）**：现状 `diagnostics::trace::new_span_id()` 生成函数已存在，
@@ -495,8 +502,10 @@ grep -rn "console\.(log|error|warn|info|debug)(" src --include=*.ts --include=*.
   主 Tauri 进程未托管任何 `HubApi`/`HubStore` State；Named Pipe 协议仅暴露 identity/pairing/
   devices，无审计读取方法；`ph_audit_log` 只在独立进程的 `hub.db` 连接内可写。`HubAuditReader`
   trait 已预留，待管道协议/主进程 State 增加只读方法后接入。
-- **Release 专属项未执行**：安装包生成、安装/升级/卸载、签名与更新机制、生产环境资源加载、
-  正式性能基线，本阶段均为 Dev 模块级验收，未出安装包、无 buildId。
+- **Release 专属项未按集成流程执行**：安装包生成、安装/升级/卸载、签名与更新机制、生产环境资源
+  加载、正式性能基线，本阶段为 Dev/真机功能验收；已用当前工作树构建临时 arm64 Release APK
+  （33,513,751 B / SHA256 `B3D6C6F2…9BEECE`）并真机安装，但非集成快照、无 buildId，不能作为
+  正式 Release 结论。
 - **整 `cargo test --lib` 受其他任务在途文件阻塞（ENVIRONMENT BLOCKED，非本任务缺陷）**：
   在途未跟踪文件 `src-tauri/src/agent_access/tests_v82_rest.rs` 存在 raw byte string 含非 ASCII
   字节的语法错误，导致测试目标整包无法编译；本阶段各子任务以定向 `cargo test --lib <模块>` +
@@ -514,7 +523,7 @@ grep -rn "console\.(log|error|warn|info|debug)(" src --include=*.ts --include=*.
 |---|---|---|
 | `npm run typecheck`（`tsc --noEmit`） | 0 | 无类型错误（2026-11-20 16:xx 复跑，53.1 s） |
 | `npm run cargo -- check --lib`（`CARGO_TARGET_DIR=C:\taskdock-target-lp2`） | 0 | lib 编译通过；36 条既有警告（均为其他在途文件既有告警），无新增阻断性错误（40.3 s） |
-| `gradlew.bat :logger:testDebugUnitTest --rerun-tasks` | 0 | BUILD SUCCESSFUL；27 用例（SafeLog 15 / FileLogSink 12），failures=0 errors=0 |
+| `gradlew.bat :logger:testDebugUnitTest --rerun-tasks` | 0 | BUILD SUCCESSFUL；**28 用例**（SafeLog 16 / FileLogSink 12），failures=0 errors=0；后续新增 metadata 键名用例 |
 | Rust 定向套件（经嵌入 Common-Controls 清单的测试二进制） | 0 | trace_wiring 16、security_audit 16、mobile_sync 90、tasks 45、shelf 7、agents 4、fsops 35、recycle 4 全部通过；diagnostics 109 通过 / 2 ignored |
 | `cargo test --lib mcp` | 101 | 71 passed / 1 failed：`taskdock_collab_create_issue` 缺并发令牌字段（其他任务在途 schema，非本任务） |
 
@@ -530,4 +539,21 @@ grep -rn "console\.(log|error|warn|info|debug)(" src --include=*.ts --include=*.
 受影响：部分定向套件仅在前台控制台真实执行通过，落盘复测日志为 ENOSPC 阻塞记录（不作为测试
 失败证据）；`metrics`、`trace-wiring` 两份 `report.md` 兜底落在会话工作区（**收尾阶段已复制入
 仓库 `tmp/acceptance/logging-phase2/{metrics,trace-wiring}/`**）。事故不影响已在绿构上跑通的
-用例结论，但全量复测与真机验收需在磁盘空间充足后补做。
+用例结论，但全量复测仍需在阻塞解除后补做；Android 真机验收已由 §10.7 完成（范围限定）。
+
+### 10.7 Android 真机回填（2026-11-20 18:20–19:33）
+
+- **设备/包**：vivo V2323A，Android 16 / API 36，`arm64-v8a`；`dev.taskdock.mobile` v0.1.20（68）。
+  最终临时 Release APK 33,513,751 B / SHA256 `B3D6C6F2…9BEECE`（当前工作树，非集成快照）。
+- **脱敏**：真机发现 metadata 键名型凭据泄漏（`password=P@ssw0rd`），Kotlin/JS 双侧新增
+  `SENSITIVE_METADATA_KEY` 后复测 `password/token/api_key/email=[redacted]`、`path=[path]`、
+  nested 丢弃，原始敏感串 0 命中；Kotlin 28、JS 14、`tsc` 0。
+- **容量/轮转**：15,000 条后仅 3 文件、总量 6,092,322 B，最旧一代被替换。
+- **崩溃/启动**：`am crash` 生成 `crash-20261120-183856-11044.txt`（650 B，10 帧，无敏感路径）；
+  Debug 启动日志已落盘（18:52:54）；最终 Release 停 Metro 后冷启动 623 ms、Logcat
+  `19:33:41 I app: 应用启动`，覆盖安装保留 SQLite/5 条任务。
+- **修复的真实问题**：metadata 键名凭据（P1）；`LoggerModule.write` 前 `FileLogSink` 未初始化
+  （P2）；`ClipboardModule.kt` / `Ed25519Ops.kt` 漏 `SafeLog` import（P2，Release 编译失败）。
+- **边界**：Release 非 debuggable/无 root，包内文件内容未直接复核；7 天清理、低电量/后台限制、
+  不同 ROM 未测；正式 Release 验收（集成快照、安装/升级/卸载、签名、生产资源加载、正式性能
+  基线）仍未执行。详见 `tmp/acceptance/logging-phase2/final/android-device.md`。

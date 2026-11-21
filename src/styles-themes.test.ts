@@ -15,6 +15,7 @@ import { describe, expect, it } from "vitest";
 import themesCss from "./styles-themes.css?raw";
 import uiCss from "./styles-ui.css?raw";
 import appCss from "./styles.css?raw";
+import componentsCss from "./styles-components.css?raw";
 
 interface Rule {
   selector: string;
@@ -1266,6 +1267,25 @@ describe("输入框光标可读性", () => {
     }
     // 令牌定义本身指向 accent（主题色），随预设/明暗联动。
     expect(uiCss).toMatch(/--input-caret-color:\s*var\(--accent\)/);
+  });
+});
+
+// 组件层（@layer components）晚于 ui 层，且全局 input 选择器特异性远高于
+// `.input-embedded`。若不显式排除，内嵌输入会被重新画上第二层边框/白底/焦点环，
+// 表现为「一个搜索框里套着一个小输入框」——这类回归已出现多次。
+describe("组件层全局输入样式不得接管嵌入式输入", () => {
+  it("四条全局 input 规则都排除 .input-embedded", () => {
+    const selectors = [...stripComments(componentsCss).matchAll(/([^{}]+)\{/g)]
+      .flatMap((match) => match[1].split(","))
+      .map((selector) => selector.trim())
+      .filter((selector) => selector.startsWith("input:not("));
+
+    expect(selectors.length, "组件层应有基础 / hover / focus / disabled 四条 input 规则").toBe(4);
+    for (const selector of selectors) {
+      expect(selector, `全局 input 规则未排除 .input-embedded: ${selector}`).toContain(
+        ":not(.input-embedded)",
+      );
+    }
   });
 });
 

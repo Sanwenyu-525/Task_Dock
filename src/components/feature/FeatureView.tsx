@@ -32,7 +32,7 @@ import { installFeatureRegistry } from "../../lib/featureRegistry";
 import { useLocale } from "../../hooks/useLocale";
 
 // 前置条件：注册表必须已安装。窗口入口会显式安装一次（`main.tsx` /
-// `workspace/main.tsx`），这里再兜底一次——组件测试、按需渲染的子树都可能
+// `workspace/workspaceEntry.tsx`），这里再兜底一次——组件测试、按需渲染的子树都可能
 // 绕过入口直接挂载本组件；`installFeatureRegistry` 幂等且只登记元数据。
 installFeatureRegistry();
 

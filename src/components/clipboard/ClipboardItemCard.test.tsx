@@ -736,6 +736,13 @@ describe("clipboard-page.css 大卡片契约", () => {
     );
     expect(use).toMatch(/display:\s*none/);
   });
+
+  it("分体复制在页面态显式还原：复制右缘直角、无第二层边框（组件层 .btn 会压过 base 层）", () => {
+    const copy = ruleBody(pageCss, ".clipboard-page .clip-copy-split > .clip-copy-btn");
+    expect(copy).toMatch(/border:\s*0/);
+    expect(copy).toMatch(/border-radius:\s*var\(--radius-sm\)\s*0\s*0\s*var\(--radius-sm\)/);
+    expect(copy).toMatch(/background:\s*transparent/);
+  });
 });
 
 describe("ClipboardItemCard 来源信息", () => {

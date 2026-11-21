@@ -4,11 +4,16 @@
  * 只有 .projection-nav 可交互（Side/Compact = 右缘导航列；Bottom = 底部条）。
  * 视频（scrcpy 渲染）不会被本层遮挡——Side 模式导航列落在右侧 letterbox 内。
  * 只使用语义 Token（颜色/圆角/阴影），不硬编码主题色。
+ *
+ * 2026-11-20：全部规则收敛到 `.projection-window`（toolbar.html 的 body class）。
+ * 原因：Vite 生产构建把各入口 CSS 合并为同一个 style-*.css，工作台/主窗也
+ * 会加载到本文件；此前裸 `body { pointer-events:none }` 会把其它窗口的
+ * 整个 body 变成不可点击（生产包 P0）。
  */
 
-html,
-body,
-#root {
+html.projection-window,
+body.projection-window,
+body.projection-window #root {
   width: 100%;
   height: 100%;
   margin: 0;
@@ -17,7 +22,7 @@ body,
   background: transparent;
 }
 
-body {
+body.projection-window {
   color: var(--text-primary);
   font-family: inherit;
   user-select: none;
@@ -27,7 +32,7 @@ body {
   pointer-events: none;
 }
 
-#root {
+body.projection-window #root {
   position: relative;
   width: 100%;
   height: 100%;

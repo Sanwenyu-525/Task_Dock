@@ -129,6 +129,19 @@ class SafeLogTest {
   }
 
   @Test
+  fun `metadata sensitive key names force redaction`() {
+    val json = """{"password":"P@ssw0rd","token":"abc123","api_key":"raw","key":123456,"authorization":"Bearer secret","note":"password:hunter2"}"""
+    val md = SafeLog.sanitizeMetadataJson(json)
+    requireNotNull(md)
+    assertEquals("[redacted]", md.getString("password"))
+    assertEquals("[redacted]", md.getString("token"))
+    assertEquals("[redacted]", md.getString("api_key"))
+    assertEquals("[redacted]", md.getString("key"))
+    assertEquals("[redacted]", md.getString("authorization"))
+    assertEquals("[redacted]", md.getString("note"))
+  }
+
+  @Test
   fun `metadata drops nested objects and arrays`() {
     val json = """{"nested":{"a":1},"list":[1],"name":"ok"}"""
     val md = SafeLog.sanitizeMetadataJson(json)

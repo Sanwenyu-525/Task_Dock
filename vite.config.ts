@@ -23,6 +23,12 @@ export default defineConfig({
     // 保持 import 顺序（base → themes → ui）。
     cssCodeSplit: false,
     rollupOptions: {
+      // 2026-11-20：多入口 + 大量动态页面时，Rollup 默认会把「没有导出」的
+      // 入口模块（src/main.tsx）并进共享 chunk；页面 import 触到该 chunk
+      // 就会执行主窗的 createRoot，把 #root 覆盖成主窗 App（工作台窗口
+      // 打开后实际显示主窗）。strict 强制每个 HTML 入口独立成 chunk，
+      // 入口副作用只在各自窗口执行一次。
+      preserveEntrySignatures: "strict",
       input: {
         main: resolve(__dirname, "index.html"),
         "context-menu": resolve(__dirname, "context-menu.html"),

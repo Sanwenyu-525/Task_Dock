@@ -1,0 +1,317 @@
+/* ════════════════════════════════════════════════════════════════
+   TaskDock Design System · 公共组件视觉层（v1.0，2026-11-20）
+   ════════════════════════════════════════════════════════════════
+   只放**跨页面共用组件**的默认视觉：按钮、输入框、选择器、徽标、标签、
+   搜索框与基础排版。页面私有组件（.wb-* / .ws-* / .clip-* …）仍在各自
+   CSS 维护；未分层的页面规则权重高于本层，页面可以按需覆盖。
+
+   与 styles.css / styles-themes.css 的关系：
+   - 三层 Token（styles-tokens.css）决定颜色与尺寸；本层只把 Token 落到
+     具体组件的 padding / height / border / 状态切换上。
+   - 放在 components 层（晚于 base/theme/ui/menu/flat/tokens），因此能稳定
+     压过 styles.css `@layer base` 与 styles-themes.css `@layer theme` 的
+     旧按钮/徽标默认值，不需要在旧文件里再改一遍。
+   ════════════════════════════════════════════════════════════════ */
+
+@layer components {
+  /* ── 基础排版 ───────────────────────────────────────────────── */
+  body {
+    font-family: var(--font-sans);
+    font-size: var(--font-size-body);
+    line-height: var(--line-height-body);
+    color: var(--color-text-primary);
+  }
+
+  /* 表单字段标签：12px / 中性色，不再用 11px 的弱对比小字 */
+  .field {
+    font-size: var(--font-size-caption);
+    color: var(--color-text-secondary);
+  }
+
+  /* ── 按钮 ─────────────────────────────────────────────────────
+     统一三级：Primary（实心 Indigo）、Secondary（白底描边）、Ghost（透明）。
+     状态只改底色/边框/文字，不靠透明度表达禁用。 */
+  .btn {
+    min-height: var(--btn-height);
+    padding: 0 13px;
+    gap: 6px;
+    border: 1px solid var(--btn-secondary-border);
+    border-radius: var(--radius-control);
+    background: var(--btn-secondary-face);
+    color: var(--btn-secondary-text);
+    font-size: var(--font-size-secondary);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.2;
+  }
+
+  .btn:hover:not(:disabled) {
+    background: var(--btn-secondary-face-hover);
+    border-color: var(--btn-secondary-border-hover);
+    color: var(--color-text-primary);
+  }
+
+  .btn:active:not(:disabled) {
+    background: var(--color-bg-active);
+    border-color: var(--btn-secondary-border-hover);
+    box-shadow: none;
+  }
+
+  .btn.primary {
+    background: var(--btn-primary-face);
+    border-color: var(--btn-primary-face);
+    color: var(--btn-primary-text);
+    box-shadow: none;
+  }
+
+  .btn.primary:hover:not(:disabled) {
+    background: var(--btn-primary-face-hover);
+    border-color: var(--btn-primary-face-hover);
+    color: var(--btn-primary-text);
+  }
+
+  .btn.primary:active:not(:disabled) {
+    background: var(--btn-primary-face-active);
+    border-color: var(--btn-primary-face-active);
+    color: var(--btn-primary-text);
+  }
+
+  .btn.danger {
+    background: var(--btn-secondary-face);
+    border-color: var(--btn-danger-soft-border);
+    color: var(--btn-danger-soft-text);
+  }
+
+  .btn.danger:hover:not(:disabled) {
+    background: var(--btn-danger-face);
+    border-color: var(--btn-danger-face);
+    color: var(--btn-danger-text);
+  }
+
+  .btn.danger-ghost {
+    background: transparent;
+    border-color: transparent;
+    color: var(--btn-danger-soft-text);
+  }
+
+  .btn.danger-ghost:hover:not(:disabled) {
+    background: var(--btn-danger-soft-face);
+    border-color: var(--btn-danger-soft-border);
+    color: var(--btn-danger-soft-text);
+  }
+
+  .btn.sm {
+    min-height: var(--btn-height-sm);
+    padding: 0 10px;
+    font-size: var(--font-size-caption);
+  }
+
+  .btn:disabled,
+  .btn.primary:disabled {
+    opacity: 1;
+    cursor: not-allowed;
+    background: var(--btn-disabled-face);
+    border-color: var(--btn-disabled-border);
+    color: var(--btn-disabled-text);
+    box-shadow: none;
+  }
+
+  /* 图标按钮：26 → 28，命中区与周边控件对齐；不加边框 */
+  .icon-btn {
+    width: 28px;
+    height: 28px;
+    border-radius: var(--radius-xs);
+    color: var(--color-text-secondary);
+  }
+
+  .icon-btn.sm {
+    width: 24px;
+    height: 24px;
+  }
+
+  .icon-btn:hover:not(:disabled) {
+    background: var(--color-bg-hover);
+    color: var(--color-text-primary);
+  }
+
+  .icon-btn.active {
+    background: var(--color-bg-selected);
+    color: var(--color-brand-text);
+  }
+
+  /* ── 输入框 / 文本域 ───────────────────────────────────────────
+     32px 高、13px 字号、白底 1px 中性边框；聚焦只加品牌色边框 + 3px 柔光环，
+     不做整框发光。禁用态使用明确的中性底色，不压透明度。
+     `.input-embedded` 必须排除：内嵌输入由容器负责表面，若这里再画一遍，
+     就会出现「搜索框里套着一个小输入框」的第二层边框/白底（已回归多次）。 */
+  input:not(.input-embedded):not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]),
+  select,
+  textarea {
+    min-height: var(--control-height);
+    padding: 0 10px;
+    border: 1px solid var(--field-border);
+    border-radius: var(--radius-control);
+    background: var(--field-bg);
+    color: var(--color-text-primary);
+    font-size: var(--font-size-secondary);
+    line-height: 1.4;
+  }
+
+  textarea {
+    padding: 8px 10px;
+  }
+
+  input::placeholder,
+  textarea::placeholder {
+    color: var(--field-placeholder);
+    opacity: 1;
+  }
+
+  input:not(.input-embedded):not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]):hover,
+  select:hover,
+  textarea:hover {
+    border-color: var(--field-border-hover);
+  }
+
+  input:not(.input-embedded):not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]):focus,
+  select:focus,
+  textarea:focus {
+    outline: none;
+    border-color: var(--field-border-focus);
+    box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.14);
+  }
+
+  input:not(.input-embedded):not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]):disabled,
+  select:disabled,
+  textarea:disabled {
+    opacity: 1;
+    cursor: not-allowed;
+    background: var(--field-disabled-bg);
+    border-color: var(--field-disabled-border);
+    color: var(--field-disabled-text);
+    box-shadow: none;
+  }
+
+  /* 选择器 / 组合框：与输入框同高同字号；包装容器负责焦点环 */
+  .ui-select-trigger,
+  .ui-combobox,
+  .ui-search {
+    min-height: var(--control-height);
+    padding: 0 10px;
+    font-size: var(--font-size-secondary);
+    border-radius: var(--radius-control);
+    background: var(--field-bg);
+    box-shadow: var(--control-shadow);
+  }
+
+  .ui-select-trigger.size-sm,
+  .ui-combobox.size-sm,
+  .ui-search.size-sm {
+    min-height: var(--btn-height-sm);
+    font-size: var(--font-size-caption);
+  }
+
+  .ui-select-trigger:hover:not(:disabled),
+  .ui-combobox:hover {
+    box-shadow: var(--control-shadow-hover);
+  }
+
+  .ui-select-trigger.is-open,
+  .ui-select-trigger:focus-visible,
+  .ui-combobox.is-open,
+  .ui-combobox:focus-within,
+  .ui-search:focus-within {
+    outline: none;
+    box-shadow: 0 0 0 1px var(--color-brand), 0 0 0 3px rgba(79, 70, 229, 0.14);
+  }
+
+  /* ── 徽标 / 标签 ───────────────────────────────────────────────
+     默认 Neutral；状态色只用于真实状态（success / warning / danger / info）。
+     旧 `.badge` 默认是红色，会让任意计数看起来像错误告警。 */
+  .badge {
+    min-height: 18px;
+    padding: 0 6px;
+    border-radius: var(--radius-pill);
+    border: 1px solid var(--color-neutral-border);
+    background: var(--color-neutral-bg);
+    color: var(--color-neutral);
+    font-size: var(--font-size-micro);
+    font-weight: var(--font-weight-medium);
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .badge.subtle {
+    background: var(--color-neutral-bg);
+    border-color: var(--color-neutral-border);
+    color: var(--color-text-secondary);
+  }
+
+  .badge.accent {
+    background: var(--color-brand-subtle);
+    border-color: transparent;
+    color: var(--color-brand-text);
+  }
+
+  .badge.success {
+    background: var(--color-success-bg);
+    border-color: var(--color-success-border);
+    color: var(--color-success);
+  }
+
+  .badge.warning {
+    background: var(--color-warning-bg);
+    border-color: var(--color-warning-border);
+    color: var(--color-warning);
+  }
+
+  .badge.danger,
+  .badge.error {
+    background: var(--color-error-bg);
+    border-color: var(--color-error-border);
+    color: var(--color-error);
+  }
+
+  .badge.info {
+    background: var(--color-info-bg);
+    border-color: var(--color-info-border);
+    color: var(--color-info);
+  }
+
+  .chip {
+    min-height: 24px;
+    padding: 0 9px;
+    border: 1px solid var(--color-chip-border);
+    border-radius: var(--radius-pill);
+    background: var(--color-chip-bg);
+    color: var(--color-chip-text);
+    font-size: var(--font-size-caption);
+    line-height: 1.2;
+  }
+
+  /* ── 浮层：统一 10px 圆角；菜单/弹窗的边框与阴影由 Token 控制 ── */
+  .ui-popover,
+  .ui-menu-popover,
+  .ui-select-popover,
+  .ui-combobox-popover,
+  .ui-dtp-popover,
+  .ui-pointer-menu {
+    border-radius: var(--menu-radius);
+  }
+
+  .ui-option {
+    border-radius: var(--radius-xs);
+    font-size: var(--font-size-secondary);
+  }
+
+  .ui-option.is-active,
+  .ui-option:active:not(.is-disabled) {
+    background: var(--menu-hover);
+  }
+
+  .ui-option.is-selected {
+    background: var(--menu-active-face);
+    color: var(--menu-active-text);
+  }
+}

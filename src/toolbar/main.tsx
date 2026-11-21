@@ -11,6 +11,7 @@ import { installGlobalErrorHandlers } from "../lib/globalErrors";
 import { initLocale } from "../i18n";
 import "../styles-themes.css";
 import "../styles-flat.css";
+import "../styles-tokens.css";
 import "../styles-ui.css";
 import "../components/mobile/virtual-display/projection-controls/projection-controls.css";
 

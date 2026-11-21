@@ -1,9 +1,11 @@
 # 日志系统第二阶段（logging-phase2）安全验收报告
 
 - 报告日期：2026-11-20（UTC+8）
-- 运行模式：**Dev 功能验收（Debug 模块级定向测试 + 静态检查）**；非 Release 正式验收，无 buildId。
-- 工作目录：`D:\Develop\task_dock`；Git HEAD：`5b6c671`；共享工作区含其他任务在途改动，
-  本报告只对第二阶段安全相关声明路径下结论。
+- 运行模式：**Dev 功能验收（Debug 模块级定向测试 + 静态检查）+ Android 真机安全验收**；
+  非 Release 正式验收，无 buildId。Android 文件级证据取自 Debug 变体，最终 Release 仅验证启动与
+  数据保留（非 debuggable、无 root）。
+- 工作目录：`D:\Develop\task_dock`；Git HEAD：收尾测试时为 `5b6c671`；运行期外部定时提交推进至
+  `fc1c629`（非本任务操作），共享工作区约 89 条在途改动，本报告只对第二阶段安全相关声明路径下结论。
 - 检查依据：`AGENTS.md` §4 架构红线、§7 报告口径；`tmp/acceptance/logging-phase2/interfaces.md`
   §2.1/§2.2；`unified-observability-design.md` §4.3（审计）/§4.4（Trace）；`DIAGNOSTICS.md`
   §6（隐私红线）/§24（级别与隐私）/§25.1/§25.3。
@@ -28,7 +30,7 @@
 5. **Android 日志边界**：沙盒目录、容量上限、队列背压、崩溃文件留存与隐私字段处理。
 
 **不在范围**：其他模块的安全审计实现评审；MCP 工具权限模型本体；Vault 加解密本体；
-Release 签名/安装包安全；真机安全走查。
+Release 签名/安装包安全；正式 Release 真机安全走查（Debug 真机已做，见 §5.5）。
 
 ## 2. 检查依据与方法
 
@@ -37,11 +39,12 @@ Release 签名/安装包安全；真机安全走查。
   `diagnostics/query.rs`、`apps/mobile/modules/logger/`、`apps/mobile/src/lib/safeLog.ts`。
 - 证据优先级：原始测试日志 > 子任务 report.md > 文档；数字以当次输出为准。
 - 方法：定向 Rust/JS/Kotlin 测试 + 源码走读；初稿未启动 Dev 实例；17:36 补做隔离 Dev 实例的
-  安全审计 UI/导出授权走查（§6、§9）；未连接真机；不做渗透测试。
+  安全审计 UI/导出授权走查（§6、§9）；18:20 后补做 Android 真机安全验收（§5.5）；不做渗透测试。
 
 ## 3. 环境
 
-- Windows 本地 PC，PowerShell 7.6.4；无 Android 真机/模拟器；未启动 `npm run tauri dev`。
+- Windows 本地 PC，PowerShell 7.6.4；Android 真机 vivo V2323A / Android 16 / API 36 / arm64
+  已连接并完成 Debug 文件级 + Release 安装/启动验收（§5.5）。
 - **D: 盘 ENOSPC 事故**：当日 D: 盘写满至 0 字节，主智能体删除可再生构建产物
   `src-tauri/target/debug`（约 8.0 GB）后恢复约 7.0 GB；部分复测仅前台控制台通过，落盘日志
   为阻塞记录，不作为失败证据。详见验收总报告 §3.2。
@@ -57,9 +60,9 @@ Release 签名/安装包安全；真机安全走查。
 | 2 | `cargo test --lib diagnostics::trace` | 0 | 5 passed / 0 failed / 0 ignored（2563 filtered） | `trace-id/cargo-test-trace.txt` |
 | 3 | `cargo test --lib mobile_sync` | 0 | 90 passed / 0 failed / 0 ignored（2478 filtered），77.89s | `trace-id/cargo-test-mobile-sync.txt` |
 | 4 | `vitest run src/lib/diagnostics.test.ts` | 0 | 1 文件 40 passed | `trace-id/frontend-diagnostics-test.txt` |
-| 5 | `vitest run` `apps/mobile` `safeLog.test.ts` | 0 | 1 文件 13 passed | `android-logger/js-safeLog-final.txt` |
+| 5 | `vitest run` `apps/mobile` `safeLog.test.ts` | 0 | 1 文件 **14 passed** | `android-safelog-js-test.log` |
 | 6 | `vitest run` `apps/mobile` 全量 | 0 | 86 文件 926 passed | `android-logger/js-all-tests.txt` |
-| 7 | Gradle `:logger:testDebugUnitTest` Kotlin 单测 | 0 | BUILD SUCCESSFUL；SafeLogTest 15 / FileLogSinkTest 12，failures=0 errors=0 | `android-logger/gradle-test-9.txt`；`final/kotlin-test.log`；`report.md` §3.1 |
+| 7 | Gradle `:logger:testDebugUnitTest` Kotlin 单测 | 0 | BUILD SUCCESSFUL；**SafeLogTest 16 / FileLogSinkTest 12 = 28**，failures=0 errors=0 | `android-safelog-kotlin-test.log`；模块 `build/test-results/TEST-*.xml` |
 | 8 | `cargo test --lib diagnostics::query` | 0 | 13 passed / 0 failed（含授权段脱敏、无审计段委托用例） | `export-preview/test-query-pass.log` |
 | 9 | `npm run typecheck`（主智能体） | 0 | 无类型错误 | 主会话静态检查记录 |
 | 10 | `npm run cargo -- check --lib`（主智能体） | 0 | lib 编译通过；36 条既有警告，无新增阻断 | 主会话静态检查记录 |
@@ -77,8 +80,13 @@ Release 签名/安装包安全；真机安全走查。
   - `LoggerModule.write` **先在原生侧独立清洗** tag、message、metadata；Logcat 输出与
     `FileLogSink` 写文件**共用同一份清洗结果**，不存在「JS 未脱敏 → 原生落明文」的绕过路径。
   - metadata 解析失败时只丢弃 metadata，不丢弃整条日志，也不把原始 metadata 写入文件。
-  - Kotlin `RULES` 与 JS `REDACT_RULES` **同序同规则**；双侧各有对照矩阵用例（13 个 JS
-    定向用例 + Kotlin SafeLogTest 用例覆盖各规则类）。
+  - Kotlin `RULES` 与 JS `REDACT_RULES` **同序同规则**；双侧各有对照矩阵用例（**14 个 JS
+    定向用例 + Kotlin SafeLogTest 16 个用例**覆盖各规则类）。
+  - **真机缺陷与修复（P1）**：metadata 键名本身就是凭据类别时，值未脱敏；真机探针
+    `password=P@ssw0rd` 原样落盘。已在 Kotlin/JS 双侧新增 `SENSITIVE_METADATA_KEY`，键名命中
+    `authorization/token/password/passwd/secret/api[_-]?key/apikey/auth/sig/key` 时值统一
+    `[redacted]`；复测 `password/token/api_key/email=[redacted]`、`path=[path]`、nested 丢弃，
+    原始敏感串 `P@ssw0rd|raw-api-key|SECRET-abc123|leak@example.com` 在 Logcat 与文件中 0 命中。
 - **traceId 不落敏感值**：审计投影中 `correlation_id` / `request_id` 必须过 16-hex 校验才
   写入 `traceId` 字段；校验失败置空，不把原始请求值透传进诊断事件。
 
@@ -127,6 +135,17 @@ Release 签名/安装包安全；真机安全走查。
   256 条、高级别（WARN/ERROR）预留 32 条；队列满优先丢 TRACE/DEBUG/INFO，按级别计数丢弃，
   绝不阻塞调用线程、绝不因队列满崩溃。
 - 写失败（磁盘满等）只递增丢弃/失败计数，不抛错、不阻塞业务。
+- **真机实测（vivo V2323A / Android 16，Debug 文件级）**：
+  - 脱敏探针：修复前 `metadata.password` 泄漏 `P@ssw0rd`；修复后
+    `password/token/api_key/email=[redacted]`、`path=[path]`、nested 丢弃、`ok` 保留；Logcat
+    与文件一致，原始敏感串 0 命中（`final/android-device.md` §3.1）。
+  - 15,000 条（3×5,000，480 字符）后仅 3 个文件：
+    `app.1=2,097,693`、`app.2=2,097,649`、`app.log=1,893,528`，总量 **6,092,322 B**；
+    最旧一代被替换（`rotate-probe3` 在 `app.2` 0 条、`app.1` 1,532 条）。
+  - `am crash` 生成 `crash-20261120-183856-11044.txt`（650 B，10 帧），仅
+    time/thread/exception/message/frames，无敏感路径；重启恢复。
+  - 最终 Release 非 debuggable，`run-as` 拒绝、无 root，文件内容未直接复核；但 Release 冷启动
+    623 ms、Logcat「应用启动」与覆盖安装保留 SQLite/5 条任务已确认（`final/android-device.md` §4）。
 
 ### 5.6 修改文件与关键位置（安全相关）
 
@@ -144,19 +163,19 @@ Release 签名/安装包安全；真机安全走查。
 | 项 | 原因 | 影响 |
 |---|---|---|
 | vault 解锁态真实 `VaultState` 读取审计 | 验收环境无解锁 Vault 会话；`Unlocked` 分支仅由适配层用例构造 | 真实解锁后的读取、过滤与错误转换路径待复核 |
-| Android 真机/模拟器行为 | 无 emulator、`adb devices` 为空；Expo Module 实例化与 JS→原生 IPC 端到端未在运行时取证 | 真机落盘内容、文件权限、崩溃写出与脱敏实际表现证据不足 |
+| ~~Android 真机/模拟器行为~~ **已真机验证（Debug 文件级 + Release 启动，范围限定）** | Debug 变体可读沙盒；Release 非 debuggable/无 root，文件内容不能直接读取 | 真机落盘内容、文件权限、崩溃写出与脱敏已取得 Debug 证据；Release 包内文件、7 天清理、低电量/后台限制、不同 ROM 未覆盖 |
 | MCP 协议层 Rust 单测 | 受在途编译错误阻塞（ENVIRONMENT BLOCKED） | MCP 外部传入 trace 校验路径未在绿构回归 |
 | 审计写入失败可靠性 | 本阶段未注入「审计写入失败」故障；设计要求高风险操作失败时诊断日志记 ERROR（`SECURITY_AUDIT_WRITE_FAILED`） | 写入失败不阻塞业务的降级路径仅有设计契约，缺本阶段故障注入证据 |
 | Dev 实例完整视觉矩阵 | 诊断中心安全审计三视图、导出授权切换/取消已 Dev 实测；320/400 窄窗、深浅主题、焦点顺序未走查 | 完整窗口视觉矩阵仍证据不足 |
-| Release 安全项 | 未出安装包 | 签名、安装/升级/卸载、生产资源加载、日志文件权限在生产包的表现未验收 |
+| Release 正式安全项 | 已出当前工作树临时 Release APK 并安装，但非集成快照、无 buildId；lint 因磁盘满跳过 | 签名、安装/升级/卸载、生产资源加载、日志文件权限的正式验收仍未执行 |
 
 ## 7. P0–P3 问题清单
 
 ### P0
 
 - **未在本任务定向证据中发现 P0**（无敏感值泄露落盘、无鉴权绕过、无审计表被诊断清理路径
-  删除的证据）。证据边界：整库测试阻塞、Android 真机未走查；Dev 诊断 UI（三视图、审计来源
-  状态、导出授权/取消）已实测，不能据此排除其他在途改动引入的安全问题。
+  删除的证据）。证据边界：整库测试阻塞、Release 包内文件未直接读取；Android 真机 Debug 文件级
+  与最终 Release 启动已覆盖（§5.5），不能据此排除其他在途改动引入的安全问题。
 
 ### P1
 
@@ -164,6 +183,7 @@ Release 签名/安装包安全；真机安全走查。
 |---|---|---|---|---|
 | P1-1 | 整库安全相关 Rust 单测无法全量回归 | 其他任务在途未跟踪文件 `tests_v82_rest.rs` 语法错误阻塞测试目标编译 | 鉴权/审计牵连链路未在绿构全量验证；阻塞解除后需复测 | 总报告 §3.3 |
 | P1-2 | 审计写入失败降级路径缺故障注入证据 | 本阶段未设计磁盘满/DB 不可用注入用例 | 高风险操作审计丢失时的 ERROR 告警链路未取证 | §6 |
+| P1-3 | **真机发现 metadata 键名型凭据未脱敏（已修复）**：`password=P@ssw0rd` 原样落盘 | `SafeLog.kt` / `safeLog.ts` 只对消息文本按赋值形态脱敏，metadata 仅按值类型截断，未检查键名类别 | 若调用方把凭据放进 metadata（如 `password`/`token`/`api_key`），会以明文写入 Logcat 与文件 | 修复：双侧 `SENSITIVE_METADATA_KEY`；复测 `[redacted]` 且原始串 0 命中；Kotlin 28 + JS 14；`final/android-device.md` §3.1 |
 
 ### P2
 
@@ -171,7 +191,7 @@ Release 签名/安装包安全；真机安全走查。
 |---|---|---|---|---|
 | P2-1 | personalHub 审计源未接线 | 独立进程无主进程只读管道 | Hub 侧审计事件暂不出现在统一视图；状态如实标注 `notWired`，未伪造数据 | `security-audit/report.md` §6 |
 | P2-2 | 审计口径偏差：vault `total` 受 1000 条上限约束；mcp COUNT 仅时间边界、过滤在内存层 | 适配层有界读取设计 | 超大库下列表计数与全量过滤存在偏差；已在文档与报告明示 | `security-audit/report.md` §8 |
-| P2-3 | Android 真机脱敏实际表现未取证 | 无真机/模拟器环境 | 原生侧脱敏顺序结论来自 JVM 单测与源码走读，真机日志样本待补 | `android-logger/report.md` §5 |
+| P2-3 | ~~Android 真机脱敏实际表现未取证~~ **已真机验证并修复 P1-3** | 初稿无设备；后续连接 vivo V2323A | 真机探针先发现 metadata 键名泄漏，修复后复测 `[redacted]`、原始串 0 命中 | `final/android-device.md` §3.1 |
 
 ### P3
 
@@ -186,8 +206,10 @@ Release 签名/安装包安全；真机安全走查。
    `mcp::protocol`、`diagnostics` 全量，并复核鉴权隔离用例仍通过。
 2. **Hub 审计接线风险**：将来通过 Named Pipe 暴露只读审计方法时，须复用现有只读适配层与
    来源标识约定，避免跨进程直连 `hub.db` 文件。
-3. **真机隐私复核**：Android 上线前须在真机抓 Logcat 与 `filesDir/logs` 文件样本，确认无
-   明文敏感值；本次 JVM 单测不能替代真机样本检查。
+3. **真机隐私复核（已完成 Debug 文件级）**：Android Debug 变体已抓 Logcat 与 `filesDir/logs`
+   文件样本，确认无明文敏感值，并修复 metadata 键名泄漏（P1-3）。最终 Release 非 debuggable、
+   无 root，包内文件内容未直接复核；上线前如条件允许，应在可调试的生产等价包或设备管理通道
+   再抽一次样本。本次 JVM 单测不能替代该复核，但真机 Debug 样本已覆盖主要脱敏路径。
 4. **导出授权 UI 链路（已 Dev 实测）**：默认关闭、勾选审计后重新预估（5 条/5.5 KB →
    6 条/6.3 KB）、取消不落盘均已验证；「确认导出」后的原生保存与实际文件脱敏仍须补测。
 5. **完整视觉矩阵**：320/400 窄窗、深浅主题、键盘/Escape 焦点顺序未走查，不能替代
@@ -195,19 +217,19 @@ Release 签名/安装包安全；真机安全走查。
 
 ## 9. 结论
 
-**部分通过（Dev 功能验收，安全口径）。**（2026-11-20 收尾复验后仍维持：代码与定向测试通过，
-真机/解锁态样本未取证。）
+**通过（Dev 功能验收 + Android 真机安全验收，范围限定；P1-2 故障注入缺口与 Release 正式验收除外）。**
 
-- 已验证：三侧脱敏规则对照、Android 原生侧先脱敏且 Logcat/文件共用结果、trace 与鉴权隔离、
-  审计来源标识与状态枚举、存储分离、导出显式授权与有界性；收尾复验
-  `security_audit` 16 passed、`mobile_sync` 90 passed、`mcp` 71 passed / 1 既有 schema 失败、
-  `diagnostics` 109 passed / 2 ignored，均有定向测试与源码证据。
-- Dev 实测补充（`final/dev-ui.md`）：安全审计页真实渲染四类来源状态（审计日志/MCP 审计
-  `无事件`、保险库 `未解锁`、个人中枢 `未接入`），未把不可读来源伪装成 0 事件；导出预览默认
-  不勾选审计，勾选后预估从 5 条/5.5 KB 变为 6 条/6.3 KB，取消后对话框关闭且无文件落地。
-- 未达到「通过」：Android 真机脱敏样本、vault 解锁态真实会话、Release 安全项、完整 Dev 视觉
-  矩阵（窄窗/主题/焦点）未取证；personalHub 源按延期处理；整库安全回归仍被其他任务未跟踪
-  测试阻塞（本任务安全路径已用定向套件复验）。
+- 已验证：三侧脱敏规则对照、Android 原生侧先脱敏且 Logcat/文件共用结果、metadata 键名凭据
+  `[redacted]`（真机 P1-3 修复并复测）、trace 与鉴权隔离、审计来源标识与状态枚举、存储分离、
+  导出显式授权与有界性；收尾复验 `security_audit` 16 passed、`mobile_sync` 90 passed、
+  `mcp` 71 passed / 1 既有 schema 失败、`diagnostics` 109 passed / 2 ignored，均为定向测试。
+- Android 真机补充（`final/android-device.md`）：vivo V2323A / Android 16；Debug 文件级验证
+  脱敏、轮转（15,000 条后 3 文件/6,092,322 B）、崩溃文件（650 B，无敏感路径）、启动日志；
+  最终 Release 冷启动 623 ms、Logcat「应用启动」、覆盖安装保留 SQLite/5 条任务。
+- 未达到「正式 Release 通过」：Release 包内文件内容（非 debuggable、无 root）、7 天清理、
+  低电量/后台限制、不同 ROM、vault 解锁态真实会话、Release 签名/升级/卸载、完整 Dev 视觉矩阵
+  未取证；personalHub 源按延期处理；**P1-2 审计写入失败故障注入仍缺证据**；整库安全回归仍被
+  其他任务未跟踪测试阻塞。
 - 本结论不覆盖其他在途改动，不构成生产包安全验收结论。
 
 ## 10. 证据路径清单
@@ -219,8 +241,12 @@ Release 签名/安装包安全；真机安全走查。
   `final/dev-ui/export-preview-default.png` / `export-preview-audit.png`（授权切换）
 - `trace-id/report.md`；`cargo-test-trace.txt`（5 passed）；`cargo-test-mobile-sync.txt`
   （90 passed）；`frontend-diagnostics-test.txt`（40 passed）
-- `android-logger/report.md`；`gradle-test-9.txt`；`js-safeLog-final.txt`（13 passed）；
-  `js-all-tests.txt`（86 文件 / 926 passed）
+- `android-logger/report.md`；`gradle-test-9.txt`（历史）；**最新**：
+  `android-safelog-kotlin-test.log`（28 用例：SafeLog 16 / FileLogSink 12）、
+  `android-safelog-js-test.log`（14 passed）、模块 `build/test-results/TEST-*.xml`
+- `final/android-device.md`；`final/android-device/`、`final/android-device-release/`；
+  `final/android-build-release-final.log`（最终 Release APK 33,513,751 B /
+  SHA256 `B3D6C6F2…9BEECE`）
 - `export-preview/report.md`；`test-query-pass.log`（13 passed）
 - `metrics/` 目录 `test-mcp.log`（71 passed / 1 既有 failed）；`report.md` 兜底副本：
   `C:\Users\ASUS\AppData\Local\DoubaoWork\User Data\Profile 1\.doubaowork\agent_mode\workspace\.sessions\38455111763599362\agents\s_000tJuwvV4g\report.md`

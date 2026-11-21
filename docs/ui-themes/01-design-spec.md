@@ -1,5 +1,9 @@
 # 01 · 视觉设计规范（v0.6）
 
+> 2026-11-20：企业级 Design System v1.0 的 Token、组件与页面约束见
+> [`14-enterprise-design-system.md`](14-enterprise-design-system.md)。本文的材质/预设章节保留为历史参考；
+> 两者冲突时以 14 的语义 Token 与新组件层为准。
+
 > 适用范围：Task Dock 完整模式（400×560 基线窗口）下的全部界面元素。
 > 两套视觉预设共享同一套结构与尺寸，只在**表面材质、边光、发光、圆角**上分化。
 > 视觉第一依据是 `docs/ui-themes/images/` 中的两张效果图；本文把效果图翻译成可实现的 Token。

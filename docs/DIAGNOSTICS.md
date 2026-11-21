@@ -278,9 +278,10 @@ IPC 查询参数使用 camelCase（项目参数规范）。
 - **panic hook 只覆盖桌面端 Rust 侧**；Android 端目前**没有**崩溃捕获，也没有本地日志落盘
   （见 `docs/architecture/unified-observability-design.md` §5 的补齐计划）。
   > **更正（2026-11-20，logging-phase2）**：Android 侧已新增 `CrashHandler.kt` 与
-  > `FileLogSink.kt`（本地滚动文件 + 崩溃写文件并委托原 handler），JVM/JS 单测通过；
-  > 但**真机/模拟器运行验收未执行**，Expo Module 实例化与 JS→原生端到端链路未在运行时取证，
-  > 本条旧结论中的「没有崩溃捕获、没有本地落盘」仅在真机行为意义上仍待复核。详见 §25.5。
+  > `FileLogSink.kt`（本地滚动文件 + 崩溃写文件并委托原 handler），JVM/JS 单测通过；并已在
+  > vivo V2323A / Android 16 真机验证崩溃文件落盘（`am crash` 生成 650 B 文件、10 帧、无敏感
+  > 路径）与重启恢复。Release 非 debuggable/无 root，包内文件内容未直接读取；7 天清理、低电量/
+  > 不同 ROM 未测。详见 §25.5。
 - 日志保留期固定 14 天，**不可由用户配置**——保留期是「过期现场」的时间窗，调大只会让
   过期现场堆积，调小会让跨天问题无法复现。
 
@@ -792,10 +793,15 @@ ErrorBoundary）在 250ms 指纹窗口内只抑制事件本身，被抑制次数
   `LoggerModule.kt` / `CrashHandler.kt`；JS 侧 `apps/mobile/src/lib/safeLog.ts`。
 - 原生侧先脱敏：`LoggerModule.write` 独立清洗 tag/message/metadata，Logcat 与文件共用同一份
   结果，不依赖 JS 已脱敏前提；Kotlin `RULES` 与 JS `REDACT_RULES` 同序同规则，双侧对照测试。
+  metadata 键名本身就是凭据类别时（`password/token/api_key/...`）值统一 `[redacted]`，与消息
+  文本的凭据规则一致。
 - 容量：单文件软目标 2 MB、归档 3 个、总量 ≤6 MB、保留 7 天；活动文件硬上限 4 MB；队列
   256 条、高级别预留 32 条，分级丢弃并按级别计数。
-- **未验证**：真机/模拟器运行、Expo Module 实例化与 JS→原生端到端链路；生产 HandlerThread
-  分发路径由测试接缝覆盖。Android 日志仅本地留存，不向桌面持续上报。
+- **真机验证（2026-11-20，vivo V2323A / Android 16）**：Debug 文件级确认脱敏、15,000 条后仅
+  3 文件/总量 6,092,322 B、崩溃文件 650 B（10 帧、无敏感路径）、启动日志落盘；最终临时 Release
+  冷启动 623 ms、覆盖安装保留 SQLite/5 条任务。Release 非 debuggable/无 root，包内文件内容
+  未直接复核；7 天清理、低电量/后台限制、不同 ROM 未测。Android 日志仅本地留存，不向桌面
+  持续上报。详见 `tmp/acceptance/logging-phase2/final/android-device.md`。
 
 ### 25.6 本阶段延期与未执行项（如实标注）
 
@@ -803,10 +809,14 @@ ErrorBoundary）在 250ms 指纹窗口内只抑制事件本身，被抑制次数
 - **Dev 已验证（单次样本）**：桌面 startup（`first_ready`）埋点——`lib.rs` 起点与
   `commands/system.rs::notify_ui_ready` 首次收尾已接线；Dev 实测 3879 ms / P95 3879 ms /
   慢操作 1（`final/dev-ui.md` §3.1）。正式 Release 性能基线未执行。
+- **Android（已真机验证，范围限定）**：2026-11-20 在 vivo V2323A / Android 16 完成 Debug 文件级
+  脱敏/轮转/崩溃/启动日志验收，并安装最终临时 Release 验证冷启动 623 ms 与覆盖安装保留数据；
+  Release 包内文件、7 天清理、低电量/不同 ROM 未覆盖。详见
+  `tmp/acceptance/logging-phase2/final/android-device.md`。
 - **未执行（非本任务缺陷）**：整 `cargo test --lib` 被其他任务在途未跟踪文件
   `src-tauri/src/agent_access/tests_v82_rest.rs`（旧 API 签名）阻塞，ENVIRONMENT BLOCKED；
   收尾阶段已用定向模块测试 + `cargo check --lib` 取证（见
-  `tmp/acceptance/logging-phase2/final/`）。Release 安装包/升级/卸载/签名/生产资源加载/
-  正式性能基线未执行；Android 真机、320/400 窄窗与主题视觉走查未执行；诊断中心三视图、
+  `tmp/acceptance/logging-phase2/final/`）。正式 Release 安装包/升级/卸载/签名/生产资源加载/
+  正式性能基线未按集成流程执行；320/400 窄窗与主题视觉走查未完成；诊断中心三视图、
   安全审计来源状态、导出预览/取消已 Dev 实测（`final/dev-ui.md`）。
 

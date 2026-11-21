@@ -1266,41 +1266,56 @@ pub fn create_text_impl(
     title: &str,
     content: &str,
 ) -> AppResult<(ImportReport, Option<String>)> {
+    db.with_conn(|conn| create_text_impl_in_conn(conn, kb_id, title, content))
+}
+
+/// 连接级写入（v82）：供文件导入在**带守卫的写事务**内复用。
+///
+/// 与 [`create_text_impl`] 语义一致，唯一区别是复用调用方提供的连接，
+/// 从而让「知识写入」与「导入租约校验」落在同一个事务边界内：
+/// 租约失效时整体回滚，不会留下「文档已写入但租约未完成」的重复导入窗口。
+pub fn create_text_impl_in_conn(
+    conn: &rusqlite::Connection,
+    kb_id: &str,
+    title: &str,
+    content: &str,
+) -> AppResult<(ImportReport, Option<String>)> {
     let title = check_text(title, "文档标题", 200)?;
     let content = cap_content(content.trim().to_string());
     if content.is_empty() {
         return Err(AppError::Validation("正文不能为空".into()));
     }
     let hash = content_hash(content.as_bytes());
-    let doc_id = db.with_conn(|conn| {
+    let doc_id = {
         ensure_kb(conn, kb_id)?;
         if find_duplicate(conn, kb_id, &hash, None)?.is_some() {
-            return Ok::<_, AppError>(None);
+            None
+        } else {
+            let id = uuid::Uuid::new_v4().to_string();
+            let now = now_iso();
+            upsert_and_index(
+                conn,
+                &id,
+                kb_id,
+                &title,
+                "text",
+                "imported",
+                None,
+                None,
+                "text/markdown",
+                &content,
+                &hash,
+                &now,
+                None,
+            )?;
+            Some(id)
         }
-        let id = uuid::Uuid::new_v4().to_string();
-        let now = now_iso();
-        upsert_and_index(
-            conn,
-            &id,
-            kb_id,
-            &title,
-            "text",
-            "imported",
-            None,
-            None,
-            "text/markdown",
-            &content,
-            &hash,
-            &now,
-            None,
-        )?;
-        Ok(Some(id))
-    })?;
+    };
     let mut report = ImportReport::new();
     match doc_id {
         Some(id) => {
             report.push(&title, "imported", "");
-            let doc = db.with_read(|conn| read_doc(conn, &id))?;
+            let doc = read_doc(conn, &id)?;
             report.documents.push(doc);
             Ok((report, Some(id)))
         }

@@ -358,13 +358,13 @@ print(len(rows)); [print(k,v) for k,v in cnt.most_common()]
 
 | 矩阵项 | 回填状态 | 依据 |
 |---|---|---|
-| B-07 Android 采集适配层 | **已实现未验证**：`SafeLog.kt` 唯一日志入口，tag 归一 + 原生脱敏；生产 `HandlerThread/Handler` 分发路径未在 JVM 执行（测试经 `LogDispatcher` 接缝注入手动队列）；真机/模拟器未执行 | `android-logger/report.md` |
-| B-08 Android JS/TS 采集 | **已实现且已验证**：`safeLog.ts` 规则表与 Kotlin 同序对照；定向 13 用例、移动端全量 86 文件 / 926 用例通过，`tsc --noEmit` 退出码 0 | 同上 |
-| C-14 Android 敏感信息处理 | **已实现且已验证（JVM/JS 层）**：原生侧先脱敏，Logcat 与文件共用同一份结果；Kotlin `RULES` ↔ JS `REDACT_RULES` 同序同规则，双侧对照矩阵用例通过；真机行为未验证 | 同上 |
-| D-09 Android 缓冲/背压 | **已实现且已验证（JVM 层）**：有界队列 256 / 高级别预留 32，分级配额与按级别丢弃计数；8 线程并发、shutdown 竞态、占用降级与退避序列均有用例；真机未验证 | 同上 |
-| E-16 Android 本地持久化 | **已实现未验证**：滚动文件 2 MB×3、总量 ≤6 MB、保留 7 天、活动文件硬上限 4 MB；轮转/降级/退避由 JVM 单测覆盖，真机落盘与跨天清理未执行 | 同上 |
-| J-07 Android UncaughtException | **已实现未验证**：`CrashHandler.kt` 随布局迁移（install 幂等、崩溃线程同步写文件、委托原 handler、5 文件/7 天）；Expo Module 运行时上下文未在 JVM 实例化，端到端未覆盖 | 同上 |
-| K-17 Android 日志生命周期测试 | **已实现且已验证**：Kotlin 27 用例（SafeLogTest 15 / FileLogSinkTest 12）failures=0 errors=0；机器可读结果在模块 `build/test-results/` | 同上 |
+| B-07 Android 采集适配层 | **已实现且真机验证（范围限定）**：`SafeLog.kt` 唯一日志入口，tag 归一 + 原生脱敏；`HandlerThread/Handler` 分发、真机落盘与启动日志已取证；Release 包内文件内容未直接读取（非 debuggable） | `android-logger/report.md`；`final/android-device.md` |
+| B-08 Android JS/TS 采集 | **已实现且已验证**：`safeLog.ts` 规则表与 Kotlin 同序对照；定向 **14** 用例、移动端全量 86 文件 / 926 用例通过，`tsc --noEmit` 退出码 0 | 同上 |
+| C-14 Android 敏感信息处理 | **已实现且真机验证**：原生侧先脱敏，Logcat 与文件共用同一份结果；Kotlin `RULES` ↔ JS `REDACT_RULES` 同序同规则，双侧对照矩阵通过；真机修复 metadata 键名凭据泄漏后 `[redacted]`、原始串 0 命中 | 同上 §3.1 |
+| D-09 Android 缓冲/背压 | **已实现且已验证（JVM + 真机容量）**：有界队列 256 / 高级别预留 32，分级配额与按级别丢弃计数；8 线程并发、shutdown 竞态、占用降级与退避序列均有用例；真机 15,000 条未崩溃、仅 3 文件 | 同上 §3.2 |
+| E-16 Android 本地持久化 | **已实现且真机验证（Debug 文件级）**：滚动文件 2 MB×3、总量 ≤6 MB、保留 7 天、活动文件硬上限 4 MB；真机总量 6,092,322 B、最旧一代被替换；7 天跨天清理未测 | 同上 §3.2 |
+| J-07 Android UncaughtException | **已实现且真机验证（Debug 文件级）**：`CrashHandler.kt` install 幂等、崩溃线程同步写文件、委托原 handler、5 文件/7 天；真机 `am crash` 生成 650 B 文件（10 帧、无敏感路径），重启恢复 | 同上 §3.3 |
+| K-17 Android 日志生命周期测试 | **已实现且已验证**：Kotlin **28** 用例（SafeLogTest 16 / FileLogSinkTest 12）failures=0 errors=0；JS 14；真机容量/崩溃/启动补证 | 同上；模块 `build/test-results/TEST-*.xml` |
 
 ### M.2 Trace 与跨模块追踪
 
@@ -415,10 +415,13 @@ print(len(rows)); [print(k,v) for k,v in cnt.most_common()]
 - **整 `cargo test --lib`**：被其他任务在途未跟踪文件 `src-tauri/src/agent_access/tests_v82_rest.rs`
   （非 ASCII 字节串语法错误）阻塞，**ENVIRONMENT BLOCKED，非本任务缺陷**；各模块以定向测试 +
   `cargo check --lib`（退出码 0，36 条既有警告，无新增阻断）证明改动。
-- **真机/Dev 实例走查**：未启动 `npm run tauri dev`；真实 WebView2/Win32 链路 trace 贯通、
-  320/400 窄窗、深浅主题、液态玻璃可读性、系统剪贴板/通知/焦点等原生通道未取证。
-- **Release 正式验收**：安装包生成、安装/升级/卸载、签名与更新、生产资源加载、正式性能基线
-  均未执行；本批结论为 Dev 功能验收，不推进 Release 状态机、无 buildId。
+- **真机/Dev 实例走查**：Android 真机已完成 Debug 文件级 + 临时 Release 安装/启动验收
+  （vivo V2323A / Android 16，见 `final/android-device.md`）；Dev 诊断中心三视图/审计/导出/
+  性能窗口已实测。320/400 窄窗、深浅主题、液态玻璃可读性、系统剪贴板/通知/焦点等原生通道
+  仍未全量取证。Release 非 debuggable/无 root，包内文件内容未直接复核。
+- **Release 正式验收**：未按集成流程生成安装包，安装/升级/卸载、签名与更新、生产资源加载、
+  正式性能基线均未执行；当前已构建的临时 arm64 Release APK（33,513,751 B /
+  SHA256 `B3D6C6F2…9BEECE`）只用于真机启动与数据保留复核，不推进 Release 状态机、无 buildId。
 - **D: 盘 ENOSPC 事故**：当日 D: 盘写满至 0 字节，主智能体删除可再生的 `src-tauri/target/debug`
   （约 8.0 GB）后恢复约 7.0 GB；部分套件仅前台控制台通过，落盘复测为 ENOSPC 记录，不能作为
   测试失败证据。详见验收报告环境一节。

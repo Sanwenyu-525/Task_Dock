@@ -28,6 +28,12 @@ object SafeLog {
   internal const val MAX_KEY_CHARS = 32
   internal const val MAX_METADATA_VALUE_CHARS = 96
 
+  /** metadata 键名本身就是凭据类别时，值统一落 [redacted]（与 JS 侧同一张表）。 */
+  private val SENSITIVE_METADATA_KEY = Regex(
+    "^(?:authorization|token|password|passwd|secret|api[_-]?key|apikey|auth|sig|key)$",
+    RegexOption.IGNORE_CASE,
+  )
+
   /**
    * 脱敏规则表（与 JS 侧 REDACT_RULES 一一对应；顺序、标记、替换值必须相同）。
    * 改任何一条正则都要同步 src/lib/safeLog.ts 与双侧规则对照测试。
@@ -134,6 +140,10 @@ object SafeLog {
       val rawKey = keys.next()
       val key = rawKey.take(MAX_KEY_CHARS)
       if (out.has(key)) continue
+      if (SENSITIVE_METADATA_KEY.matches(key)) {
+        out.put(key, "[redacted]")
+        continue
+      }
       val sanitized = sanitizeMetadataValue(parsed.opt(rawKey)) ?: continue
       out.put(key, sanitized)
     }

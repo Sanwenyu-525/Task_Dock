@@ -31,6 +31,9 @@ class LoggerModule : Module() {
     }
 
     Function("write") { level: String, tag: String, message: String, metadataJson: String? ->
+      // 首条日志可能早于 OnCreate 的异步初始化：write 入口再做一次幂等 init，
+      // 避免 startup 日志只进 Logcat、不进文件（append 在 dispatcher 为空时会丢弃）。
+      appContext.reactContext?.applicationContext?.let { FileLogSink.init(it) }
       // 原生侧先脱敏：tag/message/metadata 各清洗一次，Logcat 与文件共用结果。
       val cleanTag = SafeLog.normalizeTag(tag)
       val cleanMessage = SafeLog.sanitizeText(message)

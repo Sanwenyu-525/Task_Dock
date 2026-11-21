@@ -152,3 +152,7 @@ Settings settled: / Workbench ready:
 争抢文件读取，以及 Android 生成 `problems-report.html` 时触发桌面整页重载。
 这些配置不改变生产构建、页面注册或后台服务生命周期。修改配置后需确认 Vite 实际完成重启；
 再次执行 `npm run tauri dev` 只唤醒已有实例时，不能当作重新编译或冷启动验证。
+
+如果 React 已就绪但原生进程仍无响应，还需核查窗口层。2026-11-20 已确认并修复阴影
+同步持锁重入导致的主线程自锁，影响启动揭示、最小化恢复与热重载；调用栈、修复和真实
+Debug 复测见 [原生阴影死锁记录](../development/2026-11-20-startup-shadow-deadlock.md)。

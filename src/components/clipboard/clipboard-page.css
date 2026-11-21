@@ -325,6 +325,30 @@
   min-height: 24px;
 }
 
+/* 分体复制：组件层（styles-components.css @layer components）的 `.btn` 默认
+   「四角 8px 圆角 + 1px 边框」会压过 styles.css @layer base 里的分体规则——
+   CSS 层叠层优先于选择器权重，所以页面态必须在这里显式还原，否则复制按钮
+   会变回独立圆角矩形，右缘与箭头之间多出双层描边。
+   几何：复制段左圆右直，箭头段左直右圆，两段合成一块表面；右缘必须是直角。 */
+.clipboard-page .clip-copy-split > .clip-copy-btn {
+  border: 0;
+  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+  background: transparent;
+  box-shadow: none;
+  min-height: 22px;
+  padding: 0 8px;
+}
+
+.clipboard-page .clip-copy-split > .clip-copy-btn:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+
+.clipboard-page .clip-copy-split > .clip-copy-btn:disabled {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-tertiary);
+}
+
 /* 右栏预览态：左侧 2px 强调条 + 轻微描边；批量选中仍走 .selected 的
    强调底色与勾选图标。两者同时存在时各自保留，不互相覆盖。 */
 .clipboard-page .clip-item.is-card.previewed,

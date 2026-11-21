@@ -263,7 +263,7 @@ let installed = false;
 /**
  * 安装注册表（幂等）。
  *
- * 由两个窗口入口（`main.tsx` / `workspace/main.tsx`）在渲染前调用：只登记元数据，
+ * 由两个窗口入口（`main.tsx` / `workspace/workspaceEntry.tsx`）在渲染前调用：只登记元数据，
  * 不做任何 import。放在模块顶层副作用也可以，但显式调用更容易在测试里隔离。
  */
 export function installFeatureRegistry(): void {

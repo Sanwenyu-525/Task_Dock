@@ -276,6 +276,17 @@ html[data-window-maximized="true"] .wb-root .resize-grips {
 }
 /* 图标轨里分组标题没有横向空间：不隐藏节点，交给下方规则压成 1px 分隔线，
    保住分节结构（若这里 display:none，后面的 separators 规则永远不会生效）。 */
+/* 极窄窗口：导航固定图标轨后不再提供拖拽热区，避免误改用户保存的宽度。
+   拖拽条隐藏后，右边界细线改由导航自身补回。 */
+@media (max-width: 560px) {
+  .wb-resizer-nav,
+  .wb-nav-head {
+    display: none;
+  }
+  .wb-nav {
+    border-right: 1px solid var(--border-subtle);
+  }
+}
 /* 图标轨行：不再用三列网格，改为单行居中；手柄 / × 浮在行内两侧。 */
 .wb-root[data-nav-compact="true"] .wb-nav {
   /* 左右各 4px：72px 轨道内给 20px 图标 + 两侧浮层留出 2px 间隙。 */
@@ -544,7 +555,9 @@ body.wb-resizing {
   min-height: 56px;
   padding: 8px 14px 8px 16px;
   border-bottom: 1px solid var(--border-subtle);
-  background: color-mix(in srgb, var(--surface-raised) 92%, transparent);
+  /* Design System v1（2026-11-20）：顶栏是不透明白面，不再用 92% 半透明
+     叠在渐变窗口上——那会让顶栏与页面背景一起发虚、边界消失。 */
+  background: var(--color-bg-surface);
   container-type: inline-size;
   container-name: wb-topbar;
 }
@@ -556,8 +569,8 @@ body.wb-resizing {
   align-items: center;
   gap: 8px;
   min-width: 0;
-  flex: 0 0 210px;
-  max-width: 210px;
+  flex: 0 0 180px;
+  max-width: 180px;
 }
 /* 上下文容器只放工作空间选择器；让选择器占满容器，避免被顶栏动作挤成
    一截截断文本（对齐效果图：顶栏只有一个稳定的工作空间下拉）。 */
@@ -662,7 +675,7 @@ body.wb-resizing {
   width: 30px;
   height: 30px;
   padding: 0;
-  border: 1px solid var(--border-subtle);
+  border: none;
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-secondary);
@@ -676,9 +689,9 @@ body.wb-resizing {
   background: color-mix(in srgb, var(--text-primary) 12%, transparent);
 }
 .wb-icon-btn.is-on {
-  background: var(--accent-soft);
-  border-color: color-mix(in srgb, var(--accent) 35%, var(--border-subtle));
-  color: var(--text-primary);
+  background: var(--color-bg-selected);
+  border-color: transparent;
+  color: var(--color-brand-text);
 }
 .wb-icon-btn:focus-visible {
   outline: 2px solid var(--accent);
@@ -2251,9 +2264,9 @@ body.wb-resizing {
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-card);
   background: var(--surface-raised);
-  /* 对齐效果图的卡片内距：16px 侧内距让「标题—行—行」的呼吸感一致，
-     过窄的 12px 会让密集页显得拥挤。 */
-  padding: 15px 16px 14px;
+  /* 卡片内距 16/18：标题、行、操作之间保持 4px 基准节奏；过窄的 12px
+     会让密集页显得拥挤（效果图也是 16px 侧内距）。 */
+  padding: 16px 18px 16px;
   min-width: 0;
   min-height: 0;
 }
@@ -2271,19 +2284,20 @@ body.wb-resizing {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  margin: 0 0 10px;
+  margin: 0 0 12px;
 }
 .wb-panel-head h3 {
   display: flex;
   align-items: center;
   gap: 6px;
   margin: 0;
-  font-size: 14px;
-  font-weight: 650;
+  font-size: var(--font-size-card-title);
+  line-height: var(--line-height-card-title);
+  font-weight: var(--font-weight-card-title);
   color: var(--text-primary);
 }
 .wb-panel-count {
-  font-size: 11px;
+  font-size: var(--font-size-caption);
   color: var(--text-tertiary);
   font-variant-numeric: tabular-nums;
 }
@@ -2770,9 +2784,12 @@ body.wb-resizing {
   align-items: center;
   gap: 8px;
   margin: 0;
-  font-size: 20px;
-  font-weight: 650;
-  letter-spacing: 0.1px;
+  /* Design System v1：页面标题 24px（原先 20px 与卡片标题 14px 差距不足，
+     六个页面看起来像同一层级）。 */
+  font-size: var(--font-size-page-title);
+  line-height: var(--line-height-page-title);
+  font-weight: var(--font-weight-page-title);
+  letter-spacing: -0.01em;
   color: var(--text-primary);
   min-width: 0;
 }
@@ -2791,9 +2808,10 @@ body.wb-resizing {
 }
 .wb-ph-sub {
   margin: 0;
-  font-size: 11.5px;
-  line-height: 1.5;
-  color: var(--text-tertiary);
+  /* 说明文字 13px、次级中性色：与主标题拉开层级，但仍保持可读对比。 */
+  font-size: var(--font-size-secondary);
+  line-height: var(--line-height-secondary);
+  color: var(--text-secondary);
 }
 .wb-ph-actions {
   display: flex;
@@ -2888,10 +2906,10 @@ body.wb-resizing {
   flex: none;
 }
 .wb-topbar-context {
-  /* 可收缩但保留 150px：低于它项目名只剩省略号，选择器失去意义 */
-  flex: 0 1 var(--layout-topbar-context-w, 210px);
-  min-width: var(--layout-topbar-context-min, 150px);
-  max-width: var(--layout-topbar-context-w, 210px);
+  /* 可收缩但保留 132px：低于它项目名只剩省略号，选择器失去意义 */
+  flex: 0 1 var(--layout-topbar-context-w, 180px);
+  min-width: var(--layout-topbar-context-min, 132px);
+  max-width: var(--layout-topbar-context-w, 180px);
 }
 .wb-topbar-actions {
   flex: 1 1 auto;
@@ -2938,8 +2956,8 @@ body.wb-resizing {
     padding: 0 9px;
   }
   .wb-topbar-context {
-    flex-basis: 190px;
-    max-width: 190px;
+    flex-basis: 170px;
+    max-width: 170px;
   }
   .wb-titlebar-tools {
     padding-right: 6px;
@@ -2956,9 +2974,9 @@ body.wb-resizing {
     display: inline-flex;
   }
   .wb-topbar-context {
-    flex-basis: 170px;
-    max-width: 170px;
-    min-width: 140px;
+    flex-basis: 150px;
+    max-width: 150px;
+    min-width: 132px;
   }
   .wb-search-field {
     flex-basis: 200px;
@@ -3031,6 +3049,79 @@ body.wb-resizing {
 /* 内容区里的媒体不撑破卡片：只限最大宽度，不改已有高度语义 */
 .wb-route :is(img, video, canvas) {
   max-width: 100%;
+}
+
+/* 图标轨窄窗（≤`ULTRA_NARROW_WIDTH` = 560 DIP）顶栏压缩：窗口控制固定在右上，
+   搜索收成图标，项目选择器独占第二行。否则 400 宽时窗口按钮会被 flex 换行到左侧，
+   品牌、搜索、创建与工具组互相挤压（2026-11-20 原生 400 验收发现）。
+   本带仍是 cramped 档的子兜底，外观工具入口保持上方的「更多」菜单不变。 */
+@media (max-width: 560px) {
+  .wb-topbar {
+    position: relative;
+    flex-wrap: wrap;
+    padding-right: 112px;
+  }
+  .wb-window-controls {
+    position: absolute;
+    top: 6px;
+    right: 8px;
+    margin: 0;
+  }
+  .wb-search-field {
+    flex: 0 0 32px;
+    min-width: 32px;
+    max-width: 32px;
+  }
+  .wb-search-trigger {
+    width: 32px;
+    padding: 0;
+    justify-content: center;
+  }
+  .wb-search-ph,
+  .wb-search-kbd {
+    display: none;
+  }
+  .wb-topbar-context {
+    order: 5;
+    flex: 1 1 100%;
+    max-width: none;
+    min-width: 0;
+    margin-right: 0;
+    padding-right: 40px;
+  }
+  .wb-titlebar-tools {
+    position: absolute;
+    top: 42px;
+    right: 8px;
+    margin: 0;
+  }
+  .wb-home-head {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+  .wb-home-head-main {
+    flex: 1 1 100%;
+  }
+  .wb-home-date {
+    order: 2;
+  }
+  .wb-home-greeting {
+    font-size: 24px;
+  }
+  .wb-panel-head {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+  .wb-panel-head h3 {
+    flex: 1 1 auto;
+    min-width: 0;
+    white-space: nowrap;
+  }
+  .wb-panel-more {
+    flex: 0 0 auto;
+    margin-left: auto;
+    white-space: nowrap;
+  }
 }
 /* 长路径/URL 不撑破网格（页面若已自行处理，这里是统一兜底） */
 .wb-route :is(pre, code) {

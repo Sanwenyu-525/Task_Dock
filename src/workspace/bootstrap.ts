@@ -1,14 +1,14 @@
 //! 工作台极轻量启动入口（2026-11-19 启动诊断升级）。
 //!
 //! 为什么需要这一层：此前 workspace.html 直接以 `<script type="module"
-//! src="/src/workspace/main.tsx">` 启动，整个静态依赖图（React + 8 个业务面板 +
+//! src="/src/workspace/workspaceEntry.tsx">` 启动，整个静态依赖图（React + 8 个业务面板 +
 //! 全部 store/bridge）必须在 main.tsx 主体执行前下载+解析完。诊断只能看到
 //! 「模块脚本尚未执行」，无法区分「请求卡住 / 某个依赖 404 / 转换报错 / CSP 拦截」。
 //!
 //! 本文件刻意做到零静态业务依赖（不 import React、不 import WorkbenchShell、
 //! 不 import 任何页面/store），只用浏览器原生能力：
 //!   1. 入口一执行就记录 `bootstrap-start` —— 证明 HTML + 看门狗 + 本入口已就绪；
-//!   2. 记录 `main-import-start` 后 `import("./main")` 动态加载真正入口；
+//!   2. 记录 `main-import-start` 后 `import("./workspaceEntry")` 动态加载真正入口；
 //!   3. resolve 记 `main-import-resolved`，reject 记 `main-import-failed` 并调用
 //!      watchdog.fail() 进入 error 态、写一次 UI_BOOT_FATAL，绝不静默吞掉。
 //!
@@ -73,7 +73,10 @@ void (async () => {
   try {
     // 字面量动态 import：Vite 在 dev 下解析为原生 module 请求，在 build 下生成
     // 独立 chunk。两者都会进入 watchdog 的 resource 采样，可据此定位卡住的依赖。
-    await import("./main");
+    // 2026-11-20 改名 workspaceEntry：两个入口都叫 `main.tsx` 时，生产构建的
+    // chunk 名冲突，workspace.html 会被错误地映射到主窗入口（打开工作台却渲染
+    // 主窗 dock-window，DevWorkbenchPanel 完全不可达）。唯一文件名消除歧义。
+    await import("./workspaceEntry");
     stage("main-import-resolved");
     importState("resolved");
   } catch (error) {

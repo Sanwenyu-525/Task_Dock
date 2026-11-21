@@ -163,13 +163,13 @@ const watchdogSource = readFileSync(
   "utf8",
 );
 const mainSource = readFileSync(
-  resolve(process.cwd(), "src/workspace/main.tsx"),
+  resolve(process.cwd(), "src/workspace/workspaceEntry.tsx"),
   "utf8",
 );
 
 describe("bootstrap.ts 启动隔离契约", () => {
-  it("不静态导入 React / WorkbenchShell / 业务页，只动态 import('./main')", () => {
-    expect(bootstrapSource).toContain('import("./main")');
+  it("不静态导入 React / WorkbenchShell / 业务页，只动态 import('./workspaceEntry')", () => {
+    expect(bootstrapSource).toContain('import("./workspaceEntry")');
     // 只检查真实的 import 声明（注释里出现这些名字是允许的说明文字）。
     const importLines = bootstrapSource
       .split("\n")
