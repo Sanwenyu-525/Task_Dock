@@ -229,7 +229,7 @@ export default function NotesPanel() {
                     <span className="notes-item-title">{displayTitle(item, untitled)}</span>
                     <span className="notes-item-flags">
                       {/* 该笔记正被 Agent 修改时显示身份与状态；不改变条目布局。 */}
-                      <AgentOperationHighlight resourceKind="note" resourceId={item.id} />
+                      <AgentOperationHighlight resourceKind="note" resourceId={item.id} indicatorMax={1} />
                       {failure && (
                         <span
                           className="notes-item-warning"

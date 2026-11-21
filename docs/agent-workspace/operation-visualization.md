@@ -27,7 +27,8 @@ REST（loopback） ─┤                                      │
 - **不复制业务 SQL**。操作记录只描述「谁在改什么、结果如何」，业务写入仍由既有
   `service::*` / `agent_access::sync::*` 完成。
 - **事件不是事实来源**。事实永远在 `agent_operations` 表；事件只降低延迟。
-- **全应用只有一处订阅与一处轮询**（store），页面组件只做资源维度查询。
+- **每个窗口只有一处订阅与一处轮询**（store）：主窗口与统一工作台各一份实例，
+  页面组件只做资源维度查询，不得自行监听或轮询。
 - 不改动 Agent 接入体系（认证、授权、幂等、审计）与无关模块。
 
 代码落点：
@@ -73,7 +74,7 @@ REST（loopback） ─┤                                      │
 
 | 方法 | 职责 |
 |---|---|
-| `start` / `try_start` | 生成唯一 ID、写 `running`、记录开始时间与租约；`try_start` 失败只告警，不阻断业务 |
+| `start` / `try_start` | 生成唯一 ID、写 `running`、记录开始时间与租约；入口在调用前就从参数/路径绑定资源目标（失败也要能落到行上）；`try_start` 失败只告警，不阻断业务 |
 | `update_target` | 绑定资源目标（新建时尚无 ID → 先关联项目，提交后绑定真实 ID） |
 | `update_phase` | 推进阶段并续租 |
 | `heartbeat` | 只续租，不改阶段 |
@@ -160,8 +161,21 @@ REST（loopback） ─┤                                      │
 - 之后严格 keyset：`(updated_at > c.updated_at) OR (updated_at = c.updated_at AND id > c.id)`；
 - 前端只保存一个游标；没有新行时保留原游标，不回退到起点。
 
-频率：有运行中操作 5 秒一次，空闲 20 秒一次；**页面隐藏时不查询**（只保留一个轻量检查点），
+频率：**可见时 4 秒一次**（一次按索引的增量查询）；页面隐藏时不查询（只保留一个轻量检查点），
 回到前台立即补一次。没有 Redis / Kafka / 消息队列。
+
+### 5.1 业务刷新桥（非 MCP 入口）
+
+`planning-changed` 只由 MCP bridge 广播；独立 CLI、REST、受控文件导入都不会发。
+若只同步操作状态，用户会看到「A 改完了」但列表还是旧数据。因此
+`src/lib/agentOperationRefresh.ts` 订阅操作终态：
+
+- 仅处理 `interface != 'mcp'` 且 `status = committed` 的操作；
+- 250ms 去抖后调用各 store 既有刷新入口（任务 / 笔记 / 规划局部刷新）；
+- MCP 仍只走 `planning-changed`，同一次写入不会刷两遍；
+- 失败/冲突/中断不改业务数据，一律不刷新。
+
+主窗口与工作台窗口都在各自入口启动这层桥（`App.tsx` / `workspaceEntry.tsx`）。
 
 ---
 
@@ -279,8 +293,25 @@ npx vitest run TaskEditorView / TasksPanel → 38 passed
 npm run typecheck → 通过
 ```
 
-场景 A–G 的人工验收步骤见 `tmp/acceptance/agent-operation-visualization/README.md`。
-未在本机执行的部分明确标注「未执行」（见验收报告）。
+### 真实窗口验收（Dev，2026-11-21）
+
+`node scripts/acceptance-agent-operation-v1.mjs` 通过 CDP 驱动真实 WebView2，
+MCP 走 stdio 子进程、CLI 走独立进程、数据库用 `node:sqlite` 直读断言：
+
+```
+12 passed / 0 failed    tmp/acceptance/agent-operation-visualization/run-20261121-110541/
+```
+
+覆盖：A 规划功能新建（工作台窗口高亮 + 真实 ID）、B MCP 改任务、C 双 Agent 一成功一冲突、
+D CLI 写入 4s 内被 UI 感知且标题自动刷新、E 关闭期间写入后重开、F 编辑中并发（不覆盖 +
+冲突 + 重载）、G 租约过期 → interrupted。截图与 `summary.md` 同目录。
+
+验收过程中发现并修复的问题：
+
+1. 失败/冲突的操作没有资源 ID（只在成功返回时绑定）→ 改为调用前从工具参数/REST 路径绑定；
+2. 规划中心真实界面在统一工作台窗口，该窗口缺少操作订阅 → `workspaceEntry.tsx` 增加启动；
+3. CLI/REST/文件写入没有 `planning-changed` → 新增业务刷新桥（§5.1）；
+4. 窄窗口下多个徽标换行挤压任务标题 → 徽标 `nowrap` + 窄行只展示 1 个主体 + `+N`。
 
 ---
 

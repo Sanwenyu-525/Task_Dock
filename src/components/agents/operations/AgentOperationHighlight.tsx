@@ -25,6 +25,8 @@ export interface AgentOperationHighlightProps {
   children?: ReactElement;
   /** 是否叠加状态徽标（默认 true）。 */
   showIndicator?: boolean;
+  /** 最多展示几个主体；窄行（任务/笔记/知识）传 1，其余折叠为 +N。 */
+  indicatorMax?: number;
   className?: string;
 }
 
@@ -40,6 +42,7 @@ export function AgentOperationHighlight({
   projectId,
   children,
   showIndicator = true,
+  indicatorMax = 2,
   className,
 }: AgentOperationHighlightProps) {
   const { operations, hasRunning } = useResourceOperations(
@@ -49,7 +52,7 @@ export function AgentOperationHighlight({
   );
 
   if (!children || !isValidElement(children)) {
-    return <AgentOperationIndicator operations={operations} />;
+    return <AgentOperationIndicator operations={operations} max={indicatorMax} />;
   }
 
   const host = children as ReactElement<HostProps>;
@@ -64,7 +67,11 @@ export function AgentOperationHighlight({
   const mergedClass = [host.props.className, surface].filter(Boolean).join(" ");
   const badge =
     showIndicator && operations.length > 0 ? (
-      <AgentOperationIndicator operations={operations} variant="overlay" />
+      <AgentOperationIndicator
+        operations={operations}
+        max={indicatorMax}
+        variant="overlay"
+      />
     ) : null;
 
   return cloneElement(host, {

@@ -577,6 +577,28 @@ function flushPlanningSync(): void {
   }
 }
 
+/**
+ * 外部写入（CLI / REST / 受控文件导入）后的局部刷新。
+ *
+ * 这些入口不经过 MCP bridge，不会发 `planning-changed`；但它们会写
+ * `agent_operations`。前端游标同步发现新的终态操作后调用本函数，复用
+ * planning-changed 的同一条带代际守卫的刷新路径，不新增轮询。
+ */
+export function refreshPlanningFromExternalChange(projectId?: string): void {
+  const state = usePlanningStore.getState();
+  const active = state.activeProjectId;
+  if (!active) {
+    void state.loadProjects();
+    return;
+  }
+  if (projectId && projectId !== active) {
+    // 变化属于其他项目：只刷新项目列表（名称/统计），不动当前工作区。
+    void state.loadProjects();
+    return;
+  }
+  void refreshActiveProject();
+}
+
 /** 注册 planning-changed 监听（幂等；首次打开规划面板时调用）。 */
 export function ensurePlanningSync(): void {
   if (syncSubscribed) return;

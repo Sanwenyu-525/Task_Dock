@@ -10,11 +10,13 @@
 
 .agent-op-indicator {
   display: inline-flex;
-  flex-wrap: wrap;
+  /* 状态徽标永不换行：换行会把任务标题挤成多行（窄窗口实测）。 */
+  flex-wrap: nowrap;
   align-items: center;
   gap: 4px;
   min-width: 0;
   max-width: 100%;
+  overflow: hidden;
 }
 
 .agent-op-chip {

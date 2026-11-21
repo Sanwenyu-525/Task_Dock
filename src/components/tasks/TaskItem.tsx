@@ -354,7 +354,7 @@ export default function TaskItem({ task, compact, exiting, exitHeight, selected,
           <span className="task-title">{task.title}</span>
           {/* Agent 正在修改这一行时，直接在标题行展示身份与状态；
               不改变行高（inline-flex）、不抢焦点、不拦截点击。 */}
-          <AgentOperationHighlight resourceKind="task" resourceId={task.id} />
+          <AgentOperationHighlight resourceKind="task" resourceId={task.id} indicatorMax={1} />
         </div>
         {hasMeta && (
           <div className="task-meta">

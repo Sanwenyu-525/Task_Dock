@@ -693,7 +693,7 @@ export default function KnowledgeSection() {
                         </StatusBadge>
                         <span className="cap-ellipsis">{doc.title}</span>
                         {/* Agent 正在写入该文档时展示来源与状态；布局不变。 */}
-                        <AgentOperationHighlight resourceKind="knowledge" resourceId={doc.id} />
+                        <AgentOperationHighlight resourceKind="knowledge" resourceId={doc.id} indicatorMax={1} />
                       </span>
                       <span className="cap-list-meta">
                         {sourceLabel(t, doc.sourceKind)} ·{" "}

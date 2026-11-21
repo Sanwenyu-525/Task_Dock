@@ -51,7 +51,7 @@ export function AgentOperationIndicator({
         );
       })}
       {rest > 0 && (
-        <span className="agent-op-chip agent-op-chip--more" title={`还有 ${rest} 个 Agent`}>
+        <span className="agent-op-chip agent-op-chip--more" title={`还有 ${rest} 个操作`}>
           +{rest}
         </span>
       )}

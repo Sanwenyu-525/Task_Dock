@@ -366,6 +366,33 @@ pub(crate) fn require_revision(args: &Value) -> Result<i64, ToolError> {
 }
 
 /// 写工具幂等键：客户端显式传 requestId；缺失/非法按空处理（不做幂等）。
+/// 工具调用一开始就能确定的资源目标 `(kind, id, project_id)`。
+///
+/// 必须在**调用前**绑定：失败/冲突的操作不会走到「用返回值绑定真实 ID」那一步，
+/// 若此时资源为空，UI 就无法把冲突显示到对应行上。创建类工具没有 ID，留空等提交后绑定。
+fn operation_target(tool: &str, args: &Value) -> (String, String, String) {
+    let pick = |keys: &[&str]| {
+        keys.iter()
+            .find_map(|key| args.get(*key).and_then(|v| v.as_str()).map(str::trim))
+            .filter(|v| !v.is_empty())
+            .unwrap_or("")
+            .to_string()
+    };
+    let kind = crate::agent_access::operations::resource_kind_for_tool(tool).to_string();
+    let id = match kind.as_str() {
+        "task" => pick(&["task_id"]),
+        "feature" => pick(&["feature_id"]),
+        "step" => pick(&["step_id"]),
+        "milestone" => pick(&["milestone_id"]),
+        "project" => pick(&["project_id"]),
+        "note" => pick(&["note_id"]),
+        "knowledge" => pick(&["document_id", "doc_id"]),
+        _ => String::new(),
+    };
+    let project = pick(&["project_id"]);
+    (kind, id, project)
+}
+
 fn request_id_of(args: &Value) -> String {
     args.get("requestId")
         .and_then(|v| v.as_str())
@@ -1222,6 +1249,7 @@ pub fn run_tool_call(
         let operation = if is_replay {
             None
         } else {
+            let target = operation_target(name, args);
             operations::try_start(
                 &ctx.db,
                 &Principal::agent(
@@ -1231,9 +1259,9 @@ pub fn run_tool_call(
                 ),
                 &operations::OperationInput {
                     action: name,
-                    resource_kind: operations::resource_kind_for_tool(name),
-                    resource_id: "",
-                    project_id: "",
+                    resource_kind: &target.0,
+                    resource_id: &target.1,
+                    project_id: &target.2,
                     request_id: &request_id,
                     detail: "",
                 },

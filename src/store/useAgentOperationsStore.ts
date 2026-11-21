@@ -28,10 +28,13 @@ const FLASH_MS: Record<Exclude<AgentOperationStatus, "running">, number> = {
 };
 
 const RECENT_LIMIT = 20;
-/** 有运行中操作时的同步间隔：低频兜底，独立 CLI 只能靠它被感知。 */
-const POLL_ACTIVE_MS = 5000;
-/** 空闲时的同步间隔：仍有跨进程写入可能，保持很轻的检查。 */
-const POLL_IDLE_MS = 20000;
+/**
+ * 可见期的同步间隔：独立 CLI 只能靠它被感知。
+ * 4s 是「感知及时」与「一次索引查询」之间的折中；隐藏时完全停止查询。
+ */
+const POLL_VISIBLE_MS = 4000;
+/** 隐藏时的检查点间隔（只检查可见性，不发查询）。 */
+const POLL_HIDDEN_MS = 20000;
 
 const EMPTY: AgentOperation[] = [];
 
@@ -274,16 +277,13 @@ function schedulePoll(delay: number): void {
     const hidden = typeof document !== "undefined" && document.visibilityState === "hidden";
     if (hidden) {
       // 应用不可见：不发起查询，只保留一个很轻的检查点。
-      schedulePoll(POLL_IDLE_MS);
+      schedulePoll(POLL_HIDDEN_MS);
       return;
     }
     void useAgentOperationsStore
       .getState()
       .syncNow()
-      .finally(() => {
-        const active = useAgentOperationsStore.getState().activeCount;
-        schedulePoll(active > 0 ? POLL_ACTIVE_MS : POLL_IDLE_MS);
-      });
+      .finally(() => schedulePoll(POLL_VISIBLE_MS));
   }, delay);
   // 不阻止进程退出（Node/测试环境）。
   (pollTimer as unknown as { unref?: () => void }).unref?.();

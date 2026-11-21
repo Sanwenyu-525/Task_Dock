@@ -217,6 +217,7 @@ export function PlanningFeatureCard({
             resourceKind="feature"
             resourceId={feature.id}
             projectId={feature.project_id}
+            indicatorMax={1}
           />
           <ChevronDown
             size={15}

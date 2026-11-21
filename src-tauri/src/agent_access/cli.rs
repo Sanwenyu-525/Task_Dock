@@ -211,7 +211,7 @@ fn resolve_principal(db: &Db) -> AppResult<Principal> {
 ///
 /// 只有真正的写命令才创建操作：读命令不产生「正在修改」状态。
 /// 同一次 CLI 调用只对应一条记录（内部无论调用多少服务函数，都不再新建）。
-fn classify_cli_write(args: &[String]) -> Option<(&'static str, &'static str)> {
+fn classify_cli_write(args: &[String]) -> Option<(&'static str, &'static str, String)> {
     let group = args.first()?.as_str();
     let has_subcommand = matches!(
         group,
@@ -227,7 +227,7 @@ fn classify_cli_write(args: &[String]) -> Option<(&'static str, &'static str)> {
         .skip(2)
         .find(|a| !a.starts_with("--"))
         .map(String::as_str);
-    let action = match (group, sub, third) {
+    let (action, kind) = match (group, sub, third) {
         ("task", "create", _) => ("task.create", "task"),
         ("task", "update", _) => ("task.update", "task"),
         ("task", "complete", _) => ("task.complete", "task"),
@@ -245,7 +245,19 @@ fn classify_cli_write(args: &[String]) -> Option<(&'static str, &'static str)> {
         ("sync", "resolve", _) => ("sync.resolve", "sync"),
         _ => return None,
     };
-    Some(action)
+    // 失败也要能落到具体资源上：非创建类命令的位置参数就是目标 ID。
+    let id_index = if group == "agent" { 3 } else { 2 };
+    let target = if action.ends_with(".create")
+        || matches!((group, sub), ("sync", "init") | ("sync", "export") | ("sync", "scan"))
+    {
+        String::new()
+    } else {
+        args.get(id_index)
+            .filter(|a| !a.starts_with("--"))
+            .cloned()
+            .unwrap_or_default()
+    };
+    Some((action, kind, target))
 }
 
 /// 从 CLI 输出数据中提取真实资源指针（不猜：只认返回对象里明确存在的字段）。
@@ -328,14 +340,14 @@ pub fn main_entry(args: Vec<String>) -> i32 {
     let request_id = format!("cli-{}", uuid::Uuid::new_v4().simple());
     // 认证已完成 → 开始记录操作（读命令不记录）。CLI 在 UI 关闭时照常运行，
     // 前端通过 SQLite 游标增量感知，不依赖任何桌面端进程。
-    let operation = classify_cli_write(&argv).and_then(|(action, kind)| {
+    let operation = classify_cli_write(&argv).and_then(|(action, kind, target)| {
         operations::try_start(
             &db,
             &principal,
             &operations::OperationInput {
                 action,
                 resource_kind: kind,
-                resource_id: "",
+                resource_id: &target,
                 project_id: "",
                 request_id: &request_id,
                 detail: "",
@@ -1302,19 +1314,19 @@ mod operation_tests {
         // 同一次 CLI 调用只对应一条操作：读命令不产生「正在修改」。
         assert_eq!(
             classify_cli_write(&args(&["task", "create", "--title", "x"])),
-            Some(("task.create", "task"))
+            Some(("task.create", "task", String::new()))
         );
         assert_eq!(
             classify_cli_write(&args(&["task", "complete", "t1"])),
-            Some(("task.complete", "task"))
+            Some(("task.complete", "task", "t1".to_string()))
         );
         assert_eq!(
             classify_cli_write(&args(&["agent", "handoff", "accept", "h1"])),
-            Some(("handoff.accept", "handoff"))
+            Some(("handoff.accept", "handoff", "h1".to_string()))
         );
         assert_eq!(
             classify_cli_write(&args(&["agent", "report", "create", "--summary", "s"])),
-            Some(("report.create", "report"))
+            Some(("report.create", "report", String::new()))
         );
         assert_eq!(classify_cli_write(&args(&["task", "list"])), None);
         assert_eq!(classify_cli_write(&args(&["status"])), None);

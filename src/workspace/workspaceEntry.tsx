@@ -23,6 +23,8 @@ import { installFeatureRegistry } from "../lib/featureRegistry";
 import { installNativeDragBridge } from "../lib/dragCursorSession";
 import { initWorkbenchWindowFrame } from "../workbench/windowFrame";
 import WorkspaceApp from "./WorkspaceApp";
+import { ensureAgentOperationSync } from "../store/useAgentOperationsStore";
+import { ensureAgentOperationBusinessRefresh } from "../lib/agentOperationRefresh";
 
 // 本模块由 bootstrap.ts 动态 import：走到这里说明整个静态依赖图已下载+解析完成，
 // 模块主体开始执行。modules 阶段因此改为「主体执行」语义，不再是「加载开始」——
@@ -67,6 +69,13 @@ timed("initLocale", () => {
     // 提示损坏/存储被拒：保持 index.html 默认值，设置加载后会覆盖。
   }
   initLocale();
+});
+
+// Agent 操作可视化：每个窗口各一条事件监听 + 一个可见期同步器。
+// 工作台承载规划/任务等完整页面，缺了这层就会出现「主窗有徽标、工作台没有」。
+timed("agentOperationSync", () => {
+  ensureAgentOperationSync();
+  ensureAgentOperationBusinessRefresh();
 });
 
 // 窗口级圆角/边框：CSS 弧与 Win32 区域同源（读当前预设的 --radius-window

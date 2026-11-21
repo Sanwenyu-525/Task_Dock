@@ -13,6 +13,7 @@ import {
 import { useUiStore, type Tab } from "./store/useUiStore";
 import { useNavigationStore } from "./store/useNavigationStore";
 import { ensureAgentOperationSync } from "./store/useAgentOperationsStore";
+import { ensureAgentOperationBusinessRefresh } from "./lib/agentOperationRefresh";
 import { useEdgeSnap, useWindowPersistence } from "./hooks/useEdgeSnap";
 import { useHotkeysRuntime } from "./store/useHotkeysStore";
 import TitleBar from "./components/TitleBar";
@@ -174,6 +175,8 @@ export default function App() {
     // Agent 操作可视化：全应用唯一的事件监听 + 可见期低频游标同步。
     // 页面组件不得各自监听事件或轮询。
     ensureAgentOperationSync();
+    // CLI / REST / 文件导入不发 planning-changed：由操作终态驱动业务刷新。
+    ensureAgentOperationBusinessRefresh();
   }, [loadSettings, refreshTasks, loadAgents, loadNavLinks, loadNavTargets]);
 
   // 启动占位的重试：与启动路径同一入口，成功后 settings 就绪、外壳自动进入正常界面。
