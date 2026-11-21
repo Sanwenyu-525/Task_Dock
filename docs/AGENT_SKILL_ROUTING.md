@@ -60,3 +60,39 @@ Skill 建议；Skill 是开发工具指导，不是产品运行时能力，也�
 新增或替换 Skill 时只改本文件的路由表，并在提交说明中写明适用任务与边界；根 `AGENTS.md`
 不维护具体 Skill 清单。路由变化涉及项目规范时，先改 `docs/ui-themes/` 或 `apps/mobile/AGENTS.md`，
 再同步本文件。
+
+## 6. 前端指南按需检索（modern-web-guidance / chrome-extensions）
+
+两个技能装在**用户级** `C:\Users\ASUS\.agents\skills\`，不提交进仓库；换机器缺失时退化为
+`npx -y modern-web-guidance@latest search "<query>"`。上游 `description` 要求「所有 HTML/CSS 任务
+MANDATORY 先查」并输出 `### Modern Web Guidance` 披露段，**本项目不采纳**：只在下列信号命中时检索，
+单个任务检索 1–2 次为限，不写披露段（除非任务明确要求）。
+
+| 任务信号（命中才检索） | `search` 查询示例 | 典型 guide id |
+|---|---|---|
+| dialog / modal / popover / tooltip / 抽屉、轻关闭、Esc 或点击遮罩关闭、焦点陷阱、滚动穿透、`inert` | `light dismiss dialog` | `dialog`、`light-dismiss-a-dialog` |
+| 容器查询、`subgrid`、anchor positioning、320/400 窄窗、流式字号、`text-wrap` 平衡、安全区 | `container query card` | `css-layout`、`responsive-design` |
+| view transitions、scroll-driven animation、入场/退场、视差、scroll snap、`prefers-reduced-motion` | `animate dialog top layer` | `motion`、`animate-to-from-top-layer` |
+| 校验时机、`:user-invalid`、autofill、自定义 `<select>`、switch、range、自动伸缩输入框、IME 回车提交 | `validation after interaction` | `validate-input-after-interaction` |
+| 深/浅主题、`light-dark()`、`color-mix()`、`oklch`、滚动条配色、`prefers-contrast`、强制色彩 | `dark mode scrollbar` | `dark-mode`、`color` |
+| LCP / INP / CLS、`content-visibility`、`fetchpriority`、`scheduler.yield`、长任务拆分、预取预渲染 | `identify inp causes` | `identify-inp-causes` |
+| aria 状态、屏幕阅读器、`focus-visible`、键盘可达、生成内容替代文本、OS 文字缩放 | `accessible error announcement` | `accessibility`、`accessible-error-announcement` |
+| Trusted Types、HTML 消毒、SRI、passkey、客户端加密、Permissions Policy、本地网络访问 | `sanitize untrusted html` | `trusted-types`、`sanitize-untrusted-html` |
+| Temporal、时区、DST、`Intl.DurationFormat`、非公历 | `timezone dst event` | `js`、`coordinate-global-events` |
+| 自定义元素、Shadow DOM、声明式 Shadow DOM、表单关联元素、跨 shadow 样式 | `shadow dom slots` | `web-components`、`shadow-dom` |
+| 浏览器内置 AI（Translator / Summarizer / LanguageModel / LanguageDetector） | `on device summarizer` | `summarizer`、`prompt-api` |
+| Manifest V3、扩展 service worker、content script、消息传递、side panel、declarativeNetRequest、omnibox、userScripts、商店上架 | 无需 `search` | `chrome-extensions` 技能的 `references/extensions/*.md`、`references/webstore/*.md` |
+
+- **调用方式**（离线本地 CLI，不依赖 npx 联网）：`$env:DISABLE_TELEMETRY="1"` 后执行
+  `node <技能目录>\modern-web.mjs search "<2–5 词英文动作+组件名>"`，命中后
+  `retrieve "<id>"`（可逗号传多个）。查询词不带框架名（React/Vue/Tailwind）与业务名词；
+  一次说多个能力就拆多次 `search`；结果为空或弱相关时换同义词重试一次即放弃，不硬凑。
+- `chrome-extensions` **无 CLI**，按需 `Read` 其 `references/extensions/<topic>.md`（约 2–9 KB/篇），
+  不要把 20 篇一次性读进上下文。
+- **优先级**：根 AGENTS.md §6 的语义 Token / `overlayStack` / `data-tip` / 320·400 窄窗约束与
+  `ui-themes/` 高于指南文本；指南只提供实现方式与兼容数据，不得据此推翻已确认 Token、另造
+  组件层或绕过统一弹层栈。
+- 本项目前端跑在 Tauri/WebView2：指南中**非 Baseline Widely available** 的特性必须按其 fallback
+  要求实现，fallback 控制在 ≤50 行且不新增依赖；否则改用插件内的等价基线方案。
+- 上述信号之外（后端 SQL/ORM/API 路由、CI·Docker、Python/Go、Vite·tsconfig·ESLint、纯改名与文案、
+  纯 Rust/Tauri 后端侧、真机验收项）**不加载这两个技能**；真机与视觉验收仍按根 AGENTS.md §5.3 执行。

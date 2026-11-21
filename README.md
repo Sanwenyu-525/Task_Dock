@@ -337,7 +337,7 @@ npm run guard:cleanup    # 默认 dry-run，需 --execute 才删除
 - 剪贴板采集使用多线程 + 有界队列 + 全局访问锁，锁内比较后才写入，不覆盖用户的新复制。
 - 时间、监听器、轮询与后台任务必须可取消、有上限、退出时回收。
 
-详见 [架构说明](docs/ARCHITECTURE.md)、[开发指南](docs/DEVELOPMENT.md)、
+文档按任务与章节读取，先查 [文档索引](docs/README.md)。专题详见 [架构说明](docs/ARCHITECTURE.md)、[开发指南](docs/DEVELOPMENT.md)、
 [测试矩阵](docs/TESTING.md)、[验收通道说明](docs/ACCEPTANCE_ROUTING.md)、
 [统一集成与构建](docs/INTEGRATION_BUILD.md)、[Agent Adapter](docs/AGENT_ADAPTERS.md)。
 
@@ -399,7 +399,7 @@ cargo fmt --check
 - SQLite 迁移只在 [src-tauri/src/db/mod.rs](src-tauri/src/db/mod.rs) 的 `MIGRATIONS` 末尾追加；
   新表登记备份；新设置键同步 `Settings` 与允许列表。
 - 视觉只用语义 Token，不硬编码颜色 / 圆角 / 阴影；新弹层接入 overlay 栈。
-- 架构、开发、测试、模块文档的归属见 [AGENTS.md](AGENTS.md) 第 9 节。
+- 架构、开发、测试、模块文档的归属见 [文档索引](docs/README.md) 与 [AGENTS.md](AGENTS.md) 第 7 节。
 - 仓库未配置 GitHub Actions；提交前请在本地完成类型检查、测试与构建。
 
 ## Roadmap
