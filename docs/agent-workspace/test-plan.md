@@ -359,3 +359,12 @@ Dev 端到端复验 64/64，exit 0。用真实 Tauri 命令创建身份、授予
 `tasks.read`，再由 CLI、MCP stdio 和 REST 读取。同项目未授权任务和错误项目均被拒绝，
 撤销单任务能力后，三个入口立即拒绝目标上下文。原有交接、受控文件导入和鉴权用例同轮通过。
 证据：`tmp/acceptance/agent-task-context/report.md`。未执行 Release 安装包验收。
+
+## 16. 上下文输出与 token 预算（2026-11-21）
+
+- `npm run cargo -- test --lib agent_access::` 通过 171 项，exit 0。覆盖按表示估算预算、
+  固定内容超预算时拒绝、近期变更预算、REST GET 投影、分页、授权及既有写入和幂等。
+- 真实 CLI、MCP stdio、REST 与文件投影抽测 5/5。使用新编译的 Debug 二进制、
+  独立测试数据库和无窗口模式。同一上下文的旧版和紧凑模式保留相同的条目及近期变更。
+- 复测采用 `o200k_base`。CLI 的 6000 token 样本标记截断，保留 24 个条目，输出测得 5432 token。
+  证据：`tmp/acceptance/agent-context-compact/report.md`。本轮未执行桌面 UI 与 Release 安装态验收。

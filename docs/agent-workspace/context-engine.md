@@ -12,7 +12,7 @@
 | `agent_id` | 当前 Agent 身份（用于过滤其交接与活动） |
 | `kinds` | 需要的内容类型（task/plan/knowledge/decision/skill/handoff/activity） |
 | `budget_tokens` | 可选上限，默认 6000，最大 24000 |
-| `format` | `markdown` / `json` |
+| `format` | `compact_json` 仅结构化数据，`markdown` 仅文本，旧版 `json` 同时附带两种表示 |
 
 ## 2. 流程
 
@@ -78,7 +78,8 @@ record_context_access()        写 agent_context_access_logs（只记规模）
   并显式标注「基于规则生成的建议」。
 - 预算不足时优先保留：项目、目标、约束、已接受决策、当前计划；舍弃低分知识片段。
 - 空结果不编造：返回空分区并说明「未找到相关 X」。
-- `format=json` 时结构与 Markdown 一一对应（`sections[].items[]`），便于程序消费。
+- `format=compact_json` 适合程序消费，保留 `items[]`、`recent_changes[]`、目标、约束及预算信息。
+- 已有调用继续使用旧版格式。CLI 使用 `--json` 时，只有显式选择 `--format compact_json` 才会省略 Markdown。
 
 ## 6. 检索策略阶段
 
@@ -135,8 +136,10 @@ CLI `context get --task-id`、MCP `taskdock_get_relevant_context` 和 REST `GET 
 
 ### 7.5 预算
 
-预算覆盖：任务、规划、决策、知识、交接、近期变更、约束、下一步与 Markdown 固定骨架。
-返回 `truncated`、`estimated_tokens`、`kept_items`；近期变更与正文条目共享同一预算。
+预算按所选表示估算。双份 JSON 会计入附带的 Markdown，紧凑 JSON 只估算结构化响应。文件投影、
+MCP 资源和提示以 Markdown 估算。固定内容先占预算，正文和近期变更共享剩余额度，按优先级裁剪。
+如果只有固定内容仍装不下，请求返回 `VALIDATION`，调用方可提高预算或缩小范围。
+`estimated_tokens` 是含响应余量的本地估算值，实际模型分词与计费随客户端和模型变化。
 
 ### 7.6 中文检索
 

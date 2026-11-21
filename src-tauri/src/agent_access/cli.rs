@@ -46,9 +46,9 @@ pub const USAGE: &str = r#"Task Dock Agent CLI
   taskdock decision list [--project ID] [--status ...]
   taskdock decision get <decision_id>
   taskdock decision create --title ... --decision ... [--context ...] [--project ID] [--status accepted]
-  taskdock context get [--project ID] [--task-id ID] [--task 描述] [--budget N] [--format markdown|json]
+  taskdock context get [--project ID] [--task-id ID] [--task 描述] [--budget N] [--format markdown|json|compact_json]
   taskdock context search <关键词>
-  taskdock context export [--project ID] [--format markdown|json]
+  taskdock context export [--project ID] [--format markdown|json|compact_json]
   taskdock agent registry
   taskdock agent activity [--agent ID] [--interface cli|mcp|rest|file] [--limit N]
   taskdock agent handoff list [--status pending] [--project ID]
@@ -354,6 +354,8 @@ pub fn main_entry(args: Vec<String>) -> i32 {
             },
         )
     });
+    let compact_context = argv.first().is_some_and(|group| group == "context")
+        && take_flag(&mut argv.clone(), "--format").as_deref() == Some("compact_json");
     match execute(&db, &principal, &cli, argv) {
         Ok(outcome) => {
             if let Some(op) = &operation {
@@ -366,7 +368,12 @@ pub fn main_entry(args: Vec<String>) -> i32 {
             let data = filter_fields(outcome.data, &cli.fields);
             if cli.json {
                 let envelope = Envelope::ok(data, meta);
-                match serde_json::to_string_pretty(&envelope) {
+                let output = if compact_context {
+                    serde_json::to_string(&envelope)
+                } else {
+                    serde_json::to_string_pretty(&envelope)
+                };
+                match output {
                     Ok(text) => println!("{text}"),
                     Err(err) => {
                         eprintln!("序列化失败: {err}");
@@ -846,20 +853,22 @@ fn execute_inner(
         "context" => match sub.as_str() {
             "get" | "export" => {
                 let format = take_flag(args, "--format").unwrap_or_else(|| "markdown".into());
+                // --json 的历史响应同时包含条目和 Markdown，compact_json 为显式精简模式。
+                let budget_format = if cli.json && format == "markdown" { "json" } else { &format };
                 let req = context::ContextRequest {
                     task: take_flag(args, "--task"),
                     task_id: take_flag(args, "--task-id"),
                     project_id: take_flag(args, "--project"),
                     budget_tokens: take_flag(args, "--budget")
                         .and_then(|v| v.parse::<u32>().ok()),
-                    format: Some(format.clone()),
+                    format: Some(budget_format.to_string()),
                     ..Default::default()
                 };
                 let ctx = context::build(db, principal, req)?;
-                let human = if format == "json" {
-                    serde_json::to_string_pretty(&ctx)?
-                } else {
-                    ctx.markdown.clone()
+                let human = match format.as_str() {
+                    "compact_json" => serde_json::to_string(&ctx)?,
+                    "json" => serde_json::to_string_pretty(&ctx)?,
+                    _ => ctx.markdown.clone(),
                 };
                 Ok(Outcome {
                     data: context::to_json(&ctx)?,

@@ -50,6 +50,10 @@ MCP 客户端 ──stdio──▶ taskdock.exe --mcp-server ──HTTP 127.0.0.
 其中 `taskdock_create_task` / `taskdock_update_task` 返回的任务 JSON 也包含 `revision`，并在同一
 事务内写入 `agent_activity_logs`（`interface=mcp`），与 CLI/REST/文件入口共用版本与审计口径。
 
+上下文工具 `taskdock_get_project_context` 与 `taskdock_get_relevant_context` 可传
+`format: "compact_json"` 只返回单行 JSON 文本，或传 `format: "markdown"` 只返回 Markdown 文本。
+省略格式时继续返回含 Markdown 的结构化 JSON。
+
 ## 3. Resources（只读，按需读取）
 
 | URI | 内容 | 分页 |

@@ -137,6 +137,9 @@ taskdock sync resolve <conflict_id> --resolution db|file|dismiss [--json]
 - 分页：`meta.pagination`；`limit` 默认 20，上限 200；`offset` 上限 10000。
 - 字段筛选：`--fields title,status,due_at`（逗号分隔，未知字段报 `VALIDATION`）。
 - 非 `--json`：人类可读表格/段落；空结果输出 `（无结果）`。
+- Agent 可用 `taskdock context get --task-id <id> --format compact_json --budget 1500 --json`。
+  这会保留 JSON 信封和结构化上下文，省略 Markdown 并使用单行 JSON。只阅读文本时可使用
+  `--format markdown` 并省略 `--json`。
 
 ## 5. 退出码
 

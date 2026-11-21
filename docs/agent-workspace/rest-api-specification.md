@@ -60,7 +60,7 @@ HTTP 状态映射：`VALIDATION→400`、`UNAUTHORIZED→401`、`FORBIDDEN→403
 | GET | `/api/v1/decisions` | `decisions.read` | `project_id`/`status`/`limit` |
 | GET | `/api/v1/decisions/{id}` | `decisions.read` | 详情 |
 | POST | `/api/v1/decisions` | `decisions.write` | 创建 |
-| GET | `/api/v1/context` | `context.read`，指定任务时另需 `tasks.read` | `project`/`task_id`/`task`/`budget`/`format`；任务必须关联指定项目 |
+| GET | `/api/v1/context` | `context.read`，指定任务时另需 `tasks.read` | `project`/`task_id`/`task`/`budget`/`format`；任务必须关联指定项目。格式为 `json`、`compact_json` 或 `markdown` |
 | GET | `/api/v1/context/search` | `context.read` | 同上，`q` 必填 |
 | POST | `/api/v1/context` | `context.read` | body 里的 scope（避免超长 query） |
 | GET | `/api/v1/agents/handoffs` | `handoffs.read` | `status`/`project`/`limit`/`offset`；省略项目时按授权范围发现，过滤后分页 |
@@ -81,7 +81,13 @@ HTTP 状态映射：`VALIDATION→400`、`UNAUTHORIZED→401`、`FORBIDDEN→403
 ## 3. 分页与字段筛选
 
 - `limit` 默认 20（最大 200），`offset` 最大 10000；响应 `meta.pagination`。
-- `fields=a,b` 过滤返回字段（未知字段 → 400），用于减少上下文占用。
+- GET 的 `fields=a,b` 保留 `data` 对象或列表各项的指定字段，分页信息仍在 `meta.pagination`。
+  非空结果上的未知字段、空字段或超过 50 个字段返回 400。空列表仍返回空列表。
+  例如 `GET /api/v1/tasks?limit=10&fields=id,title,status,revision`。
+- 上下文的 `format=compact_json` 省略 Markdown，`format=markdown` 仅返回 Markdown 字段。
+  `fields` 在预算裁剪后应用。只需一种表示时应先指定 `format`。
+- 兼容性：省略新增格式或字段筛选时，响应结构保持原样。有效的 `fields` 现在生效，
+  无效值会报错。固定内容已超过上下文预算时返回 400。
 
 ## 4. 幂等
 

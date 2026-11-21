@@ -246,3 +246,10 @@ exit 0（隔离数据目录 `tmp/acceptance/agent-access-v82-20261120-224854/`�
 - 校验目标任务与项目的关联。未关联项目的任务保持独立范围，目标超出候选列表上限时仍可按 ID 入选。
 - 上下文 Rust 测试 24/24，实际 Dev 桌面与外部入口复验 64/64，含五项新增任务上下文断言。
   详见 [context-engine.md](context-engine.md#73-项目范围) 与 [test-plan.md](test-plan.md#15-单任务授权上下文2026-11-21)。
+
+## 上下文输出与 token 预算（2026-11-21）
+
+- CLI、MCP 和 REST 支持 `compact_json`，同一份上下文可只返回结构化数据。
+- 预算按选定表示估算，双份输出计入 Markdown。REST GET 支持字段投影，分页元数据以及资源授权继续独立处理。
+- 等量上下文样本中，CLI、MCP、REST 的 token 分别减少 49.5%、48.5%、36.7%。
+  Rust 模块回归 171/171，真实传输与文件投影抽测 5/5。详见 [test-plan.md](test-plan.md#16-上下文输出与-token-预算2026-11-21)。

@@ -172,10 +172,11 @@ pub(crate) fn defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "taskdock_get_project_context",
-            description: "按项目装配上下文（Markdown + 结构化条目 + 访问方式），受 token 预算限制。",
+            description: "按项目装配上下文。建议 format=compact_json 减少 token。",
             input_schema: schema(
                 json!({
                     "project_id": { "type": "string" },
+                    "format": { "type": "string", "enum": ["json", "compact_json", "markdown"] },
                     "budget_tokens": { "type": "integer", "minimum": 1000, "maximum": 24000 }
                 }),
                 &["project_id"],
@@ -184,12 +185,13 @@ pub(crate) fn defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "taskdock_get_relevant_context",
-            description: "按任务描述/任务 ID 装配相关上下文（项目、任务、计划、决策、知识、交接）。",
+            description: "按任务描述或 ID 装配相关上下文。建议 format=compact_json 减少 token。",
             input_schema: schema(
                 json!({
                     "task": { "type": "string", "description": "自然语言任务描述" },
                     "task_id": { "type": "string" },
                     "project_id": { "type": "string" },
+                    "format": { "type": "string", "enum": ["json", "compact_json", "markdown"] },
                     "budget_tokens": { "type": "integer", "minimum": 1000, "maximum": 24000 }
                 }),
                 &[],
@@ -439,19 +441,21 @@ pub(crate) fn call(
             }
             "taskdock_get_project_context" => {
                 let id = need(args, "project_id")?;
+                let format = arg_str(args, "format");
                 let ctx = context::build(
                     db,
                     &principal,
                     context::ContextRequest {
                         project_id: Some(id.clone()),
                         budget_tokens: int_arg(args, "budget_tokens").map(|v| v as u32),
-                        format: Some("json".into()),
+                        format: format.map(str::to_string),
                         ..Default::default()
                     },
                 )?;
-                Ok((context::to_json(&ctx)?, "context", id))
+                Ok((context::response(&ctx, format)?, "context", id))
             }
             "taskdock_get_relevant_context" => {
+                let format = arg_str(args, "format");
                 let ctx = context::build(
                     db,
                     &principal,
@@ -460,12 +464,12 @@ pub(crate) fn call(
                         task_id: arg_str(args, "task_id").map(str::to_string),
                         project_id: arg_str(args, "project_id").map(str::to_string),
                         budget_tokens: int_arg(args, "budget_tokens").map(|v| v as u32),
-                        format: Some("json".into()),
+                        format: format.map(str::to_string),
                         ..Default::default()
                     },
                 )?;
                 Ok((
-                    context::to_json(&ctx)?,
+                    context::response(&ctx, format)?,
                     "context",
                     ctx.project_id.clone(),
                 ))
@@ -647,7 +651,14 @@ pub fn read_resource(db: &Db, principal: &Principal, uri: &str) -> AppResult<Val
             Ok(text("application/json", json_text(serde_json::to_value(items)?)?))
         }
         "taskdock://context/current" => {
-            let ctx = context::build(db, principal, context::ContextRequest::default())?;
+            let ctx = context::build(
+                db,
+                principal,
+                context::ContextRequest {
+                    format: Some("markdown".into()),
+                    ..Default::default()
+                },
+            )?;
             Ok(text("text/markdown", ctx.markdown))
         }
         other => {

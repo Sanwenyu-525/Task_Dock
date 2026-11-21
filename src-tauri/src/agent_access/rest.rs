@@ -1405,6 +1405,17 @@ async fn handle(req: Request<Incoming>, state: Arc<RestState>) -> Response<Full<
             .await
             {
                 Ok(Ok((data, page))) => {
+                    let data = match query.get("fields").filter(|_| method == hyper::Method::GET) {
+                        Some(fields) => match project_read_fields(data, fields) {
+                            Ok(data) => data,
+                            Err(err) => {
+                                return fail_response(
+                                    StatusCode::BAD_REQUEST, &err, &principal, &request_id,
+                                );
+                            }
+                        },
+                        None => data,
+                    };
                     if let Some(op) = &operation {
                         let result =
                             operations::OperationResult::from_value(&op.resource_kind, &data);
@@ -1458,6 +1469,35 @@ async fn handle(req: Request<Incoming>, state: Arc<RestState>) -> Response<Full<
             plain(status, value, &request_id)
         }
     }
+}
+
+/// 只投影已完成鉴权的 GET 数据，信封和分页元数据不参与筛选。
+fn project_read_fields(mut data: Value, raw: &str) -> AppResult<Value> {
+    let fields: Vec<_> = raw.split(',').map(str::trim).collect();
+    if fields.len() > 50 || fields.iter().any(|field| field.is_empty()) {
+        return Err(AppError::Validation("fields 需要 1–50 个非空字段".into()));
+    }
+    let rows = match &mut data {
+        Value::Object(row) => vec![row],
+        Value::Array(rows) => rows
+            .iter_mut()
+            .map(|row| row.as_object_mut().ok_or_else(|| {
+                AppError::Validation("该响应不支持字段筛选".into())
+            }))
+            .collect::<AppResult<Vec<_>>>()?,
+        _ => return Err(AppError::Validation("该响应不支持字段筛选".into())),
+    };
+    if !rows.is_empty() {
+        for field in &fields {
+            if !rows.iter().any(|row| row.contains_key(*field)) {
+                return Err(AppError::Validation(format!("未知响应字段: {field}")));
+            }
+        }
+    }
+    for row in rows {
+        row.retain(|key, _| fields.contains(&key.as_str()));
+    }
+    Ok(data)
 }
 
 /// 读取请求体：Content-Length 与流式累计字节双重限长，且每一帧都受同一 deadline 约束。
@@ -1749,20 +1789,17 @@ where
             Ok((serde_json::to_value(service::get_decision_authorized(db, principal, id)?)?, None))
         }
         ("GET", ["context"]) => {
+            let format = query.get("format");
             let req = context::ContextRequest {
                 task: query.get("task").cloned(),
                 task_id: query.get("task_id").cloned(),
                 project_id: query.get("project").cloned(),
                 budget_tokens: query.get("budget").and_then(|v| v.parse().ok()),
-                format: query.get("format").cloned(),
+                format: format.cloned(),
                 ..Default::default()
             };
             let ctx = context::build(db, principal, req)?;
-            if query.get("format").map(String::as_str) == Some("markdown") {
-                Ok((json!({ "markdown": ctx.markdown }), None))
-            } else {
-                Ok((context::to_json(&ctx)?, None))
-            }
+            Ok((context::response(&ctx, format.map(String::as_str))?, None))
         }
         ("GET", ["context", "search"]) => {
             let q = query.get("q").cloned().unwrap_or_default();

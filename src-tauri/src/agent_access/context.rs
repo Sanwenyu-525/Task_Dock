@@ -93,6 +93,7 @@ pub struct AgentContext {
     pub kept_items: u32,
     /// 预算提示（例如固定骨架本身就超限）。为空表示没有需要提示的事。
     pub budget_note: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub markdown: String,
 }
 
@@ -136,13 +137,24 @@ impl AuthorizedContextKinds {
     }
 }
 
-/// token 预算执行结果。
-#[derive(Clone, Debug)]
-pub struct ContextBudget {
-    pub total: u32,
-    pub used: u32,
-    pub truncated: bool,
-    pub kept_items: u32,
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ContextFormat {
+    Both,
+    Markdown,
+    CompactJson,
+}
+
+impl ContextFormat {
+    fn parse(format: Option<&str>) -> AppResult<Self> {
+        match format.unwrap_or("json") {
+            "json" => Ok(Self::Both),
+            "markdown" => Ok(Self::Markdown),
+            "compact_json" => Ok(Self::CompactJson),
+            _ => Err(AppError::Validation(
+                "format 必须是 json、markdown 或 compact_json".into(),
+            )),
+        }
+    }
 }
 
 fn canonical_kind(raw: &str) -> Option<&'static str> {
@@ -169,8 +181,24 @@ fn capability_of_kind(kind: &str) -> Capability {
 }
 
 fn estimate_tokens(text: &str) -> u32 {
-    // 中文按「约 2 字符 / token」粗估；只用于预算控制，不做精确计费。
-    ((text.chars().count() as u32) / 2).max(1)
+    // 按字符类型估算，区分 JSON 标点、ID 数字和中文。模型分词表各异，
+    // 此值只用于控制本地输出预算。
+    text.chars()
+        .map(|ch| {
+            if !ch.is_ascii() {
+                10
+            } else if ch.is_ascii_alphabetic() {
+                3
+            } else if ch.is_ascii_digit() {
+                4
+            } else if ch.is_ascii_whitespace() {
+                2
+            } else {
+                7
+            }
+        })
+        .sum::<u32>()
+        .div_ceil(10)
 }
 
 /// 关键词：英文按词，中文按 2 字 shingle。
@@ -1035,35 +1063,17 @@ fn deduplicate_context_candidates(items: &mut Vec<ContextItem>) {
     items.retain(|item| seen.insert(item.source_id.clone()));
 }
 
-/// 条目成本：标题 + 摘要 + 元数据 + 固定开销。
-///
-/// Markdown 行与 JSON 对象都会带上这些字段，所以成本必须按「实际输出」估算，
-/// 否则预算只能约束标题，输出照样会超。
-fn item_cost(item: &ContextItem) -> u32 {
-    estimate_tokens(&item.title)
-        + estimate_tokens(&item.summary)
-        + estimate_tokens(&item.source_id)
-        + estimate_tokens(&item.updated_at)
-        + estimate_tokens(&item.access)
-        + estimate_tokens(&item.project_id)
-        + 20
-}
-
-/// 固定骨架的 token 消耗：项目 / 当前目标 / 约束 / 下一步 / Markdown 骨架 / JSON 元数据。
-///
-/// 骨架**先**占预算：条目与近期变更只能用剩下的额度。否则「约束、下一步、
-/// Markdown 输出、JSON 元数据」这些固定内容会在预算之外偷偷把结果撑大。
-fn skeleton_cost(ctx: &AgentContext) -> u32 {
-    let mut probe = ctx.clone();
-    probe.items.clear();
-    probe.recent_changes.clear();
-    probe.estimated_tokens = ctx.budget_tokens;
-    probe.kept_items = 0;
-    // 按最长尾部（已截断提示）估算，宁可高估也不允许无声超限。
-    probe.truncated = true;
-    let markdown = render_markdown(&probe);
-    let meta = serde_json::to_string(&probe.scope).unwrap_or_default();
-    estimate_tokens(&markdown) + estimate_tokens(&meta) + 20
+/// 估算最终表示，双份输出中的重复内容也占预算。为传输信封留余量。
+fn output_cost(ctx: &mut AgentContext, format: ContextFormat) -> AppResult<u32> {
+    if format != ContextFormat::CompactJson {
+        ctx.markdown = render_markdown(ctx);
+    }
+    let cost = match format {
+        ContextFormat::Both => estimate_tokens(&serde_json::to_string_pretty(ctx)?),
+        ContextFormat::Markdown => estimate_tokens(&ctx.markdown),
+        ContextFormat::CompactJson => estimate_tokens(&serde_json::to_string(ctx)?),
+    };
+    Ok(cost + 64)
 }
 
 /// 按重要程度分组（组内按相关性降序；**组序即保留优先级**）。
@@ -1094,31 +1104,44 @@ fn partition_by_priority(
     vec![decisions, focus, recent, rest]
 }
 
-/// 在剩余预算内按组填充条目；返回（每组保留的条目、实际消耗、是否发生裁剪）。
-///
-/// 某档装不下时**整体停止**：低优先级条目不得挤掉更高优先级的条目。
-fn allocate_by_priority(
-    groups: &[Vec<ContextItem>],
-    remaining: u32,
-) -> (Vec<Vec<ContextItem>>, u32, bool) {
-    let mut kept: Vec<Vec<ContextItem>> = groups.iter().map(|_| Vec::new()).collect();
-    let mut used = 0u32;
+/// 固定内容先占预算，再按优先级填充有上限的候选。装不下时保留当前前缀。
+fn fit_context(
+    ctx: &mut AgentContext,
+    format: ContextFormat,
+    groups: Vec<Vec<ContextItem>>,
+) -> AppResult<()> {
+    // 估算时预留截断提示和预算数字的空间。
+    ctx.estimated_tokens = ctx.budget_tokens;
+    ctx.truncated = true;
+    let mut cost = output_cost(ctx, format)?;
+    if cost > ctx.budget_tokens {
+        return Err(AppError::Validation(
+            "上下文固定内容超出预算，请提高预算或缩小请求范围".into(),
+        ));
+    }
     let mut truncated = false;
-    for (index, group) in groups.iter().enumerate() {
+    'groups: for (index, group) in groups.into_iter().enumerate() {
         for item in group {
-            let cost = item_cost(item);
-            if used.saturating_add(cost) > remaining {
+            let target = if index == 2 { &mut ctx.recent_changes } else { &mut ctx.items };
+            target.push(item);
+            ctx.kept_items = ctx.items.len() as u32;
+            let next = output_cost(ctx, format)?;
+            if next > ctx.budget_tokens {
+                let target = if index == 2 { &mut ctx.recent_changes } else { &mut ctx.items };
+                target.pop();
+                ctx.kept_items = ctx.items.len() as u32;
                 truncated = true;
-                break;
+                break 'groups;
             }
-            used += cost;
-            kept[index].push(item.clone());
-        }
-        if truncated {
-            break;
+            cost = next;
         }
     }
-    (kept, used, truncated)
+    ctx.estimated_tokens = cost;
+    ctx.truncated = truncated;
+    if format != ContextFormat::CompactJson {
+        ctx.markdown = render_markdown(ctx);
+    }
+    Ok(())
 }
 
 fn describe_task(task: &Task) -> String {
@@ -1378,6 +1401,7 @@ fn scope_value(
 
 pub fn build(db: &Db, principal: &Principal, req: ContextRequest) -> AppResult<AgentContext> {
     perms::require(db, principal, Capability::ContextRead, "")?;
+    let format = ContextFormat::parse(req.format.as_deref())?;
     let budget_total = req
         .budget_tokens
         .unwrap_or(DEFAULT_BUDGET)
@@ -1417,15 +1441,14 @@ pub fn build(db: &Db, principal: &Principal, req: ContextRequest) -> AppResult<A
     // 近期变更：受权限与项目归属约束的**候选**，最终是否保留由预算决定。
     let recent_candidates = collect_recent_changes(db, principal, &scope, &authorized, 10)?;
 
-    // ── 预算：骨架先占额度，条目与近期变更只能用剩下的 ──
-    let skeleton = AgentContext {
+    let mut ctx = AgentContext {
         project_id: scope.project_id.clone(),
         project_name: scope.project_name.clone(),
         objective: scope.objective.clone(),
         scope: scope_value(&scope, &req, &authorized),
         items: Vec::new(),
-        constraints: constraints.clone(),
-        next_steps: next_steps.clone(),
+        constraints,
+        next_steps,
         recent_changes: Vec::new(),
         budget_tokens: budget_total,
         estimated_tokens: 0,
@@ -1434,59 +1457,15 @@ pub fn build(db: &Db, principal: &Principal, req: ContextRequest) -> AppResult<A
         budget_note: String::new(),
         markdown: String::new(),
     };
-    let skeleton_tokens = skeleton_cost(&skeleton);
-    let mut budget = ContextBudget {
-        total: budget_total,
-        used: skeleton_tokens,
-        truncated: false,
-        kept_items: 0,
-    };
-    let mut budget_note = String::new();
-    if skeleton_tokens > budget_total {
-        // 骨架本身超限：明确提示，而不是无声地把结果撑大。
-        budget.truncated = true;
-        budget.used = budget_total;
-        budget_note = format!(
-            "固定骨架（项目、目标、约束、下一步与元数据）约需 {skeleton_tokens} tokens，\
-             已超过预算 {budget_total} tokens：条目已被全部裁剪。请提高 budget_tokens 或精简请求。"
-        );
-    }
-    let remaining = budget_total.saturating_sub(skeleton_tokens);
     let groups = partition_by_priority(items, &scope, recent_candidates);
-    let (kept, kept_cost, dropped) = allocate_by_priority(&groups, remaining);
-    budget.truncated = budget.truncated || dropped;
-    budget.used = budget.used.saturating_add(kept_cost).min(budget_total);
-
-    let mut kept_items: Vec<ContextItem> = kept[0].clone();
-    kept_items.extend(kept[1].clone());
-    kept_items.extend(kept[3].clone());
-    let kept_recent = kept[2].clone();
-    budget.kept_items = kept_items.len() as u32;
-
-    let mut ctx = AgentContext {
-        project_id: scope.project_id.clone(),
-        project_name: scope.project_name.clone(),
-        objective: scope.objective.clone(),
-        scope: skeleton.scope.clone(),
-        items: kept_items,
-        constraints,
-        next_steps,
-        recent_changes: kept_recent,
-        budget_tokens: budget.total,
-        estimated_tokens: budget.used,
-        truncated: budget.truncated,
-        kept_items: budget.kept_items,
-        budget_note,
-        markdown: String::new(),
-    };
-    ctx.markdown = render_markdown(&ctx);
+    fit_context(&mut ctx, format, groups)?;
     let access = store::ContextAccess {
         principal,
         purpose: req.task.as_deref().unwrap_or("context.get"),
         project_id: &ctx.project_id,
         task_id: &scope.task_id,
-        format: req.format.as_deref().unwrap_or("markdown"),
-        budget_tokens: budget.total,
+        format: req.format.as_deref().unwrap_or("json"),
+        budget_tokens: budget_total,
         item_count: ctx.items.len() as u32,
         estimated_tokens: ctx.estimated_tokens,
         request_id: "",
@@ -1571,12 +1550,20 @@ pub fn render_markdown(ctx: &AgentContext) -> String {
     out
 }
 
-/// 便于 REST/MCP 直接拿 JSON（`markdown` 字段保留，方便同一响应两种用途）。
+/// 序列化上下文。紧凑 JSON 模式不生成 Markdown，因此也不带该字段。
 pub fn to_json(ctx: &AgentContext) -> AppResult<Value> {
     Ok(serde_json::to_value(ctx)?)
 }
 
-/// 近期活动上下文（`get_recent_context`）。
+pub fn response(ctx: &AgentContext, format: Option<&str>) -> AppResult<Value> {
+    if format == Some("markdown") {
+        Ok(json!({ "markdown": ctx.markdown }))
+    } else {
+        to_json(ctx)
+    }
+}
+
+/// 近期活动上下文 (`get_recent_context`)。
 ///
 /// 活动记录是跨项目的元数据：必须经 `service::list_activity_authorized` 在服务端
 /// 按授权范围过滤；没有可读资源时返回 FORBIDDEN，而不是静默返回空列表。
@@ -1664,16 +1651,16 @@ mod tests {
                 status: "pending".into(),
             })
             .collect();
-        let groups = vec![items];
-        let (kept, used, truncated) = allocate_by_priority(&groups, 1000);
-        assert!(truncated, "装不下必须标记截断");
-        assert!(used <= 1000, "消耗不得超过预算：{used}");
-        assert!(kept[0].len() < 50, "低优先级条目必须被裁掉");
+        let mut ctx = budget_fixture();
+        ctx.budget_tokens = 1000;
+        fit_context(&mut ctx, ContextFormat::Both, vec![items]).unwrap();
+        assert!(ctx.truncated);
+        assert!(ctx.estimated_tokens <= 1000);
+        assert!(ctx.items.len() < 50);
     }
 
-    #[test]
-    fn skeleton_cost_covers_constraints_and_next_steps() {
-        let ctx = AgentContext {
+    fn budget_fixture() -> AgentContext {
+        AgentContext {
             project_id: "p1".into(),
             project_name: "项目一".into(),
             objective: "修复导入边界".into(),
@@ -1688,14 +1675,26 @@ mod tests {
             kept_items: 0,
             budget_note: String::new(),
             markdown: String::new(),
-        };
-        let bare = skeleton_cost(&ctx);
-        let mut longer = ctx.clone();
-        longer.constraints.push("约束三：必须可回放。".into());
-        assert!(
-            skeleton_cost(&longer) > bare,
-            "约束变多时骨架成本必须变大（否则约束会绕过预算）"
-        );
+        }
+    }
+
+    #[test]
+    fn output_budget_counts_duplicate_formats_and_skips_markdown_in_compact_json() {
+        let mut both = budget_fixture();
+        let mut compact = both.clone();
+        fit_context(&mut both, ContextFormat::Both, vec![]).unwrap();
+        fit_context(&mut compact, ContextFormat::CompactJson, vec![]).unwrap();
+        assert!(both.markdown.contains("修复导入边界"));
+        assert!(to_json(&compact).unwrap().get("markdown").is_none());
+        assert_eq!(to_json(&compact).unwrap()["objective"], "修复导入边界");
+        assert!(both.estimated_tokens > compact.estimated_tokens);
+
+        compact.budget_tokens = 1000;
+        compact.next_steps.push("固定步骤".repeat(500));
+        assert!(matches!(
+            fit_context(&mut compact, ContextFormat::CompactJson, vec![]),
+            Err(AppError::Validation(_))
+        ));
     }
 
     #[test]

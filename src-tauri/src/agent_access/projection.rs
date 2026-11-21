@@ -295,6 +295,7 @@ pub fn export_all(db: &Db, row: &workspace::WorkspaceRow) -> AppResult<ExportRep
             &local,
             super::context::ContextRequest {
                 project_id: Some(id.clone()),
+                format: Some("markdown".into()),
                 ..Default::default()
             },
         ) {
@@ -495,7 +496,11 @@ pub fn export_all(db: &Db, row: &workspace::WorkspaceRow) -> AppResult<ExportRep
     }
 
     // 上下文
-    if let Ok(ctx) = super::context::build(db, &local, super::context::ContextRequest::default()) {
+    let context_request = super::context::ContextRequest {
+        format: Some("markdown".into()),
+        ..Default::default()
+    };
+    if let Ok(ctx) = super::context::build(db, &local, context_request) {
         write("context/current.md", "context", "", 0, "", ctx.markdown)?;
     }
     let (activity, _) = store::list_activity(
@@ -564,6 +569,7 @@ pub fn export_project_context(db: &Db, project_id: &str) -> AppResult<String> {
         &Principal::local(Source::System),
         super::context::ContextRequest {
             project_id: Some(project_id.to_string()),
+            format: Some("markdown".into()),
             ..Default::default()
         },
     )?;

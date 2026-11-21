@@ -1201,6 +1201,10 @@ fn call(
 
 fn mcp_result(value: &Value, is_error: bool) -> Value {
     let text = serde_json::to_string_pretty(value).unwrap_or_else(|_| "{}".into());
+    mcp_text_result(text, is_error)
+}
+
+fn mcp_text_result(text: String, is_error: bool) -> Value {
     json!({
         "content": [ { "type": "text", "text": text } ],
         "isError": is_error,
@@ -1469,6 +1473,17 @@ pub fn run_tool_call(
                     message: "MCP 读取审计未能持久化".into(),
                     data: Value::Null,
                 })?;
+            if matches!(name, "taskdock_get_project_context" | "taskdock_get_relevant_context") {
+                match arg_str(args, "format") {
+                    Some("compact_json") => return Ok(mcp_text_result(outcome.value.to_string(), false)),
+                    Some("markdown") => {
+                        if let Some(markdown) = outcome.value.get("markdown").and_then(Value::as_str) {
+                            return Ok(mcp_text_result(markdown.to_string(), false));
+                        }
+                    }
+                    _ => {}
+                }
+            }
             Ok(mcp_result(&outcome.value, false))
         }
         Err(error) => {

@@ -480,6 +480,43 @@ fn get(
 }
 
 #[test]
+fn get_field_projection_keeps_pagination_and_respects_authentication() {
+    let _serial = serial();
+    let _ = rest::stop();
+    let db = Arc::new(db());
+    let (_, _, token) = writable_agent(&db, "fields");
+    let port = start_rest(&db);
+    let (created, _, _) = post(
+        port,
+        "/api/v1/tasks",
+        &token,
+        br#"{"title":"task for projection","description":"only in full response"}"#,
+        None,
+    );
+    let (status, _, body) = get(
+        port,
+        "/api/v1/tasks?limit=1&fields=id,title,revision",
+        Some(&token),
+        &[],
+    );
+    let (unknown, _, _) = get(port, "/api/v1/tasks?fields=unknown", Some(&token), &[]);
+    let (unauthorized, _, _) = get(port, "/api/v1/tasks?fields=id", None, &[]);
+    let _ = rest::stop();
+
+    assert_eq!(created, 201);
+    assert_eq!(status, 200, "{body}");
+    let value: Value = serde_json::from_str(&body).unwrap();
+    let task = value["data"][0].as_object().unwrap();
+    assert_eq!(task.len(), 3);
+    assert!(task.contains_key("id"));
+    assert_eq!(task["title"], "task for projection");
+    assert_eq!(task["revision"], 1);
+    assert_eq!(value["meta"]["pagination"]["total"], 1);
+    assert_eq!(unknown, 400);
+    assert_eq!(unauthorized, 401);
+}
+
+#[test]
 fn timeout_slow_body_returns_408_with_matching_request_id() {
     let _serial = serial();
     let _ = rest::stop();
