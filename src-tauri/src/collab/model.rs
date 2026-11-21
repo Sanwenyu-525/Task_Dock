@@ -66,9 +66,10 @@ pub const AUTHORING_MODES: &[&str] = &[
 ];
 /// 可视化资产（图片）类型白名单。
 pub const VISUAL_ASSET_EXTS: &[&str] = &["png", "jpg", "jpeg", "webp", "gif"];
-pub const MAX_VISUAL_ASSET_BYTES: u64 = 32 * 1024 * 1024;
-/// 单次受控读取上限：避免把 32 MiB 图片整体编码成 base64 塞进 WebView。
+/// 单次受控读取上限：图片以 base64 进入 WebView，超过 8 MiB 的图会明显卡顿。
 pub const MAX_VISUAL_ASSET_READ_BYTES: u64 = 8 * 1024 * 1024;
+/// 导入上限与读取上限保持一致：不允许「导入成功但永远无法预览」的资产。
+pub const MAX_VISUAL_ASSET_BYTES: u64 = MAX_VISUAL_ASSET_READ_BYTES;
 
 pub const MAX_TITLE: usize = 200;
 pub const MAX_DESCRIPTION: usize = 20_000;
@@ -571,7 +572,7 @@ pub struct PrototypeEvent {
     pub value: Option<Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PatchOp {
     pub op: String,
@@ -583,6 +584,12 @@ pub struct PatchOp {
     pub component: Option<Value>,
     #[serde(default)]
     pub patch: Option<Value>,
+    /// 字段删除表达：`{"props":["k"],"style":["bg"],"events":["onClick"]}`。
+    ///
+    /// 与 `patch` 同时出现时先删除再写入（同名键最终以 `patch` 为准）；
+    /// 删除不存在的键视为幂等空操作，便于 diff 重复应用。
+    #[serde(default)]
+    pub remove_keys: Option<BTreeMap<String, Vec<String>>>,
     #[serde(default)]
     pub x: Option<f64>,
     #[serde(default)]

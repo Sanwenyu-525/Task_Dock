@@ -403,6 +403,7 @@ fn prototype_patch_events_and_flow_validation() {
                         "props":{"text":"新增"},"style":{},"events":{}
                     })),
                     patch: None,
+                    remove_keys: None,
                     x: None,
                     y: None,
                     name: None,
@@ -734,6 +735,7 @@ fn prototype_page_ops_are_atomic() {
         component_id: None,
         component: None,
         patch: None,
+        remove_keys: None,
         x: None,
         y: None,
         name: name.map(str::to_string),
@@ -775,6 +777,7 @@ fn prototype_page_ops_are_atomic() {
                         component_id: Some("missing".to_string()),
                         component: None,
                         patch: None,
+                        remove_keys: None,
                         x: None,
                         y: None,
                         name: None,
@@ -808,6 +811,534 @@ fn prototype_page_ops_are_atomic() {
     let remaining: serde_json::Value =
         serde_json::from_str(&renamed.source_content).expect("JSON");
     assert_eq!(remaining["pages"].as_array().expect("pages").len(), 1);
+}
+
+#[test]
+fn prototype_patch_updates_and_removes_object_fields() {
+    let db = setup();
+    let ui = Actor::ui();
+    let content = serde_json::json!({
+        "schemaVersion": 1,
+        "viewport": {"width": 400, "height": 640},
+        "pages": [
+            {"id":"page-1","name":"首页","components":[
+                {"id":"c1","type":"button","x":10,"y":10,"w":120,"h":40,
+                 "props":{"label":"下一步","variant":"primary","disabled":false},
+                 "style":{"bg":"#123456","radius":"8px","fontSize":"13px"},
+                 "events":{"onClick":{"action":"navigate","target":"page-2"},
+                           "onChange":{"action":"toggle","target":"c1"}}}
+            ]},
+            {"id":"page-2","name":"详情","components":[]}
+        ],
+        "state": {}
+    });
+    let doc = db
+        .with_transaction(|conn| {
+            Core::new(conn).create_visual(
+                &ui,
+                PROJECT,
+                &VisualInput {
+                    title: "字段删除原型".to_string(),
+                    description: String::new(),
+                    kind: "prototype".to_string(),
+                    source_format: "json".to_string(),
+                    source_content: content.to_string(),
+                    plan_id: None,
+                    preview_asset: None,
+                    authoring_mode: None,
+                },
+            )
+        })
+        .expect("原型");
+
+    let patched = db
+        .with_transaction(|conn| {
+            Core::new(conn).apply_prototype_patch(
+                &ui,
+                &doc.id,
+                doc.revision,
+                &[PatchOp {
+                    op: "update".to_string(),
+                    page_id: Some("page-1".to_string()),
+                    component_id: Some("c1".to_string()),
+                    component: None,
+                    patch: Some(serde_json::json!({
+                        "props": {"label": "继续", "disabled": true},
+                        "style": {"radius": "4px"},
+                        "events": {"onClick": {"action": "navigate", "target": "page-1"}},
+                        "x": 24
+                    })),
+                    remove_keys: Some(
+                        [
+                            ("props".to_string(), vec!["variant".to_string()]),
+                            ("style".to_string(), vec!["bg".to_string()]),
+                            ("events".to_string(), vec!["onChange".to_string()]),
+                        ]
+                        .into_iter()
+                        .collect(),
+                    ),
+                    x: None,
+                    y: None,
+                    name: None,
+                    page: None,
+                }],
+                "改文案并删除废弃字段",
+            )
+        })
+        .expect("patch");
+    assert_eq!(patched.version, 2, "一次 Patch 只产生一个版本");
+
+    let parsed: serde_json::Value = serde_json::from_str(&patched.source_content).expect("JSON");
+    let comp = &parsed["pages"][0]["components"][0];
+    assert_eq!(comp["props"]["label"], "继续");
+    assert_eq!(comp["props"]["disabled"], true);
+    assert!(comp["props"].get("variant").is_none(), "props 字段必须可删除");
+    assert!(comp["style"].get("bg").is_none(), "style 字段必须可删除");
+    assert_eq!(comp["style"]["radius"], "4px");
+    assert_eq!(comp["style"]["fontSize"], "13px", "未提及的字段保持原值");
+    assert!(comp["events"].get("onChange").is_none(), "events 字段必须可删除");
+    assert_eq!(comp["events"]["onClick"]["target"], "page-1");
+    assert_eq!(comp["x"], 24.0);
+
+    // style 操作同样支持删除；removeKeys 携带其它段名必须被拒绝。
+    let styled = db
+        .with_transaction(|conn| {
+            Core::new(conn).apply_prototype_patch(
+                &ui,
+                &doc.id,
+                patched.revision,
+                &[PatchOp {
+                    op: "style".to_string(),
+                    page_id: Some("page-1".to_string()),
+                    component_id: Some("c1".to_string()),
+                    component: None,
+                    patch: Some(serde_json::json!({"fontSize": "15px"})),
+                    remove_keys: Some(
+                        [("style".to_string(), vec!["radius".to_string()])]
+                            .into_iter()
+                            .collect(),
+                    ),
+                    x: None,
+                    y: None,
+                    name: None,
+                    page: None,
+                }],
+                "调整字号",
+            )
+        })
+        .expect("style patch");
+    let parsed: serde_json::Value = serde_json::from_str(&styled.source_content).expect("JSON");
+    let comp = &parsed["pages"][0]["components"][0];
+    assert_eq!(comp["style"]["fontSize"], "15px");
+    assert!(comp["style"].get("radius").is_none());
+
+    let err = db
+        .with_transaction(|conn| {
+            Core::new(conn).apply_prototype_patch(
+                &ui,
+                &doc.id,
+                styled.revision,
+                &[PatchOp {
+                    op: "style".to_string(),
+                    page_id: Some("page-1".to_string()),
+                    component_id: Some("c1".to_string()),
+                    component: None,
+                    patch: Some(serde_json::json!({"radius": "2px"})),
+                    remove_keys: Some(
+                        [("events".to_string(), vec!["onClick".to_string()])]
+                            .into_iter()
+                            .collect(),
+                    ),
+                    x: None,
+                    y: None,
+                    name: None,
+                    page: None,
+                }],
+                "非法组合",
+            )
+        })
+        .expect_err("style 操作不得删除 events");
+    assert!(matches!(err, AppError::Validation(_)));
+
+    // 删除不存在的键是幂等空操作：请求成功，但内容没变 → 不产生新版本。
+    let noop = db
+        .with_transaction(|conn| {
+            Core::new(conn).apply_prototype_patch(
+                &ui,
+                &doc.id,
+                styled.revision,
+                &[PatchOp {
+                    op: "update".to_string(),
+                    page_id: Some("page-1".to_string()),
+                    component_id: Some("c1".to_string()),
+                    component: None,
+                    patch: None,
+                    remove_keys: Some(
+                        [("props".to_string(), vec!["不存在".to_string()])]
+                            .into_iter()
+                            .collect(),
+                    ),
+                    x: None,
+                    y: None,
+                    name: None,
+                    page: None,
+                }],
+                "幂等删除",
+            )
+        })
+        .expect("幂等删除不应失败");
+    assert_eq!(
+        noop.version, styled.version,
+        "没有实际变化的 Patch 不得生成版本"
+    );
+}
+
+#[test]
+fn prototype_patch_rejects_type_change_and_conflicts() {
+    let db = setup();
+    let ui = Actor::ui();
+    let content = serde_json::json!({
+        "schemaVersion": 1,
+        "viewport": {"width": 400, "height": 640},
+        "pages": [{"id":"page-1","name":"首页","components":[
+            {"id":"c1","type":"button","x":10,"y":10,"w":120,"h":40,
+             "props":{"label":"确定"},"style":{},"events":{}}
+        ]}],
+        "state": {}
+    });
+    let doc = db
+        .with_transaction(|conn| {
+            Core::new(conn).create_visual(
+                &ui,
+                PROJECT,
+                &VisualInput {
+                    title: "类型保护".to_string(),
+                    description: String::new(),
+                    kind: "prototype".to_string(),
+                    source_format: "json".to_string(),
+                    source_content: content.to_string(),
+                    plan_id: None,
+                    preview_asset: None,
+                    authoring_mode: None,
+                },
+            )
+        })
+        .expect("原型");
+
+    let err = db
+        .with_transaction(|conn| {
+            Core::new(conn).apply_prototype_patch(
+                &ui,
+                &doc.id,
+                doc.revision,
+                &[PatchOp {
+                    op: "update".to_string(),
+                    page_id: Some("page-1".to_string()),
+                    component_id: Some("c1".to_string()),
+                    component: None,
+                    patch: Some(serde_json::json!({"type": "text"})),
+                    remove_keys: None,
+                    x: None,
+                    y: None,
+                    name: None,
+                    page: None,
+                }],
+                "改类型",
+            )
+        })
+        .expect_err("不允许通过 patch 改类型");
+    assert!(matches!(err, AppError::Validation(_)));
+
+    // 中途失败：前一个合法操作也不得落库。
+    let err = db
+        .with_transaction(|conn| {
+            Core::new(conn).apply_prototype_patch(
+                &ui,
+                &doc.id,
+                doc.revision,
+                &[
+                    PatchOp {
+                        op: "update".to_string(),
+                        page_id: Some("page-1".to_string()),
+                        component_id: Some("c1".to_string()),
+                        component: None,
+                        patch: Some(serde_json::json!({"props": {"label": "已改"}})),
+                        remove_keys: None,
+                        x: None,
+                        y: None,
+                        name: None,
+                        page: None,
+                    },
+                    PatchOp {
+                        op: "remove".to_string(),
+                        page_id: Some("page-1".to_string()),
+                        component_id: Some("missing".to_string()),
+                        component: None,
+                        patch: None,
+                        remove_keys: None,
+                        x: None,
+                        y: None,
+                        name: None,
+                        page: None,
+                    },
+                ],
+                "中途失败",
+            )
+        })
+        .expect_err("中途失败必须整体回滚");
+    assert!(matches!(err, AppError::NotFound(_)));
+    let unchanged = db
+        .with_conn(|conn| Core::new(conn).get_visual(&ui, &doc.id))
+        .expect("读取");
+    assert_eq!(unchanged.version, 1);
+    assert!(unchanged.source_content.contains("确定"));
+
+    // revision 冲突：旧 revision 不得覆盖新版本。
+    let updated = db
+        .with_transaction(|conn| {
+            Core::new(conn).apply_prototype_patch(
+                &ui,
+                &doc.id,
+                doc.revision,
+                &[PatchOp {
+                    op: "page_rename".to_string(),
+                    page_id: Some("page-1".to_string()),
+                    component_id: None,
+                    component: None,
+                    patch: None,
+                    remove_keys: None,
+                    x: None,
+                    y: None,
+                    name: Some("改过的首页".to_string()),
+                    page: None,
+                }],
+                "改名",
+            )
+        })
+        .expect("改名");
+    let err = db
+        .with_transaction(|conn| {
+            Core::new(conn).apply_prototype_patch(
+                &ui,
+                &doc.id,
+                doc.revision,
+                &[PatchOp {
+                    op: "page_rename".to_string(),
+                    page_id: Some("page-1".to_string()),
+                    component_id: None,
+                    component: None,
+                    patch: None,
+                    remove_keys: None,
+                    x: None,
+                    y: None,
+                    name: Some("并发覆盖".to_string()),
+                    page: None,
+                }],
+                "并发改名",
+            )
+        })
+        .expect_err("旧 revision 必须冲突");
+    assert!(matches!(err, AppError::Conflict(_)));
+    let current = db
+        .with_conn(|conn| Core::new(conn).get_visual(&ui, &doc.id))
+        .expect("读取");
+    assert_eq!(current.version, updated.version);
+    assert!(current.source_content.contains("改过的首页"));
+}
+
+#[test]
+fn mcp_patch_tool_matches_backend_capabilities() {
+    let db = Arc::new(setup());
+    let row = mcp_row("mcp-patch", McpScope::ProjectRw);
+    insert_agent(&db, &row, true);
+    let ctx = ToolCtx {
+        db: db.clone(),
+        agent: row,
+        emit: Arc::new(|_| {}),
+    };
+
+    // schema 必须声明后端真正支持的页面级操作与字段删除。
+    let defs = super::mcp_tools::definitions_for_registry();
+    let def = defs
+        .iter()
+        .find(|d| d.name == "taskdock_collab_patch_prototype")
+        .expect("patch 工具存在");
+    let ops = def.input_schema["properties"]["ops"]["items"]["properties"]["op"]["enum"]
+        .as_array()
+        .expect("op enum");
+    let ops: Vec<&str> = ops.iter().filter_map(|v| v.as_str()).collect();
+    for expected in [
+        "add", "update", "remove", "move", "style", "events", "page_add", "page_remove",
+        "page_rename",
+    ] {
+        assert!(ops.contains(&expected), "MCP schema 缺少操作：{expected}");
+    }
+    assert!(def.input_schema["properties"]["ops"]["items"]["properties"]
+        .get("removeKeys")
+        .is_some());
+    assert!(def.input_schema["properties"]["ops"]["items"]["properties"]
+        .get("page")
+        .is_some());
+
+    let content = serde_json::json!({
+        "schemaVersion": 1,
+        "viewport": {"width": 400, "height": 640},
+        "pages": [{"id":"page-1","name":"首页","components":[
+            {"id":"c1","type":"text","x":10,"y":10,"w":120,"h":40,
+             "props":{"text":"旧文案"},"style":{"bg":"#fff"},"events":{}}
+        ]}],
+        "state": {}
+    });
+    let doc = db
+        .with_transaction(|conn| {
+            Core::new(conn).create_visual(
+                &Actor::ui(),
+                PROJECT,
+                &VisualInput {
+                    title: "MCP 原型".to_string(),
+                    description: String::new(),
+                    kind: "prototype".to_string(),
+                    source_format: "json".to_string(),
+                    source_content: content.to_string(),
+                    plan_id: None,
+                    preview_asset: None,
+                    authoring_mode: None,
+                },
+            )
+        })
+        .expect("原型");
+
+    let call = |args: serde_json::Value| {
+        db.with_transaction(|conn| {
+            super::mcp_tools::call(&ctx, "taskdock_collab_patch_prototype", &args, Some(conn))
+                .expect("collab 接管")
+                .map_err(|e| match e {
+                    crate::mcp::tools::ToolError::Authz(msg) => AppError::Forbidden(msg),
+                    crate::mcp::tools::ToolError::Failed(err) => err,
+                })
+        })
+    };
+
+    // 旧版调用方式（仅 add/update）必须继续可用。
+    let first = call(serde_json::json!({
+        "document_id": doc.id,
+        "expected_revision": doc.revision,
+        "ops": [{
+            "op": "update",
+            "pageId": "page-1",
+            "componentId": "c1",
+            "patch": {"props": {"text": "新文案"}}
+        }]
+    }))
+    .expect("旧版 update");
+    assert_eq!(first.value["version"], 2);
+
+    // 页面级 + removeKeys 必须由 MCP 真正执行，而不是被 schema 拒绝。
+    let second = call(serde_json::json!({
+        "document_id": doc.id,
+        "expected_revision": first.value["revision"],
+        "ops": [
+            {"op": "page_add", "name": "第二页"},
+            {
+                "op": "update",
+                "pageId": "page-1",
+                "componentId": "c1",
+                "removeKeys": {"style": ["bg"]}
+            },
+            {"op": "page_rename", "pageId": "page-1", "name": "首页改名"}
+        ]
+    }))
+    .expect("页面级 Patch");
+    let parsed: serde_json::Value =
+        serde_json::from_str(second.value["sourceContent"].as_str().expect("内容")).expect("JSON");
+    assert_eq!(parsed["pages"].as_array().expect("pages").len(), 2);
+    assert_eq!(parsed["pages"][0]["name"], "首页改名");
+    assert!(parsed["pages"][0]["components"][0]["style"]
+        .get("bg")
+        .is_none());
+
+    let removed = call(serde_json::json!({
+        "document_id": doc.id,
+        "expected_revision": second.value["revision"],
+        "ops": [{"op": "page_remove", "pageId": "page-1"}]
+    }))
+    .expect("页面删除");
+    let parsed: serde_json::Value =
+        serde_json::from_str(removed.value["sourceContent"].as_str().expect("内容")).expect("JSON");
+    assert_eq!(parsed["pages"].as_array().expect("pages").len(), 1);
+}
+
+#[test]
+fn visual_update_without_content_change_does_not_create_version() {
+    let db = setup();
+    let ui = Actor::ui();
+    let content = serde_json::json!({
+        "nodes": [
+            {"id":"n1","label":"开始","kind":"start","x":40,"y":40,"config":{}},
+            {"id":"n2","label":"结束","kind":"end","x":240,"y":40,"config":{}}
+        ],
+        "edges": [{"id":"e1","from":"n1","to":"n2","label":""}],
+        "layout": {"direction":"LR","width":600,"height":320}
+    });
+    let doc = db
+        .with_transaction(|conn| {
+            Core::new(conn).create_visual(
+                &ui,
+                PROJECT,
+                &VisualInput {
+                    title: "空保存图表".to_string(),
+                    description: String::new(),
+                    kind: "flowchart".to_string(),
+                    source_format: "json".to_string(),
+                    source_content: content.to_string(),
+                    plan_id: None,
+                    preview_asset: None,
+                    authoring_mode: None,
+                },
+            )
+        })
+        .expect("图表");
+
+    // 与当前内容完全一致的保存：不写库、不产生版本。
+    let same = db
+        .with_transaction(|conn| {
+            Core::new(conn).update_visual(
+                &ui,
+                &doc.id,
+                doc.revision,
+                &VisualPatch {
+                    title: Some(doc.title.clone()),
+                    source_content: Some(doc.source_content.clone()),
+                    source_format: Some("json".to_string()),
+                    ..Default::default()
+                },
+                "无修改保存",
+            )
+        })
+        .expect("空保存");
+    assert_eq!(same.version, doc.version, "空保存不得生成版本");
+    assert_eq!(same.revision, doc.revision, "空保存不得推进 revision");
+    let versions = db
+        .with_conn(|conn| Core::new(conn).visual_versions(&ui, &doc.id, None, None))
+        .expect("版本列表");
+    assert_eq!(versions.total, 1, "只应有创建时的 v1");
+
+    // 过期 revision 即使内容相同也必须 CONFLICT，不能被“空操作”掩盖。
+    let err = db
+        .with_transaction(|conn| {
+            Core::new(conn).update_visual(
+                &ui,
+                &doc.id,
+                doc.revision + 9,
+                &VisualPatch {
+                    source_content: Some(doc.source_content.clone()),
+                    ..Default::default()
+                },
+                "过期 revision",
+            )
+        })
+        .expect_err("过期 revision 必须冲突");
+    assert!(matches!(err, AppError::Conflict(_)), "实际：{err}");
 }
 
 #[test]
@@ -872,6 +1403,7 @@ fn authoring_mode_tracks_ai_and_manual_edits() {
             Core::new(conn).propose_visual_modification(
                 &ui,
                 &doc_id,
+                None,
                 "复核 -> 归档",
                 &[],
             )

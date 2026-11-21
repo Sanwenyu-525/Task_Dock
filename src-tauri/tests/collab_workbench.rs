@@ -167,6 +167,7 @@ fn prototype_page_patch_is_atomic() {
         component_id: None,
         component: None,
         patch: None,
+        remove_keys: None,
         x: None,
         y: None,
         name: name.map(str::to_string),
@@ -207,6 +208,7 @@ fn prototype_page_patch_is_atomic() {
                         component_id: Some("missing".to_string()),
                         component: None,
                         patch: None,
+                        remove_keys: None,
                         x: None,
                         y: None,
                         name: None,
@@ -278,7 +280,7 @@ fn authoring_mode_and_ai_proposal_require_confirmation() {
 
     let proposal = db
         .with_transaction(|conn| {
-            Core::new(conn).propose_visual_modification(&ui, &doc_id, "复核 -> 归档", &[])
+            Core::new(conn).propose_visual_modification(&ui, &doc_id, None, "复核 -> 归档", &[])
         })
         .expect("AI 提案");
     let after = db

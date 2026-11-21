@@ -4,10 +4,8 @@ import { ArrowDown, ArrowUp, Copy, Trash2 } from "lucide-react";
 import Select from "../../ui/Select";
 import type { VisualAsset } from "../../../lib/collab";
 import {
-  COMPONENT_PALETTE,
   EVENT_ACTIONS,
   STYLE_KEYS,
-  type ComponentType,
   type ProtoComponent,
   type ProtoPage,
 } from "./prototype-types";
@@ -16,7 +14,14 @@ export interface PrototypePropertiesPanelProps {
   component: ProtoComponent | null;
   pages: ProtoPage[];
   assets: VisualAsset[];
-  onChange: (mutate: (component: ProtoComponent) => ProtoComponent) => void;
+  /**
+   * `fieldKey` 用于编辑器合并连续输入（同一次输入只记一条历史），
+   * 例如 `prop:text` / `style:bg` / `geometry:x` / `event:onClick`。
+   */
+  onChange: (
+    mutate: (component: ProtoComponent) => ProtoComponent,
+    fieldKey?: string,
+  ) => void;
   onDelete: () => void;
   onDuplicate: () => void;
   onLayer: (direction: "up" | "down" | "top" | "bottom") => void;
@@ -63,7 +68,7 @@ export default function PrototypePropertiesPanel({
     .filter((o) => o.value !== component.id);
 
   const setProp = (key: string, value: string) =>
-    onChange((c) => ({ ...c, props: { ...c.props, [key]: value } }));
+    onChange((c) => ({ ...c, props: { ...c.props, [key]: value } }), `prop:${key}`);
 
   const setStyle = (key: string, value: string) =>
     onChange((c) => {
@@ -71,7 +76,7 @@ export default function PrototypePropertiesPanel({
       if (value.trim()) style[key] = value.trim();
       else delete style[key];
       return { ...c, style };
-    });
+    }, `style:${key}`);
 
   const setEvent = (key: string, action: string, target?: string, value?: string) =>
     onChange((c) => {
@@ -86,7 +91,7 @@ export default function PrototypePropertiesPanel({
         };
       }
       return { ...c, events };
-    });
+    }, `event:${key}`);
 
   return (
     <aside className="proto-properties" aria-label="原型属性面板">
@@ -94,18 +99,6 @@ export default function PrototypePropertiesPanel({
         <strong>属性</strong>
         <span className="collab-muted">{component.id}</span>
       </div>
-
-      <label>
-        类型
-        <Select
-          value={component.type}
-          options={COMPONENT_PALETTE.map((p) => ({ value: p.type, label: p.label }))}
-          onChange={(value) => onChange((c) => ({ ...c, type: value as ComponentType }))}
-          ariaLabel="组件类型"
-          size="sm"
-          block
-        />
-      </label>
 
       <label>
         文案
@@ -187,13 +180,16 @@ export default function PrototypePropertiesPanel({
               onChange={(e) => {
                 const n = Number(e.target.value);
                 if (!Number.isFinite(n) || n < 0) return;
-                onChange((c) => ({
-                  ...c,
-                  [key]:
-                    key === "w" || key === "h"
-                      ? Math.min(2000, Math.max(1, n))
-                      : Math.min(5000, n),
-                }));
+                onChange(
+                  (c) => ({
+                    ...c,
+                    [key]:
+                      key === "w" || key === "h"
+                        ? Math.min(2000, Math.max(1, n))
+                        : Math.min(5000, n),
+                  }),
+                  `geometry:${key}`,
+                );
               }}
             />
           </label>

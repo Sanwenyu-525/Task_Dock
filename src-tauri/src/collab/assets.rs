@@ -111,7 +111,9 @@ fn validate_source_file(path: &Path) -> AppResult<(u64, String)> {
         return Err(AppError::Validation("图片文件为空".to_string()));
     }
     if meta.len() > MAX_VISUAL_ASSET_BYTES {
-        return Err(AppError::Validation("图片超过 32 MiB 上限".to_string()));
+        return Err(AppError::Validation(
+            "图片超过 8 MiB 上限；请压缩后再导入（与在线预览上限一致）".to_string(),
+        ));
     }
     let ext = path
         .extension()
@@ -125,6 +127,24 @@ fn validate_source_file(path: &Path) -> AppResult<(u64, String)> {
         )));
     }
     Ok((meta.len(), ext))
+}
+
+/// 把源图复制到受控资产目录（`<root>/<project>/<sha12>-<name>`），返回目标路径与原始文件名。
+fn copy_into_assets(src: &Path, project_id: &str, sha: &str) -> AppResult<(PathBuf, String)> {
+    let dir = dest_dir(project_id);
+    std::fs::create_dir_all(&dir)?;
+    let base = src
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("asset")
+        .to_string();
+    let dest = dir.join(format!("{}-{}", &sha[..12], sanitize_filename(&base)));
+    if !dest.exists() {
+        std::fs::copy(src, &dest)?;
+    }
+    // 复制后再校验一次路径，防止符号链接/竞态把文件写到资产根之外。
+    assert_file_in_root(&dest, &collab_assets_root(), "可视化资产")?;
+    Ok((dest, base))
 }
 
 pub fn import_asset(
@@ -150,6 +170,24 @@ pub fn import_asset(
 
     if let Some(existing) = find_by_hash(conn, project_id, &sha)? {
         // 去重：同一项目同一内容只保留一份；归档资产再次导入时恢复为 active。
+        if existing.status == "missing" {
+            // 文件已随备份丢失/损坏：重新复制一份并把同一行恢复为 active，
+            // 不新增重复行（sha 唯一），也不会留下指向空路径的记录。
+            let (dest, _) = copy_into_assets(src, project_id, &sha)?;
+            conn.execute(
+                "UPDATE collab_visual_assets
+                 SET path=?2, size_bytes=?3, status='active',
+                     document_id=COALESCE(document_id, ?4)
+                 WHERE id=?1",
+                rusqlite::params![
+                    existing.id,
+                    dest.to_string_lossy().to_string(),
+                    size as i64,
+                    input.document_id
+                ],
+            )?;
+            return load_asset(conn, &existing.id);
+        }
         if existing.status == "archived" || (existing.document_id.is_none() && input.document_id.is_some())
         {
             conn.execute(
@@ -162,22 +200,11 @@ pub fn import_asset(
         return Ok(existing);
     }
 
-    let dir = dest_dir(project_id);
-    std::fs::create_dir_all(&dir)?;
-    let base = src
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("asset");
-    let dest = dir.join(format!("{}-{}", &sha[..12], sanitize_filename(base)));
-    if !dest.exists() {
-        std::fs::copy(src, &dest)?;
-    }
-    // 复制后再校验一次路径，防止符号链接/竞态把文件写到资产根之外。
-    assert_file_in_root(&dest, &collab_assets_root(), "可视化资产")?;
+    let (dest, base) = copy_into_assets(src, project_id, &sha)?;
 
     let title = validate_text(
         if input.title.trim().is_empty() {
-            base
+            base.as_str()
         } else {
             input.title.as_str()
         },
@@ -260,6 +287,11 @@ pub fn read_asset(conn: &Connection, actor: &Actor, asset_id: &str) -> AppResult
     actor.require(Capability::VisualRead)?;
     let asset = load_asset(conn, asset_id)?;
     assert_project_scope(conn, actor, &asset.project_id)?;
+    if asset.status == "missing" || asset.path.trim().is_empty() {
+        return Err(AppError::NotFound(
+            "图片文件未随备份恢复或已丢失，请重新导入该图片".to_string(),
+        ));
+    }
     let path = assert_file_in_root(
         Path::new(&asset.path),
         &collab_assets_root(),
@@ -308,5 +340,10 @@ pub fn archive_asset(conn: &Connection, actor: &Actor, asset_id: &str) -> AppRes
 /// 资产路径解析（内部使用）：只允许资产根目录内的普通文件。
 pub fn resolve_asset_path(conn: &Connection, asset_id: &str) -> AppResult<PathBuf> {
     let asset = load_asset(conn, asset_id)?;
+    if asset.status == "missing" || asset.path.trim().is_empty() {
+        return Err(AppError::NotFound(
+            "图片文件未随备份恢复或已丢失，请重新导入该图片".to_string(),
+        ));
+    }
     assert_file_in_root(Path::new(&asset.path), &collab_assets_root(), "可视化资产")
 }

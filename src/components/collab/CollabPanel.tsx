@@ -426,7 +426,7 @@ export default function CollabPanel() {
       const path = await openDialog({
         multiple: false,
         directory: false,
-        title: "选择图片（png/jpg/jpeg/webp/gif，≤32 MiB）",
+        title: "选择图片（png/jpg/jpeg/webp/gif，≤8 MiB）",
       });
       if (typeof path !== "string") return;
       setVisualBusy(true);
@@ -996,7 +996,7 @@ export default function CollabPanel() {
             />
           </label>
           <div className="collab-muted">
-            支持 png/jpg/jpeg/webp/gif，单个 ≤32 MiB；文件会复制到应用资产目录并按 SHA-256 去重。
+            支持 png/jpg/jpeg/webp/gif，单个 ≤8 MiB（与在线预览上限一致）；文件会复制到应用资产目录并按 SHA-256 去重。
           </div>
         </div>
       </Dialog>

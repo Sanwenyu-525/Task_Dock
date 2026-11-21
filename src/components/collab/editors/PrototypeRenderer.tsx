@@ -3,7 +3,7 @@
 
 import type { CSSProperties } from "react";
 import AssetImage from "./AssetImage";
-import type { ProtoComponent, ProtoEvent, ProtoPage } from "./prototype-types";
+import { defaultEventFor, type ProtoComponent, type ProtoEvent, type ProtoPage } from "./prototype-types";
 
 export function componentStyle(style?: Record<string, string>): CSSProperties {
   const out: CSSProperties = {};
@@ -35,7 +35,6 @@ export interface PrototypeRendererProps {
   values?: Record<string, unknown>;
   interactive?: boolean;
   onEvent?: (component: ProtoComponent, event: ProtoEvent) => void;
-  onInput?: (component: ProtoComponent, value: string) => void;
 }
 
 export default function PrototypeRenderer({
@@ -43,12 +42,25 @@ export default function PrototypeRenderer({
   values,
   interactive = false,
   onEvent,
-  onInput,
 }: PrototypeRendererProps) {
-  const click = (component: ProtoComponent) => {
+  /**
+   * 事件优先级：组件显式配置 → 组件类型的默认行为 → 无动作。
+   * 预览与编辑共用同一份渲染，保证「看到的行为」就是「保存下来的行为」。
+   */
+  const fire = (component: ProtoComponent, payload?: unknown) => {
     if (!interactive) return;
-    const event = component.events.onClick;
-    if (event) onEvent?.(component, event);
+    const configured =
+      component.type === "input"
+        ? component.events.onChange
+        : component.events.onClick;
+    const event =
+      configured ??
+      defaultEventFor(component, payload);
+    if (!event) return;
+    onEvent?.(
+      component,
+      payload === undefined ? event : { ...event, value: payload },
+    );
   };
 
   return (
@@ -67,13 +79,13 @@ export default function PrototypeRenderer({
         switch (component.type) {
           case "heading":
             return (
-              <div key={component.id} style={baseStyle} className="proto-heading" onClick={() => click(component)}>
+              <div key={component.id} style={baseStyle} className="proto-heading" onClick={() => fire(component)}>
                 {label}
               </div>
             );
           case "text":
             return (
-              <div key={component.id} style={baseStyle} className="proto-text" onClick={() => click(component)}>
+              <div key={component.id} style={baseStyle} className="proto-text" onClick={() => fire(component)}>
                 {label}
               </div>
             );
@@ -84,7 +96,7 @@ export default function PrototypeRenderer({
                 type="button"
                 style={baseStyle}
                 className={`proto-button ${String(component.props.variant ?? "") === "primary" ? "is-primary" : ""}`}
-                onClick={() => click(component)}
+                onClick={() => fire(component)}
               >
                 {label}
               </button>
@@ -99,7 +111,7 @@ export default function PrototypeRenderer({
                 placeholder={String(component.props.placeholder ?? label)}
                 value={String(value ?? component.props.value ?? "")}
                 readOnly={!interactive}
-                onChange={(e) => interactive && onInput?.(component, e.target.value)}
+                onChange={(e) => fire(component, e.target.value)}
                 onClick={(e) => e.stopPropagation()}
               />
             );
@@ -114,10 +126,7 @@ export default function PrototypeRenderer({
                 aria-label={label}
                 style={baseStyle}
                 className={`proto-switch${on ? " is-on" : ""}`}
-                onClick={() =>
-                  interactive &&
-                  onEvent?.(component, { action: "toggle", target: component.id })
-                }
+                onClick={() => fire(component)}
               >
                 <span className="proto-switch-knob" />
                 <span className="proto-switch-label">{label}</span>
@@ -150,7 +159,7 @@ export default function PrototypeRenderer({
           }
           case "frame":
             return (
-              <div key={component.id} style={baseStyle} className="proto-frame" onClick={() => click(component)}>
+              <div key={component.id} style={baseStyle} className="proto-frame" onClick={() => fire(component)}>
                 {label}
               </div>
             );
@@ -162,7 +171,7 @@ export default function PrototypeRenderer({
             );
           case "list":
             return (
-              <div key={component.id} style={baseStyle} className="proto-list" onClick={() => click(component)}>
+              <div key={component.id} style={baseStyle} className="proto-list" onClick={() => fire(component)}>
                 {label}
               </div>
             );
@@ -176,7 +185,7 @@ export default function PrototypeRenderer({
             );
           default:
             return (
-              <div key={component.id} style={baseStyle} className="proto-text" onClick={() => click(component)}>
+              <div key={component.id} style={baseStyle} className="proto-text" onClick={() => fire(component)}>
                 {label}
               </div>
             );

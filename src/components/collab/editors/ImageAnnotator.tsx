@@ -29,33 +29,20 @@ import {
   type VisualDocument,
 } from "../../../lib/collab";
 import { errorMessage } from "../../../lib/errors";
+import { AnnotationShape } from "./AnnotationRenderer";
 import AssetImage from "./AssetImage";
+import {
+  parseAnnotationContent,
+  type Annotation,
+  type AnnotationContent,
+  type AnnotationShapeKind,
+} from "./annotation-types";
 import "./image-annotator.css";
 
-type Shape = "rect" | "circle" | "arrow" | "text" | "highlight";
+export { parseAnnotationContent };
+export type { Annotation, AnnotationContent };
 
-interface Annotation {
-  shape: Shape;
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  note: string;
-  severity: string;
-  color?: string;
-}
-
-interface AnnotationContent {
-  assetId?: string;
-  image?: string;
-  width: number;
-  height: number;
-  annotations: Annotation[];
-  /** static_image 的附加参数：编辑时保留，避免保存后丢失。 */
-  params?: Record<string, unknown>;
-}
-
-const SHAPES: Array<{ value: Shape; label: string; icon: typeof Square }> = [
+const SHAPES: Array<{ value: AnnotationShapeKind; label: string; icon: typeof Square }> = [
   { value: "rect", label: "矩形", icon: Square },
   { value: "circle", label: "圆形", icon: Circle },
   { value: "arrow", label: "箭头", icon: ArrowUpRight },
@@ -70,41 +57,6 @@ const SEVERITIES = [
   { value: "critical", label: "严重" },
 ];
 
-export function parseAnnotationContent(raw: string): AnnotationContent {
-  try {
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    const annotations = Array.isArray(parsed.annotations)
-      ? parsed.annotations
-          .filter((a): a is Record<string, unknown> => !!a && typeof a === "object")
-          .map((a) => ({
-            shape: (["rect", "circle", "arrow", "text", "highlight"].includes(String(a.shape))
-              ? String(a.shape)
-              : "rect") as Shape,
-            x: Number(a.x) || 0,
-            y: Number(a.y) || 0,
-            w: Number(a.w) || 0,
-            h: Number(a.h) || 0,
-            note: String(a.note ?? ""),
-            severity: String(a.severity ?? "medium"),
-            color: typeof a.color === "string" ? a.color : undefined,
-          }))
-      : [];
-    return {
-      assetId: typeof parsed.assetId === "string" ? parsed.assetId : undefined,
-      image: typeof parsed.image === "string" ? parsed.image : undefined,
-      width: Number(parsed.width) || 1280,
-      height: Number(parsed.height) || 720,
-      annotations,
-      params:
-        parsed.params && typeof parsed.params === "object"
-          ? (parsed.params as Record<string, unknown>)
-          : undefined,
-    };
-  } catch {
-    return { width: 1280, height: 720, annotations: [] };
-  }
-}
-
 export interface ImageAnnotatorProps {
   doc: VisualDocument;
   onSaved: (doc: VisualDocument) => void;
@@ -118,7 +70,7 @@ export default function ImageAnnotator({ doc, onSaved, onError }: ImageAnnotator
   );
   const contentRef = useRef(content);
   contentRef.current = content;
-  const [tool, setTool] = useState<Shape | "select">("select");
+  const [tool, setTool] = useState<AnnotationShapeKind | "select">("select");
   const [selected, setSelected] = useState<number | null>(null);
   const [assets, setAssets] = useState<VisualAsset[]>([]);
   const [busy, setBusy] = useState(false);
@@ -128,6 +80,12 @@ export default function ImageAnnotator({ doc, onSaved, onError }: ImageAnnotator
   const [zoom, setZoom] = useState(1);
   const [draft, setDraft] = useState<Annotation | null>(null);
   const startRef = useRef<{ x: number; y: number } | null>(null);
+  const annotationDragRef = useRef<{
+    index: number;
+    mode: "move" | "resize";
+    start: { x: number; y: number };
+    origin: Annotation;
+  } | null>(null);
   const overlayRef = useRef<SVGSVGElement>(null);
 
   useEffect(() => {
@@ -167,7 +125,7 @@ export default function ImageAnnotator({ doc, onSaved, onError }: ImageAnnotator
       const selectedPath = await openDialog({
         multiple: false,
         directory: false,
-        title: "选择图片（png/jpg/jpeg/webp/gif，≤32 MiB）",
+        title: "选择图片（png/jpg/jpeg/webp/gif，≤8 MiB）",
       });
       if (typeof selectedPath !== "string") return;
       setBusy(true);
@@ -196,6 +154,7 @@ export default function ImageAnnotator({ doc, onSaved, onError }: ImageAnnotator
 
   const onPointerDown = (event: ReactPointerEvent) => {
     if (tool === "select") {
+      // 点在空白处才取消选择；点在标注上由 AnnotationShape 处理拖动。
       setSelected(null);
       return;
     }
@@ -231,7 +190,43 @@ export default function ImageAnnotator({ doc, onSaved, onError }: ImageAnnotator
     });
   };
 
+  const beginAnnotationDrag = (index: number, mode: "move" | "resize") => (
+    event: ReactPointerEvent,
+  ) => {
+    const annotation = contentRef.current.annotations[index];
+    if (!annotation) return;
+    event.stopPropagation();
+    setSelected(index);
+    setTool("select");
+    annotationDragRef.current = {
+      index,
+      mode,
+      start: pointOf(event),
+      origin: annotation,
+    };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  };
+
   const onPointerMove = (event: ReactPointerEvent) => {
+    const moving = annotationDragRef.current;
+    if (moving) {
+      const point = pointOf(event);
+      const dx = point.x - moving.start.x;
+      const dy = point.y - moving.start.y;
+      const origin = moving.origin;
+      if (moving.mode === "move") {
+        updateAnnotation(moving.index, {
+          x: Math.max(0, origin.x + dx),
+          y: Math.max(0, origin.y + dy),
+        });
+      } else {
+        updateAnnotation(moving.index, {
+          w: Math.max(4, origin.w + dx),
+          h: Math.max(4, origin.h + dy),
+        });
+      }
+      return;
+    }
     if (!draft || !startRef.current) return;
     const point = pointOf(event);
     const start = startRef.current;
@@ -245,6 +240,10 @@ export default function ImageAnnotator({ doc, onSaved, onError }: ImageAnnotator
   };
 
   const onPointerUp = () => {
+    if (annotationDragRef.current) {
+      annotationDragRef.current = null;
+      return;
+    }
     const current = draft;
     setDraft(null);
     startRef.current = null;
@@ -402,7 +401,7 @@ export default function ImageAnnotator({ doc, onSaved, onError }: ImageAnnotator
         <div className="image-annotator-empty">
           <ImagePlus size={28} />
           <strong>还没有图片</strong>
-          <p>导入截图或效果图后即可预览与标注；原始图片不会被子标注修改。</p>
+          <p>导入截图或效果图后即可预览与标注；原始图片不会被标注修改。</p>
           <button className="btn" onClick={() => void importImage()} disabled={busy}>
             选择图片文件
           </button>
@@ -452,9 +451,22 @@ export default function ImageAnnotator({ doc, onSaved, onError }: ImageAnnotator
                     setSelected(index);
                     setTool("select");
                   }}
+                  onPointerDown={beginAnnotationDrag(index, "move")}
                 />
               ))}
-              {draft ? <AnnotationShape annotation={draft} selected={false} onSelect={() => undefined} /> : null}
+              {draft ? <AnnotationShape annotation={draft} selected={false} /> : null}
+              {selected !== null && content.annotations[selected] &&
+              content.annotations[selected].shape !== "text" ? (
+                <rect
+                  className="annotation-resize-handle"
+                  data-testid="annotation-resize-handle"
+                  x={content.annotations[selected].x + content.annotations[selected].w - 4}
+                  y={content.annotations[selected].y + content.annotations[selected].h - 4}
+                  width={9}
+                  height={9}
+                  onPointerDown={beginAnnotationDrag(selected, "resize")}
+                />
+              ) : null}
             </svg>
           </div>
           <div className="collab-muted">
@@ -500,83 +512,4 @@ export default function ImageAnnotator({ doc, onSaved, onError }: ImageAnnotator
       ) : null}
     </div>
   );
-}
-
-function AnnotationShape({
-  annotation,
-  selected,
-  onSelect,
-}: {
-  annotation: Annotation;
-  selected: boolean;
-  onSelect: () => void;
-}) {
-  const color = annotation.color ?? "var(--status-danger)";
-  const stroke = { stroke: color, strokeWidth: selected ? 3 : 2, fill: "none" };
-  const common = {
-    className: "annotation-shape",
-    onPointerDown: (event: ReactPointerEvent) => {
-      event.stopPropagation();
-      onSelect();
-    },
-  } as const;
-  switch (annotation.shape) {
-    case "circle":
-      return (
-        <ellipse
-          cx={annotation.x + annotation.w / 2}
-          cy={annotation.y + annotation.h / 2}
-          rx={Math.max(1, annotation.w / 2)}
-          ry={Math.max(1, annotation.h / 2)}
-          {...stroke}
-          {...common}
-        />
-      );
-    case "arrow":
-      return (
-        <line
-          x1={annotation.x}
-          y1={annotation.y}
-          x2={annotation.x + annotation.w}
-          y2={annotation.y + annotation.h}
-          {...stroke}
-          markerEnd="url(#annotation-arrow)"
-          {...common}
-        />
-      );
-    case "text":
-      return (
-        <text
-          x={annotation.x}
-          y={annotation.y}
-          fontSize={Math.max(14, annotation.h || 16)}
-          style={{ fill: color, cursor: "pointer" }}
-          {...common}
-        >
-          {annotation.note || "说明文字"}
-        </text>
-      );
-    case "highlight":
-      return (
-        <rect
-          x={annotation.x}
-          y={annotation.y}
-          width={Math.max(1, annotation.w)}
-          height={Math.max(1, annotation.h)}
-          style={{ fill: color, opacity: 0.28, stroke: color, strokeWidth: 1 }}
-          {...common}
-        />
-      );
-    default:
-      return (
-        <rect
-          x={annotation.x}
-          y={annotation.y}
-          width={Math.max(1, annotation.w)}
-          height={Math.max(1, annotation.h)}
-          {...stroke}
-          {...common}
-        />
-      );
-  }
 }

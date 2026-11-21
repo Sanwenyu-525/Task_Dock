@@ -117,11 +117,26 @@ export function nextComponentId(components: ProtoComponent[]): string {
   return `c${n}`;
 }
 
+/**
+ * 全文档唯一的组件 ID。
+ *
+ * 组件 ID 曾按页面各自编号，导致不同页面出现同名组件（如两页都有 `c1`）：
+ * 后端按页面校验选择项时会误判「组件不属于该页」，AI 修改也会命中错组件。
+ * 现在统一在整个原型范围内编号。
+ */
+export function nextGlobalComponentId(content: ProtoContent): string {
+  const used = new Set(content.pages.flatMap((p) => p.components.map((c) => c.id)));
+  let n = 1;
+  while (used.has(`c${n}`)) n += 1;
+  return `c${n}`;
+}
+
 export function createComponent(
   type: ComponentType,
   components: ProtoComponent[],
   x = 16,
   y = 24,
+  id?: string,
 ): ProtoComponent {
   const size = DEFAULT_SIZE[type];
   const label =
@@ -139,7 +154,7 @@ export function createComponent(
               ? {}
               : { label };
   return {
-    id: nextComponentId(components),
+    id: id ?? nextComponentId(components),
     type,
     x,
     y,
@@ -154,10 +169,11 @@ export function createComponent(
 export function duplicateComponent(
   component: ProtoComponent,
   components: ProtoComponent[],
+  id?: string,
 ): ProtoComponent {
   return {
     ...component,
-    id: nextComponentId(components),
+    id: id ?? nextComponentId(components),
     x: Math.min(5000, component.x + 16),
     y: Math.min(5000, component.y + 16),
     props: { ...component.props },
@@ -339,16 +355,48 @@ export function prototypeTemplate(): ProtoContent {
   };
 }
 
-function componentPatch(before: ProtoComponent, after: ProtoComponent): Record<string, unknown> {
+/** 字段级差异：`patch` 只带新增/修改，`removed` 带需要删除的键。 */
+function sectionDiff(
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+): { patch: Record<string, unknown>; removed: string[] } {
   const patch: Record<string, unknown> = {};
+  const removed: string[] = [];
+  for (const [key, value] of Object.entries(after)) {
+    if (JSON.stringify(before[key]) !== JSON.stringify(value)) patch[key] = value;
+  }
+  for (const key of Object.keys(before)) {
+    if (!(key in after)) removed.push(key);
+  }
+  return { patch, removed };
+}
+
+/**
+ * 组件差异 → update 的 patch + removeKeys。
+ *
+ * `type` 永远不进入 Patch：后端禁止通过 update 改类型，前端也不再提供类型切换入口。
+ */
+function componentPatch(
+  before: ProtoComponent,
+  after: ProtoComponent,
+): { patch: Record<string, unknown>; removeKeys: Record<string, string[]> } {
+  const patch: Record<string, unknown> = {};
+  const removeKeys: Record<string, string[]> = {};
   if (before.x !== after.x) patch.x = after.x;
   if (before.y !== after.y) patch.y = after.y;
   if (before.w !== after.w) patch.w = after.w;
   if (before.h !== after.h) patch.h = after.h;
-  if (JSON.stringify(before.props) !== JSON.stringify(after.props)) patch.props = after.props;
-  if (JSON.stringify(before.style) !== JSON.stringify(after.style)) patch.style = after.style;
-  if (JSON.stringify(before.events) !== JSON.stringify(after.events)) patch.events = after.events;
-  return patch;
+  const sections: Array<["props" | "style" | "events", Record<string, unknown>, Record<string, unknown>]> = [
+    ["props", before.props, after.props],
+    ["style", before.style, after.style],
+    ["events", before.events, after.events],
+  ];
+  for (const [key, oldValue, newValue] of sections) {
+    const diff = sectionDiff(oldValue, newValue);
+    if (Object.keys(diff.patch).length) patch[key] = diff.patch;
+    if (diff.removed.length) removeKeys[key] = diff.removed;
+  }
+  return { patch, removeKeys };
 }
 
 /**
@@ -393,13 +441,14 @@ export function diffPrototype(before: ProtoContent, after: ProtoContent): PatchO
         });
         continue;
       }
-      const patch = componentPatch(oldComp, comp);
-      if (Object.keys(patch).length) {
+      const { patch, removeKeys } = componentPatch(oldComp, comp);
+      if (Object.keys(patch).length || Object.keys(removeKeys).length) {
         ops.push({
           op: "update",
           pageId: page.id,
           componentId: comp.id,
           patch,
+          ...(Object.keys(removeKeys).length ? { removeKeys } : {}),
         });
       }
     }
@@ -412,38 +461,74 @@ export function diffPrototype(before: ProtoContent, after: ProtoContent): PatchO
   return ops;
 }
 
-/** 本地预览状态机（与服务端 dispatch 语义一致，用于未保存内容预览）。 */
+export interface LocalSimulatorState {
+  currentPage: string;
+  modal: string | null;
+  values: Record<string, unknown>;
+}
+
+/**
+ * 本地预览状态机（与服务端 `dispatch_event` 语义一致，用于未保存内容预览）。
+ *
+ * 与后端相同：navigate/openModal 的目标必须存在，否则返回明确错误；
+ * 不执行任意 JS，只推进白名单动作。
+ */
 export function dispatchLocalEvent(
   content: ProtoContent,
-  state: { currentPage: string; modal: string | null; values: Record<string, unknown> },
+  state: LocalSimulatorState,
   event: ProtoEvent,
-): { currentPage: string; modal: string | null; values: Record<string, unknown> } {
-  const next = { ...state, values: { ...state.values } };
+): { state: LocalSimulatorState; error?: string } {
+  const next: LocalSimulatorState = { ...state, values: { ...state.values } };
   const pageIds = new Set(content.pages.map((p) => p.id));
   const componentIds = new Set(
     content.pages.flatMap((p) => p.components.map((c) => c.id)),
   );
   switch (event.action) {
     case "navigate":
-      if (event.target && pageIds.has(event.target)) {
-        next.currentPage = event.target;
-        next.modal = null;
+      if (!event.target) return { state, error: "页面导航需要目标页面" };
+      if (!pageIds.has(event.target)) {
+        return { state, error: `目标页面不存在：${event.target}` };
       }
+      next.currentPage = event.target;
+      next.modal = null;
       break;
     case "openModal":
-      if (event.target && componentIds.has(event.target)) next.modal = event.target;
+      if (!event.target) return { state, error: "打开弹窗需要目标组件" };
+      if (!componentIds.has(event.target)) {
+        return { state, error: `弹窗组件不存在：${event.target}` };
+      }
+      next.modal = event.target;
       break;
     case "closeModal":
       next.modal = null;
       break;
     case "toggle":
-      if (event.target) next.values[event.target] = !next.values[event.target];
+      if (!event.target) return { state, error: "开关切换需要目标组件" };
+      next.values[event.target] = !next.values[event.target];
       break;
     case "setValue":
-      if (event.target) next.values[event.target] = event.value;
+      if (!event.target) return { state, error: "写入值需要目标组件" };
+      next.values[event.target] = event.value;
       break;
     default:
-      break;
+      return { state, error: `未知事件动作：${event.action}` };
   }
-  return next;
+  return { state: next };
+}
+
+/**
+ * 组件未配置事件时的默认行为：只覆盖确实有直觉语义的交互（开关切换、输入写入），
+ * 其余组件默认不产生动作，不猜测用户意图。
+ */
+export function defaultEventFor(
+  component: ProtoComponent,
+  payload?: unknown,
+): ProtoEvent | null {
+  if (component.type === "switch") {
+    return { action: "toggle", target: component.id };
+  }
+  if (component.type === "input") {
+    return { action: "setValue", target: component.id, value: payload ?? "" };
+  }
+  return null;
 }

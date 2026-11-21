@@ -108,3 +108,44 @@
 .image-annotation-props .input {
   min-width: 200px;
 }
+
+/* 只读预览：不应出现任何可点击/可拖拽的编辑示意。 */
+.image-annotator.is-readonly .image-annotator-canvas {
+  cursor: default;
+}
+
+.image-annotator-overlay.is-readonly {
+  pointer-events: none;
+}
+
+.annotation-shape.is-interactive {
+  cursor: pointer;
+}
+
+.image-annotation-readonly-list {
+  list-style: none;
+  margin: 0;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--card-face);
+  font-size: 12px;
+}
+
+.image-annotation-readonly-list li {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: baseline;
+}
+
+/* 选中标注的缩放把手：只在编辑态出现；预览渲染器不会创建该元素。 */
+.annotation-resize-handle {
+  fill: var(--accent);
+  stroke: var(--surface-raised);
+  stroke-width: 1;
+  cursor: nwse-resize;
+}

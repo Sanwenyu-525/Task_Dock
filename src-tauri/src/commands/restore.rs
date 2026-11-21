@@ -270,6 +270,8 @@ fn trusted_dest_roots(data_dir: &Path) -> Vec<PathBuf> {
         data_dir.join("clipboard"),
         data_dir.join("shelf"),
         data_dir.join("audio").join("voice-packs"),
+        // 协作中心可视化图片：与剪贴板资产同等对待，仍限制在应用数据目录内。
+        data_dir.join("collab-assets"),
         crate::agents::retention::archive_dir(data_dir),
     ]
 }
@@ -523,6 +525,7 @@ fn rollback_file(trusted: &TrustedPlan, file: &PlannedFile) -> AppResult<()> {
 
 fn build_plan(
     read: &ReadBackup,
+    data_dir: &Path,
     clipboard_dir: &Path,
     shelf_dir: &Path,
     voice_pack_dir: &Path,
@@ -557,6 +560,17 @@ fn build_plan(
                 voice_pack_dir.join(filename),
                 vault_root.join("assets").join(&rel),
             )?;
+        } else if let Some(sub) = rel.strip_prefix("collab/") {
+            // 协作可视化资产：恢复到当前设备数据目录，不沿用旧绝对路径。
+            push_planned(
+                &mut plan,
+                &mut seen,
+                "asset",
+                &rel,
+                asset,
+                data_dir.join("collab-assets").join(sub),
+                vault_root.join("assets").join(&rel),
+            )?;
         } else {
             push_planned(
                 &mut plan,
@@ -582,6 +596,96 @@ fn build_plan(
         )?;
     }
     Ok(plan)
+}
+
+/// 协作可视化资产路径回写：把备份里的旧设备绝对路径映射到当前数据目录。
+///
+/// - 文件存在且 SHA-256/大小与数据库记录一致 → 写入新的绝对路径；
+/// - 文件缺失或校验不符 → `path=''`、`status='missing'`（仅 active 行），并返回警告；
+/// - 任何情况下都不让数据库继续指向不存在的文件。
+/// 目录/文件名单段校验：不允许分隔符、上级引用或空名（资产名已是导入时清洗过的形式，
+/// 这里不再二次清洗，否则长度截断会改掉真实文件名）。
+fn safe_path_component(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    if trimmed.is_empty()
+        || trimmed == "."
+        || trimmed == ".."
+        || trimmed.contains(['/', '\\', '\0'])
+    {
+        return None;
+    }
+    Some(trimmed)
+}
+
+fn remap_collab_asset_paths(
+    db: &Db,
+    data_dir: &Path,
+) -> AppResult<(usize, usize, Vec<String>)> {
+    let root = data_dir.join("collab-assets");
+    db.with_transaction(|conn: &rusqlite::Connection| {
+        let mut rows: Vec<(String, String, String, String, i64)> = Vec::new();
+        {
+            let mut stmt = conn.prepare(
+                "SELECT id, project_id, path, sha256, size_bytes FROM collab_visual_assets",
+            )?;
+            let mapped = stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, i64>(4)?,
+                ))
+            })?;
+            for row in mapped {
+                rows.push(row?);
+            }
+        }
+        let mut remapped = 0usize;
+        let mut missing = 0usize;
+        let mut warnings = Vec::new();
+        for (id, project_id, old_path, sha, size) in rows {
+            let file = Path::new(&old_path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+            let target = match safe_path_component(&file) {
+                Some(file) => Some(
+                    root.join(crate::collab::util::sanitize_filename(&project_id))
+                        .join(file),
+                ),
+                None => None,
+            };
+            let verified = match target.as_deref() {
+                Some(path) if path.is_file() => {
+                    let (actual_size, actual_sha) = backup::sha256_file(path)?;
+                    actual_size == size as u64 && actual_sha == sha
+                }
+                _ => false,
+            };
+            if !verified {
+                missing += 1;
+                warnings.push(format!(
+                    "协作资产 {id} 的文件未随备份恢复（或 SHA-256 不符），已标记为 missing"
+                ));
+                conn.execute(
+                    "UPDATE collab_visual_assets
+                     SET path='', status = CASE WHEN status='active' THEN 'missing' ELSE status END
+                     WHERE id=?1",
+                    rusqlite::params![id],
+                )?;
+                continue;
+            }
+            let path = target.expect("已验证存在").to_string_lossy().to_string();
+            conn.execute(
+                "UPDATE collab_visual_assets SET path=?2 WHERE id=?1",
+                rusqlite::params![id, path],
+            )?;
+            remapped += 1;
+        }
+        Ok((remapped, missing, warnings))
+    })
 }
 
 fn push_planned(
@@ -1004,6 +1108,7 @@ pub fn restore_bundle(
     let archive_dir = crate::agents::retention::archive_dir(data_dir);
     let plan = match build_plan(
         &read,
+        data_dir,
         &clipboard_dir,
         &shelf_dir,
         &voice_pack_dir,
@@ -1121,6 +1226,19 @@ pub fn restore_bundle(
     journal.phase = "files_committed".into();
     let _ = write_journal(data_dir, &mut journal);
     let mut warnings = read.warnings.clone();
+    // 协作资产行内的 path 是上一台设备的绝对路径：文件已提交，这里改写为当前数据目录，
+    // 文件缺失/校验不符的行会被标记 missing，保证数据库中不留指向不存在文件的路径。
+    match remap_collab_asset_paths(db, data_dir) {
+        Ok((remapped, missing, mut asset_warnings)) => {
+            warnings.append(&mut asset_warnings);
+            if remapped > 0 || missing > 0 {
+                tracing::info!(remapped, missing, "协作资产路径已按当前数据目录回写");
+            }
+        }
+        Err(e) => {
+            warnings.push(format!("协作资产路径回写失败：{e}"));
+        }
+    }
     let (config_warnings, config_summary) = apply_config_if_needed(data_dir, &mut journal);
     warnings.extend(config_warnings);
 
@@ -1340,6 +1458,10 @@ fn recover_pending_inner(data_dir: &Path, db: &Db) -> AppResult<Option<RecoveryO
                 for warning in warnings {
                     tracing::warn!("恢复完成收尾时应用用户配置: {}", warning);
                 }
+                // 崩溃发生在路径回写之前时，收尾阶段必须补做，否则协作资产行仍指向旧设备目录。
+                if let Err(error) = remap_collab_asset_paths(db, data_dir) {
+                    tracing::warn!("恢复收尾时回写协作资产路径失败: {}", error);
+                }
                 clear_marker(db)?;
             }
             if let Err(error) = crate::audio::voice_packs::cleanup_orphaned_files(
@@ -1372,6 +1494,9 @@ fn recover_pending_inner(data_dir: &Path, db: &Db) -> AppResult<Option<RecoveryO
                 let (warnings, _) = apply_config_if_needed(data_dir, &mut journal);
                 for warning in warnings {
                     tracing::warn!("恢复续跑时应用用户配置: {}", warning);
+                }
+                if let Err(error) = remap_collab_asset_paths(db, data_dir) {
+                    tracing::warn!("恢复续跑时回写协作资产路径失败: {}", error);
                 }
                 journal.state = RestoreState::Completed;
                 journal.phase = "recovery_done".into();

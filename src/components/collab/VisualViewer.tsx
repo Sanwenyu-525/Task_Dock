@@ -1,6 +1,6 @@
 //! 协作中心 · 统一可视化工作台。
 //!
-//! 预览：GraphPreview / PrototypeInteractionSimulator / 图片标注；
+//! 预览：GraphPreview / PrototypeInteractionSimulator / ImageRenderer（只读）；
 //! 编辑：GraphEditor / PrototypeEditor / ImageAnnotator；
 //! 版本：列表、对比、恢复（恢复生成新版本，不删历史）。
 //!
@@ -33,6 +33,7 @@ import GraphEditor from "./editors/GraphEditor";
 import PrototypeEditor from "./editors/PrototypeEditor";
 import PrototypeInteractionSimulator from "./editors/PrototypeInteractionSimulator";
 import ImageAnnotator from "./editors/ImageAnnotator";
+import ImageRenderer from "./editors/ImageRenderer";
 import { isGraphKind, parseGraph } from "./editors/graph-types";
 import { parsePrototype } from "./editors/prototype-types";
 
@@ -201,7 +202,7 @@ export default function VisualViewer({
               serverBacked
             />
           ) : isImage ? (
-            <ImageAnnotator doc={doc} onSaved={saved} onError={setError} />
+            <ImageRenderer doc={doc} />
           ) : doc.kind === "diff" ? (
             <pre className="collab-source-json">{doc.sourceContent}</pre>
           ) : (

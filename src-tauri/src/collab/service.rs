@@ -427,10 +427,11 @@ impl<'a> Core<'a> {
         &self,
         actor: &Actor,
         document_id: &str,
+        page_id: Option<&str>,
         instruction: &str,
         selection: &[String],
     ) -> AppResult<AiProposal> {
-        ai::propose_modification(self.conn, actor, document_id, instruction, selection)
+        ai::propose_modification(self.conn, actor, document_id, page_id, instruction, selection)
     }
 
     pub fn create_image_job(

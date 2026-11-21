@@ -17,6 +17,8 @@ use super::model::{
 use super::visual::{get_document, normalize_content, update_document};
 
 const MAX_OPS: usize = 100;
+/// 单次 Patch 每个对象段最多删除的字段数（与组件数上限同量级，防止恶意超长列表）。
+const MAX_REMOVE_KEYS: usize = 200;
 
 pub fn apply_patch(
     conn: &Connection,
@@ -79,29 +81,35 @@ fn apply_one(content: &mut Value, op: &PatchOp) -> AppResult<()> {
                 .component
                 .clone()
                 .ok_or_else(|| AppError::Validation("add 需要 component".to_string()))?;
+            // 组件 ID 在整个原型内唯一：跨页重名会让按页定位的选择项命中错组件。
+            if let Some(id) = component.get("id").and_then(|v| v.as_str()) {
+                if component_id_exists(content, id) {
+                    return Err(AppError::Validation(format!(
+                        "组件 id 重复：{id}（原型内必须唯一）"
+                    )));
+                }
+            }
             let page = find_page_mut(content, page_id)?;
             let comps = page
                 .get_mut("components")
                 .and_then(|v| v.as_array_mut())
                 .ok_or_else(|| AppError::Validation("页面缺少 components".to_string()))?;
-            if let Some(id) = component.get("id").and_then(|v| v.as_str()) {
-                if comps
-                    .iter()
-                    .any(|c| c.get("id").and_then(|v| v.as_str()) == Some(id))
-                {
-                    return Err(AppError::Validation(format!("组件 id 重复：{id}")));
-                }
-            }
             comps.push(component);
         }
         "update" => {
+            let patch = match op.patch.as_ref() {
+                Some(v) => Some(v.as_object().ok_or_else(|| {
+                    AppError::Validation("update 需要 patch 对象".to_string())
+                })?),
+                None => None,
+            };
+            if patch.is_none() && op.remove_keys.is_none() {
+                return Err(AppError::Validation(
+                    "update 需要 patch 或 removeKeys".to_string(),
+                ));
+            }
             let comp = find_component_mut(content, op)?;
-            let patch = op
-                .patch
-                .as_ref()
-                .and_then(|v| v.as_object())
-                .ok_or_else(|| AppError::Validation("update 需要 patch 对象".to_string()))?;
-            merge_component(comp, patch)?;
+            merge_component(comp, patch, op.remove_keys.as_ref())?;
         }
         "remove" => {
             let page_id = op
@@ -143,18 +151,14 @@ fn apply_one(content: &mut Value, op: &PatchOp) -> AppResult<()> {
                 .as_ref()
                 .and_then(|v| v.as_object())
                 .ok_or_else(|| AppError::Validation("style 需要 patch 对象".to_string()))?;
+            require_only_section(op, "style")?;
             let comp = find_component_mut(content, op)?;
-            let style = comp
-                .as_object_mut()
-                .unwrap()
-                .entry("style")
-                .or_insert_with(|| json!({}));
-            let obj = style
-                .as_object_mut()
-                .ok_or_else(|| AppError::Validation("style 不是对象".to_string()))?;
-            for (k, v) in patch {
-                obj.insert(k.clone(), v.clone());
-            }
+            apply_section(
+                comp,
+                "style",
+                Some(patch),
+                op.remove_keys.as_ref().and_then(|m| m.get("style")),
+            )?;
         }
         "events" => {
             let patch = op
@@ -162,20 +166,29 @@ fn apply_one(content: &mut Value, op: &PatchOp) -> AppResult<()> {
                 .as_ref()
                 .and_then(|v| v.as_object())
                 .ok_or_else(|| AppError::Validation("events 需要 patch 对象".to_string()))?;
+            require_only_section(op, "events")?;
             let comp = find_component_mut(content, op)?;
-            let events = comp
-                .as_object_mut()
-                .unwrap()
-                .entry("events")
-                .or_insert_with(|| json!({}));
-            let obj = events
-                .as_object_mut()
-                .ok_or_else(|| AppError::Validation("events 不是对象".to_string()))?;
-            for (k, v) in patch {
-                obj.insert(k.clone(), v.clone());
-            }
+            apply_section(
+                comp,
+                "events",
+                Some(patch),
+                op.remove_keys.as_ref().and_then(|m| m.get("events")),
+            )?;
         }
         "page_add" => {
+            // 先在不可变借用下收集已有组件 ID，再做可变借用，避免借用冲突。
+            let mut existing_ids: BTreeSet<String> = BTreeSet::new();
+            if let Some(existing) = content.get("pages").and_then(|v| v.as_array()) {
+                for p in existing {
+                    if let Some(comps) = p.get("components").and_then(|v| v.as_array()) {
+                        for c in comps {
+                            if let Some(cid) = c.get("id").and_then(|v| v.as_str()) {
+                                existing_ids.insert(cid.to_string());
+                            }
+                        }
+                    }
+                }
+            }
             let pages = content
                 .get_mut("pages")
                 .and_then(|v| v.as_array_mut())
@@ -202,6 +215,19 @@ fn apply_one(content: &mut Value, op: &PatchOp) -> AppResult<()> {
                         .any(|p| p.get("id").and_then(|v| v.as_str()) == Some(id.as_str()))
                     {
                         return Err(AppError::Validation(format!("页面 id 重复：{id}")));
+                    }
+                    // 新页面携带的组件 ID 不得与已有组件或页面内重名。
+                    let mut seen: BTreeSet<String> = BTreeSet::new();
+                    if let Some(comps) = obj.get("components").and_then(|v| v.as_array()) {
+                        for comp in comps {
+                            if let Some(cid) = comp.get("id").and_then(|v| v.as_str()) {
+                                if existing_ids.contains(cid) || !seen.insert(cid.to_string()) {
+                                    return Err(AppError::Validation(format!(
+                                        "组件 id 重复：{cid}（原型内必须唯一）"
+                                    )));
+                                }
+                            }
+                        }
                     }
                     json!({
                         "id": id,
@@ -264,6 +290,39 @@ fn apply_one(content: &mut Value, op: &PatchOp) -> AppResult<()> {
     Ok(())
 }
 
+/// `style`/`events` 操作的 removeKeys 只能携带自身段名，避免语义含糊。
+fn require_only_section(op: &PatchOp, section: &str) -> AppResult<()> {
+    let Some(map) = op.remove_keys.as_ref() else {
+        return Ok(());
+    };
+    if let Some(other) = map.keys().find(|k| k.as_str() != section) {
+        return Err(AppError::Validation(format!(
+            "{section} 操作的 removeKeys 不能包含 {other}；请用 update 一次表达"
+        )));
+    }
+    Ok(())
+}
+
+/// 组件 ID 是否已在原型任意页面出现（组件 ID 必须全文档唯一）。
+fn component_id_exists(content: &Value, id: &str) -> bool {
+    content
+        .get("pages")
+        .and_then(|v| v.as_array())
+        .map(|pages| {
+            pages.iter().any(|p| {
+                p.get("components")
+                    .and_then(|v| v.as_array())
+                    .map(|comps| {
+                        comps
+                            .iter()
+                            .any(|c| c.get("id").and_then(|v| v.as_str()) == Some(id))
+                    })
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
 /// 生成下一个稳定页面 ID：`page-<n>`，跳过已被占用的编号。
 fn next_page_id(pages: &[Value]) -> String {
     let used: BTreeSet<&str> = pages
@@ -308,10 +367,34 @@ fn find_component_mut<'a>(content: &'a mut Value, op: &PatchOp) -> AppResult<&'a
         .ok_or_else(|| AppError::NotFound(format!("组件不存在：{comp_id}")))
 }
 
-fn merge_component(comp: &mut Value, patch: &Map<String, Value>) -> AppResult<()> {
-    let obj = comp
-        .as_object_mut()
-        .ok_or_else(|| AppError::Validation("组件不是对象".to_string()))?;
+/// 组件增量合并：先按 `remove_keys` 删除字段，再写入 `patch` 中的键。
+///
+/// - 只允许 `props` / `style` / `events` 三个对象字段与 `x`/`y`/`w`/`h` 坐标；
+/// - `id` / `type` 永远不可通过 Patch 修改（类型转换必须由独立的转换规则实现）；
+/// - 任一非法字段立即返回错误，调用方在全部操作成功后才做 Schema 校验与落库。
+fn merge_component(
+    comp: &mut Value,
+    patch: Option<&Map<String, Value>>,
+    remove_keys: Option<&BTreeMap<String, Vec<String>>>,
+) -> AppResult<()> {
+    if comp.as_object().is_none() {
+        return Err(AppError::Validation("组件不是对象".to_string()));
+    }
+
+    if let Some(remove) = remove_keys {
+        for (section, keys) in remove {
+            if !["props", "style", "events"].contains(&section.as_str()) {
+                return Err(AppError::Validation(format!(
+                    "removeKeys 不支持字段 {section}（只允许 props/style/events）"
+                )));
+            }
+            apply_section(comp, section, None, Some(keys))?;
+        }
+    }
+
+    let Some(patch) = patch else {
+        return Ok(());
+    };
     for (k, v) in patch {
         match k.as_str() {
             "id" | "type" => {
@@ -320,28 +403,76 @@ fn merge_component(comp: &mut Value, patch: &Map<String, Value>) -> AppResult<()
                 )))
             }
             "props" | "style" | "events" => {
-                let target = obj.entry(k.clone()).or_insert_with(|| json!({}));
-                let target_obj = target
-                    .as_object_mut()
-                    .ok_or_else(|| AppError::Validation(format!("{k} 不是对象")))?;
                 let patch_obj = v
                     .as_object()
                     .ok_or_else(|| AppError::Validation(format!("{k} patch 不是对象")))?;
-                for (pk, pv) in patch_obj {
-                    target_obj.insert(pk.clone(), pv.clone());
-                }
+                apply_section(comp, k, Some(patch_obj), None)?;
             }
             "x" | "y" | "w" | "h" => {
                 if !v.is_number() {
                     return Err(AppError::Validation(format!("{k} 必须是数字")));
                 }
-                obj.insert(k.clone(), v.clone());
+                comp.as_object_mut()
+                    .expect("已校验为对象")
+                    .insert(k.clone(), v.clone());
             }
             other => {
                 return Err(AppError::Validation(format!(
                     "Patch 不允许修改字段 {other}"
                 )))
             }
+        }
+    }
+    Ok(())
+}
+
+/// 写入单个对象段（props/style/events）；`remove` 先于写入生效。
+fn apply_section(
+    comp: &mut Value,
+    section: &str,
+    patch: Option<&Map<String, Value>>,
+    remove: Option<&Vec<String>>,
+) -> AppResult<()> {
+    if let Some(keys) = remove {
+        if keys.len() > MAX_REMOVE_KEYS {
+            return Err(AppError::Validation(format!(
+                "removeKeys.{section} 最多 {MAX_REMOVE_KEYS} 个键"
+            )));
+        }
+        if keys.iter().any(|k| k.trim().is_empty()) {
+            return Err(AppError::Validation(format!(
+                "removeKeys.{section} 含空键"
+            )));
+        }
+        if patch.is_none() {
+            // 只删除：段不存在或为 null 时无需创建空对象。
+            let exists = comp
+                .get(section)
+                .map(|v| !v.is_null())
+                .unwrap_or(false);
+            if !exists {
+                return Ok(());
+            }
+        }
+    }
+    let obj = comp
+        .as_object_mut()
+        .ok_or_else(|| AppError::Validation("组件不是对象".to_string()))?;
+    let target = obj.entry(section).or_insert_with(|| json!({}));
+    if target.is_null() {
+        *target = json!({});
+    }
+    let target_obj = target
+        .as_object_mut()
+        .ok_or_else(|| AppError::Validation(format!("{section} 不是对象")))?;
+    if let Some(keys) = remove {
+        for key in keys {
+            target_obj.remove(key);
+        }
+    }
+    if let Some(patch) = patch {
+        for (k, v) in patch {
+            target_obj.insert(k.clone(), v.clone());
         }
     }
     Ok(())

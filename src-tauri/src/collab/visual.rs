@@ -1008,6 +1008,55 @@ pub fn update_document(
         },
     };
 
+    // 乐观锁先行：即使本次没有内容变化，也不接受过期 revision 的“空更新成功”。
+    if expected_revision != current.revision {
+        return Err(AppError::Conflict(format!(
+            "版本冲突：文档已被其他操作修改（当前 revision={}）",
+            current.revision
+        )));
+    }
+
+    // AI 提案必须按生成时的 baseRevision 应用：提案记录与写入必须指向同一版本，
+    // 否则会把「基于旧内容生成的候选」覆盖到别人刚改过的新内容上。
+    if let Some(job_id) = patch.ai_job_id.as_deref() {
+        let job = super::ai::load_job(conn, job_id)?;
+        if job.document_id.as_deref() != Some(id) {
+            return Err(AppError::Validation(
+                "AI 提案不属于该可视化文档".to_string(),
+            ));
+        }
+        if job.status != "succeeded" {
+            return Err(AppError::Conflict(format!(
+                "AI 提案状态为 {}，不能应用",
+                job.status
+            )));
+        }
+        let base = job
+            .params_json
+            .parse::<Value>()
+            .ok()
+            .and_then(|v| v.get("baseRevision").and_then(|b| b.as_i64()));
+        if base != Some(expected_revision) {
+            return Err(AppError::Conflict(format!(
+                "AI 提案基于 revision {}，当前写入期望 revision {}；请重新生成或确认覆盖",
+                base.map(|b| b.to_string()).unwrap_or_else(|| "未知".into()),
+                expected_revision
+            )));
+        }
+    }
+
+    // 无实际变化的更新不产生版本：重复保存/仅切换视图不应污染版本历史。
+    if next.title == current.title
+        && next.description == current.description
+        && next.status == current.status
+        && next.preview_asset == current.preview_asset
+        && next.source_format == current.source_format
+        && next.source_content == current.source_content
+        && next.renderer == current.renderer
+    {
+        return Ok(current);
+    }
+
     let revision = current.revision + 1;
     let version = current.version + 1;
     let now = now_iso();

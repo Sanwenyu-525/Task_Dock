@@ -47,6 +47,7 @@ import {
   createComponent,
   diffPrototype,
   duplicateComponent,
+  nextGlobalComponentId,
   parsePrototype,
   type ProtoComponent,
   type ProtoContent,
@@ -71,6 +72,10 @@ type DragState = {
   moved: boolean;
 } | null;
 
+const HISTORY_LIMIT = 50;
+/** 连续输入合并窗口：同一字段在窗口内的多次输入只记一条历史。 */
+const COALESCE_WINDOW_MS = 1500;
+
 export default function PrototypeEditor({ doc, onSaved, onError }: PrototypeEditorProps) {
   const [content, setContent] = useState<ProtoContent>(() => parsePrototype(doc.sourceContent));
   const contentRef = useRef(content);
@@ -80,6 +85,7 @@ export default function PrototypeEditor({ doc, onSaved, onError }: PrototypeEdit
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [history, setHistory] = useState<ProtoContent[]>([]);
   const [future, setFuture] = useState<ProtoContent[]>([]);
+  const coalesceRef = useRef<{ key: string; at: number } | null>(null);
   const [dirty, setDirty] = useState(false);
   const [preview, setPreview] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -97,8 +103,19 @@ export default function PrototypeEditor({ doc, onSaved, onError }: PrototypeEdit
     setContent(parsed);
     contentRef.current = parsed;
     originalRef.current = parsed;
-    setActiveId(parsed.pages[0]?.id ?? "page-1");
-    setSelectedId(null);
+    coalesceRef.current = null;
+    // 保存后重载内容时保留当前页面与选中组件：跳回第一页会打断连续编辑，
+    // 也会让「AI 修改选中组件」失去目标。
+    setActiveId((current) =>
+      parsed.pages.some((p) => p.id === current)
+        ? current
+        : parsed.pages[0]?.id ?? "page-1",
+    );
+    setSelectedId((current) =>
+      current && parsed.pages.some((p) => p.components.some((c) => c.id === current))
+        ? current
+        : null,
+    );
     setHistory([]);
     setFuture([]);
     setDirty(false);
@@ -125,7 +142,7 @@ export default function PrototypeEditor({ doc, onSaved, onError }: PrototypeEdit
       const path = await openDialog({
         multiple: false,
         directory: false,
-        title: "选择图片（png/jpg/jpeg/webp/gif，≤32 MiB）",
+        title: "选择图片（png/jpg/jpeg/webp/gif，≤8 MiB）",
       });
       if (typeof path !== "string") return null;
       setBusy(true);
@@ -176,35 +193,67 @@ export default function PrototypeEditor({ doc, onSaved, onError }: PrototypeEdit
     onError?.(message);
   };
 
-  const pushHistory = (snapshot: ProtoContent = contentRef.current) => {
-    setHistory((h) => [...h.slice(-49), snapshot]);
+  const pushHistory = (snapshot: ProtoContent) => {
+    setHistory((h) => [...h.slice(-(HISTORY_LIMIT - 1)), snapshot]);
     setFuture([]);
-    setDirty(true);
   };
 
-  const apply = (next: ProtoContent, withHistory = true) => {
-    if (withHistory) pushHistory();
+  /**
+   * 统一编辑入口：所有修改（属性/位置/尺寸/页面/组件/样式/事件）都走这里。
+   *
+   * - 每次提交只产生一条历史（连续输入按 `fieldKey` + 时间窗口合并）；
+   * - 提交即清除 redo 分支；
+   * - 内容无实际变化时直接返回，不产生历史也不标记 dirty。
+   */
+  const commitEdit = (
+    next: ProtoContent,
+    options?: { fieldKey?: string; history?: boolean },
+  ) => {
+    const prev = contentRef.current;
+    if (next === prev) return;
+    if (JSON.stringify(next) === JSON.stringify(prev)) return;
+    if (options?.history !== false) {
+      const key = options?.fieldKey;
+      const now = Date.now();
+      const last = coalesceRef.current;
+      const coalesce =
+        !!key && last?.key === key && now - last.at <= COALESCE_WINDOW_MS;
+      if (!coalesce) pushHistory(prev);
+      coalesceRef.current = key ? { key, at: now } : null;
+    }
     contentRef.current = next;
     setContent(next);
     setDirty(true);
   };
 
-  const updatePage = (pageId: string, mutate: (page: ProtoContent["pages"][number]) => ProtoContent["pages"][number]) => {
-    const next = {
-      ...contentRef.current,
-      pages: contentRef.current.pages.map((p) => (p.id === pageId ? mutate(p) : p)),
-    };
-    contentRef.current = next;
-    setContent(next);
-    setDirty(true);
+  const updatePage = (
+    pageId: string,
+    mutate: (page: ProtoContent["pages"][number]) => ProtoContent["pages"][number],
+    fieldKey?: string,
+  ) => {
+    commitEdit(
+      {
+        ...contentRef.current,
+        pages: contentRef.current.pages.map((p) => (p.id === pageId ? mutate(p) : p)),
+      },
+      { fieldKey },
+    );
   };
 
-  const updateComponent = (id: string, mutate: (c: ProtoComponent) => ProtoComponent) => {
+  const updateComponent = (
+    id: string,
+    mutate: (c: ProtoComponent) => ProtoComponent,
+    fieldKey?: string,
+  ) => {
     if (!page) return;
-    updatePage(page.id, (p) => ({
-      ...p,
-      components: p.components.map((c) => (c.id === id ? mutate(c) : c)),
-    }));
+    updatePage(
+      page.id,
+      (p) => ({
+        ...p,
+        components: p.components.map((c) => (c.id === id ? mutate(c) : c)),
+      }),
+      fieldKey ? `${id}:${fieldKey}` : undefined,
+    );
   };
 
   const addComponent = (type: ProtoComponent["type"]) => {
@@ -214,21 +263,25 @@ export default function PrototypeEditor({ doc, onSaved, onError }: PrototypeEdit
       return;
     }
     const y = selected ? Math.min(4900, selected.y + selected.h + 8) : 24 + page.components.length * 8;
-    const comp = createComponent(type, page.components, 16, y);
-    apply(
-      {
-        ...contentRef.current,
-        pages: contentRef.current.pages.map((p) =>
-          p.id === page.id ? { ...p, components: [...p.components, comp] } : p,
-        ),
-      },
+    const comp = createComponent(
+      type,
+      page.components,
+      16,
+      y,
+      nextGlobalComponentId(contentRef.current),
     );
+    commitEdit({
+      ...contentRef.current,
+      pages: contentRef.current.pages.map((p) =>
+        p.id === page.id ? { ...p, components: [...p.components, comp] } : p,
+      ),
+    });
     setSelectedId(comp.id);
   };
 
   const removeSelected = () => {
     if (!page || !selectedId) return;
-    apply({
+    commitEdit({
       ...contentRef.current,
       pages: contentRef.current.pages.map((p) =>
         p.id === page.id
@@ -241,8 +294,12 @@ export default function PrototypeEditor({ doc, onSaved, onError }: PrototypeEdit
 
   const duplicateSelected = () => {
     if (!page || !selected) return;
-    const copy = duplicateComponent(selected, page.components);
-    apply({
+    const copy = duplicateComponent(
+      selected,
+      page.components,
+      nextGlobalComponentId(contentRef.current),
+    );
+    commitEdit({
       ...contentRef.current,
       pages: contentRef.current.pages.map((p) =>
         p.id === page.id ? { ...p, components: [...p.components, copy] } : p,
@@ -261,7 +318,7 @@ export default function PrototypeEditor({ doc, onSaved, onError }: PrototypeEdit
     else if (direction === "bottom") comps.unshift(item);
     else if (direction === "up") comps.splice(Math.min(comps.length, index + 1), 0, item);
     else comps.splice(Math.max(0, index - 1), 0, item);
-    apply({
+    commitEdit({
       ...contentRef.current,
       pages: contentRef.current.pages.map((p) => (p.id === page.id ? { ...p, components: comps } : p)),
     });
@@ -272,7 +329,7 @@ export default function PrototypeEditor({ doc, onSaved, onError }: PrototypeEdit
     let n = contentRef.current.pages.length + 1;
     while (ids.has(`page-${n}`)) n += 1;
     const id = `page-${n}`;
-    apply({
+    commitEdit({
       ...contentRef.current,
       pages: [
         ...contentRef.current.pages,
@@ -284,13 +341,13 @@ export default function PrototypeEditor({ doc, onSaved, onError }: PrototypeEdit
   };
 
   const renamePage = (id: string, name: string) => {
-    updatePage(id, (p) => ({ ...p, name }));
+    updatePage(id, (p) => ({ ...p, name }), `page-name:${id}`);
   };
 
   const removePage = (id: string) => {
     if (contentRef.current.pages.length <= 1) return;
     const pages = contentRef.current.pages.filter((p) => p.id !== id);
-    apply({ ...contentRef.current, pages });
+    commitEdit({ ...contentRef.current, pages });
     setActiveId(pages[0]?.id ?? "page-1");
     setSelectedId(null);
   };
@@ -358,25 +415,28 @@ export default function PrototypeEditor({ doc, onSaved, onError }: PrototypeEdit
         }),
       })),
     };
-    contentRef.current = next;
-    setContent(next);
-    setDirty(true);
+    commitEdit(next, { history: false });
   };
 
   const onPointerUp = () => {
     const drag = dragRef.current;
     dragRef.current = null;
     if (!drag) return;
-    if (drag.moved) {
-      setHistory((h) => [...h.slice(-49), drag.snapshot]);
-      setFuture([]);
+    coalesceRef.current = null;
+    // 一次拖拽 = 一条历史；拖回原位则不留空快照。
+    if (drag.moved && JSON.stringify(contentRef.current) !== JSON.stringify(drag.snapshot)) {
+      pushHistory(drag.snapshot);
     }
   };
 
   const undo = () => {
     const previous = history[history.length - 1];
     if (!previous) return;
-    setFuture((f) => [contentRef.current, ...f.slice(0, 49)]);
+    coalesceRef.current = null;
+    // 快照必须在修改 ref 之前取出：setState 的 updater 在渲染期执行，
+    // 直接读 contentRef.current 会拿到已经被覆盖的新内容（redo 顺序错乱）。
+    const currentSnapshot = contentRef.current;
+    setFuture((f) => [currentSnapshot, ...f.slice(0, HISTORY_LIMIT - 1)]);
     setHistory((h) => h.slice(0, -1));
     contentRef.current = previous;
     setContent(previous);
@@ -386,7 +446,9 @@ export default function PrototypeEditor({ doc, onSaved, onError }: PrototypeEdit
   const redo = () => {
     const next = future[0];
     if (!next) return;
-    setHistory((h) => [...h.slice(-49), contentRef.current]);
+    coalesceRef.current = null;
+    const currentSnapshot = contentRef.current;
+    setHistory((h) => [...h.slice(-(HISTORY_LIMIT - 1)), currentSnapshot]);
     setFuture((f) => f.slice(1));
     contentRef.current = next;
     setContent(next);
@@ -413,6 +475,7 @@ export default function PrototypeEditor({ doc, onSaved, onError }: PrototypeEdit
         summary.trim() || `原型编辑（${ops.length} 个操作）`,
       );
       originalRef.current = parsePrototype(next.sourceContent);
+      coalesceRef.current = null;
       setHistory([]);
       setFuture([]);
       setDirty(false);
@@ -463,6 +526,12 @@ export default function PrototypeEditor({ doc, onSaved, onError }: PrototypeEdit
       setError("请填写 AI 修改要求");
       return;
     }
+    // AI 修改基于**已保存**版本：未保存的改动不在后端文档里，
+    // 组件选择可能根本不存在于该版本，直接生成会命中错组件。
+    if (dirty) {
+      setError("AI 修改基于已保存版本，请先保存当前修改再生成建议");
+      return;
+    }
     setBusy(true);
     setError("");
     try {
@@ -471,6 +540,7 @@ export default function PrototypeEditor({ doc, onSaved, onError }: PrototypeEdit
           doc.id,
           aiInstruction.trim(),
           selectedId ? [selectedId] : [],
+          page.id,
         ),
       );
     } catch (e) {
@@ -482,12 +552,19 @@ export default function PrototypeEditor({ doc, onSaved, onError }: PrototypeEdit
 
   const applyProposal = async () => {
     if (!proposal) return;
+    // 提案必须按生成时的 baseRevision 应用；文档已更新则要求重新生成（服务端同样返回 CONFLICT）。
+    if (proposal.baseRevision !== doc.revision) {
+      setError(
+        `文档已更新到 revision ${doc.revision}，该提案基于 revision ${proposal.baseRevision}；请重新生成建议`,
+      );
+      return;
+    }
     setBusy(true);
     setError("");
     try {
       const next = await collabVisualUpdate(
         doc.id,
-        doc.revision,
+        proposal.baseRevision,
         {
           sourceContent: proposal.proposedContent,
           authoringMode: "ai_assisted",
@@ -652,8 +729,8 @@ export default function PrototypeEditor({ doc, onSaved, onError }: PrototypeEdit
               pages={content.pages}
               assets={assets}
               onImportAsset={importAsset}
-              onChange={(mutate) => {
-                if (selected) updateComponent(selected.id, mutate);
+              onChange={(mutate, fieldKey) => {
+                if (selected) updateComponent(selected.id, mutate, fieldKey);
               }}
               onDelete={removeSelected}
               onDuplicate={duplicateSelected}
@@ -693,7 +770,11 @@ export default function PrototypeEditor({ doc, onSaved, onError }: PrototypeEdit
               生成建议
             </button>
             {proposal ? (
-              <button className="btn small" onClick={() => void applyProposal()} disabled={busy}>
+              <button
+                className="btn small"
+                onClick={() => void applyProposal()}
+                disabled={busy || proposal.baseRevision !== doc.revision}
+              >
                 确认应用
               </button>
             ) : null}
@@ -711,7 +792,15 @@ export default function PrototypeEditor({ doc, onSaved, onError }: PrototypeEdit
                   <div>删除组件：{proposalPreview.removed}</div>
                 </div>
               ) : null}
-              <div className="collab-muted">基于 revision {proposal.baseRevision}；应用后生成新版本。</div>
+              <div className="collab-muted">
+                基于 revision {proposal.baseRevision}；生成方式 {proposal.job.provider} /{" "}
+                {proposal.job.model || "无模型"}（规则生成，非模型推理）。
+              </div>
+              {proposal.baseRevision !== doc.revision ? (
+                <div className="collab-inline-error">
+                  文档已更新到 revision {doc.revision}，请重新生成建议后再应用。
+                </div>
+              ) : null}
             </div>
           ) : null}
         </div>

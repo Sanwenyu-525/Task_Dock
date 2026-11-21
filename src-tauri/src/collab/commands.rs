@@ -541,11 +541,18 @@ pub fn collab_ai_modify(
     id: String,
     instruction: String,
     selection: Option<Vec<String>>,
+    page_id: Option<String>,
 ) -> AppResult<AiProposal> {
     let actor = Actor::ui();
     let selection = selection.unwrap_or_default();
     ui_write(&db, |core| {
-        core.propose_visual_modification(&actor, &id, &instruction, &selection)
+        core.propose_visual_modification(
+            &actor,
+            &id,
+            page_id.as_deref(),
+            &instruction,
+            &selection,
+        )
     })
 }
 

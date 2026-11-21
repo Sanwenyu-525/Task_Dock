@@ -279,6 +279,15 @@ export interface PatchOp {
   componentId?: string;
   component?: Record<string, unknown>;
   patch?: Record<string, unknown>;
+  /**
+   * 字段删除（与 patch 同时出现时先删除再写入）。
+   * 后端只接受 props/style/events，删除不存在的键是幂等空操作。
+   */
+  removeKeys?: {
+    props?: string[];
+    style?: string[];
+    events?: string[];
+  };
   x?: number;
   y?: number;
   name?: string;
@@ -533,7 +542,14 @@ export const collabAiModify = (
   id: string,
   instruction: string,
   selection: string[] = [],
-) => invoke<AiProposal>("collab_ai_modify", { id, instruction, selection });
+  pageId?: string,
+) =>
+  invoke<AiProposal>("collab_ai_modify", {
+    id,
+    instruction,
+    selection,
+    pageId: pageId ?? null,
+  });
 
 /** 资产内容 → 可直接用于 <img src> 的 data URL。 */
 export const assetDataUrl = (content: AssetContent) =>

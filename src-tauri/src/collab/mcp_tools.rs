@@ -317,7 +317,7 @@ pub fn definitions_for_registry() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "taskdock_collab_patch_prototype",
-            description: "对原型做组件级增量 Patch（add/update/remove/move/style/events），生成新版本。",
+            description: "对原型做组件级增量 Patch（add/update/remove/move/style/events/page_add/page_remove/page_rename），生成新版本；update 可用 removeKeys 删除 props/style/events 字段。",
             input_schema: schema(
                 json!({
                     "document_id": { "type": "string" },
@@ -325,13 +325,27 @@ pub fn definitions_for_registry() -> Vec<ToolDef> {
                     "ops": { "type": "array", "minItems": 1, "maxItems": 100, "items": {
                         "type": "object",
                         "properties": {
-                            "op": { "type": "string", "enum": ["add","update","remove","move","style","events"] },
+                            "op": { "type": "string", "enum": [
+                                "add","update","remove","move","style","events",
+                                "page_add","page_remove","page_rename"
+                            ] },
                             "pageId": { "type": "string" },
                             "componentId": { "type": "string" },
                             "component": { "type": "object" },
                             "patch": { "type": "object" },
+                            "removeKeys": {
+                                "type": "object",
+                                "properties": {
+                                    "props": { "type": "array", "items": { "type": "string" }, "maxItems": 200 },
+                                    "style": { "type": "array", "items": { "type": "string" }, "maxItems": 200 },
+                                    "events": { "type": "array", "items": { "type": "string" }, "maxItems": 200 }
+                                },
+                                "additionalProperties": false
+                            },
                             "x": { "type": "number" },
-                            "y": { "type": "number" }
+                            "y": { "type": "number" },
+                            "name": { "type": "string" },
+                            "page": { "type": "object" }
                         },
                         "required": ["op"],
                         "additionalProperties": false

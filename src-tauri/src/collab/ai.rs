@@ -363,7 +363,7 @@ fn insert_job(conn: &Connection, job: &AiJob) -> AppResult<()> {
     Ok(())
 }
 
-fn load_job(conn: &Connection, id: &str) -> AppResult<AiJob> {
+pub(crate) fn load_job(conn: &Connection, id: &str) -> AppResult<AiJob> {
     conn.query_row(
         &format!("SELECT {JOB_COLS} FROM collab_ai_jobs WHERE id=?1"),
         rusqlite::params![id],
@@ -673,6 +673,7 @@ pub fn propose_modification(
     conn: &Connection,
     actor: &Actor,
     document_id: &str,
+    page_id: Option<&str>,
     instruction: &str,
     selection: &[String],
 ) -> AppResult<AiProposal> {
@@ -695,9 +696,15 @@ pub fn propose_modification(
         return Err(AppError::Validation("请描述要修改的内容".to_string()));
     }
 
+    // 上下文定位：pageId / selection 必须命中当前文档，绝不静默回退到第一页或最后一个组件。
     let summary = if doc.kind == "prototype" {
-        apply_ai_prototype(&mut content, &instruction, selection)?
+        apply_ai_prototype(&mut content, page_id, &instruction, selection)?
     } else {
+        if page_id.is_some() {
+            return Err(AppError::Validation(
+                "只有原型支持按 pageId 定位；当前文档是图类型".to_string(),
+            ));
+        }
         apply_ai_graph(&mut content, &doc.kind, &instruction, &steps, selection)?
     };
     let normalized = normalize_content(&doc.kind, "json", &content.to_string())?;
@@ -715,8 +722,11 @@ pub fn propose_modification(
         params_json: json!({
             "mode": "propose",
             "documentId": doc.id,
+            "pageId": page_id,
             "baseRevision": doc.revision,
-            "selection": selection
+            "selection": selection,
+            // 规则生成不是模型推理：显式记录，便于审计区分。
+            "generator": "local-structured-rules"
         })
         .to_string(),
         status: "succeeded".to_string(),
@@ -776,9 +786,13 @@ fn apply_ai_graph(
         .iter()
         .filter_map(|n| n.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
         .collect();
+    if let Some(unknown) = selection.iter().find(|id| !used.contains(*id)) {
+        return Err(AppError::Validation(format!(
+            "选中节点不存在于当前文档：{unknown}"
+        )));
+    }
     let anchor = selection
-        .iter()
-        .find(|id| used.contains(*id))
+        .first()
         .cloned()
         .or_else(|| {
             node_values
@@ -847,16 +861,24 @@ fn apply_ai_graph(
 
 fn apply_ai_prototype(
     content: &mut Value,
+    page_id: Option<&str>,
     instruction: &str,
     selection: &[String],
 ) -> AppResult<String> {
+    let page_id = page_id
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            AppError::Validation("原型 AI 修改必须指定 pageId（不允许默认作用于第一页）".to_string())
+        })?;
     let pages = content
         .get_mut("pages")
         .and_then(|v| v.as_array_mut())
         .ok_or_else(|| AppError::Validation("原型缺少 pages".to_string()))?;
     let page = pages
-        .first_mut()
-        .ok_or_else(|| AppError::Validation("原型至少需要一个页面".to_string()))?;
+        .iter_mut()
+        .find(|p| p.get("id").and_then(|v| v.as_str()) == Some(page_id))
+        .ok_or_else(|| AppError::NotFound(format!("页面不存在：{page_id}")))?;
     let comps = page
         .get_mut("components")
         .and_then(|v| v.as_array_mut())
@@ -868,15 +890,13 @@ fn apply_ai_prototype(
         .iter()
         .filter_map(|c| c.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
         .collect();
-    let anchor = selection
-        .iter()
-        .find(|id| used.contains(*id))
-        .cloned()
-        .or_else(|| {
-            comps
-                .last()
-                .and_then(|c| c.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
-        });
+    // 选中组件必须属于目标页面；存在任何不匹配都拒绝，避免改错页面。
+    if let Some(unknown) = selection.iter().find(|id| !used.contains(*id)) {
+        return Err(AppError::Validation(format!(
+            "选中组件不属于页面 {page_id}：{unknown}"
+        )));
+    }
+    let anchor = selection.first().cloned();
     let (x, y, w) = anchor
         .as_deref()
         .and_then(|id| comps.iter().find(|c| c.get("id").and_then(|v| v.as_str()) == Some(id)))
@@ -899,7 +919,13 @@ fn apply_ai_prototype(
         "style": {"fontSize": "13px"},
         "events": {}
     }));
-    Ok("规则生成：在选中组件下方新增说明文本（非模型）".to_string())
+    let anchor_note = anchor
+        .as_deref()
+        .map(|a| format!("选中组件 {a} 下方"))
+        .unwrap_or_else(|| "页面顶部".to_string());
+    Ok(format!(
+        "规则生成（非模型）：在页面 {page_id} 的{anchor_note}新增说明文本"
+    ))
 }
 
 /// 生成说明中显式暴露 Provider，避免 UI 把规则生成误认为模型生成。

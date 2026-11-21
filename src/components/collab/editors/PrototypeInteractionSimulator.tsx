@@ -92,7 +92,14 @@ export default function PrototypeInteractionSimulator({
       }
       return;
     }
-    setState(dispatchLocalEvent(content, state, event));
+    // 本地模式与后端 dispatch 语义一致：目标不存在时明确报错，不静默吞掉。
+    const result = dispatchLocalEvent(content, state, event);
+    if (result.error) {
+      setError(result.error);
+      return;
+    }
+    setError("");
+    setState(result.state);
   };
 
   const onClick = (_component: ProtoComponent, event: ProtoEvent) => {
@@ -143,9 +150,6 @@ export default function PrototypeInteractionSimulator({
             values={state?.values}
             interactive
             onEvent={onClick}
-            onInput={(component, value) =>
-              void dispatch({ action: "setValue", target: component.id, value })
-            }
           />
           {modal ? (
             <div className="proto-modal-backdrop" onClick={(e) => e.stopPropagation()}>

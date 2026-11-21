@@ -354,6 +354,11 @@ export default function GraphEditor({ doc, onSaved, onError }: GraphEditorProps)
   };
 
   const save = async () => {
+    // 无修改不产生版本：后端同样按内容比对拒绝空更新，这里提前给出明确提示。
+    if (!dirty) {
+      setError("没有需要保存的修改");
+      return;
+    }
     setBusy(true);
     setError("");
     try {
@@ -403,6 +408,11 @@ export default function GraphEditor({ doc, onSaved, onError }: GraphEditorProps)
       setError("请填写 AI 修改要求");
       return;
     }
+    // AI 修改基于**已保存**版本：未保存的改动不在后端文档里，选中节点可能不存在。
+    if (dirty) {
+      setError("AI 修改基于已保存版本，请先保存当前修改再生成建议");
+      return;
+    }
     setBusy(true);
     setError("");
     try {
@@ -416,12 +426,19 @@ export default function GraphEditor({ doc, onSaved, onError }: GraphEditorProps)
 
   const applyProposal = async () => {
     if (!proposal) return;
+    // 与原型一致：提案必须按生成时的 baseRevision 应用，文档已更新则要求重新生成。
+    if (proposal.baseRevision !== doc.revision) {
+      setError(
+        `文档已更新到 revision ${doc.revision}，该提案基于 revision ${proposal.baseRevision}；请重新生成建议`,
+      );
+      return;
+    }
     setBusy(true);
     setError("");
     try {
       const next = await collabVisualUpdate(
         doc.id,
-        doc.revision,
+        proposal.baseRevision,
         {
           sourceContent: proposal.proposedContent,
           authoringMode: "ai_assisted",
@@ -520,7 +537,7 @@ export default function GraphEditor({ doc, onSaved, onError }: GraphEditorProps)
           value={summary}
           onChange={(e) => setSummary(e.target.value)}
         />
-        <button className="btn small" onClick={() => void save()} disabled={busy || preview}>
+        <button className="btn small" onClick={() => void save()} disabled={busy || preview || !dirty}>
           {busy ? <Loader2 size={14} className="spin" /> : <Save size={14} />} 保存
           {dirty ? " *" : ""}
         </button>
@@ -850,7 +867,11 @@ export default function GraphEditor({ doc, onSaved, onError }: GraphEditorProps)
               {busy ? <Loader2 size={14} className="spin" /> : <Sparkles size={14} />} 生成建议
             </button>
             {proposal ? (
-              <button className="btn small" onClick={() => void applyProposal()} disabled={busy}>
+              <button
+                className="btn small"
+                onClick={() => void applyProposal()}
+                disabled={busy || proposal.baseRevision !== doc.revision}
+              >
                 确认应用
               </button>
             ) : null}

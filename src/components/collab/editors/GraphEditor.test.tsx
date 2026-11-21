@@ -122,4 +122,13 @@ describe("GraphEditor", () => {
     fireEvent.click(screen.getByRole("button", { name: "撤销" }));
     expect(screen.getAllByTestId("graph-node")).toHaveLength(2);
   });
+
+  it("没有修改时保存按钮禁用，不产生空版本", () => {
+    mockSaved();
+    render(<GraphEditor doc={DOC} onSaved={() => undefined} />);
+    const save = screen.getByRole("button", { name: /保存/ }) as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    fireEvent.click(save);
+    expect(collabVisualUpdate).not.toHaveBeenCalled();
+  });
 });

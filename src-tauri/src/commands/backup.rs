@@ -12,7 +12,7 @@
 //! - 快速备份始终标记 partial=true（不含完整事件/通知/归档），完整备份缺任何数据即报错；
 //! - 导入先校验完整性、结构与引用，再自动备份当前数据、单事务替换，归档暂存后提交。
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Component, Path, PathBuf};
@@ -248,6 +248,12 @@ pub const EXTENDED_TABLES: &[&str] = &[
     "plan_dependencies",
     "task_plan_links",
     "task_capability_links",
+    // 全局跨 Tab 联动（v79）：规则已声明 extended=true，必须同时登记到本表，
+    // 否则写侧不产出 section、读侧却按 registry 计数校验，整包被判定“缺少扩展数据表”。
+    "transfer_contents",
+    "transfer_items",
+    "transfer_batches",
+    "entity_links",
     // Agent 操作可视化（v86/v87）：短期运行状态，见 is_local_transient_table。
     "agent_operations",
 ];
@@ -1104,8 +1110,9 @@ pub struct BackupSources<'a> {
     pub clipboard_dir: Option<&'a Path>,
     /// 文件暂存架托管根目录（data_dir/shelf）；None = 不打包托管副本
     pub shelf_dir: Option<&'a Path>,
-    /// 应用数据目录：读取 `preferences.json` / `hotkeys.json` 写入可选 config 记录。
-    /// None = 不打包用户配置（旧调用方/单元测试保持原有行为）。
+    /// 应用数据目录：读取 `preferences.json` / `hotkeys.json` 写入可选 config 记录，
+    /// 并据此定位 `collab-assets/`（协作中心图片资产）。
+    /// None = 不打包用户配置与协作资产（旧调用方/单元测试保持原有行为）。
     pub data_dir: Option<&'a Path>,
 }
 
@@ -1370,6 +1377,12 @@ fn generic_sql(table: &str, kind: BackupKind) -> AppResult<String> {
         ),
         other if table_rule(other).is_some_and(|rule| rule.quick_policy == "all") => {
             format!("SELECT * FROM {other} ORDER BY rowid")
+        }
+        // 声明了 recent 策略的扩展表：快速备份只保留最近若干行，避免整表进包。
+        other if table_rule(other).is_some_and(|rule| rule.quick_policy == "recent") => {
+            format!(
+                "SELECT * FROM {other} ORDER BY rowid DESC LIMIT {QUICK_EXTENDED_LOG_LIMIT}"
+            )
         }
         other => {
             return Err(AppError::Validation(format!(
@@ -2036,6 +2049,18 @@ pub(crate) fn safe_asset_rel(rel: &str) -> AppResult<&Path> {
         }
         return Ok(path);
     }
+    if all_normal && comps.len() == 3 && comps[0].as_os_str() == "collab" {
+        // 协作中心可视化资产：collab/<project>/<name>
+        for part in &comps[1..] {
+            let text = part.as_os_str().to_string_lossy();
+            if text.is_empty() || text == "." || text == ".." || text.len() > 128 {
+                return Err(AppError::Validation(format!(
+                    "协作资产路径结构非法: {rel}"
+                )));
+            }
+        }
+        return Ok(path);
+    }
     if comps.len() != 2 || !all_normal {
         return Err(AppError::Validation(format!("资产路径结构非法: {}", rel)));
     }
@@ -2395,6 +2420,78 @@ fn write_bundle_inner(
             }
             counts.insert("assets".into(), assets as i64);
             counts.insert("asset_bytes".into(), asset_bytes as i64);
+
+            // 协作中心可视化资产（v85）：文档 JSON 只引用资产 ID，
+            // 原图必须随备份打包，否则恢复后所有图片/标注/原型图片全部失效。
+            // 完整与快速备份都要带：元数据行两种备份都全量导出，文件不能缺席。
+            let mut collab_assets = 0usize;
+            let mut collab_asset_bytes = 0u64;
+            {
+                let mut rows: Vec<(String, String)> = Vec::new();
+                {
+                    let mut stmt = tx.prepare(
+                        "SELECT id, path FROM collab_visual_assets ORDER BY project_id, path",
+                    )?;
+                    let mapped = stmt.query_map([], |r| {
+                        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                    })?;
+                    for row in mapped {
+                        rows.push(row?);
+                    }
+                }
+                if !rows.is_empty() {
+                    let root = sources
+                        .data_dir
+                        .map(|d| d.join("collab-assets"))
+                        .ok_or_else(|| {
+                            AppError::Validation(format!(
+                                "备份缺少协作资产目录，无法打包 {} 个可视化图片",
+                                rows.len()
+                            ))
+                        })?;
+                    let canon_root = root.canonicalize().map_err(|_| {
+                        AppError::Validation("协作资产目录不存在，无法打包图片".to_string())
+                    })?;
+                    let mut seen: BTreeSet<String> = BTreeSet::new();
+                    for (id, path) in rows {
+                        let canon = Path::new(&path).canonicalize().map_err(|_| {
+                            AppError::Validation(format!(
+                                "协作资产文件缺失或不可读（{id}）；完整备份不允许遗漏资产"
+                            ))
+                        })?;
+                        let rel = canon.strip_prefix(&canon_root).map_err(|_| {
+                            AppError::Validation(format!(
+                                "协作资产路径超出受控目录（{id}），拒绝打包"
+                            ))
+                        })?;
+                        let comps: Vec<String> = rel
+                            .components()
+                            .map(|c| c.as_os_str().to_string_lossy().to_string())
+                            .collect();
+                        if comps.len() != 2
+                            || comps
+                                .iter()
+                                .any(|c| c.is_empty() || c == "." || c == "..")
+                        {
+                            return Err(AppError::Validation(format!(
+                                "协作资产路径结构非法（{id}）"
+                            )));
+                        }
+                        let record = format!("collab/{}/{}", comps[0], comps[1]);
+                        if !seen.insert(record.clone()) {
+                            continue;
+                        }
+                        let rel = format!("{}/{}", comps[0], comps[1]);
+                        let size = write_asset_unchecked(
+                            &mut writer, &canon_root, &rel, &record,
+                        )?;
+                        collab_assets += 1;
+                        collab_asset_bytes += size;
+                    }
+                }
+            }
+            counts.insert("collab_assets".into(), collab_assets as i64);
+            counts.insert("collab_asset_bytes".into(), collab_asset_bytes as i64);
 
             // 文件暂存架托管副本（v0.8）：元数据快速/完整备份都全量；
             // 托管文件与缩略图同样全量打包，绝不恢复出「有记录无文件」的失效托管条目。
@@ -3225,11 +3322,14 @@ fn read_bundle_impl(
     let mut clip_assets = Vec::new();
     let mut shelf_staged = Vec::new();
     let mut voice_staged = Vec::new();
+    let mut collab_staged = Vec::new();
     for asset in &staged_assets {
         if asset.rel.starts_with("shelf/") {
             shelf_staged.push(asset);
         } else if asset.rel.starts_with("voice/") {
             voice_staged.push(asset);
+        } else if asset.rel.starts_with("collab/") {
+            collab_staged.push(asset);
         } else {
             clip_assets.push(asset);
         }
@@ -3237,6 +3337,72 @@ fn read_bundle_impl(
     let mut asset_by_rel: HashMap<&str, &StagedAsset> = HashMap::new();
     for asset in &clip_assets {
         asset_by_rel.insert(asset.rel.as_str(), asset);
+    }
+    // 协作可视化资产：每行必须对应一个文件（大小/SHA-256 一致），也不接受多余文件。
+    if !collab_staged.is_empty() {
+        let mut by_rel: HashMap<String, &StagedAsset> = HashMap::new();
+        for asset in &collab_staged {
+            by_rel.insert(asset.rel.clone(), asset);
+        }
+        let mut seen: HashSet<String> = HashSet::new();
+        for_each_spilled_row(rows_dir, "collab_visual_assets", |index, row| {
+            let project = row
+                .get("project_id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    AppError::Validation(format!(
+                        "collab_visual_assets 第 {} 行缺少 project_id",
+                        index + 1
+                    ))
+                })?;
+            let path = row.get("path").and_then(|v| v.as_str()).ok_or_else(|| {
+                AppError::Validation(format!(
+                    "collab_visual_assets 第 {} 行缺少 path",
+                    index + 1
+                ))
+            })?;
+            let file = Path::new(path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .ok_or_else(|| {
+                    AppError::Validation(format!(
+                        "collab_visual_assets 第 {} 行路径非法",
+                        index + 1
+                    ))
+                })?;
+            let rel = format!(
+                "collab/{}/{}",
+                crate::collab::util::sanitize_filename(project),
+                file
+            );
+            let asset = by_rel.get(&rel).ok_or_else(|| {
+                AppError::Validation(format!("备份缺少协作资产文件: {rel}"))
+            })?;
+            let expect_sha = row.get("sha256").and_then(|v| v.as_str()).unwrap_or("");
+            if expect_sha != asset.sha256 {
+                return Err(AppError::Validation(format!(
+                    "协作资产 {rel} 的 SHA-256 与数据库记录不一致"
+                )));
+            }
+            if let Some(expected) = row.get("size_bytes").and_then(|v| v.as_i64()) {
+                if expected >= 0 && expected as u64 != asset.size {
+                    return Err(AppError::Validation(format!(
+                        "协作资产 {rel} 大小与数据库记录不一致：记录 {}，实际 {}",
+                        expected, asset.size
+                    )));
+                }
+            }
+            seen.insert(rel);
+            Ok(())
+        })?;
+        for asset in &collab_staged {
+            if !seen.contains(&asset.rel) {
+                return Err(AppError::Validation(format!(
+                    "备份包含未被数据库引用的协作资产: {}",
+                    asset.rel
+                )));
+            }
+        }
     }
     let mut referenced: HashSet<String> = HashSet::new();
     if extended {
@@ -3369,23 +3535,46 @@ fn read_bundle_impl(
                 )));
             }
         }
+        // 计数只针对剪贴板资产：暂存架/语音/协作资产各有独立命名空间与独立计数键。
         let advertised = counts.get("assets").and_then(|v| v.as_i64()).unwrap_or(-1);
-        if advertised >= 0 && advertised != staged_assets.len() as i64 {
+        if advertised >= 0 && advertised != clip_assets.len() as i64 {
             return Err(AppError::Validation(format!(
                 "资产数量与完整性记录不一致：期望 {}，实际 {}",
                 advertised,
-                staged_assets.len()
+                clip_assets.len()
             )));
         }
         let advertised_bytes = counts
             .get("asset_bytes")
             .and_then(|v| v.as_u64())
             .unwrap_or(u64::MAX);
-        let actual_bytes: u64 = staged_assets.iter().map(|a| a.size).sum();
+        let actual_bytes: u64 = clip_assets.iter().map(|a| a.size).sum();
         if advertised_bytes != u64::MAX && advertised_bytes != actual_bytes {
             return Err(AppError::Validation(format!(
                 "资产总字节与完整性记录不一致：期望 {}，实际 {}",
                 advertised_bytes, actual_bytes
+            )));
+        }
+        let advertised_collab = counts
+            .get("collab_assets")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(-1);
+        if advertised_collab >= 0 && advertised_collab != collab_staged.len() as i64 {
+            return Err(AppError::Validation(format!(
+                "协作资产数量与完整性记录不一致：期望 {}，实际 {}",
+                advertised_collab,
+                collab_staged.len()
+            )));
+        }
+        let advertised_collab_bytes = counts
+            .get("collab_asset_bytes")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(u64::MAX);
+        let actual_collab_bytes: u64 = collab_staged.iter().map(|a| a.size).sum();
+        if advertised_collab_bytes != u64::MAX && advertised_collab_bytes != actual_collab_bytes {
+            return Err(AppError::Validation(format!(
+                "协作资产总字节与完整性记录不一致：期望 {}，实际 {}",
+                advertised_collab_bytes, actual_collab_bytes
             )));
         }
     } else if !staged_assets.is_empty() {
