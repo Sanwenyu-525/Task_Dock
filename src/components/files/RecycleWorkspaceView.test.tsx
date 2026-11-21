@@ -479,7 +479,8 @@ describe("RecycleWorkspaceView 异常条目语义", () => {
 
     // 工具栏按钮：全部选中项都是异常项，只能是索引移除。
     fireEvent.click(screen.getAllByRole("button", { name: "从索引移除" })[0]);
-    const dialog = await screen.findByRole("dialog", { name: "永久删除 1 项？" });
+    // 标题也必须改口：不能还写「永久删除」。
+    const dialog = await screen.findByRole("dialog", { name: "从索引移除 1 项？" });
     expect(within(dialog).getByText(/只从索引移除/)).toBeTruthy();
     fireEvent.click(within(dialog).getByRole("button", { name: "从索引移除" }));
 

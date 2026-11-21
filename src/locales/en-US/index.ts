@@ -4069,6 +4069,7 @@ export const enUS: Record<MessageKey, string> = {
   "fw.recycle.purge": "Delete permanently",
   "fw.recycle.empty": "Empty Recycle Bin",
   "fw.recycle.purgeTitle": "Permanently delete {count} items?",
+  "fw.recycle.purgeIndexOnlyTitle": "Remove {count} items from the index?",
   "fw.recycle.purgeBody": "These items will be removed from the recycle bin and cannot be restored by TaskDock or Windows.",
   "fw.recycle.purgeConfirm": "Delete permanently",
   "fw.recycle.purgeIndexOnly": "Remove from index",

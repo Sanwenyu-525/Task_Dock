@@ -1221,7 +1221,11 @@ export default function RecycleWorkspaceView() {
       {/* 永久删除确认：异常项只移出索引，说明必须在操作前讲清 */}
       <ConfirmDialog
         open={confirm?.kind === "purge"}
-        title={t("fw.recycle.purgeTitle", { count: confirm?.kind === "purge" ? confirm.ids.length : 0 })}
+        title={
+          confirm?.kind === "purge" && confirm.scope === "indexOnly"
+            ? t("fw.recycle.purgeIndexOnlyTitle", { count: confirm.ids.length })
+            : t("fw.recycle.purgeTitle", { count: confirm?.kind === "purge" ? confirm.ids.length : 0 })
+        }
         detail={
           confirm?.kind === "purge" && confirm.scope === "indexOnly"
             ? t("fw.recycle.purgeBodyIndexOnly")

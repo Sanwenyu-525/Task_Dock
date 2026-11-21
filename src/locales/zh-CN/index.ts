@@ -4043,6 +4043,7 @@ export const zhCN = {
   "fw.recycle.purge": "永久删除",
   "fw.recycle.empty": "清空回收站",
   "fw.recycle.purgeTitle": "永久删除 {count} 项？",
+  "fw.recycle.purgeIndexOnlyTitle": "从索引移除 {count} 项？",
   "fw.recycle.purgeBody": "这些项目将从回收站彻底删除，无法通过 TaskDock 或系统还原。",
   "fw.recycle.purgeConfirm": "永久删除",
   "fw.recycle.purgeIndexOnly": "从索引移除",
