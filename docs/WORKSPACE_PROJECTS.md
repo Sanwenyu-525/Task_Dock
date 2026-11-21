@@ -50,8 +50,9 @@ Task Dock 已有三类容易与「项目」混淆的对象，本功能不替换�
 - 不新增文件托管目录；根目录与产物路径只作引用。
 - 不引入第二套任务系统；任务仍由 `tasks` 管理。
 - 不实现游戏/漫画专用流水线（分镜生成、资源打包、引擎构建）；小说只实现**纯文本**
-  正文与卷→章树（B1），不实现富文本/Markdown、版本历史、人物/世界观与 AI 生成；这些能力
-  仍标记为 `planned`/`unavailable`，不得显示为可用。
+  正文与卷→章树（B1），不实现富文本/Markdown、版本历史与 AI 生成；人物/世界观已于 B2
+  接入并登记为 `limited`，AI 生成仍为 `planned`。（「人物/世界观未实现」为 B1 阶段历史口径，
+  当前状态见 §14.2。）
 
 ## 3. 能力声明与「诚实可用」
 
@@ -74,10 +75,11 @@ type WorkspaceCapabilityState = "available" | "limited" | "planned" | "unavailab
 - 游戏类型没有资源索引、构建/测试登记、引擎跳转；
 - AI 漫剧没有素材/角色库、生成结果导入、版本比较与采用；
 - 小说类型（B1，2026-11-16）已有纯文本正文与卷→章树（`novel.manuscript` available）；
-  仍没有人物档案、世界观、AI 创作辅助（这三项登记为 `planned`，不可调用），
-  也没有 Markdown/富文本、版本历史与导出；
-- `core.layout` 已声明为 `limited`：解析器支持 `moduleOrder`/`hiddenModules`，
-  但当前 UI 只有「当前模块」会被写回，没有排序/隐藏编辑入口。
+  人物档案与世界观已于 B2 接入并登记为 `limited`（部分路径可用，降级说明见能力清单）；
+  AI 创作辅助仍为 `planned`，不可调用；也没有 Markdown/富文本、版本历史与导出；
+- `core.layout` 为 `available`（2026-11-17 起，见 §13.1）：解析器支持 `moduleOrder`/
+  `hiddenModules`，项目页「布局」编辑器提供一级分组排序、组内模块排序与子模块显隐
+  （见 §14.3）。原文「只有当前模块写回、没有排序/隐藏入口」为 2026-11-15 阶段口径。
 
 ## 4. 三层入口
 
@@ -292,6 +294,9 @@ type WorkspaceCapabilityState = "available" | "limited" | "planned" | "unavailab
 
 ### 10.2 尚未实现（后续阶段）
 
+> 本节为 A 阶段（2026-11-15）历史清单：正文/卷章已由 B1 实现，人物/世界观已在 B2 接入
+> 并登记为 `limited`；当前状态见 §14.2。以下原文保留，不删除开发历史。
+
 - 小说正文编辑器、富文本/Markdown、自动保存与版本历史（纯文本 + 自动保存已由 B1 实现，
   见 §11；富文本与版本历史仍未实现）；
 - 章节/卷管理（A 阶段只用 `workspace_items.stage` 标注；B1 已建模卷→章树与字数统计，
@@ -333,7 +338,8 @@ type WorkspaceCapabilityState = "available" | "limited" | "planned" | "unavailab
   （B1 阶段历史顺序；2026-11-20 起展示层合并为 概览 / 正文 / 设定 / 推进 / 项目设置，
   七个模块 ID 不变，见 §14。）
 - `novel.manuscript` 从 `planned` 提升为 `available`，`provider` 指向 v58 表与内置纯文本
-  编辑器，`action` 指向 `manuscript` 模块；人物/世界观/AI 仍为 `planned` 且不可调用。
+  编辑器，`action` 指向 `manuscript` 模块；人物/世界观已于 B2 接入并登记为 `limited`，
+  AI 创作辅助仍为 `planned` 且不可调用（当前状态见 §14.2）。
 - `NovelManuscriptPanel`：左栏卷→章树（新建/重命名/上下移/两步删除确认，未分卷桶），
   右栏 textarea；停止输入约 0.9 秒自动保存，失焦、切换章节/项目与卸载时立即落盘；
   展示本章与全书字数、保存状态；归档项目只读。全部使用现有 `ws-*` 语义 Token。
@@ -365,7 +371,8 @@ type WorkspaceCapabilityState = "available" | "limited" | "planned" | "unavailab
 ### 11.4 明确未做
 
 - Markdown/富文本、版本历史/撤销快照、导入导出、全文搜索、拼写检查；
-- 人物档案、世界观、剧情时间线、伏笔追踪、AI 续写/改写；
+- 人物档案、世界观、剧情时间线、伏笔追踪、AI 续写/改写（人物/世界观已于 B2 接入，
+  状态 `limited`；此条为 B1 阶段口径）；
 - 跨卷拖拽移动（B1 只支持同卷内上下移与新建时指定卷）；
 - 原生窗口逐页走查（自动化与组件测试已覆盖树读取、正文回填、失焦保存与归档只读）。
 
@@ -708,3 +715,95 @@ src-tauri/src/commands/backup.rs           # BACKUP_TABLES / EXTENDED_TABLES 登
 - 一级分组目前只对小说声明；若后续游戏/漫剧也需要分组，只需在各自 Profile 增加
   `navGroups`，无需改壳层渲染逻辑。
 - 后续可评估：正文目录悬浮定位、章节拖拽排序、设定之间的交叉引用视图（均不在本轮范围）。
+
+## 15. 第二轮验收修复（2026-11-21）
+
+**范围**：小说工作空间的两处验收问题——人物/世界观空状态分层、导航键盘无障碍；
+外加项目资源卡紧凑化与兼容性复核。不改数据库、IPC 签名、模块 ID、`layout_json` 版本与
+正文保存/flush 机制。
+
+### 15.1 空状态五态（人物 / 世界观）
+
+人物与世界观共用同一套列表状态机，左栏负责选择、右栏负责内容，空态不再用一张大卡片
+同时承担「说明 + 创建 + 重试」。五态如下：
+
+| 状态 | 左栏 | 右栏 |
+|---|---|---|
+| 加载中 | 「加载中…」 | 不渲染结果区，等待列表 |
+| 加载失败 | `LoadError`（`role="alert"`）+「重试」按钮 | 一行「列表读取失败，请在左侧重试」；不解释为「暂无数据」 |
+| 集合为空 | 紧凑引导（标题 + 一句说明）；创建入口只有 toolbar 的「新建人物 / 新建设定」 | 一行说明（人物/世界观各自的空态文案），不再重复一张大卡片 |
+| 筛选无结果 | 「没有匹配的人物 / 设定」+「清空搜索 / 清空筛选」 | 一行说明当前筛选没有匹配项 |
+| 有数据未选中 | 完整列表 | 选择提示（「选择一个人物 / 选择一条设定」） |
+| 创建/编辑中 | 保留列表，当前项高亮 | 表单；保存/删除/关系编辑在同一右栏完成 |
+
+- 列表状态机为 `loading / error / empty / filtered / ready` 五值；「搜索或类型筛选无结果」
+  落在 `filtered`，与 `empty`（整个集合为空）严格区分，互不覆盖。
+- 已选中/正在新建时不受列表筛选影响：搜索过滤掉当前编辑项不会关闭右栏表单。
+- 窄容器（`workspace-split ≤ 559px`，上下分区）下侧栏标题块压成单行并隐去重复眉题，
+  列表可视高度由 39px 提升到 76px；分栏轨道比例属共享组件，本轮未改。
+- 归档项目：工具栏新建按钮、表单字段、保存/删除、关系新增全部禁用，并显示归档横幅；
+  读取列表仍允许。
+
+### 15.2 导航键盘无障碍（页内导航，不是 Tabs）
+
+- **语义选择**：一级入口切换的是分组/模块，二级入口切换组内模块，内容区没有 `tabpanel`。
+  两级都用普通导航语义：`<nav aria-label="工作空间模块">`、`<nav aria-label="设定子模块">`
+  （推进为「推进子模块」）；不再出现 `role="tablist"` / `role="tab"` / `aria-selected`。
+- **选中态**：每个入口是原生 `<button type="button">`，当前项用 `aria-current="page"`，
+  非当前项不写该属性；视觉类仍为 `.ws-tab.is-active` / `.ws-subtab.is-active`。
+- **Tab 顺序**：不做 roving tabIndex，Tab 逐个经过入口；Enter / Space 由原生按钮 click
+  激活，继续走 `switchModule()`（正文 flush 门禁、布局串行保存、`moduleRequest` 原样）。
+- **方向键**：←/→/↑/↓ 与 Home / End 只在**同一导航容器内**移动焦点并循环，只移动焦点、
+  不激活模块，且 `preventDefault()`；禁用项被跳过。布局按钮与「加载中」指示是 `<nav>` 的
+  兄弟节点，不在导航容器内，因此不会被方向键扫到。
+- **测试**：`src/workbench/ProjectWorkspacePanel.nav.test.tsx` 重写为 12 项，断言使用
+  role / accessible name / `aria-current`，不依赖 `data-nav-item`；覆盖五入口顺序、
+  两级选中态、一级与二级键盘、循环与 Home/End、方向键不触发切换、布局按钮不在导航内。
+
+### 15.3 项目资源空状态
+
+`ProjectResourcesCard` 收紧卡片高度，功能未裁剪：
+
+- 保留资源类型选择（笔记 / Agent 会话 / 产物路径）、笔记搜索与选择、Agent 会话选择、
+  产物路径与显示名称、「关联」动作；筛选类型、总数与分页（每页 50）保留。
+- 列表行内边距 7–8px、行间距 6px，类型徽标、标签、路径、更新时间与解除入口同排；
+  `targetExists=false` 显示「当前不可用」，关联本身保留。
+- 解除关联走确认弹窗，文案明确「目标本身不会被删除」；归档项目新增与解除均禁用。
+- 读取失败保留上一次列表并标注「可能已过期」，不清空用户可见数据。
+
+### 15.4 兼容性
+
+- `WorkspaceModuleId` 仍是七个值：`overview / manuscript / characters / worldview /
+  items / links / settings`；`WORKSPACE_LAYOUT_VERSION` 仍为 `1`。
+- `layout_json` 仍是 `version: 1` + `moduleOrder` / `hiddenModules` / `activeModule`；
+  一级分组只是 `workspaceProfiles.ts` 的展示层声明（`navGroups`），保存时展平为原模块 ID
+  数组，不写回新结构。
+- 旧布局（平铺 `moduleOrder`、隐藏项）直接可读，无需迁移；未知/损坏 JSON 仍回退默认布局。
+- 开发 / 游戏 / AI 漫剧 / 通用未声明 `navGroups`，继续平铺一级导航，无二级条。
+- 正文 900ms 防抖、同章串行保存、切换模块/项目/关闭前 flush、归档只读均未改动。
+
+### 15.5 本轮版本记录
+
+- **导航**：五个一级入口为 概览 / 正文 / 设定 / 推进 / 项目设置；二级为 设定 → 人物 ·
+  世界观、推进 → 写作事项 · 任务关联。模块切换仍统一经 `switchModule()`。
+- **能力状态**（以 `src/workspace/workspaceProfiles.ts` 的 `WORKSPACE_CAPABILITIES` 为准）：
+
+  | 能力 | 状态 | provider |
+  |---|---|---|
+  | `novel.manuscript` | `available` | `novel_volumes / novel_chapters（v58）+ 内置纯文本编辑器` |
+  | `novel.characters` | `limited` | `novel_characters / novel_character_relations / novel_entity_refs（v59）` |
+  | `novel.worldview` | `limited` | `novel_worldview_entries / novel_entity_refs（v59）` |
+  | `novel.aiAssist` | `planned` | 未接入（无小说上下文装配与调用链） |
+
+- **布局编辑器**（`ProjectLayoutEditor.tsx`）：声明分组的 Profile 下支持一级分组排序、
+  组内模块排序、子模块显隐、隐藏当前模块时安全回退（同组可见模块，否则概览）、归档只读；
+  保存时展平为原模块 ID 数组。
+- **文档校正**：修正 §2「不做的事」、§3 小说能力与 `core.layout`、§11.2、§11.4 的过期口径；
+  §10.2 补历史标注。原文保留，不删除开发历史。
+- **验证**：定向 Vitest 10 个文件 / 155 项全部通过（含导航 12 项、人物 9 项、世界观 9 项、
+  资源卡 9 项、正文 29 项、布局编辑器 5 项、Profile 24 项等），`tsc --noEmit` 0 错误，
+  `arch:guard` 无本模块新增违规。真实 Tauri Debug 桌面实例（独立数据目录）完成 UI 走查：
+  五入口/二级入口、键盘焦点（方向键/Home/End/Enter）、空状态五态、搜索与类型筛选无结果、
+  归档只读、隐藏人物后回退世界观、`moduleRequest`、正文切模块前 flush、通用项目平铺导航，
+  截图与命令记录见 `tmp/acceptance/novel-workspace-round2/report.md`。
+  **未验证**：多显示器、系统 DPI 缩放、原生窗口拖拽（尺寸走查使用 CDP 视口仿真）。
