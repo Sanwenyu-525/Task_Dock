@@ -260,8 +260,12 @@ exit 0（隔离数据目录 `tmp/acceptance/agent-access-v82-20261120-224854/`�
 Agent 读模型按项目根去重、计划独立列表与反解析、`projects.create` / `projects.write`（v90）、
 授权表外键改挂项目根（v91）、MCP/CLI/REST 共用创建服务、投影文件协议按项目根分目录。
 
-验证：`cargo test --test project_creation_identity` 12/12；`cargo check --lib` 通过；
-`vitest src/workbench/WorkbenchShell.test.tsx` 21/21。
+验证（22:10 提交 bf13dd6 后补齐）：`cargo test --test project_creation_identity` 18/18；
+CLI 真机端到端（隔离库）：创建/幂等重放/摘要冲突 exit=5/列表去重/计划反解析/`create_new` 目录
+真实初始化全部通过，并由此发现修复详情 JSON 非 camelCase（`a7a474b`）；真实窗口验收
+（隔离实例 + CDP 截图）：「新建项目」弹层全字段渲染 → 创建成功 Toast 显示真实
+activePlanId → 自动选中新项目 → CLI 交叉读取同一项目与同一计划 ID。
+证据：`tmp/acceptance/project-identity-v2/{report.md,cli-e2e/,gui/}`。
 
-未完成：真实 Dev 窗口截图与「人类→Agent→人类」跨入口集成演练（本轮被共享工作树内其他会话的
-在途改动阻塞，`cargo test --lib` 测试二进制加载失败 `0xC0000139`）。
+未完成：MCP/REST 真机调用（需外部客户端；服务端与 CLI/REST 共用创建服务，已由集成测试覆盖）、
+Agent Token 写链路演练（需注册 Token）。
