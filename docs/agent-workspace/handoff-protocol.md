@@ -100,3 +100,18 @@ pending ──accept──▶ accepted ──complete──▶ completed
   项目为空的交接只对全局授权可见。
 - 工作报告必须挂到**可访问**的交接上；报告项目与交接项目不一致时拒绝；
 - 报告不写空项目绕过范围限制。
+
+## 7. 按授权范围发现交接（2026-11-21）
+
+CLI `agent handoff list`、MCP `taskdock_list_handoffs` 与 REST
+`GET /api/v1/agents/handoffs` 共用 `handoff::list_handoffs`：
+
+- 省略项目筛选时，项目级 `handoffs.read` 返回全部已授权项目的交接；不再要求全局授权。
+- 项目范围、状态筛选都在 SQL 分页前应用，`total` 只统计可见记录。
+- 显式指定未授权项目（包括空项目）仍返回 `FORBIDDEN`；无项目交接仅全局授权或本机身份可读。
+- 每次请求重新读取授权，禁用或撤销立即生效；`projects.read`、`handoffs.write` 不替代读取权限。
+- 文件导入身份必须显式持有 `handoffs.read`，且不能超出导入授权项目；绑定 Agent 时复核其有效权限。
+
+兼容性：Breaking Change: No（已授权客户端的请求参数与响应结构不变；项目级发现由拒绝变为受限列表）。
+文件导入列表原先跳过鉴权的行为被修复；缺少读取授权的调用现在被拒绝。
+无数据库迁移，不改变交接状态迁移和写入权限。

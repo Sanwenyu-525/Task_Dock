@@ -227,3 +227,14 @@ exit 0（隔离数据目录 `tmp/acceptance/agent-access-v82-20261120-224854/`�
 文档与报告路径：[v82-acceptance-report.md](v82-acceptance-report.md)、
 [test-plan.md](test-plan.md) §13、[architecture.md](architecture.md) §9–10、
 [permission-model.md](permission-model.md) §9。
+
+## 项目级交接发现（2026-11-21）
+
+- 接续 v82 保留的项目级列表限制：CLI / MCP / REST 省略项目时，按
+  `handoffs.read` 的授权项目集合发现交接；SQL 先过滤再分页，`total` 与可见列表一致。
+- 修复 `list_handoffs` 对文件导入身份跳过鉴权：要求显式读取能力，收敛到导入授权项目，
+  绑定 Agent 时复核授权及撤销状态。全局与本机身份的既有列表行为保持兼容。
+- 无数据库、IPC 签名或响应结构变化；协议说明见 [handoff-protocol.md](handoff-protocol.md) §7。
+- 自动化验证：`npm run cargo -- test --lib agent_access::tests_v82_handoff -- --nocapture`
+  exit 0，11/11 通过（含新增 4 例）；日志 `tmp/acceptance/agent-handoff-discovery/cargo-test.log`。
+  定向差异与文档链接检查通过；未执行桌面与安装包验收。

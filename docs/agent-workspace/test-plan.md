@@ -328,3 +328,17 @@ CLI `task get` revision=3，`task list` 每条含 revision。
 - 结果 **34/34 通过，exit 0**：项目隔离、知识索引过滤、重复完成不重开、REST 幂等重放/409、交接身份与报告归属、在线撤销后 CLI 6 / REST 401 / MCP -32001。
 - 证据：`tmp/acceptance/external-agent-live/`（`results.log`、`summary.json`）。
 - 边界：客户端为验收脚本实现的 JSON-RPC stdio 客户端，不含 LLM 推理；Release 安装包未覆盖。
+
+## 14. 项目级交接发现（2026-11-21）
+
+定向命令：`npm run cargo -- test --lib agent_access::tests_v82_handoff -- --nocapture`。
+新增 4 例 `handoff_discovery_*`，在隔离内存库验证：
+
+- 两个授权项目与一个未授权项目混合时，列表先过滤再分页，越界页为空且总数正确。
+- 显式项目筛选、状态筛选、无项目交接与全局/本机可见性。
+- `projects.read` / `handoffs.write` 不能替代读取权限，撤销后的已有主体立即失效。
+- 文件导入无授权、只有其它读能力或写能力时拒绝；显式交接读授权仅返回授权项目。
+
+执行结果：11 passed / 0 failed / 0 ignored，exit 0（含新增 4 例，2026-11-21）。
+证据：`tmp/acceptance/agent-handoff-discovery/cargo-test.log`。
+上述自动化测试不代表真实桌面或安装包验收。

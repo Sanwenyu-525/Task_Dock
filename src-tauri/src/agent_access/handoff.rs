@@ -178,17 +178,40 @@ pub fn list_handoffs(
     limit: u32,
     offset: u32,
 ) -> AppResult<(Vec<store::Handoff>, Page)> {
-    match (principal.is_agent(), project_id) {
-        (true, Some(pid)) => perms::require(db, principal, Capability::HandoffsRead, pid)?,
-        (true, None) => perms::require(db, principal, Capability::HandoffsRead, "")?,
-        _ => {}
+    let mut scope = perms::authorized_reads(db, principal)?.handoffs;
+    // 导入身份的读取必须显式授权；其它读能力不能代替 handoffs.read。
+    if let Some(grant) = principal.import.as_ref() {
+        if !grant.capabilities.contains(&Capability::HandoffsRead) {
+            return Err(perms::denial(Capability::HandoffsRead));
+        }
+        perms::require(db, principal, Capability::HandoffsRead, &grant.project_id)?;
+        if !grant.project_id.trim().is_empty() {
+            let project = grant.project_id.trim();
+            let allowed = scope.allows(project);
+            scope.global = false;
+            scope.ids.clear();
+            if allowed {
+                scope.ids.insert(project.to_string());
+            }
+        }
+    }
+    if scope.is_empty() || project_id.is_some_and(|id| !scope.allows(id)) {
+        return Err(perms::denial(Capability::HandoffsRead));
     }
     if let Some(status) = status {
-        if !matches!(status, "pending" | "accepted" | "rejected" | "completed" | "cancelled") {
+        if !matches!(
+            status,
+            "pending" | "accepted" | "rejected" | "completed" | "cancelled"
+        ) {
             return Err(validation(format!("非法交接状态: {status}")));
         }
     }
-    store::list_handoffs(db, status, project_id, limit, offset)
+    if scope.global {
+        store::list_handoffs(db, status, project_id, limit, offset)
+    } else {
+        let projects: Vec<String> = scope.ids.into_iter().collect();
+        store::list_handoffs_in_projects(db, status, project_id, &projects, limit, offset)
+    }
 }
 
 pub fn get_handoff(db: &Db, principal: &Principal, id: &str) -> AppResult<store::Handoff> {

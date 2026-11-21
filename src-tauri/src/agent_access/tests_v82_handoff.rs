@@ -262,6 +262,134 @@ fn revoked_agent_and_file_import_cannot_transition() {
 
 // ── 项目范围 ─────────────────────────────────────────────────────
 
+#[test]
+fn handoff_discovery_filters_projects_before_pagination() {
+    let fx = Fixture::new();
+    for id in ["discovery-a", "discovery-b", "discovery-c"] {
+        fx.project(id);
+    }
+    let (row, agent) = fx.agent("discovery-reader");
+    fx.grant(&row, "handoffs.read", "discovery-a");
+    fx.grant(&row, "handoffs.read", "discovery-c");
+    let local = Principal::local(Source::Ui);
+    let a = fx.handoff("discovery-a", &local, &agent).handoff;
+    let b = fx.handoff("discovery-b", &local, &agent).handoff;
+    let c = fx.handoff("discovery-c", &local, &agent).handoff;
+    fx.handoff("", &local, &agent);
+    let principal = fx.agent_principal(&row, &agent);
+    let (all, page) = handoff::list_handoffs(&fx.db, &principal, None, None, 100, 0).unwrap();
+    assert_eq!(page.total, 2);
+    let ids: Vec<_> = all.iter().map(|h| h.id.as_str()).collect();
+    assert!(ids.contains(&a.id.as_str()) && ids.contains(&c.id.as_str()));
+    assert!(!ids.contains(&b.id.as_str()));
+    for offset in 0..2 {
+        let (items, page) =
+            handoff::list_handoffs(&fx.db, &principal, Some("pending"), None, 1, offset).unwrap();
+        assert_eq!(page.total, 2);
+        assert_eq!(items[0].id, all[offset as usize].id);
+    }
+    let (items, page) = handoff::list_handoffs(&fx.db, &principal, None, None, 1, 2).unwrap();
+    assert!(items.is_empty());
+    assert_eq!(page.total, 2);
+    let (items, page) =
+        handoff::list_handoffs(&fx.db, &principal, None, Some("discovery-c"), 10, 0).unwrap();
+    assert_eq!(items[0].id, c.id);
+    assert_eq!(page.total, 1);
+    let (items, page) =
+        handoff::list_handoffs(&fx.db, &principal, Some("completed"), None, 10, 0).unwrap();
+    assert!(items.is_empty());
+    assert_eq!(page.total, 0);
+    for project in ["discovery-b", ""] {
+        let err =
+            handoff::list_handoffs(&fx.db, &principal, None, Some(project), 10, 0).unwrap_err();
+        assert_eq!(error_code(&err), "FORBIDDEN");
+    }
+}
+
+#[test]
+fn handoff_discovery_requires_own_capability_and_live_identity() {
+    let fx = Fixture::new();
+    fx.project("discovery-auth");
+    let (row, agent) = fx.agent("discovery-auth-reader");
+    fx.handoff("discovery-auth", &Principal::local(Source::Ui), &agent);
+    let principal = fx.agent_principal(&row, &agent);
+    fx.grant(&row, "projects.read", "");
+    fx.grant(&row, "handoffs.write", "discovery-auth");
+    let err = handoff::list_handoffs(&fx.db, &principal, None, None, 10, 0).unwrap_err();
+    assert_eq!(error_code(&err), "FORBIDDEN");
+    fx.grant(&row, "handoffs.read", "discovery-auth");
+    assert_eq!(
+        handoff::list_handoffs(&fx.db, &principal, None, None, 10, 0)
+            .unwrap()
+            .1
+            .total,
+        1
+    );
+    mcp_auth::revoke_agent(&fx.db, &row).unwrap();
+    let err = handoff::list_handoffs(&fx.db, &principal, None, None, 10, 0).unwrap_err();
+    assert_eq!(error_code(&err), "FORBIDDEN");
+}
+
+#[test]
+fn handoff_discovery_global_and_local_include_projectless_rows() {
+    let fx = Fixture::new();
+    fx.project("discovery-global");
+    let (row, agent) = fx.agent("discovery-global-reader");
+    fx.grant(&row, "handoffs.read", "");
+    let local = Principal::local(Source::Ui);
+    fx.handoff("discovery-global", &local, &agent);
+    fx.handoff("", &local, &agent);
+    for principal in [local, fx.agent_principal(&row, &agent)] {
+        let (items, page) = handoff::list_handoffs(&fx.db, &principal, None, None, 10, 0).unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(page.total, 2);
+        assert!(items.iter().any(|h| h.project_id.is_empty()));
+    }
+}
+
+#[test]
+fn handoff_discovery_file_import_requires_explicit_read_and_project_scope() {
+    let fx = Fixture::new();
+    fx.project("discovery-file-a");
+    fx.project("discovery-file-b");
+    let (_, agent) = fx.agent("discovery-file-target");
+    let local = Principal::local(Source::Ui);
+    fx.handoff("discovery-file-a", &local, &agent);
+    fx.handoff("discovery-file-b", &local, &agent);
+    fx.handoff("", &local, &agent);
+    for capability in [
+        Capability::ProjectsRead,
+        Capability::HandoffsWrite,
+        Capability::HandoffsRead,
+    ] {
+        let principal = Principal::file_import_granted(
+            ImportGrant {
+                authorization_id: "discovery-test".into(),
+                capabilities: vec![capability],
+                project_id: "discovery-file-a".into(),
+                agent_row_id: None,
+                approved_by: "tester".into(),
+            },
+            "",
+        );
+        let result = handoff::list_handoffs(&fx.db, &principal, None, None, 10, 0);
+        if capability == Capability::HandoffsRead {
+            let (items, page) = result.unwrap();
+            assert_eq!(page.total, 1);
+            assert_eq!(items[0].project_id, "discovery-file-a");
+            let err =
+                handoff::list_handoffs(&fx.db, &principal, None, Some("discovery-file-b"), 10, 0)
+                    .unwrap_err();
+            assert_eq!(error_code(&err), "FORBIDDEN");
+        } else {
+            assert_eq!(error_code(&result.unwrap_err()), "FORBIDDEN");
+        }
+    }
+    let err =
+        handoff::list_handoffs(&fx.db, &Principal::file_import(""), None, None, 10, 0).unwrap_err();
+    assert_eq!(error_code(&err), "FORBIDDEN");
+}
+
 /// 项目 A 的 Agent 列/取报告都看不到项目 B；B 的报告 get 被 FORBIDDEN。
 #[test]
 fn project_scoped_agent_cannot_read_other_project_reports() {

@@ -864,27 +864,68 @@ pub fn list_handoffs(
     limit: u32,
     offset: u32,
 ) -> AppResult<(Vec<Handoff>, Page)> {
+    list_handoffs_filtered(db, status, project_id, None, limit, offset)
+}
+
+/// 项目范围在 SQL 中过滤，列表与 total 使用相同条件。
+pub fn list_handoffs_in_projects(
+    db: &Db,
+    status: Option<&str>,
+    project_id: Option<&str>,
+    projects: &[String],
+    limit: u32,
+    offset: u32,
+) -> AppResult<(Vec<Handoff>, Page)> {
+    list_handoffs_filtered(db, status, project_id, Some(projects), limit, offset)
+}
+
+fn list_handoffs_filtered(
+    db: &Db,
+    status: Option<&str>,
+    project_id: Option<&str>,
+    projects: Option<&[String]>,
+    limit: u32,
+    offset: u32,
+) -> AppResult<(Vec<Handoff>, Page)> {
     db.with_read(|conn| {
+        let mut filter =
+            String::from("(?1 IS NULL OR status = ?1) AND (?2 IS NULL OR project_id = ?2)");
+        let mut params: Vec<rusqlite::types::Value> = vec![
+            status.map(str::to_string).into(),
+            project_id.map(str::to_string).into(),
+        ];
+        if let Some(projects) = projects {
+            if projects.is_empty() {
+                filter.push_str(" AND 0");
+            } else {
+                let placeholders = (3..3 + projects.len())
+                    .map(|i| format!("?{i}"))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                filter.push_str(&format!(" AND project_id IN ({placeholders})"));
+                params.extend(projects.iter().cloned().map(rusqlite::types::Value::Text));
+            }
+        }
         let total: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM agent_handoffs
-                 WHERE (?1 IS NULL OR status = ?1) AND (?2 IS NULL OR project_id = ?2)",
-                rusqlite::params![status, project_id],
+                &format!("SELECT COUNT(*) FROM agent_handoffs WHERE {filter}"),
+                rusqlite::params_from_iter(params.iter()),
                 |r| r.get(0),
             )
             .map_err(AppError::from)?;
+        let limit_at = params.len() + 1;
+        let offset_at = params.len() + 2;
+        params.push(rusqlite::types::Value::Integer(limit as i64));
+        params.push(rusqlite::types::Value::Integer(offset as i64));
         let mut stmt = conn
             .prepare(&format!(
                 "SELECT {HANDOFF_COLS} FROM agent_handoffs
-                 WHERE (?1 IS NULL OR status = ?1) AND (?2 IS NULL OR project_id = ?2)
-                 ORDER BY created_at DESC, id DESC LIMIT ?3 OFFSET ?4"
+                 WHERE {filter}
+                 ORDER BY created_at DESC, id DESC LIMIT ?{limit_at} OFFSET ?{offset_at}"
             ))
             .map_err(AppError::from)?;
         let rows = stmt
-            .query_map(
-                rusqlite::params![status, project_id, limit as i64, offset as i64],
-                handoff_from_row,
-            )
+            .query_map(rusqlite::params_from_iter(params.iter()), handoff_from_row)
             .map_err(AppError::from)?;
         let mut out = Vec::new();
         for row in rows {
