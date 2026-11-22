@@ -2141,6 +2141,15 @@ export interface PlanningProject {
   stats: PlanningProjectStats;
 }
 
+/**
+ * ADR-0010 Plan 语义别名：旧 IPC（planning_list_projects 等）返回的记录本质是
+ * 「计划」，新代码统一用 PlanningPlan / Plan 命名；字段结构不变，外部契约不动。
+ */
+export type PlanningPlan = PlanningProject;
+export type PlanningPlanInput = PlanningProjectInput;
+export type PlanningPlanPatch = PlanningProjectPatch;
+export type PlanningPlanStats = PlanningProjectStats;
+
 export interface PlanningProjectInput {
   name: string;
   description?: string;

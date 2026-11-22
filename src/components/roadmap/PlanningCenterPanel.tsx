@@ -23,7 +23,7 @@ type Source = "hub" | "mine" | "builtin" | "collab";
 
 export default function PlanningCenterPanel() {
   const [source, setSource] = useState<Source>("hub");
-  /** 兼容深链：项目中枢把当前 active 计划 ID 交给规划编辑器定位项目。 */
+  /** 兼容深链：项目中枢把当前 active 计划 ID 交给规划编辑器优先查看（ADR-0010：planId）。 */
   const [planningTarget, setPlanningTarget] = useState<string | null>(null);
   const { t } = useLocale();
   const openPlanning = (planId: string | null) => {
@@ -65,7 +65,7 @@ export default function PlanningCenterPanel() {
         {source === "hub" ? (
           <ProjectHubPanel onOpenPlanning={openPlanning} />
         ) : source === "mine" ? (
-          <PlanningWorkspace initialProjectId={planningTarget} />
+          <PlanningWorkspace initialPlanId={planningTarget} />
         ) : source === "builtin" ? (
           <FeatureRoadmapPanel />
         ) : (

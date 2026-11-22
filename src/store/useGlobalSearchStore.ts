@@ -50,6 +50,12 @@ export interface GlobalSearchLocateIntent {
   kind: string;
   /** 父级 id（run→session、snapshot→task、feature/milestone→project）。 */
   parentId: string | null;
+  /**
+   * planning 分类的项目根（workspace_projects.id，ADR-0010）：planning 的
+   * id/parentId 都是计划 ID，导航/授权必须用根 ID，不从 parentId 猜测身份。
+   * 其余分类为 null。
+   */
+  workspaceProjectId?: string | null;
   /** 搜索词（目标模块可用来设置过滤，确保目标可见）。 */
   keyword: string;
   token: number;
@@ -117,8 +123,15 @@ interface GlobalSearchState {
   requestLocate: (intent: Omit<GlobalSearchLocateIntent, "token">) => void;
   /** 胶囊「最近暂存」跳转完整暂存架并定位条目（复用同一 pendingLocate 通道）。 */
   requestShelfLocate: (id: string, kind: string) => void;
-  /** 从 Agent 会话跳转到规划功能详情。 */
-  requestPlanningFeatureLocate: (featureId: string, projectId: string) => void;
+  /**
+   * 从 Agent 会话跳转到规划功能详情（ADR-0010）：
+   * planId 是功能所属计划 ID；workspaceProjectId 是项目根，导航/授权用它。
+   */
+  requestPlanningFeatureLocate: (
+    featureId: string,
+    planId: string,
+    workspaceProjectId?: string | null,
+  ) => void;
   clearRecent: () => void;
   setNotice: (n: string | null) => void;
 }
@@ -549,6 +562,7 @@ export const useGlobalSearchStore = create<GlobalSearchState>((set, get) => ({
       id: item.target_id ?? item.id,
       kind: item.kind,
       parentId: item.parent_id,
+      workspaceProjectId: item.workspace_project_id ?? null,
       keyword: query.trim(),
       token: ++locateSeq,
     };
@@ -663,14 +677,22 @@ export const useGlobalSearchStore = create<GlobalSearchState>((set, get) => ({
       },
     }),
 
-  requestPlanningFeatureLocate: (featureId, projectId) => {
+  /**
+   * Agent 规划关联 → 功能定位（ADR-0010）：
+   * @param featureId 功能 id
+   * @param planId    功能所属计划 id（planning_projects.id；旧字段 project_id）
+   * @param workspaceProjectId 所属项目根（workspace_projects.id），缺省时由
+   *   目标页从计划归属解析；孤儿旧计划没有根，目标页会给出明确反馈。
+   */
+  requestPlanningFeatureLocate: (featureId, planId, workspaceProjectId) => {
     useUiStore.getState().setTab("roadmap");
     set({
       pendingLocate: {
         category: "planning",
         id: featureId,
         kind: "feature",
-        parentId: projectId,
+        parentId: planId,
+        workspaceProjectId: workspaceProjectId ?? null,
         keyword: "",
         token: ++locateSeq,
       },

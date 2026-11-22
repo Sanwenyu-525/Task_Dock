@@ -113,7 +113,7 @@ function KanbanCard({
 export default function PlanningKanban({ onOpenFeature, onOpenFeatureList }: PlanningKanbanProps) {
   const features = usePlanningStore((s) => s.features);
   const milestones = usePlanningStore((s) => s.milestones);
-  const activeProjectId = usePlanningStore((s) => s.activeProjectId);
+  const activeProjectId = usePlanningStore((s) => s.activePlanId);
   const featuresLoading = usePlanningStore((s) => s.featuresLoading);
   const updateFeature = usePlanningStore((s) => s.updateFeature);
   const showToast = useUiStore((s) => s.showToast);

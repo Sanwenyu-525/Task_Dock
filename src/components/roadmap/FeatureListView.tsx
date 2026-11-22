@@ -59,8 +59,8 @@ export default function FeatureListView({
   const features = usePlanningStore((s) => s.features);
   const featuresLoading = usePlanningStore((s) => s.featuresLoading);
   const featuresError = usePlanningStore((s) => s.featuresError);
-  const activeProjectId = usePlanningStore((s) => s.activeProjectId);
-  const loadedForProject = usePlanningStore((s) => s.loadedForProject);
+  const activeProjectId = usePlanningStore((s) => s.activePlanId);
+  const loadedForProject = usePlanningStore((s) => s.loadedForPlan);
   const milestones = usePlanningStore((s) => s.milestones);
   const deleteFeature = usePlanningStore((s) => s.deleteFeature);
   const showToast = useUiStore((s) => s.showToast);
@@ -253,7 +253,7 @@ export default function FeatureListView({
       {featuresError && (
         <div className="planning-error" role="alert">
           <span>功能列表加载失败：{featuresError}</span>
-          <button className="btn sm" onClick={() => void usePlanningStore.getState().selectProject(activeProjectId)}>
+          <button className="btn sm" onClick={() => void usePlanningStore.getState().selectPlan(activeProjectId)}>
             重试
           </button>
         </div>

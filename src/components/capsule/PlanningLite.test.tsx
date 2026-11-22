@@ -135,14 +135,14 @@ function feature(over: Partial<PlanningFeature> = {}): PlanningFeature {
 
 function resetStore() {
   usePlanningStore.setState({
-    projects: [],
-    projectsLoading: false,
-    projectsError: null,
-    activeProjectId: null,
+    plans: [],
+    plansLoading: false,
+    plansError: null,
+    activePlanId: null,
     features: [],
     featuresLoading: false,
     featuresError: null,
-    loadedForProject: null,
+    loadedForPlan: null,
     milestones: [],
     milestonesLoading: false,
     milestonesError: null,

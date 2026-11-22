@@ -17,7 +17,7 @@ import {
   type PlanningFeatureStatus,
   type PlanningMilestone,
   type PlanningPriority,
-  type PlanningProject,
+  type PlanningPlan,
   type PlanningProjectStatus,
 } from "../../lib/bridge";
 import { usePlanningStore } from "../../store/usePlanningStore";
@@ -135,20 +135,19 @@ function EditorShell({
 }
 
 export interface ProjectEditorViewProps {
-  /** null = 新建；否则编辑该项目 */
-  project: PlanningProject | null;
+  /** 编辑目标计划（ADR-0010：不再承担「新建项目」入口，创建统一走顶栏/项目中枢）。 */
+  plan: PlanningPlan;
   onClose: () => void;
 }
 
-export function ProjectEditorView({ project, onClose }: ProjectEditorViewProps) {
-  const createProject = usePlanningStore((s) => s.createProject);
-  const updateProject = usePlanningStore((s) => s.updateProject);
+export function ProjectEditorView({ plan, onClose }: ProjectEditorViewProps) {
+  const updatePlan = usePlanningStore((s) => s.updatePlan);
   const showToast = useUiStore((s) => s.showToast);
 
-  const [name, setName] = useState(project?.name ?? "");
-  const [description, setDescription] = useState(project?.description ?? "");
-  const [status, setStatus] = useState<PlanningProjectStatus>(project?.status ?? "planning");
-  const [targetDate, setTargetDate] = useState(project?.target_date ?? "");
+  const [name, setName] = useState(plan.name);
+  const [description, setDescription] = useState(plan.description);
+  const [status, setStatus] = useState<PlanningProjectStatus>(plan.status);
+  const [targetDate, setTargetDate] = useState(plan.target_date ?? "");
   const [busy, setBusy] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -194,23 +193,14 @@ export function ProjectEditorView({ project, onClose }: ProjectEditorViewProps) 
     setBusy(true);
     setError(null);
     try {
-      if (project) {
-        await updateProject(project.id, {
-          name: name.trim(),
-          description,
-          status,
-          target_date: normalizeDateInput(targetDate),
-        });
-        showToast("项目已更新", { kind: "success" });
-      } else {
-        await createProject({
-          name: name.trim(),
-          description,
-          status,
-          target_date: normalizeDateInput(targetDate),
-        });
-        showToast("项目已创建", { kind: "success" });
-      }
+      // 项目根名称/描述由 ProjectService 同步（计划是项目容器，ADR-0008）。
+      await updatePlan(plan.id, {
+        name: name.trim(),
+        description,
+        status,
+        target_date: normalizeDateInput(targetDate),
+      });
+      showToast("计划已更新", { kind: "success" });
       if (aliveRef.current) onClose();
     } catch (e) {
       // 保留输入，仅提示错误（编辑失败不丢用户内容）
@@ -226,10 +216,8 @@ export function ProjectEditorView({ project, onClose }: ProjectEditorViewProps) 
 
   return (
     <EditorShell
-      title={project ? "编辑项目" : "新建项目"}
-      subtitle={
-        project ? "修改项目名称、状态与目标日期，保存后回到项目总览。" : "填写项目基本信息，保存后回到项目总览。"
-      }
+      title="编辑计划"
+      subtitle="修改计划名称、状态与目标日期，保存后回到项目总览。"
       backLabel="返回项目总览"
       dirty={dirty}
       busy={busy}
@@ -250,7 +238,7 @@ export function ProjectEditorView({ project, onClose }: ProjectEditorViewProps) 
             disabled={busy || !name.trim()}
           >
             {busy ? <Loader2 size={13} className="spin" aria-hidden="true" /> : null}
-            {project ? "保存" : "创建"}
+            保存
           </button>
         </>
       }
@@ -263,7 +251,7 @@ export function ProjectEditorView({ project, onClose }: ProjectEditorViewProps) 
           maxLength={100}
           placeholder="例如：Task Dock v1.0"
           aria-label="项目名称"
-          autoFocus={!project}
+          autoFocus
           onChange={(e) => patch(setName)(e.target.value)}
         />
       </label>
@@ -323,7 +311,7 @@ export function FeatureEditorView({
   const createFeature = usePlanningStore((s) => s.createFeature);
   const updateFeature = usePlanningStore((s) => s.updateFeature);
   const milestones = usePlanningStore((s) => s.milestones);
-  const activeProjectId = usePlanningStore((s) => s.activeProjectId);
+  const activeProjectId = usePlanningStore((s) => s.activePlanId);
   const showToast = useUiStore((s) => s.showToast);
 
   const [title, setTitle] = useState(feature?.title ?? "");

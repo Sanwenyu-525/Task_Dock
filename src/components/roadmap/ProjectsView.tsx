@@ -1,10 +1,12 @@
-//! 规划中心「项目总览」视图：左侧项目列表 + 右侧详情统计（窄窗折叠为
-//! Select + 纵向排列），以及项目级 CRUD / 归档 / 删除。
+//! 规划「项目总览」视图（ADR-0010）：只展示**当前全局项目**的计划与统计。
 //!
-//! - 无项目 → 引导创建；有项目但无功能 → 「尚未添加功能」，不显示 0% 进度；
-//! - 统计来自后端权威项目实体（Rust/SQLite），功能变更后由 Store 同步；
-//! - 最近进度复用项目级 activity（feature_id = null），与功能级历史按作用域隔离；
-//! - 加载失败显示重试入口；删除项目必须经 ConfirmDialog 明确影响面。
+//! - 全局项目来自 ProjectContext；本视图不跨项目切换、不提供第二套选择器，
+//!   也不在规划页内创建新项目（创建统一走顶栏/项目中枢）；
+//! - 计划列表按 `workspace_project_id` 归属过滤：planning_list_projects 返回的是
+//!   每个项目的当前激活计划，未关联到当前项目的记录（孤儿/其他项目）不展示；
+//! - 无计划 → 「当前项目尚无可用计划」空态；无项目 → 由 PlanningWorkspace 兜底；
+//! - 统计来自后端权威计划实体，功能变更后由 Store 同步；加载失败显示重试入口；
+//!   删除计划必须经 ConfirmDialog 明确影响面（最后一个计划的保护在后端）。
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -12,20 +14,20 @@ import {
   ArchiveRestore,
   ArrowRight,
   Flag,
-  FolderPlus,
   LayoutDashboard,
   Loader2,
   Pencil,
   Plus,
   Trash2,
 } from "lucide-react";
-import { Select, ConfirmDialog, EmptyState } from "../ui";
+import { ConfirmDialog, EmptyState } from "../ui";
 import {
   PLANNING_PROJECT_STATUS_LABELS,
-  type PlanningProject,
+  type PlanningPlan,
 } from "../../lib/bridge";
 import { usePlanningStore } from "../../store/usePlanningStore";
 import { useUiStore } from "../../store/useUiStore";
+import { useProjectContext } from "../../workbench/ProjectContext";
 import { WorkbenchPageDetail, WorkbenchDetailFacts } from "../../workbench/pageDetail";
 import { ProjectEditorView } from "./PlanningEditors";
 import { PlanningActivityRow } from "./PlanningFeatureCard";
@@ -36,21 +38,23 @@ export interface ProjectsViewProps {
   onOpenMilestones: () => void;
 }
 
-function projectProgressText(p: PlanningProject): string {
+function planProgressText(p: PlanningPlan): string {
   if (!p.stats.has_features) return "尚未添加功能";
   return `${p.stats.feature_completed}/${p.stats.feature_total} 完成 · ${p.stats.progress_percent}%`;
 }
 
 export default function ProjectsView({ onOpenFeatures, onOpenMilestones }: ProjectsViewProps) {
-  const projects = usePlanningStore((s) => s.projects);
-  const projectsLoading = usePlanningStore((s) => s.projectsLoading);
-  const projectsError = usePlanningStore((s) => s.projectsError);
-  const loadProjects = usePlanningStore((s) => s.loadProjects);
-  const activeProjectId = usePlanningStore((s) => s.activeProjectId);
-  const loadedForProject = usePlanningStore((s) => s.loadedForProject);
-  const selectProject = usePlanningStore((s) => s.selectProject);
-  const archiveProject = usePlanningStore((s) => s.archiveProject);
-  const deleteProject = usePlanningStore((s) => s.deleteProject);
+  // 全局项目上下文（ADR-0010）：只读消费，计划范围由项目根决定。
+  const { projectId, selectedProject } = useProjectContext();
+  const plans = usePlanningStore((s) => s.plans);
+  const plansLoading = usePlanningStore((s) => s.plansLoading);
+  const plansError = usePlanningStore((s) => s.plansError);
+  const loadPlans = usePlanningStore((s) => s.loadPlans);
+  const activePlanId = usePlanningStore((s) => s.activePlanId);
+  const loadedForPlan = usePlanningStore((s) => s.loadedForPlan);
+  const selectPlan = usePlanningStore((s) => s.selectPlan);
+  const archivePlan = usePlanningStore((s) => s.archivePlan);
+  const deletePlan = usePlanningStore((s) => s.deletePlan);
   const milestones = usePlanningStore((s) => s.milestones);
   const milestonesLoading = usePlanningStore((s) => s.milestonesLoading);
   const activity = usePlanningStore((s) => s.activity);
@@ -61,23 +65,29 @@ export default function ProjectsView({ onOpenFeatures, onOpenMilestones }: Proje
   const loadMoreActivity = usePlanningStore((s) => s.loadMoreActivity);
   const showToast = useUiStore((s) => s.showToast);
 
-  /** null = 列表态；非空 = 页面内编辑态（project 为 null 表示新建）。 */
-  const [editor, setEditor] = useState<{ project: PlanningProject | null } | null>(null);
-  const [deletingProject, setDeletingProject] = useState<PlanningProject | null>(null);
+  /** null = 列表态；非空 = 页面内编辑态（只编辑当前项目范围内的计划）。 */
+  const [editor, setEditor] = useState<{ plan: PlanningPlan } | null>(null);
+  const [deletingPlan, setDeletingPlan] = useState<PlanningPlan | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   /** 进入编辑前列表的滚动位置：返回时恢复，避免用户回到列表顶部。 */
   const listScrollTop = useRef(0);
-  // 项目级 recent activity 只在本项目数据就绪后请求一次；Store 内按作用域防护乱序
+  // 计划级 recent activity 只在本计划数据就绪后请求一次；Store 内按作用域防护乱序
   const activityRequestedFor = useRef<string | null>(null);
 
-  const activeProject = useMemo(
-    () => projects.find((p) => p.id === activeProjectId) ?? null,
-    [projects, activeProjectId],
+  // 当前项目范围内的计划：planning_list_projects 返回各项目当前激活计划（含孤儿），
+  // 按 workspace_project_id 归属过滤后只剩本项目的计划（多计划版本 UI 待后续 API）。
+  const projectPlans = useMemo(
+    () => plans.filter((p) => p.workspace_project_id === projectId),
+    [plans, projectId],
   );
-  const archivedProjects = useMemo(() => projects.filter((p) => p.archived), [projects]);
-  const activeProjects = useMemo(() => projects.filter((p) => !p.archived), [projects]);
+  // 数据已加载的计划（可来自计划版本之外的同项目计划，显示层以 Store 为准）。
+  const activePlan = useMemo(
+    () => plans.find((p) => p.id === activePlanId) ?? null,
+    [plans, activePlanId],
+  );
+
   /**
-   * 左侧里程碑只展示当前项目的真实记录；不补占位里程碑，也不从功能数量反推。
+   * 左侧里程碑只展示当前计划的真实记录；不补占位里程碑，也不从功能数量反推。
    * 宽窗点击后进入里程碑视图；窄窗仍可从工具行的「里程碑」按钮进入。
    */
   const activeMilestones = useMemo(
@@ -90,19 +100,19 @@ export default function ProjectsView({ onOpenFeatures, onOpenMilestones }: Proje
   );
 
   useEffect(() => {
-    if (!activeProjectId || loadedForProject !== activeProjectId) return;
-    if (activityRequestedFor.current === activeProjectId) return;
-    activityRequestedFor.current = activeProjectId;
+    if (!activePlanId || loadedForPlan !== activePlanId) return;
+    if (activityRequestedFor.current === activePlanId) return;
+    activityRequestedFor.current = activePlanId;
     void loadActivity(null);
-  }, [activeProjectId, loadedForProject, loadActivity]);
+  }, [activePlanId, loadedForPlan, loadActivity]);
 
-  const stats = activeProject?.stats;
+  const stats = activePlan?.stats;
 
   /** 进入编辑态前记住列表滚动位置；返回时一次性恢复（页面级单一滚动容器）。 */
-  const openEditor = (project: PlanningProject | null) => {
+  const openEditor = (plan: PlanningPlan) => {
     const sc = findScrollParent(rootRef.current);
     if (sc) listScrollTop.current = sc.scrollTop;
-    setEditor({ project });
+    setEditor({ plan });
     window.requestAnimationFrame(() => {
       const container = findScrollParent(rootRef.current);
       if (container) container.scrollTop = 0;
@@ -118,11 +128,11 @@ export default function ProjectsView({ onOpenFeatures, onOpenMilestones }: Proje
   };
 
   const handleArchive = () => {
-    if (!activeProject) return;
-    const next = !activeProject.archived;
-    archiveProject(activeProject.id, next)
+    if (!activePlan) return;
+    const next = !activePlan.archived;
+    archivePlan(activePlan.id, next)
       .then(() =>
-        showToast(next ? "计划已归档，可在列表中恢复" : "计划已恢复", { kind: "success" }),
+        showToast(next ? "计划已归档" : "计划已恢复", { kind: "success" }),
       )
       .catch((e) => showToast(`操作失败：${String(e)}`, { kind: "error" }));
   };
@@ -131,32 +141,41 @@ export default function ProjectsView({ onOpenFeatures, onOpenMilestones }: Proje
   if (editor) {
     return (
       <div className="planning-projects planning-editor-page" ref={rootRef}>
-        <ProjectEditorView project={editor.project} onClose={closeEditor} />
+        <ProjectEditorView plan={editor.plan} onClose={closeEditor} />
       </div>
     );
   }
 
-  // ── 无项目：引导创建 ──
-  if (!projectsLoading && projects.length === 0 && !projectsError) {
+  // ── 无计划：明确空态（不自动创建、不静默挑别的计划）──
+  if (!projectId) {
     return (
       <div className="planning-projects" ref={rootRef}>
         <EmptyState
           framed
           titleAs="h3"
-          title="规划中心"
-          icon={<FolderPlus size={22} aria-hidden="true" />}
+          title="尚未选择项目"
+          icon={<LayoutDashboard size={22} aria-hidden="true" />}
+          hint={<p>使用顶栏的项目选择器选择项目，或到项目中枢创建。</p>}
+        />
+      </div>
+    );
+  }
+
+  if (!plansLoading && projectPlans.length === 0 && !activePlan && !plansError) {
+    return (
+      <div className="planning-projects" ref={rootRef}>
+        <EmptyState
+          framed
+          titleAs="h3"
+          title="当前项目尚无可用计划"
+          icon={<LayoutDashboard size={22} aria-hidden="true" />}
           hint={
             <>
-              <p>创建你的第一个项目：规划功能、拆分开发步骤、记录进度。</p>
+              <p>当前项目「{selectedProject?.name ?? projectId}」还没有激活的计划。</p>
               <p className="planning-empty-sub">
-                Task Dock 自身的路线图在上方「内置路线图」中查看，两者互不影响。
+                可以在项目中枢为项目创建计划；创建后回到这里开始规划功能与里程碑。
               </p>
             </>
-          }
-          action={
-            <button className="btn primary" onClick={() => openEditor(null)}>
-              <FolderPlus size={14} aria-hidden="true" /> 新建项目
-            </button>
           }
         />
       </div>
@@ -165,36 +184,36 @@ export default function ProjectsView({ onOpenFeatures, onOpenMilestones }: Proje
 
   return (
     <div className="planning-projects planning-overview-page" ref={rootRef}>
-      {projectsError && (
+      {plansError && (
         <div className="planning-error" role="alert">
-          <span>项目列表加载失败：{projectsError}</span>
-          <button className="btn sm" onClick={() => void loadProjects()}>
+          <span>计划列表加载失败：{plansError}</span>
+          <button className="btn sm" onClick={() => void loadPlans()}>
             重试
           </button>
         </div>
       )}
 
-      {projectsLoading && projects.length === 0 ? (
+      {plansLoading && plans.length === 0 ? (
         <div className="planning-loading" role="status">
-          <Loader2 size={14} className="spin" aria-hidden="true" /> 加载项目…
+          <Loader2 size={14} className="spin" aria-hidden="true" /> 加载计划…
         </div>
       ) : (
         <div className="planning-overview-layout">
-          {/* 宽窗：左侧项目列表；窄窗由 CSS 收起，改用 Select */}
-          <aside className="planning-project-list" aria-label="项目列表">
+          {/* 宽窗：当前项目的计划卡；窄窗由 CSS 收起。 */}
+          <aside className="planning-project-list" aria-label="当前项目计划">
             <div className="planning-project-list-head">
-              <span>我的项目</span>
-              <span className="planning-project-list-count">{activeProjects.length}</span>
+              <span>当前项目</span>
+              <span className="planning-project-list-count">{projectPlans.length}</span>
             </div>
-            {activeProjects.map((p) => (
+            {projectPlans.map((p) => (
               <button
                 key={p.id}
-                className={`task-card planning-project-item ${p.id === activeProjectId ? "is-active" : ""}`}
+                className={`task-card planning-project-item ${p.id === activePlanId ? "is-active" : ""}`}
                 onClick={() => {
                   activityRequestedFor.current = null;
-                  void selectProject(p.id);
+                  void selectPlan(p.id);
                 }}
-                aria-pressed={p.id === activeProjectId}
+                aria-pressed={p.id === activePlanId}
               >
                 <span className="planning-project-item-top">
                   <span className="planning-project-item-name">{p.name}</span>
@@ -202,48 +221,22 @@ export default function ProjectsView({ onOpenFeatures, onOpenMilestones }: Proje
                     {PLANNING_PROJECT_STATUS_LABELS[p.status]}
                   </em>
                 </span>
-                <span className="planning-project-item-progress">{projectProgressText(p)}</span>
+                <span className="planning-project-item-progress">{planProgressText(p)}</span>
                 {p.stats.has_features && <PlanningProgressBar value={p.stats.progress_percent} />}
               </button>
             ))}
-            {archivedProjects.length > 0 && (
-              <div className="planning-project-archived">
-                <span className="planning-project-list-sub">已归档</span>
-                {archivedProjects.map((p) => (
-                  <button
-                    key={p.id}
-                    className={`task-card planning-project-item is-archived ${
-                      p.id === activeProjectId ? "is-active" : ""
-                    }`}
-                    onClick={() => {
-                      activityRequestedFor.current = null;
-                      void selectProject(p.id);
-                    }}
-                    aria-pressed={p.id === activeProjectId}
-                  >
-                    <span className="planning-project-item-top">
-                      <span className="planning-project-item-name">{p.name}</span>
-                      <em className="planning-project-state">已归档</em>
-                    </span>
-                  </button>
-                ))}
-              </div>
-            )}
-            <button className="planning-project-add" onClick={() => openEditor(null)}>
-              <Plus size={13} aria-hidden="true" /> 新建项目
-            </button>
 
-            {/* 左侧在本期项目下直接列出里程碑，避免「项目总览」与「里程碑」
+            {/* 左侧在本期计划下直接列出里程碑，避免「项目总览」与「里程碑」
                 两个视图之间来回切换才能看到时间节点。数据缺失时只给入口。 */}
-            <section className="planning-side-milestones" aria-label="当前项目里程碑">
+            <section className="planning-side-milestones" aria-label="当前计划里程碑">
               <div className="planning-project-list-head">
                 <span>里程碑</span>
                 <span className="planning-project-list-count">
-                  {activeProject ? milestones.length : 0}
+                  {activePlan ? milestones.length : 0}
                 </span>
               </div>
-              {!activeProject ? (
-                <p className="planning-side-empty">先选择一个项目。</p>
+              {!activePlan ? (
+                <p className="planning-side-empty">当前项目还没有可用计划。</p>
               ) : milestonesLoading && activeMilestones.length === 0 ? (
                 <p className="planning-side-empty">
                   <Loader2 size={12} className="spin" aria-hidden="true" /> 加载里程碑…
@@ -294,41 +287,24 @@ export default function ProjectsView({ onOpenFeatures, onOpenMilestones }: Proje
           </aside>
 
           <section className="planning-project-main">
-            {/* 窄窗项目选择器 */}
             <div className="planning-toolbar planning-overview-toolbar">
-              <div className="planning-project-picker planning-wide-hidden">
-                <Select
-                  value={activeProjectId ?? ""}
-                  ariaLabel="选择项目"
-                  block
-                  menuMinWidth={220}
-                  options={projects.map((p) => ({
-                    value: p.id,
-                    label: p.archived ? `${p.name}（已归档）` : p.name,
-                  }))}
-                  onChange={(id) => {
-                    activityRequestedFor.current = null;
-                    void selectProject(id);
-                  }}
-                />
-              </div>
               <div className="planning-toolbar-actions">
-                <button className="btn sm" onClick={onOpenFeatures} disabled={!activeProject}>
+                <button className="btn sm" onClick={onOpenFeatures} disabled={!activePlan}>
                   <LayoutDashboard size={13} aria-hidden="true" /> 功能列表
                 </button>
-                <button className="btn sm" onClick={onOpenMilestones} disabled={!activeProject}>
+                <button className="btn sm" onClick={onOpenMilestones} disabled={!activePlan}>
                   <Flag size={13} aria-hidden="true" /> 里程碑
                 </button>
                 <button
                   className="icon-btn sm"
-                  data-tip="编辑项目"
-                  aria-label="编辑项目"
-                  disabled={!activeProject}
-                  onClick={() => openEditor(activeProject)}
+                  data-tip="编辑计划"
+                  aria-label="编辑计划"
+                  disabled={!activePlan}
+                  onClick={() => activePlan && openEditor(activePlan)}
                 >
                   <Pencil size={13} />
                 </button>
-                {activeProject?.archived ? (
+                {activePlan?.archived ? (
                   <button
                     className="icon-btn sm"
                     data-tip="恢复计划"
@@ -342,7 +318,7 @@ export default function ProjectsView({ onOpenFeatures, onOpenMilestones }: Proje
                     className="icon-btn sm"
                     data-tip="归档计划（当前计划需要先有未归档的继任计划）"
                     aria-label="归档计划"
-                    disabled={!activeProject}
+                    disabled={!activePlan}
                     onClick={handleArchive}
                   >
                     <Archive size={13} />
@@ -352,42 +328,46 @@ export default function ProjectsView({ onOpenFeatures, onOpenMilestones }: Proje
                   className="icon-btn sm"
                   data-tip="删除计划（影响其功能、步骤与历史）"
                   aria-label="删除计划"
-                  disabled={!activeProject}
-                  onClick={() => setDeletingProject(activeProject)}
+                  disabled={!activePlan}
+                  onClick={() => activePlan && setDeletingPlan(activePlan)}
                 >
                   <Trash2 size={13} />
                 </button>
               </div>
             </div>
 
-            {activeProject && stats ? (
+            {activePlan && stats ? (
               <>
                 <header className="planning-project-hero">
                   <div className="planning-project-hero-title">
-                    <h3>{activeProject.name}</h3>
-                    <em className={`planning-project-state s-${activeProject.status}`}>
-                      {PLANNING_PROJECT_STATUS_LABELS[activeProject.status]}
+                    <h3>{activePlan.name}</h3>
+                    <em className={`planning-project-state s-${activePlan.status}`}>
+                      {PLANNING_PROJECT_STATUS_LABELS[activePlan.status]}
                     </em>
-                    {activeProject.archived && <span className="chip">已归档</span>}
+                    {activePlan.archived && <span className="chip">已归档</span>}
                   </div>
                   <p className="planning-project-desc">
-                    {activeProject.description || "尚未填写项目描述。"}
+                    {activePlan.description || "尚未填写计划描述。"}
                   </p>
                   <div className="planning-project-meta">
-                    {activeProject.target_date && (
-                      <span>目标日期 {activeProject.target_date}</span>
+                    {activePlan.target_date && (
+                      <span>目标日期 {activePlan.target_date}</span>
                     )}
-                    <span>更新于 {activeProject.updated_at.slice(0, 10)}</span>
+                    <span>更新于 {activePlan.updated_at.slice(0, 10)}</span>
                   </div>
                 </header>
 
-                {/* 四张等权摘要：项目级关键决策信息优先，详细分布留在右栏与功能视图。
+                {/* 四张等权摘要：计划级关键决策信息优先，详细分布留在右栏与功能视图。
                     无真实数据时保留 0，不用演示数字填充。 */}
-                <div className="planning-summary-grid" aria-label="项目概览">
+                <div className="planning-summary-grid" aria-label="计划概览">
                   <div className="planning-summary-card">
-                    <span className="planning-summary-label">进行中项目</span>
-                    <strong className="planning-summary-value">{activeProjects.length}</strong>
-                    <span className="planning-summary-sub">共 {projects.length} 个项目</span>
+                    <span className="planning-summary-label">计划状态</span>
+                    <strong className="planning-summary-value">
+                      {PLANNING_PROJECT_STATUS_LABELS[activePlan.status]}
+                    </strong>
+                    <span className="planning-summary-sub">
+                      {activePlan.archived ? "计划已归档" : "当前项目激活计划"}
+                    </span>
                   </div>
                   <div className="planning-summary-card">
                     <span className="planning-summary-label">功能总数</span>
@@ -427,7 +407,7 @@ export default function ProjectsView({ onOpenFeatures, onOpenMilestones }: Proje
                     <PlanningProgressBar value={stats.progress_percent} large />
                   ) : (
                     <p className="planning-section-empty">
-                      这个项目还没有功能。先登记要交付的功能，再拆分步骤记录进度。
+                      这个计划还没有功能。先登记要交付的功能，再拆分步骤记录进度。
                     </p>
                   )}
                   {!stats.has_features && (
@@ -478,16 +458,16 @@ export default function ProjectsView({ onOpenFeatures, onOpenMilestones }: Proje
               </>
             ) : (
               <div className="planning-empty-features">
-                <p>选择一个项目查看详情</p>
+                <p>当前项目尚无可用计划</p>
               </div>
             )}
           </section>
         </div>
       )}
 
-      {/* 右栏「本期规划」：只读汇总当前项目真实统计、目标日期与里程碑；
+      {/* 右栏「本期规划」：只读汇总当前计划真实统计、目标日期与里程碑；
           编辑与功能维护仍在中央内容区，不把整页业务搬进右栏。 */}
-      {activeProject && stats && (
+      {activePlan && stats && (
         <WorkbenchPageDetail
           title="本期规划"
           actions={
@@ -497,12 +477,12 @@ export default function ProjectsView({ onOpenFeatures, onOpenMilestones }: Proje
           }
         >
           <div className="planning-rail-project">
-            <span className={`planning-project-state s-${activeProject.status}`}>
-              {PLANNING_PROJECT_STATUS_LABELS[activeProject.status]}
+            <span className={`planning-project-state s-${activePlan.status}`}>
+              {PLANNING_PROJECT_STATUS_LABELS[activePlan.status]}
             </span>
-            <strong>{activeProject.name}</strong>
-            {activeProject.target_date ? (
-              <span>目标 {activeProject.target_date}</span>
+            <strong>{activePlan.name}</strong>
+            {activePlan.target_date ? (
+              <span>目标 {activePlan.target_date}</span>
             ) : (
               <span>未设置目标日期</span>
             )}
@@ -552,24 +532,24 @@ export default function ProjectsView({ onOpenFeatures, onOpenMilestones }: Proje
       )}
 
       <ConfirmDialog
-        open={deletingProject !== null}
+        open={deletingPlan !== null}
         title="删除计划"
         detail={
-          deletingProject
-            ? `确定删除计划「${deletingProject.name}」？其 ${deletingProject.stats.feature_total} 个功能、全部开发步骤与进度历史将一并删除，且无法恢复。若这是项目的最后一个计划，将被拒绝；请在项目工作空间删除整个项目。`
+          deletingPlan
+            ? `确定删除计划「${deletingPlan.name}」？其 ${deletingPlan.stats.feature_total} 个功能、全部开发步骤与进度历史将一并删除，且无法恢复。若这是项目的最后一个计划，将被拒绝；请在项目工作空间删除整个项目。`
             : ""
         }
         danger
         confirmLabel="删除计划"
         onConfirm={() => {
-          const p = deletingProject;
-          setDeletingProject(null);
+          const p = deletingPlan;
+          setDeletingPlan(null);
           if (!p) return;
-          deleteProject(p.id)
+          deletePlan(p.id)
             .then(() => showToast(`计划「${p.name}」已删除`, { kind: "success" }))
             .catch((e) => showToast(`删除失败：${String(e)}`, { kind: "error" }));
         }}
-        onCancel={() => setDeletingProject(null)}
+        onCancel={() => setDeletingPlan(null)}
       />
     </div>
   );

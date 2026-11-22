@@ -1,5 +1,5 @@
 //! usePlanningStore 一致性测试（node 环境）：
-//! 项目切换的乱序防护、删除后自动切换、历史分页追加、失败保留旧数据。
+//! 计划切换的乱序防护、删除后的明确空态语义、历史分页追加、失败保留旧数据。
 //! bridge 全部 mock，用受控 deferred promise 模拟乱序返回。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -123,11 +123,11 @@ function deferred<T>() {
 beforeEach(() => {
   vi.clearAllMocks();
   usePlanningStore.setState({
-    projects: [],
-    projectsLoading: false,
-    projectsError: null,
-    activeProjectId: null,
-    loadedForProject: null,
+    plans: [],
+    plansLoading: false,
+    plansError: null,
+    activePlanId: null,
+    loadedForPlan: null,
     features: [],
     featuresLoading: false,
     featuresError: null,
@@ -146,7 +146,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe("项目切换与乱序防护", () => {
+describe("计划切换与乱序防护", () => {
   it("先发 A（慢）后发 B（快）：B 的数据不被 A 的迟到响应覆盖", async () => {
     const dA = deferred<PlanningFeature[]>();
     const dB = deferred<PlanningFeature[]>();
@@ -155,8 +155,8 @@ describe("项目切换与乱序防护", () => {
     );
     bridge.planningListMilestones.mockResolvedValue([]);
 
-    const p1 = usePlanningStore.getState().selectProject("A");
-    const p2 = usePlanningStore.getState().selectProject("B");
+    const p1 = usePlanningStore.getState().selectPlan("A");
+    const p2 = usePlanningStore.getState().selectPlan("B");
     // B 先返回
     dB.resolve([feat("f-b", "B", "B 功能")]);
     await p2;
@@ -166,59 +166,60 @@ describe("项目切换与乱序防护", () => {
     dA.resolve([feat("f-a", "A", "A 功能")]);
     await p1;
     expect(usePlanningStore.getState().features.map((f) => f.id)).toEqual(["f-b"]);
-    expect(usePlanningStore.getState().activeProjectId).toBe("B");
+    expect(usePlanningStore.getState().activePlanId).toBe("B");
   });
 
-  it("同一项目数据已就绪时重复 select 不重拉", async () => {
+  it("同一计划数据已就绪时重复 select 不重拉", async () => {
     bridge.planningListFeatures.mockResolvedValue([feat("f-1", "P1", "功能1")]);
     bridge.planningListMilestones.mockResolvedValue([]);
-    await usePlanningStore.getState().selectProject("P1");
+    await usePlanningStore.getState().selectPlan("P1");
     expect(bridge.planningListFeatures).toHaveBeenCalledTimes(1);
-    await usePlanningStore.getState().selectProject("P1");
+    await usePlanningStore.getState().selectPlan("P1");
     expect(bridge.planningListFeatures).toHaveBeenCalledTimes(1);
-    // 空项目同样视为已就绪
+    // 空计划同样视为已就绪
     bridge.planningListFeatures.mockResolvedValue([]);
-    await usePlanningStore.getState().selectProject("P2");
-    await usePlanningStore.getState().selectProject("P2");
+    await usePlanningStore.getState().selectPlan("P2");
+    await usePlanningStore.getState().selectPlan("P2");
     expect(bridge.planningListFeatures).toHaveBeenCalledTimes(2);
   });
 
-  it("切换项目期间立即清空旧项目数据", async () => {
+  it("切换计划期间立即清空旧计划数据", async () => {
     const dA = deferred<PlanningFeature[]>();
     bridge.planningListFeatures.mockImplementation((pid: string) =>
       pid === "A" ? dA.promise : Promise.resolve([]),
     );
     bridge.planningListMilestones.mockResolvedValue([]);
     usePlanningStore.setState({
-      activeProjectId: "A",
-      loadedForProject: "A",
+      activePlanId: "A",
+      loadedForPlan: "A",
       features: [feat("f-a", "A", "A 功能")],
       milestones: [],
     });
-    void usePlanningStore.getState().selectProject("B");
+    void usePlanningStore.getState().selectPlan("B");
     expect(usePlanningStore.getState().features).toEqual([]);
-    expect(usePlanningStore.getState().loadedForProject).toBeNull();
+    expect(usePlanningStore.getState().loadedForPlan).toBeNull();
     dA.resolve([]);
   });
 
-  it("删除当前项目后自动切到剩余第一个项目", async () => {
+  it("删除当前计划后置空选中态，不自动挑剩余计划（ADR-0010）", async () => {
     usePlanningStore.setState({
-      projects: [proj("A", "甲"), proj("B", "乙")],
-      activeProjectId: "A",
-      loadedForProject: "A",
+      plans: [proj("A", "甲"), proj("B", "乙")],
+      activePlanId: "A",
+      loadedForPlan: "A",
     });
     bridge.planningDeleteProject.mockResolvedValue(undefined);
-    bridge.planningListFeatures.mockResolvedValue([]);
-    bridge.planningListMilestones.mockResolvedValue([]);
-    await usePlanningStore.getState().deleteProject("A");
-    expect(usePlanningStore.getState().projects.map((p) => p.id)).toEqual(["B"]);
-    expect(usePlanningStore.getState().activeProjectId).toBe("B");
+    await usePlanningStore.getState().deletePlan("A");
+    expect(usePlanningStore.getState().plans.map((p) => p.id)).toEqual(["B"]);
+    // 空态由面板明确展示：不静默切换到剩余计划，也不保留已删除计划的选中态
+    expect(usePlanningStore.getState().activePlanId).toBeNull();
+    expect(usePlanningStore.getState().loadedForPlan).toBeNull();
+    expect(bridge.planningListFeatures).not.toHaveBeenCalled();
   });
 
   it("加载失败置 error 保留旧列表（不拿空列表冒充现状）", async () => {
     bridge.planningListFeatures.mockRejectedValue("boom");
     bridge.planningListMilestones.mockRejectedValue("boom");
-    await usePlanningStore.getState().selectProject("P1");
+    await usePlanningStore.getState().selectPlan("P1");
     expect(usePlanningStore.getState().featuresError).toBe("boom");
     expect(usePlanningStore.getState().featuresLoading).toBe(false);
   });
@@ -245,10 +246,10 @@ describe("变更后就地更新", () => {
     expect(usePlanningStore.getState().features).toEqual([]);
   });
 
-  it("功能增删改后同步项目统计，不出现列表已变统计仍旧", async () => {
+  it("功能增删改后同步计划统计，不出现列表已变统计仍旧", async () => {
     usePlanningStore.setState({
-      projects: [proj("P", "项目")],
-      activeProjectId: "P",
+      plans: [proj("P", "项目")],
+      activePlanId: "P",
       features: [],
       milestones: [ms("m1", "M1")],
     });
@@ -259,7 +260,7 @@ describe("变更后就地更新", () => {
       milestone_name: "M1",
     });
     await usePlanningStore.getState().createFeature({ title: "甲", milestone_id: "m1" });
-    const p = usePlanningStore.getState().projects[0];
+    const p = usePlanningStore.getState().plans[0];
     expect(p.stats.feature_total).toBe(1);
     expect(p.stats.feature_completed).toBe(1);
     expect(p.stats.progress_percent).toBe(100);
@@ -270,7 +271,7 @@ describe("变更后就地更新", () => {
     const updated = { ...feat("f1", "P", "甲"), status: "blocked" as const, milestone_id: "m1", milestone_name: "M1" };
     bridge.planningUpdateFeature.mockResolvedValue(updated);
     await usePlanningStore.getState().updateFeature("f1", { status: "blocked" });
-    const next = usePlanningStore.getState().projects[0];
+    const next = usePlanningStore.getState().plans[0];
     expect(next.stats.feature_blocked).toBe(1);
     expect(next.stats.feature_completed).toBe(0);
     expect(next.stats.progress_percent).toBe(0);
@@ -303,7 +304,7 @@ describe("变更后就地更新", () => {
 describe("进度历史分页", () => {
   it("首页加载后 has_more 时 loadMore 追加且不重复请求", async () => {
     bridge.planningListProjects.mockResolvedValue([]);
-    usePlanningStore.setState({ activeProjectId: "P" });
+    usePlanningStore.setState({ activePlanId: "P" });
     const page1 = {
       items: Array.from({ length: ACTIVITY_PAGE_SIZE }, (_, i) => ({
         id: `a${i}`, project_id: "P", feature_id: null, feature_title: null,
@@ -332,7 +333,7 @@ describe("进度历史分页", () => {
 
   it("addNote 在第一页就地前插；有更早历史未加载时不破坏时间序", async () => {
     bridge.planningListProjects.mockResolvedValue([]);
-    usePlanningStore.setState({ activeProjectId: "P", activity: [], activityHasMore: false });
+    usePlanningStore.setState({ activePlanId: "P", activity: [], activityHasMore: false });
     bridge.planningAddNote.mockResolvedValue({
       id: "n1", project_id: "P", feature_id: null, feature_title: null,
       kind: "note", old_status: null, new_status: null, message: "日志",
@@ -347,14 +348,14 @@ describe("进度历史分页", () => {
     expect(usePlanningStore.getState().activity[0].id).toBe("n1");
   });
 
-  it("项目级历史迟到响应不覆盖功能级历史（按作用域隔离）", async () => {
+  it("计划级历史迟到响应不覆盖功能级历史（按作用域隔离）", async () => {
     const dProject = deferred<{ items: unknown[]; has_more: boolean }>();
     const dFeature = deferred<{ items: unknown[]; has_more: boolean }>();
     bridge.planningActivityPage.mockImplementation(
       (_pid: string, opts: { featureId: string | null }) =>
         opts.featureId === null ? dProject.promise : dFeature.promise,
     );
-    usePlanningStore.setState({ activeProjectId: "P" });
+    usePlanningStore.setState({ activePlanId: "P" });
 
     const p1 = usePlanningStore.getState().loadActivity(null);
     const p2 = usePlanningStore.getState().loadActivity("f1");
@@ -398,11 +399,11 @@ describe("进度历史分页", () => {
     expect(usePlanningStore.getState().activityScope?.featureId).toBe("f1");
   });
 
-  it("功能级作用域下项目级 addNote 不污染当前历史", async () => {
+  it("功能级作用域下计划级 addNote 不污染当前历史", async () => {
     usePlanningStore.setState({
-      activeProjectId: "P",
+      activePlanId: "P",
       activity: [],
-      activityScope: { projectId: "P", featureId: "f1" },
+      activityScope: { planId: "P", featureId: "f1" },
     });
     bridge.planningAddNote.mockResolvedValue({
       id: "n-project",
@@ -424,19 +425,19 @@ describe("进度历史分页", () => {
 
 function emitPlanningChanged(e: PlanningChangedEvent): void {
   if (!bridge.state.planningChangedCb) {
-    throw new Error("planning-changed 回调未注册（需先触发 loadProjects/selectProject）");
+    throw new Error("planning-changed 回调未注册（需先触发 loadPlans/selectPlan）");
   }
   bridge.state.planningChangedCb(e);
 }
 
 describe("planning-changed 同步", () => {
-  it("同项目事件去抖合并为一次局部刷新", async () => {
+  it("同计划事件去抖合并为一次局部刷新", async () => {
     vi.useFakeTimers();
     bridge.planningListProjects.mockResolvedValue([proj("P1", "甲")]);
     bridge.planningListFeatures.mockResolvedValue([]);
     bridge.planningListMilestones.mockResolvedValue([]);
     bridge.planningActivityPage.mockResolvedValue({ items: [], has_more: false });
-    await usePlanningStore.getState().selectProject("P1");
+    await usePlanningStore.getState().selectPlan("P1");
     const callsBefore = bridge.planningListFeatures.mock.calls.length;
 
     emitPlanningChanged({ kind: "feature", projectId: "P1" });
@@ -449,12 +450,12 @@ describe("planning-changed 同步", () => {
     expect(bridge.planningListFeatures.mock.calls.length).toBe(callsBefore + 1);
   });
 
-  it("非当前项目的事件不触发当前项目刷新；project 事件刷新项目列表", async () => {
+  it("非当前计划的事件不触发当前计划刷新；project 事件刷新计划列表", async () => {
     vi.useFakeTimers();
     bridge.planningListProjects.mockResolvedValue([proj("P1", "甲"), proj("P9", "MCP 新建")]);
     bridge.planningListFeatures.mockResolvedValue([]);
     bridge.planningListMilestones.mockResolvedValue([]);
-    await usePlanningStore.getState().selectProject("P1");
+    await usePlanningStore.getState().selectPlan("P1");
 
     const featCalls = bridge.planningListFeatures.mock.calls.length;
     const projCalls = bridge.planningListProjects.mock.calls.length;
@@ -467,8 +468,8 @@ describe("planning-changed 同步", () => {
     await vi.advanceTimersByTimeAsync(300);
     expect(bridge.planningListProjects.mock.calls.length).toBe(projCalls + 1);
     expect(bridge.planningListFeatures.mock.calls.length).toBe(featCalls);
-    // 项目列表已带出 MCP 新建的项目
-    expect(usePlanningStore.getState().projects.map((p) => p.id)).toContain("P9");
+    // 计划列表已带出 MCP 新建的计划
+    expect(usePlanningStore.getState().plans.map((p) => p.id)).toContain("P9");
   });
 
   it("事件刷新与用户切换的迟到响应互不覆盖（代际守卫）", async () => {
@@ -483,7 +484,7 @@ describe("planning-changed 同步", () => {
     bridge.planningListMilestones.mockResolvedValue([]);
     bridge.planningListProjects.mockResolvedValue([]);
 
-    void usePlanningStore.getState().selectProject("P1"); // call=1（select，pending）
+    void usePlanningStore.getState().selectPlan("P1"); // call=1（select，pending）
     emitPlanningChanged({ kind: "feature", projectId: "P1" });
     await vi.advanceTimersByTimeAsync(300); // call=2（事件刷新，pending）
 
@@ -496,6 +497,6 @@ describe("planning-changed 同步", () => {
     dSel.resolve([feat("f-old", "P1", "旧数据")]);
     await vi.advanceTimersByTimeAsync(1);
     expect(usePlanningStore.getState().features.map((f) => f.id)).toEqual(["f-new"]);
-    expect(usePlanningStore.getState().activeProjectId).toBe("P1");
+    expect(usePlanningStore.getState().activePlanId).toBe("P1");
   });
 });

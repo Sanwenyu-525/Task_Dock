@@ -2,7 +2,7 @@
 //!
 //! 边界：重型编辑（项目 / 功能 / 里程碑 CRUD、看板与历史）仍在完整规划中心；
 //! 胶囊只复用 `usePlanningStore` 的既有数据与命令，不新增 IPC、不新增轮询：
-//! - 挂载时 `loadProjects()`，并按既有 `activeProjectId` / 第一个未归档项目选择一次；
+//! - 挂载时 `loadPlans()`，并按既有 `activePlanId` / 第一个未归档项目选择一次；
 //!   选择用挂载标记守卫，空项目不会让 effect 反复重发 IPC（v0.7 的 P0 回归点）；
 //! - `planning-changed` 订阅由 store 统一懒注册，面板不复制第二套刷新逻辑；
 //! - 切换项目只走 `selectProject`（带请求代际，旧响应自动丢弃）；
@@ -46,7 +46,7 @@ import {
 } from "./actions";
 import { EmptyState, PanelHead, Segmented, type SegOption } from "./PanelKit";
 
-type View = "features" | "projects";
+type View = "features" | "plans";
 type Source = "mine" | "builtin";
 type Filter = "all" | "todo" | "active" | "done";
 
@@ -118,14 +118,14 @@ function projectProgressText(
 
 export default function PlanningLite() {
   const { t } = useLocale();
-  const projects = usePlanningStore((s) => s.projects);
-  const projectsLoading = usePlanningStore((s) => s.projectsLoading);
-  const projectsError = usePlanningStore((s) => s.projectsError);
-  const loadProjects = usePlanningStore((s) => s.loadProjects);
-  const activeProjectId = usePlanningStore((s) => s.activeProjectId);
+  const plans = usePlanningStore((s) => s.plans);
+  const plansLoading = usePlanningStore((s) => s.plansLoading);
+  const plansError = usePlanningStore((s) => s.plansError);
+  const loadPlans = usePlanningStore((s) => s.loadPlans);
+  const activePlanId = usePlanningStore((s) => s.activePlanId);
   const features = usePlanningStore((s) => s.features);
   const featuresError = usePlanningStore((s) => s.featuresError);
-  const loadedForProject = usePlanningStore((s) => s.loadedForProject);
+  const loadedForPlan = usePlanningStore((s) => s.loadedForPlan);
   const updateStep = usePlanningStore((s) => s.updateStep);
 
   const [view, setView] = useState<View>("features");
@@ -140,7 +140,7 @@ export default function PlanningLite() {
   /** 首次读取完成前不渲染「还没有项目」空态，避免加载中的一帧误报。 */
   const [bootedState, setBootedState] = useState(false);
   const noticeTimer = useRef<number | null>(null);
-  // 挂载期只自动选择一次：空项目时任何依赖 projects/loading 的 effect 都会
+  // 挂载期只自动选择一次：空项目时任何依赖 plans/loading 的 effect 都会
   // 反复成立，必须用标记而不是「列表为空就再试」。
   const booted = useRef(false);
 
@@ -164,40 +164,40 @@ export default function PlanningLite() {
     booted.current = true;
     void (async () => {
       const store = usePlanningStore.getState();
-      await store.loadProjects();
+      await store.loadPlans();
       const state = usePlanningStore.getState();
       const target =
-        state.projects.find((p) => p.id === state.activeProjectId) ??
-        state.projects.find((p) => !p.archived) ??
-        state.projects[0];
+        state.plans.find((p) => p.id === state.activePlanId) ??
+        state.plans.find((p) => !p.archived) ??
+        state.plans[0];
       // 项目列表已就绪：先放行项目空态/列表，功能加载由各视图自己的 loading 表达。
       setBootedState(true);
       // 没有任何用户项目时直接展示内置路线图：否则面板只剩空态，
       // 用户会误以为「路线图没显示」。读取失败不切换，错误态仍给重试。
-      if (!state.projectsError && state.projects.length === 0) {
+      if (!state.plansError && state.plans.length === 0) {
         setSource("builtin");
         return;
       }
       if (!target) return;
-      if (state.loadedForProject !== target.id || state.featuresError) {
-        await usePlanningStore.getState().selectProject(target.id);
+      if (state.loadedForPlan !== target.id || state.featuresError) {
+        await usePlanningStore.getState().selectPlan(target.id);
       }
     })();
   }, []);
 
-  const activeProject = useMemo(
-    () => projects.find((p) => p.id === activeProjectId) ?? null,
-    [projects, activeProjectId],
+  const activePlan = useMemo(
+    () => plans.find((p) => p.id === activePlanId) ?? null,
+    [plans, activePlanId],
   );
 
-  const orderedProjects = useMemo(() => {
+  const orderedPlans = useMemo(() => {
     // 未归档优先；组内保持用户排序（sort_order）。
-    return [...projects].sort(
+    return [...plans].sort(
       (a, b) => Number(a.archived) - Number(b.archived) || a.sort_order - b.sort_order,
     );
-  }, [projects]);
+  }, [plans]);
 
-  const scopeReady = activeProjectId !== null && loadedForProject === activeProjectId;
+  const scopeReady = activePlanId !== null && loadedForPlan === activePlanId;
 
   // 搜索 250ms 防抖：输入停顿后才更新生效的查找词（纯客户端过滤，无 IPC）。
   useEffect(() => {
@@ -238,13 +238,13 @@ export default function PlanningLite() {
 
   /** 已选择项目时的完整规划入口：直达唯一工作台规划中心（项目级定位随导航事务下发）。 */
   const openFullPlanning = useCallback(() => {
-    void openWorkbenchPageWithToast("roadmap", activeProjectId ?? undefined);
-  }, [activeProjectId]);
+    void openWorkbenchPageWithToast("roadmap", activePlanId ?? undefined);
+  }, [activePlanId]);
 
   const openProject = (id: string) => {
     setExpandedId(null);
     setView("features");
-    void usePlanningStore.getState().selectProject(id);
+    void usePlanningStore.getState().selectPlan(id);
   };
 
   const toggleStep = async (step: PlanningStep) => {
@@ -271,7 +271,7 @@ export default function PlanningLite() {
   ];
 
   // ── 项目列表（二级视图）──────────────────────────────────────────
-  if (view === "projects") {
+  if (view === "plans") {
     return (
       <>
         <PanelHead
@@ -279,9 +279,9 @@ export default function PlanningLite() {
           sub={
             !bootedState
               ? t("capsule.planning.loading")
-              : projects.length > 0
+              : plans.length > 0
                 ? t("capsule.planning.projectCount", {
-                    count: projects.length,
+                    count: plans.length,
                   })
                 : t("capsule.planning.emptyProjectsShort")
           }
@@ -297,21 +297,21 @@ export default function PlanningLite() {
           }
         />
         <div className="cap-list">
-          {!bootedState || (projectsLoading && projects.length === 0) ? (
+          {!bootedState || (plansLoading && plans.length === 0) ? (
             <EmptyState
               icon={<MapIcon size={22} strokeWidth={1.6} aria-hidden="true" />}
               text={t("capsule.planning.projectsLoading")}
             />
           ) : null}
-          {bootedState && projectsError && projects.length === 0 && (
+          {bootedState && plansError && plans.length === 0 && (
             <EmptyState
               icon={<MapIcon size={22} strokeWidth={1.6} aria-hidden="true" />}
               text={t("capsule.planning.projectsError")}
               actionLabel={t("common.retry")}
-              onAction={() => void loadProjects()}
+              onAction={() => void loadPlans()}
             />
           )}
-          {bootedState && !projectsLoading && !projectsError && projects.length === 0 && (
+          {bootedState && !plansLoading && !plansError && plans.length === 0 && (
             <EmptyState
               icon={<FolderKanban size={22} strokeWidth={1.6} aria-hidden="true" />}
               text={t("capsule.planning.emptyProjects")}
@@ -319,17 +319,17 @@ export default function PlanningLite() {
               onAction={() => void openWorkbenchPageWithToast("roadmap")}
             />
           )}
-          {orderedProjects.map((project) => (
+          {orderedPlans.map((project) => (
             <button
               key={project.id}
               type="button"
               className={`cap-item cap-plan-row cap-plan-project${
-                project.id === activeProjectId ? " is-active" : ""
+                project.id === activePlanId ? " is-active" : ""
               }`}
               aria-label={t("capsule.planning.openProjectAria", {
                 name: project.name,
               })}
-              aria-pressed={project.id === activeProjectId}
+              aria-pressed={project.id === activePlanId}
               onClick={() => openProject(project.id)}
             >
               <span className="cap-main">
@@ -365,14 +365,14 @@ export default function PlanningLite() {
   }
 
   // ── 功能列表（一级视图）──────────────────────────────────────────
-  const projectName = activeProject?.name ?? t("capsule.planning.noProject");
+  const projectName = activePlan?.name ?? t("capsule.planning.noProject");
   const showingBuiltin = source === "builtin";
   const emptyProjectList =
-    bootedState && !projectsLoading && !projectsError && projects.length === 0;
+    bootedState && !plansLoading && !plansError && plans.length === 0;
   const noActiveProject =
-    bootedState && !projectsLoading && !projectsError && projects.length > 0 && !activeProject;
-  const donePct = activeProject?.stats.has_features
-    ? activeProject.stats.progress_percent
+    bootedState && !plansLoading && !plansError && plans.length > 0 && !activePlan;
+  const donePct = activePlan?.stats.has_features
+    ? activePlan.stats.progress_percent
     : 0;
 
   return (
@@ -387,8 +387,8 @@ export default function PlanningLite() {
                   total: FEATURE_CATALOG.length,
                   done: BUILTIN_IMPLEMENTED,
                 })
-              : activeProject
-                ? `${projectName} · ${statsText(activeProject, t)}`
+              : activePlan
+                ? `${projectName} · ${statsText(activePlan, t)}`
                 : projectName
         }
         actions={
@@ -397,7 +397,7 @@ export default function PlanningLite() {
               type="button"
               className="cap-iconbtn"
               aria-label={t("capsule.planning.switchAria")}
-              onClick={() => setView("projects")}
+              onClick={() => setView("plans")}
             >
               <FolderKanban size={16} strokeWidth={2} aria-hidden="true" />
             </button>
@@ -455,12 +455,12 @@ export default function PlanningLite() {
         </div>
       ) : (
         <div className="cap-list">
-        {bootedState && projectsError && projects.length === 0 && (
+        {bootedState && plansError && plans.length === 0 && (
           <EmptyState
             icon={<MapIcon size={22} strokeWidth={1.6} aria-hidden="true" />}
             text={t("capsule.planning.projectsError")}
             actionLabel={t("common.retry")}
-            onAction={() => void loadProjects()}
+            onAction={() => void loadPlans()}
           />
         )}
 
@@ -478,43 +478,43 @@ export default function PlanningLite() {
             icon={<FolderKanban size={22} strokeWidth={1.6} aria-hidden="true" />}
             text={t("capsule.planning.footPickProject")}
             actionLabel={t("capsule.planning.selectProject")}
-            onAction={() => setView("projects")}
+            onAction={() => setView("plans")}
           />
         )}
 
-        {activeProject &&
+        {activePlan &&
           featuresError &&
-          loadedForProject !== activeProjectId && (
+          loadedForPlan !== activePlanId && (
             <EmptyState
               icon={<MapIcon size={22} strokeWidth={1.6} aria-hidden="true" />}
               text={t("capsule.planning.featuresError")}
               actionLabel={t("common.retry")}
-              onAction={() => void usePlanningStore.getState().selectProject(activeProject.id)}
+              onAction={() => void usePlanningStore.getState().selectPlan(activePlan.id)}
             />
           )}
 
-        {activeProject && featuresError && loadedForProject === activeProjectId && (
+        {activePlan && featuresError && loadedForPlan === activePlanId && (
           <div className="cap-item cap-error-row" role="alert">
             <span className="cap-error-text">{t("capsule.panel.staleText")}</span>
             <button
               type="button"
               className="cap-mini"
               aria-label={t("capsule.planning.retryFeaturesAria")}
-              onClick={() => void usePlanningStore.getState().selectProject(activeProject.id)}
+              onClick={() => void usePlanningStore.getState().selectPlan(activePlan.id)}
             >
               {t("common.retry")}
             </button>
           </div>
         )}
 
-        {activeProject && !scopeReady && !featuresError && (
+        {activePlan && !scopeReady && !featuresError && (
           <EmptyState
             icon={<MapIcon size={22} strokeWidth={1.6} aria-hidden="true" />}
             text={t("capsule.planning.featuresLoading")}
           />
         )}
 
-        {activeProject &&
+        {activePlan &&
           scopeReady &&
           visible !== null &&
           visible.length === 0 && (
@@ -531,20 +531,20 @@ export default function PlanningLite() {
                   : undefined
               }
               onAction={
-                features.length === 0 && activeProject
-                  ? () => void withWorkbenchToast(openRoadmapFocus({ projectId: activeProject.id }))
+                features.length === 0 && activePlan
+                  ? () => void withWorkbenchToast(openRoadmapFocus({ projectId: activePlan.id }))
                   : undefined
               }
             />
           )}
 
-        {activeProject &&
+        {activePlan &&
           scopeReady &&
           visible?.map((feature) => (
             <FeatureRow
               key={feature.id}
               feature={feature}
-              projectId={activeProject.id}
+              projectId={activePlan.id}
               open={expandedId === feature.id}
               busyStep={busyStep}
               onToggle={() => setExpandedId((cur) => (cur === feature.id ? null : feature.id))}
@@ -569,9 +569,9 @@ export default function PlanningLite() {
         <div className="cap-foot">
           <span className="cap-foot-note">
             <MapIcon size={12} strokeWidth={1.8} aria-hidden="true" />
-            {notice ?? statsText(activeProject, t)}
+            {notice ?? statsText(activePlan, t)}
           </span>
-          {activeProject?.stats.has_features ? (
+          {activePlan?.stats.has_features ? (
             <span className="cap-progress" aria-hidden="true">
               <i style={{ width: `${donePct}%` }} />
             </span>

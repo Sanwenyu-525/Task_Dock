@@ -60,7 +60,7 @@ export default function MilestonesView({ onOpenFeatures }: MilestonesViewProps) 
   const milestones = usePlanningStore((s) => s.milestones);
   const milestonesLoading = usePlanningStore((s) => s.milestonesLoading);
   const milestonesError = usePlanningStore((s) => s.milestonesError);
-  const activeProjectId = usePlanningStore((s) => s.activeProjectId);
+  const activeProjectId = usePlanningStore((s) => s.activePlanId);
   const reloadMilestones = usePlanningStore((s) => s.loadMilestones);
   const deleteMilestone = usePlanningStore((s) => s.deleteMilestone);
   const showToast = useUiStore((s) => s.showToast);

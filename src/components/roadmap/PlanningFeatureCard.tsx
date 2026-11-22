@@ -113,8 +113,9 @@ export function PlanningFeatureCard({
   const loadMoreActivity = usePlanningStore((s) => s.loadMoreActivity);
   const addNote = usePlanningStore((s) => s.addNote);
   const milestones = usePlanningStore((s) => s.milestones);
-  const projectName = usePlanningStore(
-    (s) => s.projects.find((p) => p.id === feature.project_id)?.name ?? "未知项目",
+  // feature.project_id 是计划 ID（ADR-0010）：显示计划（规划容器）名而非项目根名。
+  const planName = usePlanningStore(
+    (s) => s.plans.find((p) => p.id === feature.project_id)?.name ?? "未知计划",
   );
   const showToast = useUiStore((s) => s.showToast);
   // 只为当前功能订阅 Agent 操作：其他功能变化不会让本卡重渲染。
@@ -235,7 +236,7 @@ export function PlanningFeatureCard({
         <div className="planning-detail" role="region" aria-label={`${feature.title} 详情`}>
           <div className="planning-detail-summary">
             <span>
-              所属项目 <strong>{projectName}</strong>
+              所属项目 <strong>{planName}</strong>
             </span>
             <span>目标日期 {feature.target_date ?? "未设置"}</span>
             <span>更新于 {formatRelative(feature.updated_at)}</span>

@@ -404,7 +404,7 @@ export default function ProjectHubPanel({ onOpenPlanning }: ProjectHubPanelProps
               {planningMode === "edit" ? (
                 <section className="ph-section ph-embed" aria-label="规划编辑（复用规划工作区）">
                   {active.planId ? (
-                    <PlanningWorkspace initialProjectId={active.planId} />
+                    <PlanningWorkspace initialPlanId={active.planId} />
                   ) : (
                     <p className="ph-muted">项目还没有计划，先在概览里创建计划后再编辑阶段与功能。</p>
                   )}

@@ -1,11 +1,11 @@
-//! 规划中心四视图共用的小型展示件：项目选择器、进度条、功能状态徽标。
+//! 规划中心四视图共用的小型展示件：进度条、功能状态徽标。
 //! 颜色只做辅助，所有状态徽标同时带文本，不作为唯一识别依据。
+//! （ADR-0010：原 PlanningProjectPicker 已移除——计划列表不得冒充项目选择器。）
 
-import { Select, StatusBadge, type StatusTone } from "../ui";
+import { StatusBadge, type StatusTone } from "../ui";
 import {
   PLANNING_FEATURE_STATUS_LABELS,
   type PlanningFeatureStatus,
-  type PlanningProject,
 } from "../../lib/bridge";
 
 /** 内容区的滚动容器（页面级单一滚动）：向上找第一个 overflow-y 可滚动的祖先。 */
@@ -55,31 +55,5 @@ export function PlanningFeatureStatusBadge({ status }: { status: PlanningFeature
     <StatusBadge tone={PLANNING_STATUS_TONE[status]} size="sm">
       {PLANNING_FEATURE_STATUS_LABELS[status]}
     </StatusBadge>
-  );
-}
-
-export function PlanningProjectPicker({
-  projects,
-  activeProjectId,
-  onChange,
-}: {
-  projects: PlanningProject[];
-  activeProjectId: string | null;
-  onChange: (id: string) => void;
-}) {
-  return (
-    <div className="planning-project-picker">
-      <Select
-        value={activeProjectId ?? ""}
-        ariaLabel="选择项目"
-        block
-        menuMinWidth={220}
-        options={projects.map((p) => ({
-          value: p.id,
-          label: p.archived ? `${p.name}（已归档）` : p.name,
-        }))}
-        onChange={onChange}
-      />
-    </div>
   );
 }

@@ -45,7 +45,11 @@ export default function AgentPlanningLinks({
   }, [agentSource, sessionId]);
 
   const openFeature = (link: PlanningAgentFeatureLink) => {
-    useGlobalSearchStore.getState().requestPlanningFeatureLocate(link.feature_id, link.project_id);
+    // ADR-0010：link.project_id 是计划 ID；定位意图携带计划 ID + 项目根，
+    // 规划页先对齐全局项目根再解析计划，不把计划 ID 当项目 ID 传。
+    useGlobalSearchStore
+      .getState()
+      .requestPlanningFeatureLocate(link.feature_id, link.project_id, link.workspace_project_id);
   };
 
   return (

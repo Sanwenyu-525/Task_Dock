@@ -7,14 +7,18 @@
 //! 请求失败重试。bridge planning 命令全部 mock，store 用真实实现覆盖联动。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useCallback, useState } from "react";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import PlanningCenterPanel from "./PlanningCenterPanel";
+import { ProjectContextProvider, type ProjectContextValue } from "../../workbench/ProjectContext";
+import type { WorkspaceProject } from "../../lib/bridge";
 import { usePlanningStore } from "../../store/usePlanningStore";
 import { useUiStore } from "../../store/useUiStore";
 import type { PlanningFeature, PlanningMilestone, PlanningProject } from "../../lib/bridge";
 
 const bridge = vi.hoisted(() => ({
+  projectHubGetProject: vi.fn(),
   planningListProjects: vi.fn(),
   planningCreateProject: vi.fn(),
   planningUpdateProject: vi.fn(),
@@ -113,8 +117,9 @@ function ms(
   };
 }
 
-const PROJECT_A = proj("p1", "我的应用");
+const PROJECT_A = proj("p1", "我的应用", { workspace_project_id: "root-a" });
 const PROJECT_B = proj("p2", "副业项目", {
+  workspace_project_id: "root-b",
   stats: {
     feature_total: 0,
     feature_completed: 0,
@@ -142,11 +147,11 @@ const FEATURE_DONE = feat("f3", "已上线", { status: "completed" });
 beforeEach(() => {
   vi.clearAllMocks();
   usePlanningStore.setState({
-    projects: [],
-    projectsLoading: false,
-    projectsError: null,
-    activeProjectId: null,
-    loadedForProject: null,
+    plans: [],
+    plansLoading: false,
+    plansError: null,
+    activePlanId: null,
+    loadedForPlan: null,
     features: [],
     featuresLoading: false,
     featuresError: null,
@@ -167,14 +172,108 @@ afterEach(cleanup);
 // 全量套件并行时本机负载高：所有显式等待放宽超时，避免偶发抖动
 const WAIT = { timeout: 15000 };
 
+/** 全局项目上下文替身：projectId 可切换（模拟顶栏选择器），selectProject 直通。 */
+function PlanningHarness({
+  initialProjectId = "root-a",
+  children,
+}: {
+  initialProjectId?: string | null;
+  children?: React.ReactNode;
+}) {
+  const [projectId, setProjectId] = useState<string | null>(initialProjectId);
+  const selectProject = useCallback(async (id: string | null): Promise<boolean> => {
+    setProjectId(id);
+    return true;
+  }, []);
+  const value: ProjectContextValue = {
+    projectId,
+    selectedProject: projectId ? wsProject(projectId) : null,
+    projects: projectId ? [wsProject("root-a"), wsProject("root-b")] : [],
+    projectsLoading: false,
+    projectsError: null,
+    selectProject,
+    refreshProjects: vi.fn().mockResolvedValue([]),
+  };
+  return (
+    <ProjectContextProvider value={value}>
+      {children ?? <PlanningCenterPanel />}
+      {projectId ? (
+        <button onClick={() => setProjectId(projectId === "root-a" ? "root-b" : "root-a")}>
+          switch-project
+        </button>
+      ) : (
+        <button onClick={() => setProjectId("root-a")}>switch-project</button>
+      )}
+    </ProjectContextProvider>
+  );
+}
+
+function wsProject(id: string): WorkspaceProject {
+  return {
+    id,
+    name: id === "root-a" ? "应用项目" : "副业根项目",
+    kind: "general",
+    status: "active",
+    rootPath: "",
+    rootExists: false,
+    devProjectId: null,
+    devProjectExists: false,
+    devProjectName: null,
+    note: "",
+    itemCount: 0,
+    taskLinkCount: 0,
+    createdAt: "",
+    updatedAt: "",
+  };
+}
+
+/**
+ * 项目根 → activePlanId 的快照解析（PlanningWorkspace 挂载即解析）。
+ * 注意：同一个 mock 也服务默认挂载的项目中枢 Tab（ProjectHubPanel 渲染完整
+ * 快照），必须返回 ProjectHubSnapshot 全形状，缺数组会让进度推导崩溃。
+ */
+function mockPlanResolve(mapping: Record<string, string | null>) {
+  bridge.projectHubGetProject.mockImplementation(async (rootId: string) => ({
+    project: {
+      id: rootId,
+      name: wsProject(rootId)?.name ?? rootId,
+      kind: "general",
+      status: "active",
+      description: "",
+      goal: "",
+      targetDate: null,
+      activePlanId: mapping[rootId] ?? null,
+      createdAt: "2026-11-01T00:00:00Z",
+      updatedAt: "2026-11-01T00:00:00Z",
+      phaseCount: 0,
+      taskCount: 0,
+      completedTaskCount: 0,
+      capabilityCount: 0,
+      capabilityGapCount: 0,
+      deliverableCount: 0,
+    },
+    planId: mapping[rootId] ?? null,
+    goals: [],
+    phases: [],
+    milestones: [],
+    features: [],
+    capabilities: [],
+    tasks: [],
+    deliverables: [],
+    events: [],
+    risks: [],
+  }));
+}
+
 async function renderWithProjects() {
   bridge.planningListProjects.mockResolvedValue([PROJECT_A, PROJECT_B]);
   bridge.planningListFeatures.mockImplementation(async (pid: string) =>
     pid === "p1" ? [FEATURE_STEPS, FEATURE_NO_STEPS, FEATURE_DONE] : [],
   );
   bridge.planningListMilestones.mockResolvedValue([]);
+  mockPlanResolve({ "root-a": "p1", "root-b": "p2" });
   const user = userEvent.setup();
-  render(<PlanningCenterPanel />);
+  render(<PlanningHarness />);
   // 默认入口是项目中枢；旧规划编辑器用例显式切到「规划编辑」。
   await user.click(screen.getByRole("tab", { name: "规划编辑" }));
   await waitFor(() => expect(screen.getAllByText("我的应用").length).toBeGreaterThan(0), WAIT);
@@ -188,25 +287,24 @@ async function goToFeatures(user: ReturnType<typeof userEvent.setup>) {
 describe("数据源与视图导航", () => {
   it("提供规划中心对应的上下文教程入口", () => {
     bridge.planningListProjects.mockResolvedValue([]);
-    render(<PlanningCenterPanel />);
+    render(<PlanningHarness />);
 
     expect(
       screen.getByRole("button", { name: "查看帮助：规划中心：管理项目与内置路线图" }),
     ).toBeTruthy();
   });
 
-  it("默认项目中枢；切到规划编辑后无项目时给出创建引导并提示内置路线图位置", async () => {
+  it("全局无项目时显示明确空态，不自动选项目、不显示 0% 进度", async () => {
     bridge.planningListProjects.mockResolvedValue([]);
     const user = userEvent.setup();
-    render(<PlanningCenterPanel />);
+    render(<PlanningHarness initialProjectId={null} />);
     expect(screen.getByRole("tab", { name: "项目中枢" })).toBeTruthy();
     await user.click(screen.getByRole("tab", { name: "规划编辑" }));
-    expect(await screen.findByText(/创建你的第一个项目/, {}, WAIT)).toBeTruthy();
-    expect(screen.getByRole("button", { name: /新建项目/ })).toBeTruthy();
-    expect(screen.getAllByText(/内置路线图/).length).toBeGreaterThanOrEqual(1);
-    // 空态不得显示 0% 进度
-    expect(screen.queryByText(/0%/)).toBeNull();
-    // 四视图入口存在
+    expect(await screen.findByText(/尚未选择项目/, {}, WAIT)).toBeTruthy();
+    // 全局没有项目：不自动选第一个，也不发计划数据请求（ADR-0010 §5.5）
+    expect(bridge.planningListFeatures).not.toHaveBeenCalled();
+    expect(usePlanningStore.getState().activePlanId).toBeNull();
+    // 四视图入口存在（禁用态）
     expect(screen.getByRole("tab", { name: "项目总览" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "功能列表" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "功能看板" })).toBeTruthy();
@@ -216,7 +314,7 @@ describe("数据源与视图导航", () => {
   it("切到内置路线图后渲染 Task Dock 既有目录与七个分区", async () => {
     const user = userEvent.setup();
     bridge.planningListProjects.mockResolvedValue([]);
-    render(<PlanningCenterPanel />);
+    render(<PlanningHarness />);
     await user.click(screen.getByRole("tab", { name: "内置路线图" }));
     expect(screen.getByText("核心效率功能")).toBeTruthy();
     // 新增分区必须在真实面板可见（不能只改数据、页面无法展示）
@@ -239,8 +337,8 @@ describe("项目总览", () => {
   it("统计来自真实功能数据：总数、各状态数量与整体完成率", async () => {
     await renderWithProjects();
     // 项目级加载完成后，Store 用后端功能实体同步统计
-    await waitFor(() => expect(usePlanningStore.getState().projects[0].stats.feature_total).toBe(3));
-    const overview = screen.getByLabelText("项目概览");
+    await waitFor(() => expect(usePlanningStore.getState().plans[0].stats.feature_total).toBe(3));
+    const overview = screen.getByLabelText("计划概览");
     const totalCard = within(overview).getByText("功能总数").parentElement!;
     expect(totalCard.textContent).toContain("3");
     const doneCard = within(overview).getByText("已完成").parentElement!;
@@ -249,35 +347,29 @@ describe("项目总览", () => {
     expect(screen.getAllByText("33%").length).toBeGreaterThanOrEqual(1);
   });
 
-  it("项目切换：Select 换项目后加载其数据；空项目显示尚未添加功能且不显示 0%", async () => {
+  it("全局项目切换后加载新项目计划数据；空计划显示尚未添加功能且不显示 0%", async () => {
     const user = await renderWithProjects();
-    await user.click(screen.getByRole("combobox", { name: "选择项目" }));
-    await user.click(screen.getByRole("option", { name: "副业项目" }));
-    await waitFor(() => expect(usePlanningStore.getState().activeProjectId).toBe("p2"));
+    // 顶栏切换项目 → root-b 解析出 p2（空计划），旧计划数据被清空
+    await user.click(screen.getByRole("button", { name: "switch-project" }));
+    await waitFor(() => expect(usePlanningStore.getState().activePlanId).toBe("p2"), WAIT);
     await waitFor(() => expect(screen.getAllByText("尚未添加功能").length).toBeGreaterThanOrEqual(1), WAIT);
-    expect(screen.queryByText(/整体完成率/)).toBeTruthy();
     expect(screen.queryByText(/0%/)).toBeNull();
-    await user.click(screen.getByRole("combobox", { name: "选择项目" }));
-    await user.click(screen.getByRole("option", { name: "我的应用" }));
+    // 切回 root-a → p1 数据恢复
+    await user.click(screen.getByRole("button", { name: "switch-project" }));
+    await waitFor(() => expect(usePlanningStore.getState().activePlanId).toBe("p1"), WAIT);
     await waitFor(() => expect(screen.getAllByText("我的应用").length).toBeGreaterThan(0), WAIT);
   });
 
-  it("新建项目：填名创建后出现在项目里", async () => {
-    const user = await renderWithProjects();
-    await user.click(screen.getByRole("button", { name: /新建项目/ }));
-    const editor = await screen.findByRole("region", { name: "新建项目" }, WAIT);
-    await user.type(within(editor).getByLabelText("项目名称"), "新坑");
-    bridge.planningCreateProject.mockResolvedValue(proj("p3", "新坑"));
-    await user.click(within(editor).getByRole("button", { name: "创建" }));
-    await waitFor(() => expect(bridge.planningCreateProject).toHaveBeenCalled(), WAIT);
-    await waitFor(() => expect(screen.queryByRole("region", { name: "新建项目" })).toBeNull(), WAIT);
-    expect(screen.getAllByText("新坑").length).toBeGreaterThan(0);
+  it("规划编辑不再提供第二套项目创建入口（创建统一走顶栏/项目中枢，ADR-0010）", async () => {
+    await renderWithProjects();
+    expect(screen.queryByRole("button", { name: /新建项目/ })).toBeNull();
+    expect(screen.queryByRole("region", { name: "新建项目" })).toBeNull();
   });
 
   it("项目目标日期：选择后标记未保存并随保存提交", async () => {
     const user = await renderWithProjects();
-    await user.click(screen.getByRole("button", { name: "编辑项目" }));
-    const editor = await screen.findByRole("region", { name: "编辑项目" }, WAIT);
+    await user.click(screen.getByRole("button", { name: "编辑计划" }));
+    const editor = await screen.findByRole("region", { name: "编辑计划" }, WAIT);
     await user.click(within(editor).getByRole("textbox", { name: "目标日期" }));
     await user.click(screen.getByRole("button", { name: "2026-11-20" }));
     expect(within(editor).getByRole("status").textContent).toContain("未保存");
@@ -296,8 +388,8 @@ describe("项目总览", () => {
 
   it("编辑项目失败：提示错误、页面内编辑态保留用户输入", async () => {
     const user = await renderWithProjects();
-    await user.click(screen.getByRole("button", { name: "编辑项目" }));
-    const editor = await screen.findByRole("region", { name: "编辑项目" }, { timeout: WAIT.timeout });
+    await user.click(screen.getByRole("button", { name: "编辑计划" }));
+    const editor = await screen.findByRole("region", { name: "编辑计划" }, { timeout: WAIT.timeout });
     const nameInput = within(editor).getByLabelText("项目名称") as HTMLInputElement;
     await user.clear(nameInput);
     await user.type(nameInput, "改名后失败");
@@ -307,20 +399,20 @@ describe("项目总览", () => {
       expect(useUiStore.getState().toasts.some((t) => t.kind === "error")).toBe(true),
     );
     // 页面内编辑态保留：输入未丢失
-    expect(screen.getByRole("region", { name: "编辑项目" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "编辑计划" })).toBeTruthy();
     expect((screen.getByLabelText("项目名称") as HTMLInputElement).value).toBe("改名后失败");
   });
 
   it("项目未保存返回保护：放弃修改后回到总览", async () => {
     const user = await renderWithProjects();
-    await user.click(screen.getByRole("button", { name: "编辑项目" }));
-    const editor = await screen.findByRole("region", { name: "编辑项目" }, WAIT);
+    await user.click(screen.getByRole("button", { name: "编辑计划" }));
+    const editor = await screen.findByRole("region", { name: "编辑计划" }, WAIT);
     await user.type(within(editor).getByLabelText("项目名称"), "改一半");
     await user.click(within(editor).getByRole("button", { name: "返回项目总览" }));
     expect(within(editor).getByRole("alert").textContent).toContain("未保存");
     await user.click(within(editor).getByRole("button", { name: "放弃修改" }));
-    await waitFor(() => expect(screen.queryByRole("region", { name: "编辑项目" })).toBeNull(), WAIT);
-    expect(screen.getByLabelText("项目概览")).toBeTruthy();
+    await waitFor(() => expect(screen.queryByRole("region", { name: "编辑计划" })).toBeNull(), WAIT);
+    expect(screen.getByLabelText("计划概览")).toBeTruthy();
   });
 
   it("删除计划必须确认且明确影响面（功能/步骤/历史）", async () => {
@@ -352,7 +444,7 @@ describe("功能列表与详情", () => {
     await waitFor(() => expect(screen.queryByRole("region", { name: "新增功能" })).toBeNull(), WAIT);
     expect(screen.getByRole("button", { name: /^验收新功能（/ })).toBeTruthy();
     await waitFor(() =>
-      expect(usePlanningStore.getState().projects[0].stats.feature_total).toBe(4),
+      expect(usePlanningStore.getState().plans[0].stats.feature_total).toBe(4),
     );
   });
 
@@ -498,8 +590,9 @@ describe("功能列表与详情", () => {
     bridge.planningListProjects.mockResolvedValue([PROJECT_A]);
     bridge.planningListFeatures.mockRejectedValue("查询失败");
     bridge.planningListMilestones.mockResolvedValue([]);
+    mockPlanResolve({ "root-a": "p1" });
     const user = userEvent.setup();
-    render(<PlanningCenterPanel />);
+    render(<PlanningHarness />);
     await user.click(screen.getByRole("tab", { name: "规划编辑" }));
     await waitFor(() => expect(screen.getAllByText("我的应用").length).toBeGreaterThan(0), WAIT);
     await goToFeatures(user);
@@ -578,8 +671,9 @@ describe("里程碑", () => {
       MS_EMPTY,
       MS_OVERDUE,
     ]);
+    mockPlanResolve({ "root-a": "p1" });
     const user = userEvent.setup();
-    render(<PlanningCenterPanel />);
+    render(<PlanningHarness />);
     await user.click(screen.getByRole("tab", { name: "规划编辑" }));
     await waitFor(() => expect(screen.getAllByText("我的应用").length).toBeGreaterThan(0), WAIT);
     return user;
