@@ -27,6 +27,14 @@
 > `projects.write`（v90）与授权表外键改挂项目根（v91）。方案见
 > [`10-统一项目身份与创建服务.md`](10-统一项目身份与创建服务.md) 与
 > `docs/adr/0008-unified-project-identity-and-creation.md`；测试见 `tmp/acceptance/project-identity-v2/`。
+>
+> **状态更新（2026-11-22，第五轮：统一项目上下文）**：前端 UI/Store/导航按 ADR-0010 收敛——
+> WorkbenchShell 顶栏是**唯一**项目根选择器（`src/workbench/ProjectContext.tsx` 只读透传给路由页）；
+> 项目中枢不再维护第二份项目选择状态；规划 Store 全面改用 Plan 语义（`plans`/`activePlanId`/
+> `selectPlan`，见 `usePlanningStore.ts`），由全局项目根快照解析 activePlanId，不再跨项目切换计划；
+> 深链/全局搜索/Agent 定位的 `projectId` 一律是项目根，`planId` 按根快照解析后加载。
+> 三个领域职责边界（中枢=生命周期、规划=计划编辑、工作空间=生产现场）见
+> `docs/adr/0010-unified-project-context-and-lifecycle-workbench.md`。
 
 > **状态更新（2026-11-21，第三轮：一致性修复）**：资源关联项目化（迁移 v89）、计划删除弱引用清理、
 > 多计划任务按 active 计划归属、项目中枢内嵌规划编辑、进度口径统一、Agent Access 迁出能力中心。

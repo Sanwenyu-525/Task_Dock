@@ -31,6 +31,8 @@ ADR 记录"为什么这样决策"，让未来 Agent 理解取舍、避免反复�
 | [0007](0007-remove-build-scheduler.md) | 删除构建调度器，命令直接执行 | Accepted |
 | [0008](0008-unified-project-identity-and-creation.md) | 统一项目身份与统一项目创建服务 | Accepted |
 | [0009](0009-window-close-behavior-and-tray-recall.md) | 窗口关闭策略（window_close_behavior）与托盘唤回入口 | Accepted |
+| [0010](0010-unified-project-context-and-lifecycle-workbench.md) | 统一项目上下文与项目生命周期工作台（ProjectContext + Plan 语义收敛） | Accepted |
+| [0011](0011-project-plan-dual-aggregate.md) | Project Root 与 Plan 双聚合及 API 契约（v93 根 revision、三入口创建事务统一） | Accepted |
 
 ## 战略草案决策（未正式 Accepted，待用户确认）
 
