@@ -8,9 +8,9 @@
 //! - 项目不存在 / 计划缺失 / 对象不存在 / 过期意图：明确反馈，不伪装成功。
 //! bridge planning 命令全部 mock，store 用真实实例；ProjectContext 用受控替身。
 
-import { useCallback, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 const bridge = vi.hoisted(() => ({
   projectHubGetProject: vi.fn(),
@@ -174,19 +174,31 @@ function intentToast(prefix: string): boolean {
   return useUiStore.getState().toasts.some((t) => t.message.startsWith(prefix));
 }
 
-/**
- * 受控全局上下文：selectProject 按项目列表校验并真实切换渲染中的 projectId，
- * 与 WorkbenchShell 的「校验存在 → 提交选择」语义一致。
- */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+/** 受控全局上下文：selectProject 按项目列表校验并真实切换渲染中的 projectId，
+ *  与 WorkbenchShell 的「校验存在 → 提交选择」语义一致；controller 供模拟用户手动切换。 */
+type HarnessController = { selectProject?: (id: string | null) => Promise<boolean> };
+
 function WorkspaceHarness({
   initialProjectId,
   projects,
   extra,
+  controller,
   children,
 }: {
   initialProjectId: string | null;
   projects: WorkspaceProject[];
   extra?: Partial<ProjectContextValue>;
+  controller?: HarnessController;
   children?: ReactNode;
 }) {
   const [projectId, setProjectId] = useState<string | null>(initialProjectId);
@@ -198,6 +210,9 @@ function WorkspaceHarness({
     },
     [projects],
   );
+  useEffect(() => {
+    if (controller) controller.selectProject = selectProject;
+  }, [controller, selectProject]);
   const value: ProjectContextValue = {
     projectId,
     selectedProject: projectId ? wsProject(projectId) : null,
@@ -502,5 +517,295 @@ describe("PlanningWorkspace 空态（ADR-0010 §5.5）", () => {
     await waitFor(() => expect(usePlanningStore.getState().loadedForPlan).toBe("p2"));
     const overview = screen.getByRole("tab", { name: "项目总览" });
     expect(overview.getAttribute("aria-selected")).toBe("true");
+  });
+});
+
+describe("PlanningWorkspace 归属校验与定位竞态（ADR-0010 收尾）", () => {
+  it("快照归属不符：拒绝解析并明确报错，不加载任何计划", async () => {
+    bridge.projectHubGetProject.mockResolvedValue({
+      project: { id: "root-x", name: "错项目" },
+      planId: "p1",
+    });
+    bridge.planningListProjects.mockResolvedValue([PLAN_A]);
+    bridge.planningListFeatures.mockResolvedValue([F1]);
+    bridge.planningListMilestones.mockResolvedValue([]);
+    seedStore([PLAN_A]);
+
+    render(
+      <WorkspaceHarness initialProjectId="root-a" projects={ROOTS}>
+        <PlanningWorkspace />
+      </WorkspaceHarness>,
+    );
+
+    expect(await screen.findByText(/项目快照与请求的项目不一致/)).toBeTruthy();
+    expect(bridge.planningListFeatures).not.toHaveBeenCalled();
+    expect(usePlanningStore.getState().activePlanId).toBeNull();
+  });
+
+  it("快照加载失败：明确反馈解析失败，不误报「尚无可用计划」", async () => {
+    mockPlanResolve({ "root-a": "p1", "root-b": "error" });
+    bridge.planningListProjects.mockResolvedValue([PLAN_A]);
+    bridge.planningListFeatures.mockResolvedValue([F1]);
+    bridge.planningListMilestones.mockResolvedValue([]);
+    seedStore([PLAN_A]);
+    setIntent({ projectId: "root-b", featureId: "f9" });
+
+    render(
+      <WorkspaceHarness initialProjectId="root-a" projects={ROOTS}>
+        <PlanningWorkspace />
+      </WorkspaceHarness>,
+    );
+
+    await waitFor(() => expect(intentToast("项目计划解析失败，无法定位")).toBe(true));
+    expect(intentToast("该项目尚无可用计划")).toBe(false);
+    // 切换后解析失败：不保留旧项目的计划数据。
+    expect(usePlanningStore.getState().activePlanId).toBeNull();
+  });
+
+  it("搜索目标计划不是项目激活计划：拒绝打开，不切换项目", async () => {
+    mockPlanResolve({ "root-a": "p1", "root-b": "p2" });
+    bridge.planningListProjects.mockResolvedValue([PLAN_A, PLAN_B]);
+    bridge.planningListFeatures.mockResolvedValue([F1]);
+    bridge.planningListMilestones.mockResolvedValue([]);
+    seedStore([PLAN_A, PLAN_B]);
+    // root-b 的激活计划是 p2，却要求打开 p1（别的项目的计划）：必须拒绝。
+    useGlobalSearchStore.setState({
+      pendingLocate: {
+        category: "planning",
+        id: "f9",
+        kind: "feature",
+        parentId: "p1",
+        workspaceProjectId: "root-b",
+        keyword: "",
+        token: 1,
+      },
+    });
+
+    render(
+      <WorkspaceHarness initialProjectId="root-a" projects={ROOTS}>
+        <PlanningWorkspace />
+      </WorkspaceHarness>,
+    );
+
+    await waitFor(() => expect(intentToast("目标计划不是当前项目的激活计划")).toBe(true));
+    expect(usePlanningStore.getState().activePlanId).toBe("p1");
+    expect(bridge.planningListFeatures).not.toHaveBeenCalledWith("p2");
+  });
+
+  it("搜索项目根快照归属不符：取消定位并明确反馈", async () => {
+    bridge.projectHubGetProject.mockImplementation(async (rootId: string) =>
+      rootId === "root-b"
+        ? { project: { id: "root-x", name: "错项目" }, planId: "p2" }
+        : { project: { id: rootId, name: "项目一" }, planId: "p1" },
+    );
+    bridge.planningListProjects.mockResolvedValue([PLAN_A, PLAN_B]);
+    bridge.planningListFeatures.mockResolvedValue([F1]);
+    bridge.planningListMilestones.mockResolvedValue([]);
+    seedStore([PLAN_A, PLAN_B]);
+    useGlobalSearchStore.setState({
+      pendingLocate: {
+        category: "planning",
+        id: "f9",
+        kind: "feature",
+        parentId: "p2",
+        workspaceProjectId: "root-b",
+        keyword: "",
+        token: 1,
+      },
+    });
+
+    render(
+      <WorkspaceHarness initialProjectId="root-a" projects={ROOTS}>
+        <PlanningWorkspace />
+      </WorkspaceHarness>,
+    );
+
+    await waitFor(() => expect(intentToast("项目快照与目标项目不一致")).toBe(true));
+    expect(usePlanningStore.getState().activePlanId).toBe("p1");
+    expect(bridge.planningListFeatures).not.toHaveBeenCalledWith("p2");
+  });
+
+  it("计划列表加载失败：反馈解析失败，不误报孤儿计划", async () => {
+    mockPlanResolve({ "root-a": "p1" });
+    bridge.planningListProjects.mockRejectedValue(new Error("列表读取失败"));
+    bridge.planningListFeatures.mockResolvedValue([F1]);
+    bridge.planningListMilestones.mockResolvedValue([]);
+    seedStore([]);
+    useGlobalSearchStore.setState({
+      pendingLocate: {
+        category: "planning",
+        id: "f9",
+        kind: "feature",
+        parentId: "p2",
+        workspaceProjectId: null,
+        keyword: "",
+        token: 1,
+      },
+    });
+
+    render(
+      <WorkspaceHarness initialProjectId="root-a" projects={ROOTS}>
+        <PlanningWorkspace />
+      </WorkspaceHarness>,
+    );
+
+    await waitFor(() => expect(intentToast("计划列表加载失败")).toBe(true));
+    expect(intentToast("该计划未关联项目")).toBe(false);
+    expect(usePlanningStore.getState().activePlanId).toBe("p1");
+  });
+
+  it("定位等待快照时用户手动切走项目：旧定位静默放弃，不抢新项目视图", async () => {
+    const snapB = deferred<{ project: { id: string; name: string }; planId: string | null }>();
+    const PLAN_C = plan("p3", "计划三", "root-c");
+    bridge.projectHubGetProject.mockImplementation(async (rootId: string) => {
+      if (rootId === "root-b") return snapB.promise;
+      if (rootId === "root-c") return { project: { id: rootId, name: "项目三" }, planId: "p3" };
+      return { project: { id: rootId, name: "项目一" }, planId: "p1" };
+    });
+    bridge.planningListProjects.mockResolvedValue([PLAN_A, PLAN_B, PLAN_C]);
+    bridge.planningListFeatures.mockImplementation(async (pid: string) =>
+      pid === "p2" ? [feat("f9", "p2", "迟到功能")] : pid === "p3" ? [] : [F1],
+    );
+    bridge.planningListMilestones.mockResolvedValue([]);
+    seedStore([PLAN_A, PLAN_B, PLAN_C]);
+    setIntent({ projectId: "root-b", featureId: "f9" });
+    const controller: HarnessController = {};
+
+    render(
+      <WorkspaceHarness
+        controller={controller}
+        initialProjectId="root-a"
+        projects={[...ROOTS, wsProject("root-c")]}
+      >
+        <PlanningWorkspace />
+      </WorkspaceHarness>,
+    );
+
+    await waitFor(() => expect(bridge.projectHubGetProject).toHaveBeenCalledWith("root-b"));
+    // 用户在 root-b 快照仍挂起时手动切到 root-c。
+    await act(async () => {
+      await controller.selectProject!("root-c");
+    });
+    await waitFor(() => expect(usePlanningStore.getState().activePlanId).toBe("p3"));
+    // 旧定位的迟到回包不得再选中 p2、不得用失败文案打断用户。
+    snapB.resolve({ project: { id: "root-b", name: "项目二" }, planId: "p2" });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(bridge.planningListFeatures).not.toHaveBeenCalledWith("p2");
+    expect(intentToast("该项目尚无可用计划")).toBe(false);
+    expect(intentToast("项目计划解析失败")).toBe(false);
+    expect(intentToast("切换项目未完成")).toBe(false);
+    expect(usePlanningStore.getState().activePlanId).toBe("p3");
+  });
+
+  it("用户在定位途中切换视图：旧定位不得把视图拉回", async () => {
+    mockPlanResolve({ "root-a": "p1", "root-b": "p2" });
+    const featuresP2 = deferred<PlanningFeature[]>();
+    bridge.planningListProjects.mockResolvedValue([PLAN_A, PLAN_B]);
+    bridge.planningListFeatures.mockImplementation(async (pid: string) =>
+      pid === "p2" ? featuresP2.promise : [F1],
+    );
+    bridge.planningListMilestones.mockResolvedValue([]);
+    seedStore([PLAN_A, PLAN_B]);
+    setIntent({ projectId: "root-b", featureId: "f9" });
+
+    render(
+      <WorkspaceHarness initialProjectId="root-a" projects={ROOTS}>
+        <PlanningWorkspace />
+      </WorkspaceHarness>,
+    );
+
+    // 定位已切到 root-b 且 p2 数据仍在途：此时用户手动切到里程碑视图。
+    await waitFor(() => expect(bridge.planningListFeatures).toHaveBeenCalledWith("p2"));
+    fireEvent.click(screen.getByRole("tab", { name: "里程碑" }));
+    featuresP2.resolve([feat("f9", "p2", "定位目标九")]);
+    await waitFor(() => expect(usePlanningStore.getState().loadedForPlan).toBe("p2"));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    // 旧定位被用户接管：视图保持在里程碑，不再跳回功能视图。
+    expect(screen.getByRole("tab", { name: "里程碑" }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("tab", { name: "功能列表" }).getAttribute("aria-selected")).toBe(
+      "false",
+    );
+    expect(intentToast("功能不存在")).toBe(false);
+  });
+
+  it("深链 initialPlanId 变化（p1→p1b）：新的合法目标可以再次消费", async () => {
+    const PLAN_A2 = plan("p1b", "计划一B", "root-a");
+    mockPlanResolve({ "root-a": "p1" });
+    bridge.planningListProjects.mockResolvedValue([PLAN_A, PLAN_A2]);
+    bridge.planningListFeatures.mockImplementation(async (pid: string) =>
+      pid === "p1b" ? [feat("f2", "p1b", "深链二功能")] : [F1],
+    );
+    bridge.planningListMilestones.mockResolvedValue([]);
+    seedStore([PLAN_A, PLAN_A2]);
+
+    const view = render(
+      <WorkspaceHarness initialProjectId="root-a" projects={ROOTS}>
+        <PlanningWorkspace initialPlanId="p1" />
+      </WorkspaceHarness>,
+    );
+    await waitFor(() => expect(usePlanningStore.getState().activePlanId).toBe("p1"));
+
+    view.rerender(
+      <WorkspaceHarness initialProjectId="root-a" projects={ROOTS}>
+        <PlanningWorkspace initialPlanId="p1b" />
+      </WorkspaceHarness>,
+    );
+    await waitFor(() => expect(usePlanningStore.getState().activePlanId).toBe("p1b"));
+    expect(bridge.planningListFeatures).toHaveBeenCalledWith("p1b");
+  });
+
+  it("深链计划不属于当前项目：明确反馈且不加载", async () => {
+    mockPlanResolve({ "root-a": "p1" });
+    bridge.planningListProjects.mockResolvedValue([PLAN_A, PLAN_B]);
+    bridge.planningListFeatures.mockResolvedValue([F1]);
+    bridge.planningListMilestones.mockResolvedValue([]);
+    seedStore([PLAN_A, PLAN_B]);
+
+    render(
+      <WorkspaceHarness initialProjectId="root-a" projects={ROOTS}>
+        <PlanningWorkspace initialPlanId="p2" />
+      </WorkspaceHarness>,
+    );
+
+    await waitFor(() => expect(intentToast("该计划不存在或不属于当前项目")).toBe(true));
+    expect(usePlanningStore.getState().activePlanId).toBe("p1");
+    expect(bridge.planningListFeatures).not.toHaveBeenCalledWith("p2");
+  });
+
+  it("功能不属于当前计划：不伪装定位成功，落回功能列表并反馈", async () => {
+    mockPlanResolve({ "root-a": "p1", "root-b": "p2" });
+    bridge.planningListProjects.mockResolvedValue([PLAN_A, PLAN_B]);
+    // p2 的列表里混入一条 project_id=p1 的脏数据：定位必须识别归属不符。
+    bridge.planningListFeatures.mockImplementation(async (pid: string) =>
+      pid === "p2" ? [feat("f9", "p1", "错归属功能")] : [F1],
+    );
+    bridge.planningListMilestones.mockResolvedValue([]);
+    seedStore([PLAN_A, PLAN_B]);
+    useGlobalSearchStore.setState({
+      pendingLocate: {
+        category: "planning",
+        id: "f9",
+        kind: "feature",
+        parentId: "p2",
+        workspaceProjectId: "root-b",
+        keyword: "",
+        token: 1,
+      },
+    });
+
+    render(
+      <WorkspaceHarness initialProjectId="root-a" projects={ROOTS}>
+        <PlanningWorkspace />
+      </WorkspaceHarness>,
+    );
+
+    await waitFor(() => expect(intentToast("功能不属于当前计划")).toBe(true));
+    expect(usePlanningStore.getState().activePlanId).toBe("p2");
+    const tab = screen.getByRole("tab", { name: "功能列表" });
+    await waitFor(() => expect(tab.getAttribute("aria-selected")).toBe("true"));
   });
 });

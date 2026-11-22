@@ -26,6 +26,12 @@ import MilestonesView from "./MilestonesView";
 type PlanningView = "overview" | "features" | "kanban" | "milestones";
 /** 项目根 → 计划的解析状态；error/no-plan 是明确空态，不用旧计划数据冒充。 */
 type PlanResolveState = "idle" | "loading" | "no-plan" | "error";
+/** 解析结果：stale=被更新请求取代（静默作废）；error 带可读原因，调用方可区分失败与无计划。 */
+type PlanResolveResult =
+  | { ok: true; planId: string }
+  | { ok: false; reason: "no-plan" }
+  | { ok: false; reason: "stale" }
+  | { ok: false; reason: "error"; message: string };
 
 const VIEW_TABS: { key: PlanningView; label: string; icon: typeof LayoutDashboard }[] = [
   { key: "overview", label: "项目总览", icon: LayoutDashboard },
@@ -64,30 +70,77 @@ export default function PlanningWorkspace({ initialPlanId }: { initialPlanId?: s
   // ── 项目根 → activePlanId 解析 ─────────────────────────────────────
   // 代际防乱序：快速切换项目时旧项目的解析/选择一律丢弃。
   const planResolveSeq = useRef(0);
+  // 定位意图代际：新定位或用户手动操作都会作废旧定位（含跨项目的迟到回包）。
+  const locateRunSeq = useRef(0);
+  // 最新全局项目根：await 之后的归属校验必须用最新值，不能依赖闭包旧值。
+  const projectIdRef = useRef<string | null>(projectId);
+  useEffect(() => {
+    projectIdRef.current = projectId;
+  }, [projectId]);
+
+  /** 等待自身触发的项目切换在上下文里生效（有上限）；超时返回 false，不无限等待。 */
+  const waitForProjectContext = useCallback(async (rootId: string): Promise<boolean> => {
+    if (projectIdRef.current === rootId) return true;
+    const deadline = Date.now() + 2000;
+    while (projectIdRef.current !== rootId && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    return projectIdRef.current === rootId;
+  }, []);
+
   const resolvePlanForProject = useCallback(
-    async (pid: string): Promise<string | null> => {
+    async (pid: string): Promise<PlanResolveResult> => {
       const seq = ++planResolveSeq.current;
       setPlanResolve("loading");
       setPlanResolveError(null);
       try {
         const snap = await projectHubGetProject(pid);
-        if (seq !== planResolveSeq.current) return null;
-        if (!snap.planId) {
+        // 请求已过期（项目又切换了）：静默作废，由最新一次解析接管。
+        if (seq !== planResolveSeq.current) return { ok: false, reason: "stale" };
+        // 快照归属校验：project.id 必须等于请求的项目根，否则拒绝用它解析计划。
+        if (snap.project.id !== pid) {
+          usePlanningStore.setState({ activePlanId: null, loadedForPlan: null });
+          setPlanResolve("error");
+          setPlanResolveError("项目快照与请求的项目不一致");
+          return { ok: false, reason: "error", message: "项目快照与请求的项目不一致" };
+        }
+        const planId =
+          typeof snap.planId === "string" && snap.planId.trim().length > 0 ? snap.planId : null;
+        // 无可用计划：明确空态，并清掉可能属于其他项目的旧计划数据。
+        if (!planId) {
+          usePlanningStore.setState({ activePlanId: null, loadedForPlan: null });
           setPlanResolve("no-plan");
-          return null;
+          return { ok: false, reason: "no-plan" };
         }
         const st = usePlanningStore.getState();
-        if (!(st.activePlanId === snap.planId && st.loadedForPlan === snap.planId)) {
-          await selectPlan(snap.planId);
-          if (seq !== planResolveSeq.current) return null;
+        if (!(st.activePlanId === planId && st.loadedForPlan === planId)) {
+          await selectPlan(planId);
+          if (seq !== planResolveSeq.current) return { ok: false, reason: "stale" };
+          // 选择完成后核对 Store：计划一致且数据真正到位，失败不伪装成成功。
+          const after = usePlanningStore.getState();
+          if (after.activePlanId !== planId) {
+            setPlanResolve("error");
+            setPlanResolveError("计划选择未生效");
+            return { ok: false, reason: "error", message: "计划选择未生效" };
+          }
+          if (after.loadedForPlan !== planId) {
+            // 计划已选中但数据未就绪（加载失败）：保留 FeatureListView 自带的
+            // 错误/重试 UI（解析状态回 idle），只让定位调用方拿 error 结果显式中止。
+            const message = after.featuresError ?? "计划数据加载失败";
+            setPlanResolve("idle");
+            return { ok: false, reason: "error", message };
+          }
         }
         setPlanResolve("idle");
-        return snap.planId;
+        return { ok: true, planId };
       } catch (cause) {
-        if (seq !== planResolveSeq.current) return null;
+        if (seq !== planResolveSeq.current) return { ok: false, reason: "stale" };
+        // 失败时不保留可能属于其他项目的计划数据（错误态与空态可区分）。
+        usePlanningStore.setState({ activePlanId: null, loadedForPlan: null });
+        const message = cause instanceof Error ? cause.message : String(cause);
         setPlanResolve("error");
-        setPlanResolveError(cause instanceof Error ? cause.message : String(cause));
-        return null;
+        setPlanResolveError(message);
+        return { ok: false, reason: "error", message };
       }
     },
     [selectPlan],
@@ -115,23 +168,44 @@ export default function PlanningWorkspace({ initialPlanId }: { initialPlanId?: s
   }, [projectId, activePlanId, planResolve, resolvePlanForProject]);
 
   // ── 兼容深链：项目中枢传入的 active 计划 ID 优先查看 ────────────────
-  // 目标计划必须归属当前项目根；归属可证时不静默换计划。
-  const deepLinkApplied = useRef(false);
+  // 目标计划必须能证明归属当前项目根；按 (项目根, 计划) 组合消费一次：
+  // 新的合法目标（计划或项目变化）可再次消费，相同目标不重复加载。
+  const consumedDeepLink = useRef<string | null>(null);
   useEffect(() => {
-    if (deepLinkApplied.current) return;
     if (!initialPlanId || !projectId) return;
-    if (planResolve === "loading") return;
-    deepLinkApplied.current = true;
+    if (planResolve !== "idle") return;
+    if (plansLoading) return;
+    const key = `${projectId}:${initialPlanId}`;
+    if (consumedDeepLink.current === key) return;
+    // 列表为空且无错误 = 尚未加载出结果：等待，不提前消费有效目标。
+    if (plans.length === 0 && !plansError) return;
+    consumedDeepLink.current = key;
+    if (plansError) {
+      showToast(`计划列表加载失败，无法确认深链计划归属：${plansError}`, { kind: "warning" });
+      return;
+    }
     const plan = plans.find((p) => p.id === initialPlanId);
-    if (plan?.workspace_project_id && plan.workspace_project_id !== projectId) {
-      showToast("该计划不属于当前项目，已忽略深链", { kind: "warning" });
+    if (!plan || plan.workspace_project_id !== projectId) {
+      showToast("该计划不存在或不属于当前项目，已忽略深链", { kind: "warning" });
       return;
     }
     if (activePlanId !== initialPlanId) void selectPlan(initialPlanId);
-  }, [initialPlanId, projectId, planResolve, plans, activePlanId, selectPlan, showToast]);
+  }, [
+    initialPlanId,
+    projectId,
+    planResolve,
+    plans,
+    plansLoading,
+    plansError,
+    activePlanId,
+    selectPlan,
+    showToast,
+  ]);
 
   const switchView = (next: PlanningView) => {
-    // 手动切换视图时清空跳转定位，避免旧看板/里程碑的定位残留
+    // 手动切换视图 = 用户接管：作废在途定位（防止迟到回包把视图拉回去），
+    // 并清空旧定位残留，避免旧看板/里程碑的定位串到新视图。
+    locateRunSeq.current += 1;
     setFocusFeatureId(null);
     setMilestoneFilterId(null);
     setView(next);
@@ -152,7 +226,6 @@ export default function PlanningWorkspace({ initialPlanId }: { initialPlanId?: s
   // ── 精确定位意图（跨窗口导航 / Agent 操作链 → 规划功能）────────────
   // 意图的 projectId 是项目根（workspace_projects.id）；先对齐全局上下文，
   // 再由项目根快照解析计划，最后校验 feature/milestone 归属。
-  const locateRunSeq = useRef(0);
   const locateFeatureOrMilestone = useCallback(
     (target: { featureId?: string; milestoneId?: string }) => {
       const st = usePlanningStore.getState();
@@ -163,8 +236,14 @@ export default function PlanningWorkspace({ initialPlanId }: { initialPlanId?: s
       }
       if (target.featureId) {
         const feature = st.features.find((f) => f.id === target.featureId);
-        if (feature) {
+        if (feature && feature.project_id === st.activePlanId) {
           openFeature(feature.id);
+        } else if (feature) {
+          // 归属不符：其他计划的功能不当作定位成功，落回功能列表并明确反馈。
+          setFocusFeatureId(null);
+          setMilestoneFilterId(null);
+          setView("features");
+          showToast("功能不属于当前计划，已定位到功能列表", { kind: "warning" });
         } else {
           // 功能不存在：落到当前计划功能列表并反馈，不伪装定位成功。
           setFocusFeatureId(null);
@@ -176,9 +255,15 @@ export default function PlanningWorkspace({ initialPlanId }: { initialPlanId?: s
       }
       if (target.milestoneId) {
         const milestone = st.milestones.find((m) => m.id === target.milestoneId);
-        if (milestone) {
+        if (milestone && milestone.project_id === st.activePlanId) {
           openMilestone(milestone.id);
+        } else if (milestone) {
+          setFocusFeatureId(null);
+          setMilestoneFilterId(null);
+          setView("milestones");
+          showToast("里程碑不属于当前计划，已定位到里程碑列表", { kind: "warning" });
         } else {
+          // 里程碑不存在：落到里程碑列表并反馈，不伪装定位成功。
           setFocusFeatureId(null);
           setMilestoneFilterId(null);
           setView("milestones");
@@ -197,29 +282,61 @@ export default function PlanningWorkspace({ initialPlanId }: { initialPlanId?: s
   const runRoadmapFocus = useCallback(
     async (target: { projectId: string; featureId?: string; milestoneId?: string }) => {
       const seq = ++locateRunSeq.current;
-      // 1. 全局项目上下文对齐目标项目根（ADR-0010：导航 projectId 是项目根，
-      //    不能再拿它与 planning store 的计划 ID 比较）。
-      if (target.projectId !== projectId) {
-        const ok = await selectProject(target.projectId);
+      const targetRoot = target.projectId;
+      // 1. 对齐全局项目根（ADR-0010：导航 projectId 是项目根，不是计划 ID）。
+      if (projectIdRef.current !== targetRoot) {
+        const ok = await selectProject(targetRoot);
         if (seq !== locateRunSeq.current) return;
         if (!ok) {
           showToast("切换项目未完成，无法精确定位", { kind: "warning" });
           return;
         }
+        // 自身触发的切换：等待上下文就位（有上限）；不算用户取消，也不误判失败。
+        if (!(await waitForProjectContext(targetRoot))) return;
+        if (seq !== locateRunSeq.current) return;
       }
-      // 2. 由项目根权威快照解析 activePlanId（显式 planId 缺省时用它）。
-      const planId = await resolvePlanForProject(target.projectId);
+      // 用户手动切走（等待期间改选了别的项目）：静默放弃，不抢当前视图、不误报失败。
+      if (projectIdRef.current !== targetRoot) return;
+      // 2. 由项目根权威快照解析计划（快照归属、计划有效性与数据落位都在解析器内校验）。
+      const resolved = await resolvePlanForProject(targetRoot);
       if (seq !== locateRunSeq.current) return;
-      if (!planId) {
-        showToast("该项目尚无可用计划，无法定位", { kind: "warning" });
+      if (projectIdRef.current !== targetRoot) return;
+      if (!resolved.ok) {
+        if (resolved.reason === "stale") return;
+        if (resolved.reason === "no-plan") {
+          showToast("该项目尚无可用计划，无法定位", { kind: "warning" });
+        } else {
+          showToast(`项目计划解析失败，无法定位：${resolved.message}`, { kind: "error" });
+        }
         return;
       }
-      // 3. 选中计划并加载，然后定位对象。
-      await selectPlan(planId);
+      // 3. 选中目标计划并确认上下文与数据就位，最后才定位对象。
+      //    以 loadedForPlan 判定：并发解析可能已选中计划但数据仍在途，
+      //    此时再调 selectPlan 会安全接管（同计划已就绪时内部 no-op）。
+      const planId = resolved.planId;
+      if (usePlanningStore.getState().loadedForPlan !== planId) {
+        await selectPlan(planId);
+      }
       if (seq !== locateRunSeq.current) return;
+      if (projectIdRef.current !== targetRoot) return;
+      const st = usePlanningStore.getState();
+      if (st.activePlanId !== planId) return;
+      if (st.loadedForPlan !== planId) {
+        showToast(`计划数据加载失败，无法精确定位：${st.featuresError ?? "未知错误"}`, {
+          kind: "error",
+        });
+        return;
+      }
       locateFeatureOrMilestone(target);
     },
-    [projectId, selectProject, resolvePlanForProject, selectPlan, locateFeatureOrMilestone, showToast],
+    [
+      selectProject,
+      waitForProjectContext,
+      resolvePlanForProject,
+      selectPlan,
+      locateFeatureOrMilestone,
+      showToast,
+    ],
   );
 
   // 挂载与每次新 token 时消费一次：无意图/已过期（TTL）返回 null，静默跳过。
@@ -246,36 +363,82 @@ export default function PlanningWorkspace({ initialPlanId }: { initialPlanId?: s
       workspaceProjectId?: string | null;
     }) => {
       const seq = ++locateRunSeq.current;
-      let planId = intent.kind === "project" ? intent.id : intent.parentId;
+      const planId = intent.kind === "project" ? intent.id : intent.parentId;
       let rootId = intent.workspaceProjectId ?? null;
-      if (!rootId && planId) {
-        // 计划列表未就绪时补一次加载（只用于解析归属，不做任何选择）。
-        const st0 = usePlanningStore.getState();
-        if (st0.plans.length === 0 && !st0.plansLoading && !st0.plansError) {
-          await loadPlans();
-          if (seq !== locateRunSeq.current) return;
-        }
-        const plan = usePlanningStore.getState().plans.find((p) => p.id === planId);
-        rootId = plan?.workspace_project_id ?? null;
-      }
       if (!planId) {
         showToast("目标不存在或已被删除", { kind: "warning" });
         return;
       }
+      // 缺项目根：从计划列表解析归属（只读，不做任何选择）。
+      // 列表加载失败 ≠ 孤儿计划，必须分别反馈。
       if (!rootId) {
-        showToast("该计划未关联项目（旧数据），无法定位", { kind: "warning" });
+        const before = usePlanningStore.getState();
+        if (before.plans.length === 0 && !before.plansError) {
+          await loadPlans();
+          if (seq !== locateRunSeq.current) return;
+        }
+        const st = usePlanningStore.getState();
+        if (st.plansError) {
+          showToast(`计划列表加载失败，无法解析计划归属：${st.plansError}`, { kind: "error" });
+          return;
+        }
+        const plan = st.plans.find((p) => p.id === planId);
+        if (!plan) {
+          showToast("计划不存在或已被删除，无法定位", { kind: "warning" });
+          return;
+        }
+        rootId = plan.workspace_project_id ?? null;
+        if (!rootId) {
+          showToast("该计划未关联项目（旧数据），无法定位", { kind: "warning" });
+          return;
+        }
+      }
+      // 权威快照校验：项目根必须存在且 ID 一致；目标计划必须是该项目的当前激活计划
+      //（本轮无多计划版本选择能力：无法确认归属的非激活计划明确拒绝，不自动激活）。
+      let snap;
+      try {
+        snap = await projectHubGetProject(rootId);
+      } catch (cause) {
+        if (seq !== locateRunSeq.current) return;
+        const message = cause instanceof Error ? cause.message : String(cause);
+        showToast(`项目快照加载失败，无法精确定位：${message}`, { kind: "error" });
         return;
       }
-      if (rootId !== projectId) {
+      if (seq !== locateRunSeq.current) return;
+      if (snap.project.id !== rootId) {
+        showToast("项目快照与目标项目不一致，已取消定位", { kind: "warning" });
+        return;
+      }
+      if (snap.planId !== planId) {
+        showToast("目标计划不是当前项目的激活计划，暂不支持打开", { kind: "warning" });
+        return;
+      }
+      // 对齐全局项目根（selectProject 返回 true = 已真实落库且未被取代）。
+      if (projectIdRef.current !== rootId) {
         const ok = await selectProject(rootId);
         if (seq !== locateRunSeq.current) return;
         if (!ok) {
           showToast("切换项目未完成，无法精确定位", { kind: "warning" });
           return;
         }
+        if (!(await waitForProjectContext(rootId))) return;
+        if (seq !== locateRunSeq.current) return;
       }
-      await selectPlan(planId);
+      if (projectIdRef.current !== rootId) return; // 用户已切走：静默放弃
+      // 数据未就绪（含并发解析已选中但仍在途）时接管加载；已就绪时内部 no-op。
+      if (usePlanningStore.getState().loadedForPlan !== planId) {
+        await selectPlan(planId);
+      }
       if (seq !== locateRunSeq.current) return;
+      if (projectIdRef.current !== rootId) return;
+      const st = usePlanningStore.getState();
+      if (st.activePlanId !== planId) return;
+      if (st.loadedForPlan !== planId) {
+        showToast(`计划数据加载失败，无法精确定位：${st.featuresError ?? "未知错误"}`, {
+          kind: "error",
+        });
+        return;
+      }
       locateFeatureOrMilestone(
         intent.kind === "feature"
           ? { featureId: intent.id }
@@ -284,7 +447,14 @@ export default function PlanningWorkspace({ initialPlanId }: { initialPlanId?: s
             : {},
       );
     },
-    [projectId, selectProject, loadPlans, selectPlan, locateFeatureOrMilestone, showToast],
+    [
+      selectProject,
+      waitForProjectContext,
+      loadPlans,
+      selectPlan,
+      locateFeatureOrMilestone,
+      showToast,
+    ],
   );
 
   useEffect(() => {
