@@ -1,0 +1,304 @@
+/*
+ * 应用中心「页面态」栅格（2026-11-15 视觉对齐）。
+ *
+ * 背景：`.apps-grid` 在 ≥560px 容器时用 `minmax(150px, 1fr)`，1180 窗口下内容区约 620px
+ * 会排成 4 列、每列约 150px，应用名被压到只剩「Visua…」「窗口已…」，卡片里的收藏和
+ * 更多按钮也挤在同一行。把最小列宽提到 240px 后同一宽度只排 3 列（每列约 200px），
+ * 名称与状态可读，行内控件不再互相挤压。
+ *
+ * 只在 ≥560px 的容器档位生效，保留窄窗原有的 1 / 2 / 3 列降级行为；作用域 .apps-panel。
+ */
+
+@container (min-width: 560px) {
+  .apps-panel .apps-grid {
+    /* 显式 3 列：auto-fill + 260px 在 1600 内容区会生成 4 个隐式列，
+       三张卡只占左侧 3/4，右侧留一条空列。1366 仍三列、1180/960 落两列。 */
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  /* 效果图 10 的应用卡是图标在上、名称/状态在下的大卡，不是 52px 行内条目。
+     这里只改页面态卡片的视觉结构，拖拽/启动/收藏/更多/删除的 DOM 与事件不变。 */
+  .apps-panel .apps-tile {
+    min-height: 118px;
+  }
+
+  .apps-panel .apps-tile-main {
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 9px;
+    padding: 18px 76px 14px 15px;
+  }
+
+  .apps-panel .apps-tile-text {
+    gap: 5px;
+    align-items: flex-start;
+    min-width: 0;
+  }
+
+  .apps-panel .apps-tile-name {
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+
+  /* 图标随卡片一起放大到 36px；20px 的旧容器会把 36px 图标裁掉。 */
+  .apps-panel .apps-tile-avatar {
+    width: 36px;
+    height: 36px;
+    border-radius: 9px;
+  }
+
+  .apps-panel .apps-tile-state {
+    font-size: 10.5px;
+  }
+
+  /* 收藏/关闭/更多收进右上角；删除保持 hover-only，放到右下角避免与三点菜单
+     的 22px 热区重叠。 */
+  .apps-panel .apps-tile-actions {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    padding: 0;
+  }
+
+  .apps-panel .apps-tile > .apps-tile-del {
+    top: auto;
+    bottom: 7px;
+    right: 7px;
+  }
+}
+
+/* 1180 内容区约 666px、960 约 754px：三列会把 15px 名称压到 200px 以下，
+   两列保持大卡可读性。1366（约 852px）仍走上面的三列。 */
+@container (min-width: 560px) and (max-width: 799px) {
+  .apps-panel .apps-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* ── 第三轮：组合场景 / 最近使用 / 右栏详情 ── */
+.apps-quick-sections {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+/* 没有可成组的分类时只渲染「组合场景」真实空态 + 最近使用，两者各占一行；
+   不留一张被邻近卡片拉高的空白色块。 */
+.apps-quick-sections.is-single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.apps-scene-section,
+.apps-recent-section {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--card-face);
+  box-shadow: var(--card-shadow);
+}
+
+.apps-quick-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 7px;
+}
+
+.apps-quick-head h3 {
+  margin: 0;
+  font-size: 11.5px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+.apps-quick-head span {
+  font-size: 9.5px;
+  color: var(--text-tertiary);
+}
+
+/* 无同分类 ≥2 应用时只给真实空态，不拼演示分组，也不放不可点击的假场景卡。 */
+.apps-scene-empty {
+  margin: 0;
+  padding: 10px 2px 4px;
+  color: var(--text-tertiary);
+  font-size: 10.5px;
+  line-height: 1.55;
+}
+
+.apps-scene-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.apps-scene-card {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 6px 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--surface-raised) 58%, transparent);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.apps-scene-card:hover {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border-subtle));
+}
+
+.apps-scene-card.is-active {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border-subtle));
+  background: color-mix(in srgb, var(--accent) 9%, var(--surface-raised));
+}
+
+.apps-scene-text {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.apps-scene-text strong {
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-primary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.apps-scene-text em {
+  font-style: normal;
+  font-size: 9.5px;
+  color: var(--text-tertiary);
+}
+
+.apps-scene-card > svg:last-child {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+}
+
+.apps-recent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.apps-recent-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  min-width: 0;
+  padding: 4px 5px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.apps-recent-item:hover {
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+
+.apps-recent-name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  font-size: 11px;
+  color: var(--text-primary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.apps-recent-time {
+  flex: 0 0 auto;
+  font-size: 9.5px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.apps-recent-item > svg:last-child {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+}
+
+.apps-scene-active {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border-subtle));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  font-size: 10px;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.apps-scene-active button {
+  display: inline-flex;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.apps-rail-hero {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 9px;
+  margin-bottom: 9px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.apps-rail-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.apps-rail-title strong {
+  overflow: hidden;
+  font-size: 14px;
+  color: var(--text-primary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.apps-rail-title span {
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+.apps-rail-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+@media (max-width: 1180px) {
+  .apps-quick-sections {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+

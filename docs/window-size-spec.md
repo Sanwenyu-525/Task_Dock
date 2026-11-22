@@ -203,6 +203,18 @@
 1440×900 / 1920×1080，DPI 100/125/150/200%，最大化/还原、跨屏移动、模式切换、重启恢复、
 可用区不足降级。判定标准见本次任务验收报告（`tmp/acceptance/window-layout-spec-20261116/`）。
 
+### 7.0 窗口生命周期契约（2026-11-22，ADR-0009）
+
+- **托盘唤回不是新的几何来源**：托盘左键/右键「打开完整工作台」、第二实例、启动路径
+  共用 `open_or_focus_workbench` 统一创建入口；重建窗口的尺寸/位置/最大化一律由
+  `restore_geometry`（`workspace_window_rect` + 内存快照）恢复，显示器变化由
+  `window_layout` 收敛。**禁止**为修复唤回问题修改工作台默认尺寸（默认 1200×760 /
+  最小 960×600 只随本规范的显示器适配条款变化）。
+- **关闭策略不改变几何持久化**：`window_close_behavior = close_window` 走 CloseRequested
+  的快照/落库链路；`quit_app` 由 `request_exit` 开头的 `persist_geometry_on_exit` 兜底。
+  两条路径共享同一几何存储，不新增第二套。
+- 关闭场景的真机判定标准见 [WORKSPACE_CLOSE_ACCEPTANCE.md](WORKSPACE_CLOSE_ACCEPTANCE.md) §4。
+
 已知无法在本机完成的项（单显示器、系统缩放固定 125%）必须写 `ENVIRONMENT BLOCKED`，
 不得用「应该/理论上」代替证据。
 

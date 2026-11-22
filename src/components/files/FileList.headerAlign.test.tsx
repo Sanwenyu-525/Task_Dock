@@ -117,17 +117,17 @@ describe("对齐方向：表头与数据行全部左对齐（2026-11-22 用户�
   });
 
   it("表头列显式锚定轨道（列与行双双定位，手柄与列重叠同单元）", () => {
-    const anchors: Array<[string, number]> = [
-      [".fw-row-icon", 1],
-      [".fw-row-name", 2],
+    // 名称表头跨「图标+名称」两轨，与文件行图标左缘对齐（不再渲染空图标格）。
+    const nameAnchor = ruleText(/^\.fw-list-head \.fw-row-name\s*\{ grid-column: 1 \/ 3; grid-row: 1; \}/m);
+    expect(nameAnchor, "missing header anchor for .fw-row-name").toBeTruthy();
+    for (const [cls, track] of [
       [".fw-row-time", 3],
       [".fw-row-size", 4],
       [".fw-row-type", 5],
-    ];
-    for (const [cls, track] of anchors) {
+    ] as const) {
       // 一行式锚定规则：选择器后直接跟 grid-column 声明，避免匹配到更早的同选择器规则。
-      // grid-row: 1 缺失时手柄占 (1,3..5)，auto 布局会把时间/大小/类型挤到隐式第 2 行
-      // （2026-11-22 真机回归：表头拆成两行、首行被叠加内容遮挡）。
+      // grid-row: 1 缺失时手柄占据第 1 行的列单元，auto 布局会把后续表头挤到隐式
+      // 第 2 行（2026-11-22 真机回归：表头拆成两行、首行被叠加内容遮挡）。
       const block = ruleText(new RegExp(`^\\.fw-list-head \\${cls}\\s*\\{ grid-column: ${track}; grid-row: 1; \\}`, "m"));
       expect(block, `missing header anchor (column+row) for ${cls}`).toBeTruthy();
     }
@@ -151,7 +151,10 @@ describe("对齐方向：表头与数据行全部左对齐（2026-11-22 用户�
     const row = container.querySelector<HTMLElement>(".fw-row")!;
     expect(head).toBeTruthy();
     expect(row).toBeTruthy();
-    for (const cls of ["fw-row-icon", "fw-row-name", "fw-row-time", "fw-row-size", "fw-row-type"]) {
+    // 表头不渲染独立图标格（名称表头跨图标+名称两轨）。
+    expect(head.querySelector(".fw-row-icon")).toBeNull();
+    expect(row.querySelector(".fw-row-icon")).toBeTruthy();
+    for (const cls of ["fw-row-name", "fw-row-time", "fw-row-size", "fw-row-type"]) {
       expect(head.querySelector(`.${cls}`), `head missing .${cls}`).toBeTruthy();
       expect(row.querySelector(`.${cls}`), `row missing .${cls}`).toBeTruthy();
     }

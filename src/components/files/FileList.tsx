@@ -18,13 +18,9 @@ import {
 
 import type { FsEntry } from "../../lib/bridge";
 import {
-  MAX_COL_WIDTHS,
-  MIN_COL_WIDTHS,
-  clampColWidth,
-  effectiveColWidth,
-  maxForName,
+  applyBoundaryDrag,
   type ColWidths,
-  type ListColumn,
+  type ListBoundary,
 } from "../../lib/filesWorkspace/columnWidths";
 import { fileVisual, formatModified, formatSize, toneVar } from "../../lib/filesWorkspace/fileMeta";
 import { basename, joinPath } from "../../lib/filesWorkspace/pathUtils";
@@ -44,8 +40,16 @@ import { useFilesWorkspaceStore } from "../../store/useFilesWorkspaceStore";
 const LIST_ROW_H = 26;
 /** 吸顶表头高度（与 .fw-list-head CSS 高度一致；虚拟化 headOffset 按此计入）。 */
 const LIST_HEAD_H = 26;
-/** 表头可拖拽调宽的列（名称列是 1fr 弹性列，自动吸收剩余空间，不直接调宽）。 */
-const RESIZABLE_COLS: readonly ListColumn[] = ["time", "size", "type"];
+/** 表头可拖拽的列边界（分隔线随光标移动，两侧列互补增减，其余列不动）。 */
+const RESIZABLE_BOUNDARIES: readonly ListBoundary[] = ["name-time", "time-size", "size-type"];
+
+/** 表头列名（去「按」字）。语言包本次被其他任务占用，暂以代码内双语映射承载，待空闲后挪入 i18n。 */
+const COLUMN_LABELS: Record<"name" | "time" | "size" | "type", { zh: string; en: string }> = {
+  name: { zh: "名称", en: "Name" },
+  time: { zh: "修改日期", en: "Date modified" },
+  size: { zh: "大小", en: "Size" },
+  type: { zh: "类型", en: "Type" },
+};
 const GRID_CELL_W = 104;
 const GRID_CELL_H = 116;
 const GRID_GAP = 8;
@@ -474,52 +478,51 @@ export default function FileList({
   const { t, locale } = useLocale();
   const [dragState, setDragState] = useState(() => getFwDragState());
 
-  // ── 表头列宽拖拽（Windows 资源管理器习惯）────────────────────────────
+  // ── 表头列宽拖拽（边界语义，2026-11-22 用户确认）──────────────────────
+  // 手柄在列边界上：拖动只移动被抓住的那条分隔线，它左右两列互补增减
+  // （总宽恒定），其余列与其他分隔线不动。名称列保持弹性自动占满，不落存储。
   // 列宽是全分栏共享的 store 状态；拖拽期间只更新本地预览（rAF 节流），
   // 松手才提交 store 触发防抖持久化，避免拖拽过程高频写盘。
   const colWidths = useFilesWorkspaceStore((s) => s.colWidths);
-  const [colDrag, setColDrag] = useState<{ col: ListColumn; width: number } | null>(null);
+  const [colDrag, setColDrag] = useState<ColWidths | null>(null);
   const colResizeRef = useRef<{
-    col: ListColumn;
+    boundary: ListBoundary;
     startClientX: number;
-    startWidth: number;
-    maxByName: number;
     pending: number;
     frame: number | null;
   } | null>(null);
-  const mergedColWidths: ColWidths = colDrag
-    ? { ...colWidths, [colDrag.col]: colDrag.width }
-    : colWidths;
+  const mergedColWidths: ColWidths = colDrag ? { ...colWidths, ...colDrag } : colWidths;
 
-  const startColResize = (col: ListColumn) => (event: ReactPointerEvent<HTMLDivElement>) => {
+  const startColResize = (boundary: ListBoundary) => (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
     event.stopPropagation();
     event.preventDefault();
-    const startWidth = effectiveColWidth(mergedColWidths, col);
     colResizeRef.current = {
-      col,
+      boundary,
       startClientX: event.clientX,
-      startWidth,
-      maxByName: maxForName(containerRef.current?.clientWidth ?? 0, mergedColWidths, col),
-      pending: startWidth,
+      pending: 0,
       frame: null,
     };
-    setColDrag({ col, width: startWidth });
     event.currentTarget.setPointerCapture?.(event.pointerId);
   };
 
   const moveColResize = (event: ReactPointerEvent<HTMLDivElement>) => {
     const session = colResizeRef.current;
     if (!session) return;
-    // 手柄贴在列左缘：光标右移 = 该列变窄（名称列是前置 1fr，列右缘被钉死，
-    // 只有左缘能跟随光标），因此增量取负。
-    session.pending = session.startWidth - (event.clientX - session.startClientX);
+    // 光标右移为正：分隔线随光标移动，两侧列互补增减（钳制在提交时统一算）。
+    session.pending = event.clientX - session.startClientX;
     if (session.frame !== null) return;
     session.frame = scheduleFrame(() => {
       const current = colResizeRef.current;
       if (!current) return;
       current.frame = null;
-      setColDrag({ col: current.col, width: clampColWidth(current.col, current.pending, current.maxByName) });
+      const { widths } = applyBoundaryDrag(
+        containerRef.current?.clientWidth ?? 0,
+        colWidths,
+        current.boundary,
+        current.pending,
+      );
+      setColDrag(widths);
     });
   };
 
@@ -530,49 +533,57 @@ export default function FileList({
     if (session.frame !== null) cancelFrame(session.frame);
     setColDrag(null);
     if (cancel) return;
-    // 原地单击（未拖动）不改列宽，也不把默认值写进持久化。
-    const width = clampColWidth(session.col, session.pending, session.maxByName);
-    if (width === session.startWidth) return;
+    // 原地单击（未拖动）不改列宽、不写持久化。
+    const { widths, applied } = applyBoundaryDrag(
+      containerRef.current?.clientWidth ?? 0,
+      useFilesWorkspaceStore.getState().colWidths,
+      session.boundary,
+      session.pending,
+    );
+    if (applied === 0) return;
     const store = useFilesWorkspaceStore.getState();
-    store.setColWidths({ ...store.colWidths, [session.col]: width });
+    store.setColWidths({ ...store.colWidths, ...widths });
   };
 
-  const nudgeColWidth = (col: ListColumn) => (event: ReactKeyboardEvent<HTMLDivElement>) => {
+  const nudgeBoundary = (boundary: ListBoundary) => (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
     event.preventDefault();
     event.stopPropagation();
-    // 方向键跟随视觉：手柄在列左缘，→=边界右移=列变窄，←=列变宽。
-    const next = clampColWidth(
-      col,
-      effectiveColWidth(mergedColWidths, col) + (event.key === "ArrowLeft" ? 8 : -8),
-      maxForName(containerRef.current?.clientWidth ?? 0, mergedColWidths, col),
+    // 方向键跟随视觉：→=分隔线右移（左列变宽），←=左移。
+    const { widths, applied } = applyBoundaryDrag(
+      containerRef.current?.clientWidth ?? 0,
+      useFilesWorkspaceStore.getState().colWidths,
+      boundary,
+      event.key === "ArrowRight" ? 8 : -8,
     );
+    if (applied === 0) return;
     const store = useFilesWorkspaceStore.getState();
-    store.setColWidths({ ...store.colWidths, [col]: next });
+    store.setColWidths({ ...store.colWidths, ...widths });
   };
 
-  const resetColWidth = (col: ListColumn) => {
+  const resetBoundary = (boundary: ListBoundary) => {
     const store = useFilesWorkspaceStore.getState();
-    if (store.colWidths[col] === undefined) return;
+    const cols = boundary === "name-time" ? (["time"] as const) : boundary === "time-size" ? (["time", "size"] as const) : (["size", "type"] as const);
     const next = { ...store.colWidths };
-    delete next[col];
+    for (const col of cols) delete next[col];
     store.setColWidths(next);
   };
 
-  // 手柄文案由现有 fw.sort.* key 组合（语言包本次被其他任务占用，后续可挪入 i18n）。
-  const colHandleText = useMemo(
-    () =>
-      RESIZABLE_COLS.map((col) => {
-        const column = t(col === "time" ? "fw.sort.modified" : col === "size" ? "fw.sort.size" : "fw.sort.type");
-        const zh = locale.startsWith("zh");
-        return {
-          col,
-          label: zh ? `调整${column}列宽` : `Resize ${column} column`,
-          tip: zh ? "拖动调整列宽，双击恢复默认" : "Drag to resize, double-click to reset",
-        };
-      }),
-    [t, locale],
-  );
+  // 表头列名与手柄文案：语言包本次被其他任务占用，暂以代码内双语映射承载（COLUMN_LABELS），待空闲后挪入 i18n。
+  const zh = locale.startsWith("zh");
+  const columnLabel = (col: "name" | "time" | "size" | "type") => (zh ? COLUMN_LABELS[col].zh : COLUMN_LABELS[col].en);
+  const colHandleText = RESIZABLE_BOUNDARIES.map((boundary) => {
+    const pair: Record<ListBoundary, ["name" | "time" | "size" | "type", "time" | "size" | "type"]> = {
+      "name-time": ["name", "time"],
+      "time-size": ["time", "size"],
+      "size-type": ["size", "type"],
+    };
+    const [left, right] = pair[boundary];
+    const label = zh
+      ? `调整${COLUMN_LABELS[left].zh}与${COLUMN_LABELS[right].zh}列宽`
+      : `Resize ${COLUMN_LABELS[left].en} & ${COLUMN_LABELS[right].en} columns`;
+    return { boundary, label, tip: zh ? "拖动调整列宽，双击恢复默认" : "Drag to resize, double-click to reset" };
+  });
 
   /** 仅给用户定制/拖拽中的列注入 CSS 变量；未定制列保持 files.css 默认（含窄栏 360px 覆盖）。 */
   const colStyleVars = {
@@ -1000,29 +1011,27 @@ export default function FileList({
     >
       {viewMode === "list" && (
         <div className="fw-list-head">
-          <span className="fw-row-icon" aria-hidden="true" />
-          <span className="fw-row-name" aria-hidden="true">{t("fw.sort.name")}</span>
-          <span className="fw-row-time" aria-hidden="true">{t("fw.sort.modified")}</span>
-          <span className="fw-row-size" aria-hidden="true">{t("fw.sort.size")}</span>
-          <span className="fw-row-type" aria-hidden="true">{t("fw.sort.type")}</span>
-          {colHandleText.map(({ col, label, tip }) => (
+          <span className="fw-row-name" aria-hidden="true">{columnLabel("name")}</span>
+          <span className="fw-row-time" aria-hidden="true">{columnLabel("time")}</span>
+          <span className="fw-row-size" aria-hidden="true">{columnLabel("size")}</span>
+          <span className="fw-row-type" aria-hidden="true">{columnLabel("type")}</span>
+          {colHandleText.map(({ boundary, label, tip }) => (
             <div
-              key={col}
-              className={`fw-col-handle fw-col-handle--${col}${colDrag?.col === col ? " is-dragging" : ""}`}
+              key={boundary}
+              className={`fw-col-handle fw-col-handle--${boundary.split("-")[1]}${
+                colResizeRef.current?.boundary === boundary ? " is-dragging" : ""
+              }`}
               role="separator"
               aria-orientation="vertical"
               aria-label={label}
-              aria-valuemin={MIN_COL_WIDTHS[col]}
-              aria-valuemax={MAX_COL_WIDTHS[col]}
-              aria-valuenow={effectiveColWidth(mergedColWidths, col)}
               tabIndex={0}
               data-tip={tip}
-              onPointerDown={startColResize(col)}
+              onPointerDown={startColResize(boundary)}
               onPointerMove={moveColResize}
               onPointerUp={endColResize(false)}
               onPointerCancel={endColResize(true)}
-              onDoubleClick={() => resetColWidth(col)}
-              onKeyDown={nudgeColWidth(col)}
+              onDoubleClick={() => resetBoundary(boundary)}
+              onKeyDown={nudgeBoundary(boundary)}
             />
           ))}
         </div>

@@ -1,0 +1,875 @@
+/* 文件暂存架：单行工具条、筛选浮层、批量栏与拖出光标（2026-11-09）。
+   基础卡片/列表仍在 styles.css；这里只覆盖本次改版的结构，使用语义 Token。 */
+
+.shelf-workspace {
+  /* 工具条按面板自身宽度收敛，不按屏幕宽度推断。 */
+  container-type: inline-size;
+  container-name: shelf-panel;
+}
+
+.shelf-toolbar-wrap {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+
+.shelf-workspace .shelf-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px 4px;
+  flex-wrap: nowrap;
+}
+
+.shelf-add-split {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+.shelf-add-main {
+  gap: 4px;
+}
+
+.shelf-add-more {
+  flex: 0 0 auto;
+}
+
+/* 搜索框吃掉剩余宽度，窄窗下允许收缩到 0，不换行。 */
+.shelf-toolbar .shelf-search {
+  flex: 1 1 120px;
+  min-width: 0;
+  max-width: none;
+}
+
+.shelf-filter-btn {
+  flex: 0 0 auto;
+  gap: 4px;
+}
+
+.shelf-filter-btn-label {
+  white-space: nowrap;
+}
+
+.shelf-filter-btn.is-open {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.shelf-filter-badge {
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-text-on);
+  font-size: 9.5px;
+  line-height: 15px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.shelf-overflow {
+  flex: 0 0 auto;
+}
+
+/* ── 激活筛选摘要：只在有筛选时占一行，横向滚动不撑破 ── */
+.shelf-active-filters {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 14px 2px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.shelf-active-filters::-webkit-scrollbar {
+  display: none;
+}
+
+.shelf-active-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: var(--control-face);
+  color: var(--text-secondary);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+.shelf-active-filter:hover {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.shelf-active-filter-clear {
+  flex: 0 0 auto;
+  height: 22px;
+  padding: 0 5px;
+  border: 0;
+  background: none;
+  color: var(--text-tertiary);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+.shelf-active-filter-clear:hover {
+  color: var(--text-primary);
+}
+
+/* ── 筛选浮层：类型/分组 chips + 收藏开关 + 清除 ── */
+.ui-popover.shelf-filter-pop {
+  width: 280px;
+  max-width: calc(100vw - 24px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 11px 12px;
+}
+
+.shelf-filter-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.shelf-filter-label {
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+.shelf-filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.shelf-filter-groups {
+  max-height: 132px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.shelf-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: var(--control-face);
+  color: var(--text-secondary);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+.shelf-filter-chip:hover {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.shelf-filter-chip.is-active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.shelf-filter-switch-row {
+  padding: 2px 0;
+}
+
+.shelf-filter-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* ── 批量操作栏：单行内联卡，替代原来的两行按钮矩阵 ── */
+.shelf-workspace .shelf-selectbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 4px;
+  margin: 4px 14px 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+  box-shadow: var(--card-shadow);
+  flex-shrink: 0;
+}
+
+.shelf-workspace .shelf-selectbar-count {
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.shelf-workspace .shelf-selectbar .flex-spacer {
+  flex: 1 1 auto;
+}
+
+.shelf-workspace .shelf-selectbar .btn.sm {
+  height: 24px;
+  padding: 0 7px;
+}
+
+/* ── 拖出光标：卡片与胶囊最近暂存行都提示可按住拖出 ── */
+.shelf-item.is-draggable {
+  cursor: grab;
+}
+
+.shelf-item.is-draggable .shelf-thumb,
+.shelf-item.is-draggable .shelf-item-name {
+  cursor: grab;
+}
+
+.shelf-item.is-draggable:active,
+.shelf-item.is-draggable:active .shelf-thumb,
+.shelf-item.is-draggable:active .shelf-item-name,
+.cap-shelf-recent-item.is-draggable:active {
+  cursor: grabbing;
+}
+
+.cap-shelf-recent-item.is-draggable {
+  cursor: grab;
+}
+
+/* ── 投递区（目标管理视图内的真实文件投递落点）──────────────
+   命中高亮用内描边 + accent-soft 面（与胶囊卡片同语义），只作用于
+   卡片自身样式层，不新增元素，不会挡住 elementFromPoint 命中。 */
+.shelf-drop-target-row.is-over {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.shelf-targets-drop-hint {
+  margin: 0;
+  flex-shrink: 0;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  padding: 5px 9px;
+  border-radius: var(--radius-control);
+  border: 1px dashed var(--border-strong);
+  background: var(--surface-raised);
+}
+
+/* ── 投递结果条：目标卡片下方最近一次投递的计数与逐项原因 ── */
+.shelf-drop-report {
+  margin: 3px 0 0;
+  padding: 6px 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--surface-base);
+  font-size: 10.5px;
+}
+
+.shelf-drop-report.is-warn {
+  border-color: color-mix(in srgb, var(--status-waiting) 40%, transparent);
+}
+
+.shelf-drop-report-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 10.5px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.shelf-drop-report-head:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+  border-radius: 4px;
+}
+
+.shelf-drop-report.is-warn .shelf-drop-report-head svg {
+  color: var(--status-waiting);
+}
+
+.shelf-drop-report-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shelf-drop-report-head .is-open {
+  transform: rotate(180deg);
+}
+
+.shelf-drop-report-list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 6px 0 0;
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 190px;
+  overflow-y: auto;
+}
+
+.shelf-drop-report-list li {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 3px 8px;
+  min-width: 0;
+}
+
+.shelf-drop-report-name {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.shelf-drop-report-tag {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 9.5px;
+  line-height: 15px;
+  background: var(--control-face);
+  color: var(--text-secondary);
+}
+
+.shelf-drop-report-tag.is-failed {
+  background: color-mix(in srgb, var(--status-error) 18%, transparent);
+  color: var(--status-error);
+}
+
+.shelf-drop-report-tag.is-partial {
+  background: color-mix(in srgb, var(--status-waiting) 18%, transparent);
+  color: var(--status-waiting);
+}
+
+.shelf-drop-report-tag.is-skipped {
+  background: var(--control-face);
+  color: var(--text-tertiary);
+}
+
+.shelf-drop-report-reason {
+  min-width: 0;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.shelf-drop-report-residual,
+.shelf-drop-report-recovery {
+  min-width: 0;
+  color: var(--text-tertiary);
+  overflow-wrap: anywhere;
+}
+
+.shelf-drop-report-residual {
+  color: var(--status-waiting);
+}
+
+.shelf-drop-report-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 6px;
+}
+
+.shelf-drop-report-actions .link-btn {
+  font-size: 10.5px;
+}
+
+.shelf-drop-report.is-orphan {
+  border-color: color-mix(in srgb, var(--status-waiting) 40%, transparent);
+}
+
+/* ── 窄容器：添加/筛选收成图标，搜索仍保留可输入宽度 ── */
+@container shelf-panel (max-width: 360px) {
+  .shelf-workspace .shelf-toolbar {
+    gap: 4px;
+    padding-inline: 10px;
+  }
+
+  .shelf-workspace .shelf-add-main {
+    padding-inline: 7px;
+  }
+
+  .shelf-workspace .shelf-add-label,
+  .shelf-workspace .shelf-filter-btn-label {
+    display: none;
+  }
+
+  .shelf-workspace .shelf-active-filters {
+    padding-inline: 10px;
+  }
+
+  .shelf-workspace .shelf-selectbar {
+    margin-inline: 10px;
+  }
+
+  /* 窄窗下优先保留「大小 + 时间」：来源、存储方式与时钟图标让位，
+     存储方式仍可在详情/悬停名称提示中看到。 */
+  .shelf-workspace .shelf-item-meta {
+    gap: 5px;
+  }
+
+  .shelf-workspace .shelf-item-src,
+  .shelf-workspace .shelf-item-meta-sep,
+  .shelf-workspace .shelf-item-meta .shelf-tag.mode,
+  .shelf-workspace .shelf-item-time svg {
+    display: none;
+  }
+}
+
+/* 投递目标「最近使用」：只占一行小字，不改变卡片高度体系与操作区。 */
+.shelf-drop-target-recent {
+  font-size: 10px;
+  line-height: 1.2;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── 矩形框选（2026-11-14）：低饱和半透明框，内容坐标系随列表滚动 ── */
+.shelf-list {
+  position: relative;
+}
+
+.shelf-marquee {
+  position: absolute;
+  z-index: var(--z-content);
+  border: 1px solid color-mix(in srgb, var(--accent) 65%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border-radius: 4px;
+  pointer-events: none;
+}
+
+/* 键盘焦点：与选中态分离的细描边，不改变卡片尺寸。 */
+.shelf-item.is-focused {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* ── 列表 / 网格双视图（只改变布局，保留筛选、排序与选择）── */
+.shelf-list.shelf-list--grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--shelf-grid-min, 148px), 1fr));
+  align-content: start;
+  gap: 10px;
+}
+
+.shelf-grid-s { --shelf-grid-min: 108px; }
+.shelf-grid-m { --shelf-grid-min: 148px; }
+.shelf-grid-l { --shelf-grid-min: 196px; }
+
+.shelf-list--grid > .shelf-empty,
+.shelf-list--grid > .shelf-loading {
+  grid-column: 1 / -1;
+}
+
+.shelf-item.shelf-item--grid {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  padding: 8px;
+  min-width: 0;
+}
+
+.shelf-item--grid .shelf-check {
+  position: absolute;
+  inset-block-start: 6px;
+  inset-inline-start: 6px;
+  z-index: var(--z-content);
+  background: color-mix(in srgb, var(--surface-raised) 88%, transparent);
+}
+
+.shelf-item--grid .shelf-check.on {
+  background: var(--accent);
+}
+
+.shelf-item--grid .shelf-thumb {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 4 / 3;
+  border-radius: var(--radius-control);
+}
+
+.shelf-item--grid .shelf-item-body {
+  gap: 2px;
+}
+
+.shelf-item--grid .shelf-item-name {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  white-space: normal;
+  overflow: hidden;
+  line-height: 1.35;
+}
+
+.shelf-item--grid .shelf-item-meta {
+  gap: 5px;
+  font-size: 10px;
+}
+
+/* 网格以缩略图为主：隐藏来源/时间/存储徽标，保留大小；详情仍可查看。 */
+.shelf-item--grid .shelf-item-src,
+.shelf-item--grid .shelf-item-meta-sep,
+.shelf-item--grid .shelf-item-meta .shelf-tag.mode,
+.shelf-item--grid .shelf-item-time {
+  display: none;
+}
+
+.shelf-item--grid .shelf-more {
+  position: absolute;
+  inset-block-start: 6px;
+  inset-inline-end: 6px;
+  z-index: var(--z-content);
+  background: color-mix(in srgb, var(--surface-raised) 88%, transparent);
+}
+
+.shelf-item--grid .shelf-item-flags {
+  position: absolute;
+  inset-block-start: 8px;
+  inset-inline-end: 34px;
+}
+
+/* 网格下失效徽标保持可见，不被缩略图圆角裁掉。 */
+.shelf-item--grid .shelf-thumb-badge {
+  inset-block-end: 4px;
+  inset-inline-end: 4px;
+}
+
+/* ── 工具栏垃圾桶：平时小图标，拖拽时向外扩命中区但不改变布局 ── */
+.shelf-trash-slot {
+  position: relative;
+  flex: 0 0 auto;
+  display: inline-flex;
+  border-radius: var(--radius-control);
+  transition: background 0.12s ease;
+}
+
+.shelf-trash-slot::before {
+  content: "";
+  position: absolute;
+  inset: -5px;
+  border: 1px dashed transparent;
+  border-radius: 10px;
+  pointer-events: none;
+  transition: border-color 0.12s ease, inset 0.12s ease;
+}
+
+.shelf-trash-slot.is-armed {
+  background: color-mix(in srgb, var(--status-error) 9%, transparent);
+}
+
+.shelf-trash-slot.is-armed::before {
+  inset: -8px;
+  border-color: color-mix(in srgb, var(--status-error) 40%, transparent);
+}
+
+.shelf-trash-slot.is-armed .shelf-trash-btn {
+  color: var(--status-error);
+}
+
+.shelf-trash-slot.is-over {
+  background: color-mix(in srgb, var(--status-error) 16%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--status-error) 35%, transparent);
+}
+
+.shelf-trash-slot.is-over .shelf-trash-btn {
+  color: var(--status-error);
+}
+
+.shelf-trash-btn {
+  color: var(--text-secondary);
+}
+
+/* Alt+拖动的跟随提示：fixed 浮层，不占列表布局。 */
+.shelf-trash-ghost {
+  position: fixed;
+  z-index: var(--z-toast);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 9px;
+  border: 1px solid color-mix(in srgb, var(--status-error) 45%, transparent);
+  border-radius: 999px;
+  background: var(--surface-raised);
+  color: var(--status-error);
+  font-size: 10.5px;
+  box-shadow: var(--card-shadow);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+/* ── 外部文件回收站确认框 ── */
+.shelf-recycle {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 11.5px;
+}
+
+.shelf-recycle-summary {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.shelf-recycle-note,
+.shelf-recycle-hint {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: 10.5px;
+  line-height: 1.55;
+}
+
+.shelf-recycle-list {
+  list-style: none;
+  margin: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  max-height: 180px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.shelf-recycle-list li,
+.shelf-recycle-blocked li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.shelf-recycle-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shelf-recycle-size {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.shelf-recycle-more {
+  color: var(--text-tertiary);
+  font-size: 10px;
+}
+
+.shelf-recycle-blocked {
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, var(--status-waiting) 38%, transparent);
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--status-waiting) 7%, transparent);
+}
+
+.shelf-recycle-blocked-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--status-waiting);
+  font-weight: 600;
+}
+
+.shelf-recycle-blocked ul {
+  list-style: none;
+  margin: 5px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 120px;
+  overflow: auto;
+}
+
+.shelf-recycle-reason {
+  flex: 0 1 auto;
+  max-width: 58%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-tertiary);
+}
+
+/* ── 灯箱序列导航与快捷操作 ── */
+.shelf-lightbox-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: var(--z-sticky);
+  width: 34px;
+  height: 52px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface-raised) 82%, transparent);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.shelf-lightbox-nav.prev { left: 16px; }
+.shelf-lightbox-nav.next { right: 16px; }
+
+.shelf-lightbox-nav:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: var(--surface-raised);
+}
+
+.shelf-lightbox-nav:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.shelf-lightbox-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.shelf-lightbox-sep {
+  width: 1px;
+  height: 16px;
+  background: var(--border-subtle);
+  margin-inline: 2px;
+}
+
+.shelf-lightbox .icon-btn .is-on {
+  color: var(--accent);
+  fill: currentColor;
+}
+
+.shelf-lightbox-hint.is-error {
+  color: var(--status-error);
+  text-align: center;
+}
+
+.shelf-lightbox-hint-actions {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+@container shelf-panel (max-width: 360px) {
+  .shelf-list.shelf-list--grid {
+    grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+    gap: 8px;
+  }
+}
+
+/* 灯箱挂在 body：窄视口用媒体查询，不能依赖暂存架容器查询。 */
+@media (max-width: 560px) {
+  .shelf-lightbox-nav {
+    width: 28px;
+    height: 44px;
+  }
+
+  .shelf-lightbox-nav.prev { left: 8px; }
+  .shelf-lightbox-nav.next { right: 8px; }
+}
+
+/* ── 右键菜单（指针定位，按当前选择集合执行）── */
+.shelf-context-menu {
+  position: fixed;
+  z-index: var(--z-menu);
+  min-width: 184px;
+  max-width: 260px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  /* 不透明底：玻璃材质的 surface-raised 可能半透明，菜单文字不能被下层卡片穿透。 */
+  background: var(--surface-base);
+  box-shadow: var(--card-shadow);
+}
+
+.shelf-context-menu:focus {
+  outline: none;
+}
+
+.shelf-context-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 11.5px;
+  text-align: start;
+  cursor: pointer;
+}
+
+.shelf-context-item:hover:not(:disabled),
+.shelf-context-item:focus-visible {
+  background: var(--control-face);
+  outline: none;
+}
+
+.shelf-context-item:disabled {
+  color: var(--text-tertiary);
+  cursor: default;
+}
+
+.shelf-context-item.is-danger {
+  color: var(--status-error);
+}
+
+.shelf-context-item.is-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--status-error) 10%, transparent);
+}
+
+.shelf-context-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: inherit;
+}
+
+.shelf-context-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

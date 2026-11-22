@@ -1,0 +1,863 @@
+//! 逐项粘贴面板：显式选择目标窗口 → 逐条写入剪贴板并发送 Ctrl+V。
+//! 只报告「粘贴动作已发送」，目标应用是否接收由后端如实说明，前端不推断成功。
+
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  ArrowLeft,
+  ArrowUpRight,
+  Check,
+  Play,
+  RefreshCw,
+  StopCircle,
+  TriangleAlert,
+} from "lucide-react";
+import {
+  clipboardFocusTarget,
+  clipboardGroup,
+  clipboardPasteActive,
+  clipboardPasteCancel,
+  clipboardPasteGroup,
+  clipboardPasteItemStates,
+  clipboardPasteItems,
+  clipboardPasteJob,
+  clipboardPastePrecheck,
+  clipboardPasteResolveUncertain,
+  clipboardPasteResumableJob,
+  clipboardPasteResume,
+  clipboardVisibleTargets,
+  onClipboardPaste,
+  type PasteItemState,
+  type PasteJob,
+  type PasteTarget,
+} from "../../lib/bridge";
+import * as bridgeModule from "../../lib/bridge";
+import { clipboardTime, fileBaseName } from "../../lib/clipboardUi";
+import { errorMessage } from "../../lib/errors";
+import { createSubscriptionScope } from "../../lib/subscriptions";
+import { useSettingsStore } from "../../store/useSettingsStore";
+import { useUiStore } from "../../store/useUiStore";
+import { radioTabIndex, useRovingRadioGroup } from "../ui/radioGroup";
+import TargetIcon from "./TargetIcon";
+
+interface JobState {
+  id: string;
+  groupId: string;
+  status: string;
+  sent: number;
+  total: number;
+  pending: number;
+  message?: string;
+  restored?: boolean;
+  targetTitle?: string;
+  itemState?: string;
+  confirmed?: number;
+  unverified?: number;
+  /** 结果不确定（按键可能已发出）的条目数：不自动重发 */
+  uncertain?: number;
+  pauseReason?: string | null;
+  reasonCode?: string | null;
+  /** 会话内累计的逐项状态（itemId → 状态）；后端不持久化，恢复任务后重新累计 */
+  itemStates: Record<string, string>;
+}
+
+function fromJob(j: PasteJob): JobState {
+  return {
+    id: j.id,
+    groupId: j.group_id,
+    status: j.status,
+    sent: j.sent,
+    total: j.total,
+    pending: j.remaining_items.length,
+    message: j.message,
+    restored: j.restored,
+    targetTitle: j.target_title,
+    uncertain: j.uncertain_items.length,
+    itemStates: {},
+  };
+}
+
+const STATUS_LABELS: Record<string, string> = {
+  running: "进行中",
+  completed: "已完成",
+  cancelled: "已取消",
+  failed: "已停止",
+  paused: "已暂停（可继续）",
+  interrupted: "已中断（可继续）",
+  finish_persist_failed: "结果尚未可靠保存",
+};
+
+type ResumableJobsFn = (groupId?: string | null) => Promise<PasteJob[]>;
+
+/**
+ * 桥接函数 `clipboardPasteResumableJobs` 可能尚未由主智能体登记到 bridge.ts，
+ * 这里做特性检测而不是硬依赖导入：导出缺失时退回现有单任务 `clipboardPasteResumableJob` 路径。
+ */
+function resumableJobsFn(): ResumableJobsFn | undefined {
+  return (bridgeModule as unknown as { clipboardPasteResumableJobs?: ResumableJobsFn })
+    .clipboardPasteResumableJobs;
+}
+
+/** 任务是否属于当前面板范围：分组模式按 group_id 匹配，多选模式只匹配未分组（group_id 为空）。 */
+function scopeMatchesJob(j: PasteJob, groupMode: boolean, groupId?: string): boolean {
+  return groupMode ? j.group_id === groupId : j.group_id === "";
+}
+
+/** 历史任务逐项顺序：以数据库持久化行的 position 升序重建，不依赖当前页面选择。 */
+function historyOrderFromRows(rows: PasteItemState[]): string[] {
+  return [...rows].sort((a, b) => a.position - b.position).map((r) => r.item_id);
+}
+
+const PAUSE_REASONS: Record<string, string> = {
+  user_switched: "你切换到了其他应用，已自动暂停，不会把按键发到别的软件",
+  target_closed: "目标窗口已关闭",
+  hwnd_reused: "目标窗口句柄已被其他窗口复用",
+  focus_denied: "系统焦点保护拒绝了激活",
+};
+
+const ITEM_STATE_LABELS: Record<string, string> = {
+  pending: "待处理",
+  preparing: "准备中",
+  clipboard_written: "已写入剪贴板",
+  input_sent: "按键已发送",
+  settling: "等待目标处理",
+  confirmed: "已确认接收",
+  unverified: "未确认（无接收信号）",
+  failed: "失败",
+  skipped: "已跳过（内容不可用）",
+  uncertain: "结果不确定（不会自动重发）",
+  cancelled: "已取消",
+};
+
+/** 逐项状态 chip 的紧凑标签：语义同上，chip 内需要更短 */
+const ITEM_CHIP_LABELS: Record<string, string> = {
+  pending: "待处理",
+  preparing: "准备中",
+  clipboard_written: "已写入",
+  dispatching: "发送中",
+  input_sent: "已发送",
+  settling: "等待中",
+  confirmed: "已确认",
+  unverified: "未确认",
+  failed: "失败",
+  skipped: "已跳过",
+  uncertain: "不确定",
+  cancelled: "已取消",
+};
+
+export default function PastePanel({
+  groupId,
+  groupName,
+  itemIds,
+  onBack,
+}: {
+  /** 分组模式：粘贴整个分组（与 itemIds 二选一） */
+  groupId?: string;
+  groupName?: string;
+  /** 多选模式：按传入顺序逐项粘贴，不依赖永久分组 */
+  itemIds?: string[];
+  onBack: () => void;
+}) {
+  const settings = useSettingsStore((s) => s.settings);
+  const showToast = useUiStore((s) => s.showToast);
+  const [targets, setTargets] = useState<PasteTarget[] | null>(null);
+  /** 窗口枚举失败：不能把失败当成「没有可见窗口」，否则会误导用户去刷新而不是重试 */
+  const [targetsError, setTargetsError] = useState<string | null>(null);
+  /** 分组逐项顺序读取失败：非关键，允许降级但不冒充「没有条目」 */
+  const [orderError, setOrderError] = useState<string | null>(null);
+  /**
+   * 选中目标必须同时记录 HWND + PID：HWND 会被系统复用，
+   * 只记句柄可能在执行时把按键发到另一个进程。
+   */
+  const [selected, setSelected] = useState<{ hwnd: number; pid: number } | null>(null);
+  const [job, setJob] = useState<JobState | null>(null);
+  const [otherJob, setOtherJob] = useState<JobState | null>(null);
+  const [busy, setBusy] = useState<"start" | "cancel" | "resume" | "refresh" | null>(null);
+  /** 正在跳转的 HWND（防连点；同一时间只允许一次跳转） */
+  const [jumping, setJumping] = useState<number | null>(null);
+  const [showHelp, setShowHelp] = useState(false);
+  /** 当前任务的 jobId；用于在 setJob 提交前识别属于本任务的事件（旧任务事件仍被忽略） */
+  const jobIdRef = useRef<string | null>(null);
+  /** 逐项状态的展示顺序：历史任务由数据库 position 重建；无历史依据时才退回当前选择顺序 */
+  const [orderIds, setOrderIds] = useState<string[]>([]);
+  /** 顺序来源：history = 数据库持久化行；current = 当前页面选择兜底 */
+  const [orderSource, setOrderSource] = useState<"current" | "history">("current");
+  const orderSourceRef = useRef<"current" | "history">("current");
+  /** 同范围（分组/多选）内可恢复的历史任务；多于一个时必须由用户明确选择 */
+  const [resumableJobs, setResumableJobs] = useState<PasteJob[]>([]);
+  const groupMode = !!groupId;
+  /** 只有标题真的被截断时才挂 data-tip，避免悬停任意卡片都弹提示遮挡其他行。 */
+  const listRef = useRef<HTMLDivElement>(null);
+  const [truncatedTitles, setTruncatedTitles] = useState<Set<number>>(new Set());
+  /** 粘贴目标单选组：复用 listRef，单 Tab 停靠 + 方向键切换选中。 */
+  const targetRadio = useRovingRadioGroup<HTMLDivElement>(listRef);
+
+  useLayoutEffect(() => {
+    const measure = () => {
+      const list = listRef.current;
+      if (!list) return;
+      const next = new Set<number>();
+      list.querySelectorAll<HTMLElement>("[data-target-hwnd]").forEach((row) => {
+        const title = row.querySelector<HTMLElement>(".clip-target-title");
+        if (title && title.scrollWidth > title.clientWidth + 1) {
+          next.add(Number(row.dataset.targetHwnd));
+        }
+      });
+      setTruncatedTitles((prev) =>
+        prev.size === next.size && Array.from(next).every((v) => prev.has(v)) ? prev : next,
+      );
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [targets]);
+
+  async function loadTargets() {
+    setBusy("refresh");
+    try {
+      const list = await clipboardVisibleTargets();
+      setTargets(list);
+      setTargetsError(null);
+      // 不自动选第一个窗口；只保留仍然存在且 PID 一致的选择，其余要求用户重新选择。
+      setSelected((cur) => {
+        if (!cur) return null;
+        const hit = list.find((t) => t.hwnd === cur.hwnd);
+        return hit && hit.pid === cur.pid ? { hwnd: hit.hwnd, pid: hit.pid } : null;
+      });
+    } catch (e) {
+      // 保留上次结果，明确标记失败；不再伪装成空列表
+      setTargetsError(errorMessage(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  /**
+   * 载入一个历史/恢复任务：
+   * - 逐项状态以数据库为准，顺序按持久化行 position 升序重建，不依赖当前页面选择；
+   * - 载入后当前选择/分组变化不得再覆盖这套顺序（orderSourceRef 守门）。
+   */
+  async function loadHistoryJob(j: PasteJob, isAlive?: () => boolean) {
+    jobIdRef.current = j.id;
+    setJob(fromJob(j));
+    const rows = await clipboardPasteItemStates(j.id).catch(() => []);
+    if (isAlive && !isAlive()) return;
+    const persisted: Record<string, string> = {};
+    for (const row of rows) persisted[row.item_id] = row.state;
+    if (rows.length > 0) {
+      orderSourceRef.current = "history";
+      setOrderSource("history");
+      setOrderIds(historyOrderFromRows(rows));
+    }
+    setJob((prev) =>
+      prev && prev.id === j.id
+        ? { ...prev, itemStates: { ...persisted, ...prev.itemStates } }
+        : prev,
+    );
+  }
+
+  /** 多任务列表里用户明确选择某个可恢复任务后载入。 */
+  async function onPickResumable(j: PasteJob) {
+    setBusy("refresh");
+    try {
+      setResumableJobs([]);
+      await loadHistoryJob(j);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  useEffect(() => {
+    let alive = true;
+    const isAlive = () => alive;
+    void loadTargets();
+
+    // 兜底顺序：仅在没有历史任务可依据时使用。历史任务载入后顺序由数据库 position 决定，
+    // 后续当前选择/分组变化不得覆盖。
+    const applyFallbackOrder = () => {
+      if (orderSourceRef.current === "history") return;
+      if (groupMode) {
+        clipboardGroup(groupId!)
+          .then((g) => {
+            if (alive && orderSourceRef.current !== "history") {
+              setOrderIds(g.items.map((i) => i.id));
+              setOrderError(null);
+            }
+          })
+          .catch((e) => {
+            // 只影响逐项状态的展示顺序；粘贴仍可按后端顺序执行
+            if (alive) setOrderError(errorMessage(e));
+          });
+      } else {
+        setOrderIds(itemIds ?? []);
+      }
+    };
+    applyFallbackOrder();
+
+    // 页面打开时找回任务：先看内存里的活动任务，再回退到数据库里「可继续」的任务。
+    // 只用 clipboardPasteActive 的话，切走页面/重启应用后暂停任务就再也找不回来了。
+    void (async () => {
+      try {
+        const activeId = await clipboardPasteActive();
+        let active: PasteJob | null = activeId
+          ? await clipboardPasteJob(activeId).catch(() => null)
+          : null;
+        if (active && !scopeMatchesJob(active, groupMode, groupId)) {
+          setOtherJob(fromJob(active));
+          active = null;
+        }
+        if (active) {
+          await loadHistoryJob(active, isAlive);
+          return;
+        }
+
+        const plural = resumableJobsFn();
+        if (plural) {
+          // 多任务列表：同范围任务全部列出，由用户明确选择；不同分组的任务互不混入。
+          const list = await plural(groupMode ? groupId! : null).catch(() => []);
+          if (!alive) return;
+          const mine = list.filter((j) => scopeMatchesJob(j, groupMode, groupId));
+          const others = list.filter((j) => !scopeMatchesJob(j, groupMode, groupId));
+          if (others.length > 0) setOtherJob(fromJob(others[0]));
+          if (mine.length === 0) return;
+          if (mine.length === 1) {
+            // 只有 1 个可恢复任务：保持现有交互，自动载入。
+            await loadHistoryJob(mine[0], isAlive);
+          } else {
+            setResumableJobs(mine);
+          }
+        } else {
+          // 桥接 plural 导出尚未落地：退回现有单任务路径。
+          const j = await clipboardPasteResumableJob().catch(() => null);
+          if (!alive || !j) return;
+          if (!scopeMatchesJob(j, groupMode, groupId)) {
+            setOtherJob(fromJob(j));
+            return;
+          }
+          await loadHistoryJob(j, isAlive);
+        }
+      } catch (e) {
+        if (alive) showToast(`读取粘贴任务状态失败：${errorMessage(e)}`, { kind: "warning" });
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groupId, groupMode]);
+
+  useEffect(() => {
+    const scope = createSubscriptionScope();
+    scope.add(onClipboardPaste((e) => {
+      setJob((prev) => {
+        // 只接受当前任务的事件：旧任务事件不得覆盖新任务。
+        const isMine = prev ? prev.id === e.jobId : jobIdRef.current === e.jobId;
+        if (!isMine) return prev;
+        const base = prev ?? {
+          id: e.jobId,
+          groupId: groupMode ? groupId ?? "" : "",
+          status: e.status,
+          sent: e.sent,
+          total: e.total,
+          pending: e.pending,
+          itemStates: {},
+        };
+        // 启动竞态：任务可能在 setJob 提交前就完成，此时事件先到也要接住。
+        jobIdRef.current = e.jobId;
+        return {
+          ...base,
+          status: e.status,
+          sent: e.sent,
+          total: e.total,
+          pending: e.pending,
+          message: e.message ?? base.message,
+          restored: e.restored ?? base.restored,
+          itemState: e.itemState ?? base.itemState,
+          confirmed: e.confirmed ?? base.confirmed,
+          unverified: e.unverified ?? base.unverified,
+          uncertain: e.uncertain ?? base.uncertain,
+          pauseReason: e.pauseReason ?? base.pauseReason,
+          reasonCode: e.reasonCode ?? base.reasonCode,
+          itemStates:
+            e.itemId && e.itemState
+              ? { ...base.itemStates, [e.itemId]: e.itemState }
+              : base.itemStates,
+        };
+      });
+      setOtherJob((prev) =>
+        prev && prev.id === e.jobId
+          ? { ...prev, status: e.status, sent: e.sent, total: e.total, pending: e.pending, message: e.message }
+          : prev,
+      );
+    }));
+    return () => scope.dispose();
+  }, []);
+
+  async function onStart() {
+    if (!selected) return;
+    if (!groupMode && (!itemIds || itemIds.length === 0)) return;
+    setBusy("start");
+    try {
+      const target = await clipboardPastePrecheck(selected.hwnd, selected.pid);
+      const r = groupMode
+        ? await clipboardPasteGroup(groupId, selected.hwnd, selected.pid)
+        : await clipboardPasteItems(selected.hwnd, selected.pid, itemIds!);
+      // 先建立 jobId 关联，再主动拉一次最新状态：任务可能已经完成，
+      // 实时事件也可能早于本次 setJob 到达。
+      jobIdRef.current = r.job_id;
+      setJob({
+        id: r.job_id,
+        groupId: groupMode ? groupId! : "",
+        status: "running",
+        sent: 0,
+        total: r.total,
+        pending: r.total,
+        targetTitle: target.title,
+        itemStates: {},
+      });
+      const fresh = await clipboardPasteJob(r.job_id).catch((e) => {
+        // 任务已开始，状态读取失败只影响进度展示，不能让用户以为没开始
+        showToast(`粘贴已开始，但状态读取失败：${errorMessage(e)}`, { kind: "warning" });
+        return null;
+      });
+      if (fresh) {
+        setJob((prev) =>
+          prev && prev.id === r.job_id
+            ? {
+                ...prev,
+                status: fresh.status,
+                sent: fresh.sent,
+                total: fresh.total,
+                pending: fresh.remaining_items.length,
+                message: fresh.message ?? prev.message,
+                restored: fresh.restored ?? prev.restored,
+                targetTitle: fresh.target_title ?? prev.targetTitle,
+              }
+            : prev,
+        );
+      }
+      showToast(`开始逐项粘贴到「${target.title}」（间隔 ${r.interval_ms} ms）`, { kind: "info" });
+    } catch (e) {
+      showToast(`无法开始粘贴：${errorMessage(e)}`, { kind: "error" });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function onCancel(j: JobState) {
+    setBusy("cancel");
+    try {
+      await clipboardPasteCancel(j.id);
+      showToast("已请求取消：当前步骤结束后停止", { kind: "info" });
+    } catch (e) {
+      showToast(`取消失败：${errorMessage(e)}`, { kind: "error" });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function onResume() {
+    if (!job || !selected) return;
+    setBusy("resume");
+    try {
+      await clipboardPastePrecheck(selected.hwnd, selected.pid);
+      const r = await clipboardPasteResume(job.id, selected.hwnd, selected.pid);
+      jobIdRef.current = r.job_id;
+      setJob((prev) =>
+        prev
+          ? {
+              ...prev,
+              status: "running",
+              total: r.total,
+              pending: r.total,
+            }
+          : prev,
+      );
+      // 快速完成时同样以主动拉取为准，避免停留在「进行中」。
+      const fresh = await clipboardPasteJob(r.job_id).catch((e) => {
+        showToast(`继续粘贴已开始，但状态读取失败：${errorMessage(e)}`, { kind: "warning" });
+        return null;
+      });
+      if (fresh) {
+        setJob((prev) =>
+          prev && prev.id === r.job_id
+            ? {
+                ...prev,
+                status: fresh.status,
+                sent: fresh.sent,
+                total: fresh.total,
+                pending: fresh.remaining_items.length,
+                message: fresh.message ?? prev.message,
+                restored: fresh.restored ?? prev.restored,
+              }
+            : prev,
+        );
+      }
+      showToast(`继续粘贴剩余项（${r.total} 项）`, { kind: "info" });
+    } catch (e) {
+      showToast(`继续失败：${errorMessage(e)}`, { kind: "error" });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  /**
+   * 处置结果不确定项：必须由用户明确选择「已收到」或「没收到，重发」。
+   * jobId/itemId 都绑定被展示的历史任务与历史条目，不混用当前页面选择。
+   */
+  async function onResolveUncertain(jobId: string, itemId: string, action: "received" | "resend") {
+    setBusy("resume");
+    try {
+      await clipboardPasteResolveUncertain(jobId, itemId, action);
+      const fresh = await clipboardPasteJob(jobId).catch(() => null);
+      if (fresh) {
+        setJob((prev) =>
+          prev && prev.id === fresh.id
+            ? {
+                ...prev,
+                status: fresh.status,
+                sent: fresh.sent,
+                pending: fresh.remaining_items.length,
+                uncertain: fresh.uncertain_items.length,
+                itemStates: {
+                  ...prev.itemStates,
+                  [itemId]: action === "received" ? "confirmed" : "pending",
+                },
+              }
+            : prev,
+        );
+      }
+      showToast(
+        action === "received" ? "已标记为收到" : "已排入重发，请点击「继续」发送",
+        { kind: "info" },
+      );
+    } catch (e) {
+      showToast(`处置失败：${errorMessage(e)}`, { kind: "error" });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  /** 跳转：选中 + 后端校验 HWND/PID/权限 → 激活。只切换窗口，不写剪贴板、不发送按键。 */
+  async function onJump(t: PasteTarget) {
+    if (running || jumping !== null) return;
+    setSelected({ hwnd: t.hwnd, pid: t.pid });
+    setJumping(t.hwnd);
+    try {
+      await clipboardFocusTarget(t.hwnd, t.pid);
+      showToast(`已切换到「${t.title || "目标窗口"}」`, { kind: "info" });
+    } catch (e) {
+      showToast(`无法跳转：${errorMessage(e)}`, { kind: "error" });
+    } finally {
+      setJumping(null);
+    }
+  }
+
+  const intervals = {
+    text: settings?.clipboard_paste_interval_ms ?? 350,
+    html: settings?.clipboard_paste_interval_html_ms ?? 600,
+    image: settings?.clipboard_paste_interval_image_ms ?? 1200,
+    files: settings?.clipboard_paste_interval_files_ms ?? 900,
+  };
+  const running = job?.status === "running";
+  const progress = job && job.total > 0 ? Math.round((job.sent / job.total) * 100) : 0;
+
+  return (
+    <div className="clip-detail clip-paste">
+      <div className="clip-detail-head">
+        <button className="icon-btn sm" onClick={onBack} data-tip="返回" aria-label="返回分组详情">
+          <ArrowLeft size={13} />
+        </button>
+        <span>逐项粘贴 · {groupName ?? `所选 ${itemIds?.length ?? 0} 项`}</span>
+      </div>
+
+      <div className="clip-detail-body">
+        <div className="clip-paste-intro">
+          <span className="clip-hint">点击卡片选择目标，右侧箭头仅跳转，不执行粘贴。</span>
+          <button
+            className="clip-hint-toggle"
+            onClick={() => setShowHelp((v) => !v)}
+            aria-expanded={showHelp}
+            aria-controls="clip-paste-help"
+          >
+            {showHelp ? "收起说明" : "操作说明"}
+          </button>
+        </div>
+        {showHelp && (
+          <div className="clip-hint clip-paste-help" id="clip-paste-help">
+            <p>
+              仅在点击「开始」后执行：依次把每一项写入剪贴板并发送一次 <code>Ctrl+V</code>。
+              默认间隔：文字 {intervals.text} ms / 富文本 {intervals.html} ms / 图片 {intervals.image} ms /
+              文件 {intervals.files} ms；图片更保守。
+            </p>
+            <p>
+              取消会在当前步骤结束后生效，未处理项目保留以便手动继续；继续时需重新选择仍存在的目标窗口。
+              最后一项发送后会先完成独立收尾，再尝试恢复剪贴板；若期间你又复制了新内容，不会覆盖。
+            </p>
+            <p>
+              目标应用是否真正接收内容无法自动验证，结果只说明「粘贴动作已发送」；
+              状态中的「未确认」不是失败，也不会自动重发可能已被接收的内容。
+            </p>
+            <p>所有粘贴都只由你手动触发，不会在后台自动执行。</p>
+          </div>
+        )}
+
+        {otherJob && otherJob.status === "running" && (
+          <div className="clip-warn">
+            <TriangleAlert size={12} />
+            <span>
+              另一个分组正在粘贴到「{otherJob.targetTitle || "其他窗口"}」（{otherJob.sent}/{otherJob.total}）。
+              同一时间只允许一个粘贴任务。
+            </span>
+            <button className="btn sm" onClick={() => onCancel(otherJob)} disabled={busy === "cancel"}>
+              取消它
+            </button>
+          </div>
+        )}
+
+        {resumableJobs.length > 1 && !job && (
+          <div className="clip-paste-job" role="group" aria-label="可恢复的粘贴任务">
+            <div className="clip-paste-job-head">
+              <span>可恢复的粘贴任务（{resumableJobs.length}）</span>
+            </div>
+            <div className="clip-hint">
+              以下任务此前未完成，请选择要继续查看的一个；不同分组的任务各自独立，不会串条目。
+            </div>
+            {resumableJobs.map((j) => {
+              const groupLabel =
+                j.group_id === ""
+                  ? "所选条目"
+                  : groupName && j.group_id === groupId
+                    ? groupName
+                    : "其他分组";
+              return (
+                <div key={j.id} className="clip-paste-uncertain-row">
+                  <span className="clip-target-text">
+                    <span className="clip-target-title">{j.target_title || "（无标题窗口）"}</span>
+                    <span className="clip-target-meta">
+                      {groupLabel} · 剩余 {j.remaining_items.length} 项 · 不确定{" "}
+                      {j.uncertain_items.length} 项
+                      {j.started_at ? ` · ${clipboardTime(j.started_at)}` : ""}
+                    </span>
+                  </span>
+                  <button
+                    className="btn sm"
+                    onClick={() => void onPickResumable(j)}
+                    disabled={busy === "refresh"}
+                  >
+                    <Play size={11} /> 继续 / 查看
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        <div className="clip-block-head">
+          <span>目标窗口</span>
+          <button className="btn sm" onClick={loadTargets} disabled={busy === "refresh" || running}>
+            {busy === "refresh" ? <RefreshCw size={11} className="spin" /> : <RefreshCw size={11} />} 刷新
+          </button>
+        </div>
+        {targetsError && (
+          <div className="clip-warn" role="status">
+            <TriangleAlert size={12} />
+            <span>读取窗口列表失败：{targetsError}</span>
+            <button className="btn sm" onClick={() => void loadTargets()} disabled={busy === "refresh"}>
+              重试
+            </button>
+          </div>
+        )}
+        {targets === null ? (
+          <div className="clip-hint">
+            {targetsError ? "窗口列表未读取成功，请点击刷新重试。" : "正在读取可见窗口…"}
+          </div>
+        ) : targets.length === 0 ? (
+          <div className="clip-hint">
+            未发现其他可见窗口。请先打开目标应用，再点击刷新。本应用自身不能作为粘贴目标。
+          </div>
+        ) : (
+          <div
+            ref={listRef}
+            className="clip-target-list"
+            role="radiogroup"
+            aria-label="粘贴目标窗口"
+            onKeyDown={targetRadio.onKeyDown}
+          >
+            {targets.map((t, i) => {
+              const isSelected = selected?.hwnd === t.hwnd && selected.pid === t.pid;
+              const isJumping = jumping === t.hwnd;
+              return (
+                <div
+                  key={t.hwnd}
+                  data-target-hwnd={t.hwnd}
+                  className={`clip-target-row ${isSelected ? "active" : ""}`}
+                >
+                  {/* 点击卡片只选中：高亮并更新目标身份，不跳转、不粘贴。 */}
+                  <button
+                    className="clip-target"
+                    role="radio"
+                    aria-checked={isSelected}
+                    tabIndex={radioTabIndex(isSelected, !!selected, i)}
+                    disabled={running}
+                    onClick={() => setSelected({ hwnd: t.hwnd, pid: t.pid })}
+                    data-tip={truncatedTitles.has(t.hwnd) ? t.title : undefined}
+                  >
+                    {/* 真实应用图标：后端按窗口身份解析 exe，失败回退统一通用图标。 */}
+                    <TargetIcon hwnd={t.hwnd} pid={t.pid} exePath={t.exe_path} />
+                    <span className="clip-target-text">
+                      <span className="clip-target-title">{t.title || "（无标题窗口）"}</span>
+                      <span className="clip-target-meta">
+                        {fileBaseName(t.exe_path)} · PID {t.pid}
+                      </span>
+                    </span>
+                  </button>
+                  <span className="clip-target-state" aria-hidden={!isSelected}>
+                    {isSelected && (
+                      <>
+                        <Check size={11} /> 已选
+                      </>
+                    )}
+                  </span>
+                  {/* 跳转是独立点击区：选中 + 校验身份 + 激活；不触发粘贴。 */}
+                  <button
+                    className="icon-btn sm clip-target-jump"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void onJump(t);
+                    }}
+                    disabled={running || jumping !== null}
+                    data-tip="跳转到该窗口"
+                    aria-label={`跳转到该窗口：${t.title || "无标题窗口"}`}
+                  >
+                    {isJumping ? (
+                      <RefreshCw size={12} className="spin" />
+                    ) : (
+                      <ArrowUpRight size={12} />
+                    )}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {job && (
+          <div className="clip-paste-job">
+            <div className="clip-paste-job-head">
+              <span className={`clip-paste-status status-${job.status}`}>
+                {STATUS_LABELS[job.status] ?? job.status}
+              </span>
+              <span>
+                已发送 {job.sent}/{job.total} 项
+                {job.itemState ? ` · 当前：${ITEM_STATE_LABELS[job.itemState] ?? job.itemState}` : ""}
+                {job.pending > 0 ? ` · 剩余 ${job.pending} 项` : ""}
+              </span>
+            </div>
+            <div
+              className="clip-progress"
+              role="progressbar"
+              aria-valuemin={0}
+              aria-valuemax={job.total}
+              aria-valuenow={job.sent}
+            >
+              <div style={{ width: `${progress}%` }} />
+            </div>
+            {(job.pauseReason || job.status === "paused") && (
+              <div className="clip-paste-message" role="status">
+                {PAUSE_REASONS[job.pauseReason ?? ""] ??
+                  "粘贴已暂停：目标窗口不在前台，剩余条目已保留"}
+                {job.pending > 0 ? `（剩余 ${job.pending} 项，继续时会重新确认目标窗口）` : ""}
+              </div>
+            )}
+            {job.uncertain && job.uncertain > 0 ? (
+              <div className="clip-paste-message" role="status">
+                {job.uncertain} 项结果不确定（按键可能已发出）。为避免重复粘贴不会自动重发，
+                请先确认目标应用里是否已收到，再手动重新选择这些条目。
+              </div>
+            ) : null}
+            {job.status === "finish_persist_failed" && (
+              <div className="clip-paste-message" role="status">
+                结果尚未可靠保存：收尾状态写入失败，重启后可能被识别为中断。条目与不确定项仍保留，
+                请确认目标窗口后继续处置，不要把它当作已完成。
+              </div>
+            )}
+            {job.message && job.status !== "finish_persist_failed" && (
+              <div className="clip-paste-message">{job.message}</div>
+            )}
+            {orderError && (
+              <div className="clip-hint">
+                逐项顺序读取失败，仍会按后端顺序粘贴，但暂时看不到逐项状态：{orderError}
+              </div>
+            )}
+            {orderSource === "current" && (
+              <div className="clip-hint">顺序来自当前所选条目；恢复历史任务后将按数据库原始顺序展示。</div>
+            )}
+            {/* 秒完成任务可能只拿到聚合状态；没有逐项事件时不展示全“待处理”的误导 chip。 */}
+            {orderIds.length > 0 &&
+              !(job.status !== "running" && Object.keys(job.itemStates).length === 0) && (
+              <div className="clip-paste-items" role="list" aria-label="逐项粘贴状态">
+                {orderIds.map((id, i) => {
+                  const st = job.itemStates[id] ?? "pending";
+                  return (
+                    <span key={id} role="listitem" className={`clip-paste-item st-${st}`}>
+                      <span className="clip-paste-item-idx">{i + 1}</span>
+                      {ITEM_CHIP_LABELS[st] ?? st}
+                    </span>
+                  );
+                })}
+              </div>
+            )}
+            {orderIds.some((id) => job.itemStates[id] === "uncertain") && (
+              <div className="clip-paste-uncertain" role="group" aria-label="结果不确定项处置">
+                <div className="clip-hint">
+                  以下项按键可能已发出、也可能没发出，为避免重复粘贴不会自动重发。请按实际结果处置：
+                </div>
+                {orderIds
+                  .filter((id) => job.itemStates[id] === "uncertain")
+                  .map((id) => (
+                    <div key={id} className="clip-paste-uncertain-row">
+                      <span>第 {orderIds.indexOf(id) + 1} 项</span>
+                      <button
+                        className="btn sm"
+                        onClick={() => void onResolveUncertain(job.id, id, "received")}
+                        disabled={busy === "resume"}
+                      >
+                        <Check size={11} /> 已收到
+                      </button>
+                      <button
+                        className="btn sm"
+                        onClick={() => void onResolveUncertain(job.id, id, "resend")}
+                        disabled={busy === "resume"}
+                      >
+                        <RefreshCw size={11} /> 没收到，重发
+                      </button>
+                    </div>
+                  ))}
+              </div>
+            )}
+            {running && (
+              <button className="btn sm danger" onClick={() => onCancel(job)} disabled={busy === "cancel"}>
+                <StopCircle size={11} /> 取消粘贴
+              </button>
+            )}
+            {!running && job.pending > 0 && (
+              <button className="btn sm" onClick={onResume} disabled={busy === "resume" || !selected}>
+                <Play size={11} /> 继续剩余 {job.pending} 项到所选窗口
+              </button>
+            )}
+          </div>
+        )}
+
+        <div className="clip-paste-actions">
+          <button
+            className="btn primary"
+            onClick={onStart}
+            disabled={!selected || running || busy === "start"}
+          >
+            {busy === "start" ? <RefreshCw size={12} className="spin" /> : <Play size={12} />} 开始逐项粘贴
+          </button>
+          {!selected && <span className="clip-hint">请先选择目标窗口</span>}
+        </div>
+      </div>
+    </div>
+  );
+}

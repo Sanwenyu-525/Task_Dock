@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "workspace",
-  "description": "项目工作空间专业窗口的最小能力集：事件、文件夹选择与在本机打开路径；不继承主窗口的导航/通知/贴边吸附等插件权限。",
+  "description": "项目工作空间专业窗口的最小能力集：事件、文件夹选择、在本机打开路径与关闭协调器的 destroy 放行（tauri v2 契约：前端注册 onCloseRequested 后 Rust 无条件 prevent_close，放行路径由 JS API 调 destroy，缺 allow-destroy 会导致窗口永不销毁）；不继承主窗口的导航/通知/贴边吸附等插件权限。",
   "windows": ["workspace"],
   "permissions": [
     "core:default",
@@ -14,6 +14,7 @@
     "core:window:allow-minimize",
     "core:window:allow-toggle-maximize",
     "core:window:allow-close",
+    "core:window:allow-destroy",
     "core:window:allow-is-always-on-top",
     "core:window:allow-set-always-on-top"
   ]

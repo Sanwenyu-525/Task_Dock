@@ -1,0 +1,1788 @@
+//! 收集箱「文件」子页（胶囊内）——文件投递部分。
+//!
+//! 职责：把 Windows 资源管理器里拖来的文件/文件夹，**直接**落到用户配置好的真实目录。
+//! 与「快速收集」互补：那边存文字/链接/待办，这边只搬文件，不写库、不进暂存架。
+//!
+//! 设计约束（详见 docs/shelf/README.md §12）：
+//! - 拖入走 `lib/fileDrop` 的**唯一** Webview 订阅，本面板只是其中一个消费者；
+//!   命中不到具体卡片就什么都不做（fail-closed），绝不猜测目标目录；
+//! - 命中只认 `data-drop-target` 卡片，高亮层 `pointer-events: none` 不挡命中；
+//! - 结果内联展示（成功/跳过/失败逐项原因 + 打开目标目录），不依赖 Toast：
+//!   胶囊窗口被 Win32 裁剪，浮层提示可能落在可见区域之外；
+//! - 面板卸载只释放拖放订阅与定时器；在途投递的进度与结果由 store 持有，
+//!   重开面板仍能看到，底层文件操作不会被界面卸载打断。
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  AlertTriangle,
+  ArrowDown,
+  ArrowUp,
+  Check,
+  ChevronDown,
+  Folder,
+  FolderInput,
+  Loader2,
+  MoreVertical,
+  Pencil,
+  Plus,
+  Trash2,
+} from "lucide-react";
+import {
+  discardOperation,
+  dropTargetAt,
+  registerFileDropConsumer,
+  type DropPayloadMeta,
+  type DropPoint,
+} from "../../lib/fileDrop";
+import {
+  canDropToDirectory,
+  labelOf,
+  payloadCount,
+  type DragPayloadView,
+  type DragProbe,
+} from "../../lib/dragPayload";
+import { errorMessage, sanitizeForUser } from "../../lib/errors";
+import { shouldHandleShelfPaste } from "../../lib/pasteShortcut";
+import type { MessageKey, MessageParams } from "../../i18n";
+import { useLocale } from "../../hooks/useLocale";
+import { useShelfCollected } from "../../hooks/useShelfCollected";
+import { useDropTargetsStore } from "../../store/useDropTargetsStore";
+import { useShelfStore } from "../../store/useShelfStore";
+import { DropdownMenu } from "../ui";
+import DropTargetForm from "../shelf/DropTargetForm";
+import type { ShelfDropReport, ShelfDropTarget, ShelfPasteReport, ShelfCollectedEvent } from "../../lib/bridge";
+import { openDiagnosticsOperation, openFullApp } from "./actions";
+import DragStatusNotice, {
+  type DragStatusTone,
+} from "./DragStatusNotice";
+import InboxRecentShelf, { SHELF_RECENT_DROP_ZONE } from "./InboxRecentShelf";
+import { EmptyState } from "./PanelKit";
+
+/** 表单与底栏共用：底栏按钮通过 form 属性提交，不在表单里再放一套主操作。 */
+const FORM_ID = "cap-drop-target-form";
+
+/** 卡片上只留最有辨识度的一段路径：`…\父目录\名称`，完整路径放 title。 */
+function shortPath(path: string): string {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  if (parts.length <= 2) return path;
+  return `…\\${parts.slice(-2).join("\\")}`;
+}
+
+/** 载荷条数：只用于「正在复制/移动 N 项」这类真实计数文案。 */
+
+/** 稳定拖入错误码：后端以 `DRAG_*：说明` 形式表达语义，前端只单独展示码。 */
+const DRAG_CODE_RE = /\bDRAG_[A-Z0-9_]{2,}\b/;
+
+/** 从任意错误/失败原因里提取稳定码；提取不到就不编造。 */
+function dragCodeOf(raw: unknown): string | undefined {
+  const text =
+    typeof raw === "string" ? raw : raw instanceof Error ? raw.message : "";
+  const match = text.match(DRAG_CODE_RE);
+  return match ? match[0] : undefined;
+}
+
+/**
+ * 失败原因压成一句可读说明：去掉稳定码、脱敏路径/凭证并限长。
+ * 稳定码由 `cap-drop-notice-code` 单独展示，不混在正文里。
+ */
+function compactDragDetail(raw: unknown, code?: string): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  let text = sanitizeForUser(raw);
+  if (!text) return undefined;
+  if (code) {
+    text = text.split(code).join(" ").replace(/^[\s:：\-—·]+/, "").trim();
+  }
+  if (!text || text === code) return undefined;
+  return text.length > 120 ? `${text.slice(0, 120)}…` : text;
+}
+
+/** 只展示文件名，不把完整路径塞进胶囊；未知/空目标用中性占位。 */
+function pasteFailureDetail(
+  report: ShelfPasteReport,
+  t: (key: MessageKey, params?: MessageParams) => string,
+): string | undefined {
+  const lines = report.failed.slice(0, 3).map((failure) => {
+    const name = failure.path
+      ? (failure.path.split(/[\\/]/).filter(Boolean).at(-1) ?? "")
+      : "";
+    const reason =
+      compactDragDetail(failure.reason, failure.code ?? undefined) ??
+      t("capsule.inboxDrop.pasteFailedDetail");
+    return `${name || t("capsule.inboxDrop.pasteUnknownItem")}：${reason}`;
+  });
+  if (report.skipped > 0) {
+    lines.push(t("capsule.inboxDrop.pasteSkipped", { count: report.skipped }));
+  }
+  return lines.length > 0 ? lines.join("\n") : undefined;
+}
+
+/** 剪贴板粘贴失败的统一文案：空/占用/超限/不支持/保存失败分别说明。 */
+function pasteFailureCopy(
+  code: string | undefined,
+  t: (key: MessageKey, params?: MessageParams) => string,
+): { tone: DragStatusTone; title: string; detail: string } {
+  if (code === "CLIPBOARD_BUSY") {
+    return {
+      tone: "warn",
+      title: t("capsule.inboxDrop.pasteBusy"),
+      detail: t("capsule.inboxDrop.pasteBusyDetail"),
+    };
+  }
+  if (code === "CLIPBOARD_EMPTY") {
+    return {
+      tone: "warn",
+      title: t("capsule.inboxDrop.pasteEmpty"),
+      detail: t("capsule.inboxDrop.pasteEmptyDetail"),
+    };
+  }
+  if (code === "CLIPBOARD_CONTENT_TOO_LARGE") {
+    return {
+      tone: "error",
+      title: t("capsule.inboxDrop.pasteTooLarge"),
+      detail: t("capsule.inboxDrop.pasteTooLargeDetail"),
+    };
+  }
+  if (code === "CLIPBOARD_UNSUPPORTED" || code === "CLIPBOARD_UNREADABLE") {
+    return {
+      tone: "warn",
+      title: t("capsule.inboxDrop.pasteUnsupported"),
+      detail: t("capsule.inboxDrop.pasteUnsupportedDetail"),
+    };
+  }
+  return {
+    tone: "error",
+    title: t("capsule.inboxDrop.pasteFailed"),
+    detail: t("capsule.inboxDrop.pasteFailedDetail"),
+  };
+}
+
+/**
+ * 结构化拖入状态行的本地状态。
+ * `id` 让「同一条状态更新」与「旧计时器到期」可区分，避免误清新状态。
+ */
+interface DragNoticeState {
+  id: number;
+  tone: DragStatusTone;
+  title: string;
+  detail?: string;
+  code?: string;
+  operationId?: string;
+}
+
+/**
+ * 「最近暂存」接收区在悬停时显示的文案：只说已识别类型能做什么。
+ * 识别不出（`probe` 为空）时返回 `undefined`，由调用方沿用默认文案——
+ * 绝不猜一个类型来「让提示看起来更聪明」。
+ */
+function shelfHintFor(
+  probe: DragProbe | null,
+  t: (key: MessageKey) => string,
+): string | undefined {
+  if (!probe) return undefined;
+  if (!probe.canShelf) return t("capsule.inboxDrop.hintUnsupported");
+  switch (labelOf(probe.kind)) {
+    case "files":
+      return t("capsule.inboxDrop.hintFiles");
+    case "virtual":
+      return t("capsule.inboxDrop.hintVirtual");
+    case "image":
+      return t("capsule.inboxDrop.hintImage");
+    case "link":
+      return t("capsule.inboxDrop.hintLink");
+    case "text":
+      return t("capsule.inboxDrop.hintText");
+    case "mixed":
+      return t("capsule.inboxDrop.hintMixed");
+    default:
+      return undefined;
+  }
+}
+
+export default function InboxDropPane() {
+  const { t } = useLocale();
+  /** 结果条的状态标签：跳过 / 部分完成都不能被说成成功。 */
+  const statusLabel: Record<string, string> = {
+    ok: t("capsule.inboxDrop.status.ok"),
+    skipped: t("capsule.inboxDrop.status.skipped"),
+    failed: t("capsule.inboxDrop.status.failed"),
+    partial: t("capsule.inboxDrop.status.partial"),
+  };
+  const targets = useDropTargetsStore((s) => s.targets);
+  const loading = useDropTargetsStore((s) => s.loading);
+  const loaded = useDropTargetsStore((s) => s.loaded);
+  const error = useDropTargetsStore((s) => s.error);
+  const ops = useDropTargetsStore((s) => s.ops);
+  const reports = useDropTargetsStore((s) => s.reports);
+  const reportNames = useDropTargetsStore((s) => s.reportNames);
+  const lastTargetId = useDropTargetsStore((s) => s.lastTargetId);
+  const load = useDropTargetsStore((s) => s.load);
+  const drop = useDropTargetsStore((s) => s.drop);
+  const remove = useDropTargetsStore((s) => s.remove);
+  const move = useDropTargetsStore((s) => s.move);
+  const openDir = useDropTargetsStore((s) => s.openDir);
+  const clearReport = useDropTargetsStore((s) => s.clearReport);
+  const requestManage = useDropTargetsStore((s) => s.requestManage);
+
+  const [overId, setOverId] = useState<string | null>(null);
+  /** 落点是否在「最近暂存」接收区：与 overId 互斥，由同一套实时命中决定。 */
+  const [shelfOver, setShelfOver] = useState(false);
+  /**
+   * 拖入内容的**类型探测**（原生桥 enter/over）：只影响提示文案与「能否投递到
+   * 文件夹」的可用形态，**不参与命中**——松手落在哪里始终由坐标决定。
+   * 桥未安装/未给出探测时为 null，此时完全沿用原有交互，不编造类型。
+   */
+  const [probe, setProbe] = useState<DragProbe | null>(null);
+  /** 原生拖入会话进行中（enter 已到、leave/drop 未到）。 */
+  const [dragging, setDragging] = useState(false);
+  /**
+   * 应用内拖出（最近暂存行 → 卡片）的前置信号。
+   * 该路径的 `shelf_drag_out` 在 UI 线程执行 `DoDragDrop`，tao 会把原生
+   * enter/over/drop 全部缓冲到拖拽结束后才派发——拖拽期间面板收不到任何原生
+   * 事件。没有这个前置信号，整段拖拽里界面完全静止（看起来「不能投递」）。
+   */
+  const [localDrag, setLocalDrag] = useState(false);
+  /** 拖拽进行中（原生会话或应用内拖出）：卡片/接收区的可投递形态只看这一个值。 */
+  const dragActive = dragging || localDrag;
+  /** null=不在表单里；"new"=新增；其余为目标 id=编辑 */
+  const [editing, setEditing] = useState<string | null>(null);
+  /** 表单在途状态：底栏按钮与表单共享，避免重复提交/取消丢失。 */
+  const [formBusy, setFormBusy] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [reportOpen, setReportOpen] = useState(false);
+  /** 「重试失败项」在途：同一批次只允许一个重试（drop 内部还有同目标单飞兜底）。 */
+  const [retryBusy, setRetryBusy] = useState(false);
+  const overRef = useRef<string | null>(null);
+  /**
+   * 最后一次 enter/over 的坐标（CSS 像素）。拖拽期间目标列表晚到、卡片被
+   * 隐藏/删除、面板滚动都会让上一次命中失效，用它重算，不必等鼠标再动一次。
+   */
+  const lastPoint = useRef<DropPoint | null>(null);
+  /** 应用内拖出的兜底复位计时器（后端 OLE 循环卡死时不能让面板永久停在拖拽形态）。 */
+  const localDragTimer = useRef<number | null>(null);
+  /** 投递列表滚动容器：滚动会改变卡片位置，需要按最后一次坐标重算命中。 */
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  /**
+   * 一次原生拖入会话只允许执行一次落点动作。
+   * fileDrop 在 drop 后已结束会话，这里再兜一层：重复/迟到的 drop 不得
+   * 重复投递或重复暂存；新会话必须由 enter（或 enter 未认领时的 over）开启。
+   */
+  const dropSession = useRef({ active: false, handled: false });
+  /** 当前已受理、仍在读取的 operationId：旧会话的迟到载荷不得清掉新会话的读取态。 */
+  const acceptedOp = useRef<string | null>(null);
+  const timers = useRef(new Set<number>());
+  /** 卸载后不再更新任何本地状态：投递可能在面板关闭后才返回（结果由 store 保留）。 */
+  const alive = useRef(true);
+  useEffect(() => {
+    // StrictMode 下 effect 会「清理 → 重跑」一次，必须在这里重新置真。
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+
+  const visible = useMemo(
+    () => targets.filter((t) => t.show_in_capsule),
+    [targets],
+  );
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  // 提示 3.2s 自动消失；卸载时清掉全部计时器（不对已卸载组件 setState）
+  useEffect(() => {
+    const pending = timers.current;
+    return () => {
+      pending.forEach((t) => window.clearTimeout(t));
+      pending.clear();
+    };
+  }, []);
+
+  const flash = useCallback((msg: string) => {
+    if (!alive.current) return;
+    setNotice(msg);
+    const t = window.setTimeout(() => {
+      timers.current.delete(t);
+      setNotice((n) => (n === msg ? null : n));
+    }, 3200);
+    timers.current.add(t);
+  }, []);
+
+  /**
+   * 结构化状态行：新状态替换旧状态；只有显式传入 `autoHideMs` 才自动消失。
+   * 读取中给 30s 上限（桥异常时不能永久停在「正在读取」），错误/部分成功
+   * 必须由用户关闭或下一条状态替换，绝不 3.2s 后偷偷消失。
+   */
+  const [dragNotice, setDragNotice] = useState<DragNoticeState | null>(null);
+  const dragNoticeSeq = useRef(0);
+  const pushDragNotice = useCallback(
+    (next: Omit<DragNoticeState, "id">, autoHideMs?: number) => {
+      if (!alive.current) return;
+      const id = ++dragNoticeSeq.current;
+      setDragNotice({ ...next, id });
+      if (autoHideMs && autoHideMs > 0) {
+        const timer = window.setTimeout(() => {
+          timers.current.delete(timer);
+          setDragNotice((n) => (n && n.id === id ? null : n));
+        }, autoHideMs);
+        timers.current.add(timer);
+      }
+    },
+    [],
+  );
+  const dismissDragNotice = useCallback(() => setDragNotice(null), []);
+
+  /**
+   * 主动粘贴当前剪贴板。
+   *
+   * 与拖入共用结构化状态行，但语义独立：不依赖剪贴板历史、不经过拖入会话。
+   * 同一次操作内 busy 互斥；卸载后不再 setState（`alive` 已在 push 里兜底）。
+   */
+  const [pasteBusy, setPasteBusy] = useState(false);
+  const pasteBusyRef = useRef(false);
+  const pasteCurrent = useCallback(async () => {
+    if (pasteBusyRef.current) return;
+    pasteBusyRef.current = true;
+    setPasteBusy(true);
+    pushDragNotice(
+      {
+        tone: "busy",
+        title: t("capsule.inboxDrop.pasteBusyStatus"),
+      },
+      30_000,
+    );
+    try {
+      const { report, operationId } = await useShelfStore
+        .getState()
+        .pasteCurrent("reference", null);
+      if (report.success) {
+        // 胶囊只取 4 条最近暂存；强制刷新，避免 5s 软缓存展示旧列表。
+        void useShelfStore.getState().loadRecent({ force: true }).catch(() => {});
+        if (report.partial || report.failed.length > 0 || report.skipped > 0) {
+          const detail = pasteFailureDetail(report, t);
+          pushDragNotice({
+            tone: "warn",
+            title: t("capsule.inboxDrop.pastePartial"),
+            detail: [
+              t("capsule.inboxDrop.pastePartialDetail", {
+                added: report.added.length,
+                failed: report.failed.length,
+                skipped: report.skipped,
+              }),
+              report.duplicates > 0
+                ? t("capsule.inboxDrop.pasteDuplicates", {
+                    added: report.added.length,
+                    count: report.duplicates,
+                  })
+                : undefined,
+              detail,
+            ]
+              .filter(Boolean)
+              .join("\n"),
+            code: report.failed[0]?.code ?? undefined,
+            operationId,
+          });
+        } else if (report.duplicates > 0) {
+          pushDragNotice(
+            {
+              tone: "info",
+              title: t("capsule.inboxDrop.pasteDuplicates", {
+                added: report.added.length,
+                count: report.duplicates,
+              }),
+            },
+            3_200,
+          );
+        } else {
+          pushDragNotice(
+            {
+              tone: "success",
+              title: t("capsule.inboxDrop.pasteSuccess", {
+                added: report.added.length,
+              }),
+            },
+            3_200,
+          );
+        }
+        return;
+      }
+
+      const code = report.code ?? undefined;
+      const copy = pasteFailureCopy(code, t);
+      const knownClipboardCode =
+        code === "CLIPBOARD_BUSY" ||
+        code === "CLIPBOARD_EMPTY" ||
+        code === "CLIPBOARD_CONTENT_TOO_LARGE" ||
+        code === "CLIPBOARD_UNSUPPORTED" ||
+        code === "CLIPBOARD_UNREADABLE";
+      const extra = knownClipboardCode ? undefined : pasteFailureDetail(report, t);
+      pushDragNotice({
+        tone: copy.tone,
+        title: copy.title,
+        detail: extra ? `${copy.detail}\n${extra}` : copy.detail,
+        code,
+        operationId,
+      });
+    } catch (e) {
+      const code = dragCodeOf(e);
+      pushDragNotice({
+        tone: "error",
+        title: t("capsule.inboxDrop.pasteFailed"),
+        detail:
+          compactDragDetail(errorMessage(e), code) ??
+          t("capsule.inboxDrop.pasteFailedDetail"),
+        code,
+      });
+    } finally {
+      pasteBusyRef.current = false;
+      setPasteBusy(false);
+    }
+  }, [pushDragNotice, t]);
+
+  // 只在「文件」子页挂载期间生效；编辑框/弹层由 shouldHandleShelfPaste 放行。
+  // 目录表单不是 overlay 层：表单打开时即使焦点在按钮/单选上也不能触发粘贴。
+  useEffect(() => {
+    if (editing !== null || confirmRemove !== null) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!shouldHandleShelfPaste(event, { busy: pasteBusyRef.current })) return;
+      event.preventDefault();
+      void pasteCurrent();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [pasteCurrent, editing, confirmRemove]);
+
+  // 全局收集热键 / 资源管理器「发送到」：后台入库不经过本面板，事件到达后
+  // 复用同一套状态行展示结果（不把正文/路径放进事件或日志）。
+  useShelfCollected(
+    useCallback(
+      (event: ShelfCollectedEvent) => {
+        if (!alive.current) return;
+        if (
+          event.success &&
+          !event.partial &&
+          event.failed === 0 &&
+          event.skipped === 0 &&
+          !(event.duplicates ?? 0)
+        ) {
+          pushDragNotice(
+            {
+              tone: "success",
+              title: t("capsule.inboxDrop.pasteSuccess", { added: event.added }),
+            },
+            3_200,
+          );
+          return;
+        }
+        if (event.success && !event.partial && event.failed === 0 && event.skipped === 0) {
+          pushDragNotice(
+            {
+              tone: "info",
+              title: t("capsule.inboxDrop.pasteDuplicates", {
+                added: event.added,
+                count: event.duplicates ?? 0,
+              }),
+            },
+            3_200,
+          );
+          return;
+        }
+        if (event.success) {
+          pushDragNotice({
+            tone: "warn",
+            title: t("capsule.inboxDrop.pastePartial"),
+            detail: t("capsule.inboxDrop.pastePartialDetail", {
+              added: event.added,
+              failed: event.failed,
+              skipped: event.skipped,
+            }),
+            code: event.code ?? undefined,
+          });
+          return;
+        }
+        const copy = pasteFailureCopy(event.code ?? undefined, t);
+        pushDragNotice({ ...copy, code: event.code ?? undefined });
+      },
+      [pushDragNotice, t],
+    ),
+  );
+
+
+  /** 稳定码 → 一句短标题；未知码回退到「读取/投递/暂存失败」，不展示原文。 */
+  const dragNoticeTitle = useCallback(
+    (code: string | undefined, fallback: "read" | "drop" | "shelf"): string => {
+      switch (code) {
+        case "DRAG_PAYLOAD_INVALID":
+        case "DRAG_VIRTUAL_FILE_READ_FAILED":
+        case "DRAG_VIRTUAL_INDEX_INVALID":
+        case "DRAG_IMAGE_DECODE_FAILED":
+          return t("capsule.inboxDrop.noticeReadFailed");
+        case "DRAG_FORMAT_UNSUPPORTED":
+        case "DRAG_NO_READABLE_CONTENT":
+          return t("capsule.inboxDrop.noticeUnsupported");
+        case "DRAG_SIZE_LIMIT_EXCEEDED":
+        case "DRAG_MEMORY_CONTENT_TOO_LARGE":
+          return t("capsule.inboxDrop.noticeTooLarge");
+        case "DRAG_TOO_MANY_ITEMS":
+          return t("capsule.inboxDrop.noticeTooMany");
+        case "DRAG_OPERATION_EXPIRED":
+          return t("capsule.inboxDrop.noticeExpired");
+        default:
+          if (fallback === "shelf") return t("capsule.inboxDrop.noticeShelfFailed");
+          return fallback === "read"
+            ? t("capsule.inboxDrop.noticeReadFailed")
+            : t("capsule.inboxDrop.noticeDropFailed");
+      }
+    },
+    [t],
+  );
+
+  const setOver = useCallback((id: string | null) => {
+    // 高频 over 事件只在实际换卡时触发一次渲染，避免拖入时反复重排
+    if (overRef.current === id) return;
+    overRef.current = id;
+    setOverId(id);
+  }, []);
+
+  /** 只命中「当前显示的卡片」，隐藏目标不接收投递。 */
+  const hitVisible = useCallback((point: DropPoint): string | null => {
+    const id = dropTargetAt(point);
+    if (!id) return null;
+    const list = useDropTargetsStore.getState().targets;
+    return list.some((t) => t.id === id && t.show_in_capsule) ? id : null;
+  }, []);
+
+  /** 只认本面板的「最近暂存」接收区；其它 data-drop-zone 不参与路由。 */
+  const hitShelfZone = useCallback(
+    (point: DropPoint): boolean =>
+      dropTargetAt(point, "data-drop-zone") === SHELF_RECENT_DROP_ZONE,
+    [],
+  );
+
+  /**
+   * 悬停高亮的唯一入口：每次都用当前坐标重新命中，卡片与接收区互斥。
+   * `over` 是高频事件，但 `setOver` 只在换卡时触发渲染，布尔高亮同理。
+   */
+  const applyOver = useCallback(
+    (point: DropPoint | null) => {
+      lastPoint.current = point;
+      if (!point) {
+        setOver(null);
+        setShelfOver(false);
+        return;
+      }
+      const id = hitVisible(point);
+      setOver(id);
+      setShelfOver(id === null && hitShelfZone(point));
+    },
+    [hitShelfZone, hitVisible, setOver],
+  );
+
+  /**
+   * 用最后一次已知坐标重算命中。
+   *
+   * 为什么需要：`over` 由 OLE 在**鼠标移动**时驱动（wry 不节流也不补发），
+   * 而 `enter` 只有一次。只要命中发生在「目标卡片还没渲染」（面板刚打开、
+   * 目标列表 IPC 晚到）或「布局刚变化」（列表更新、面板滚动）的时刻，
+   * `overId` 就会停在 null，用户看到的是「鼠标明明在卡片上，界面却一直提示
+   * 把文件拖到卡片上」，直到再动一下鼠标才恢复。这里在已知状态变化后补算一次，
+   * 不改变坐标换算、也不改变松手时按实时坐标重新命中的规则。
+   */
+  const rehit = useCallback(() => {
+    if (!dropSession.current.active) return;
+    const point = lastPoint.current;
+    if (point) applyOver(point);
+  }, [applyOver]);
+
+  // 视图切换（进入表单、目标被隐藏/删除）时旧高亮立即失效：
+  // 已不在列表里的卡片不能继续显示「松开即投递到…」。
+  useEffect(() => {
+    if (editing !== null) {
+      setOver(null);
+      setShelfOver(false);
+      setDragging(false);
+      setLocalDrag(false);
+      return;
+    }
+    if (overRef.current && !visible.some((t) => t.id === overRef.current)) {
+      setOver(null);
+    }
+    // 目标列表在拖拽期间才就绪/变化：按最后一次坐标补算一次命中。
+    rehit();
+  }, [editing, visible, setOver, rehit]);
+
+  // 拖拽期间滚动投递列表会改变卡片位置：同样按最后一次坐标重算，
+  // 避免高亮停在一张已经移走的卡片上。监听只在会话期间存在，结束即释放。
+  useEffect(() => {
+    if (!dragging) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    el.addEventListener("scroll", rehit, { passive: true });
+    return () => el.removeEventListener("scroll", rehit);
+  }, [dragging, rehit]);
+
+  /** 应用内拖出开始：原生事件被 DoDragDrop 阻塞，先用前置信号给出可投递形态。 */
+  const beginLocalDrag = useCallback(() => {
+    if (!alive.current) return;
+    setOver(null);
+    setShelfOver(false);
+    setLocalDrag(true);
+    if (localDragTimer.current !== null) window.clearTimeout(localDragTimer.current);
+    // 与 useShelfDragOut 的看门狗同量级：OLE 循环若始终不返回，界面不能永久停在拖拽态。
+    localDragTimer.current = window.setTimeout(() => {
+      localDragTimer.current = null;
+      setLocalDrag(false);
+    }, 30_000);
+  }, []);
+
+  const endLocalDrag = useCallback(() => {
+    if (localDragTimer.current !== null) {
+      window.clearTimeout(localDragTimer.current);
+      localDragTimer.current = null;
+    }
+    setLocalDrag(false);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (localDragTimer.current !== null) {
+        window.clearTimeout(localDragTimer.current);
+        localDragTimer.current = null;
+      }
+    },
+    [],
+  );
+
+  /**
+   * 目标可用性：缓存快照说不可用时强制重探一次（只在「看起来不可用」这条路径上
+   * 发生，不轮询）；仍不可用就明确提示并放弃，绝不把内容写进一个不可用的目录。
+   */
+  const resolveTarget = useCallback(
+    async (targetId: string): Promise<ShelfDropTarget | null> => {
+      const target = useDropTargetsStore.getState().targets.find((t) => t.id === targetId);
+      if (!target) return null;
+      if (target.available) return target;
+      await useDropTargetsStore.getState().load({ force: true });
+      const fresh = useDropTargetsStore.getState().targets.find((t) => t.id === targetId);
+      if (fresh && fresh.available) return fresh;
+      if (alive.current) {
+        flash(t("capsule.inboxDrop.targetUnavailable", { name: target.name }));
+      }
+      return null;
+    },
+    [flash, t],
+  );
+
+  /**
+   * 目录投递结果：结果条 + 首条提示。
+   * 路径通道（本地文件）与会话通道（虚拟文件/图片字节）共用同一套文案与分支，
+   * 避免同一个目标出现两套口径。
+   */
+  const announceReport = useCallback(
+    (report: ShelfDropReport, name: string) => {
+      if (!alive.current) return;
+      setReportOpen(report.failed > 0 || report.partial > 0);
+      if (report.failed > 0 && report.partial > 0) {
+        flash(
+          t("capsule.inboxDrop.flashFailedPartial", {
+            name,
+            failed: report.failed,
+            partial: report.partial,
+          }),
+        );
+      } else if (report.failed > 0) {
+        flash(t("capsule.inboxDrop.flashFailed", { name, count: report.failed }));
+      } else if (report.partial > 0) {
+        flash(t("capsule.inboxDrop.flashPartial", { name, count: report.partial }));
+      }
+    },
+    [flash, t],
+  );
+
+  const submit = useCallback(
+    async (targetId: string, paths: string[]) => {
+      const target = await resolveTarget(targetId);
+      if (!target) return;
+      try {
+        const report = await drop(targetId, paths);
+        if (!report || !alive.current) return; // 被去重/在途守卫拦下，或面板已关闭
+        // 投递源可能是「最近暂存」里的文件：move 模式目标会把源文件搬走，
+        // 引用条目随即失效；复制也顺带刷新存在性。一次小切片查询，不轮询。
+        void useShelfStore.getState().loadRecent({ force: true });
+        announceReport(report, target.name);
+      } catch (e) {
+        if (alive.current) {
+          const code = dragCodeOf(e);
+          pushDragNotice({
+            tone: "error",
+            title: dragNoticeTitle(code, "drop"),
+            detail:
+              code === "DRAG_PAYLOAD_INVALID"
+                ? t("capsule.inboxDrop.noticeReadFailedDetail")
+                : compactDragDetail(errorMessage(e), code),
+            code,
+          });
+        }
+      }
+    },
+    [announceReport, dragNoticeTitle, drop, pushDragNotice, resolveTarget, t],
+  );
+
+  /**
+   * 拖入会话 → 目录卡片。
+   *
+   * 内容（虚拟文件流 / 图片字节）已经在后端暂存区，这里只传 `operationId`：
+   * 前端不持有字节、也不把临时路径当稳定存储。目标不可用时释放会话，
+   * 不留下无主的临时副本。
+   */
+  const commitDirectory = useCallback(
+    async (targetId: string, operationId: string, count: number) => {
+      const target = await resolveTarget(targetId);
+      if (!target) {
+        void discardOperation(operationId, "target-unavailable");
+        return;
+      }
+      try {
+        const report = await useDropTargetsStore.getState().commit(targetId, operationId, count);
+        if (!report || !alive.current) return;
+        void useShelfStore.getState().loadRecent({ force: true });
+        announceReport(report, target.name);
+      } catch (e) {
+        if (alive.current) {
+          const code = dragCodeOf(e);
+          pushDragNotice({
+            tone: "error",
+            title: dragNoticeTitle(code, "drop"),
+            detail:
+              code === "DRAG_PAYLOAD_INVALID"
+                ? t("capsule.inboxDrop.noticeReadFailedDetail")
+                : compactDragDetail(errorMessage(e), code),
+            code,
+            operationId,
+          });
+        }
+      }
+    },
+    [announceReport, dragNoticeTitle, pushDragNotice, resolveTarget, t],
+  );
+
+  /**
+   * 拖入会话 → 最近暂存。
+   *
+   * 后端按真实类型落库：本地路径沿用引用语义、虚拟文件/图片字节为托管副本、
+   * 链接与文本各自成为条目。前端只传 `operationId`，不重建内容。
+   */
+  const commitShelf = useCallback(
+    async (operationId: string) => {
+      try {
+        const r = await useShelfStore
+          .getState()
+          .commitDragPayload(operationId, "reference", null);
+        if (!alive.current) return;
+        const failed = r.failed.length;
+        const first = r.failed[0];
+        const code = dragCodeOf(first?.code) ?? dragCodeOf(first?.reason);
+        const reasonText =
+          code === "DRAG_PAYLOAD_INVALID"
+            ? t("capsule.inboxDrop.noticeReadFailedDetail")
+            : compactDragDetail(first?.reason, code);
+        if (failed > 0) {
+          pushDragNotice({
+            tone: r.added > 0 ? "warn" : "error",
+            title:
+              r.added > 0
+                ? t("capsule.inboxDrop.noticePartial")
+                : dragNoticeTitle(code, "shelf"),
+            detail: reasonText
+              ? r.added > 0
+                ? t("capsule.inboxDrop.shelfPartial", {
+                    added: r.added,
+                    failed,
+                    reason: reasonText,
+                  })
+                : t("capsule.inboxDrop.shelfFailed", {
+                    failed,
+                    reason: reasonText,
+                  })
+              : undefined,
+            code,
+            operationId,
+          });
+        } else if (r.added > 0) {
+          // 成功是信息类：可以自动消失，不占用后续拖拽的空间。
+          pushDragNotice(
+            {
+              tone: "success",
+              title: t("capsule.inboxDrop.shelfAdded", { added: r.added }),
+            },
+            3200,
+          );
+        } else {
+          pushDragNotice(
+            {
+              tone: "info",
+              title: t("capsule.inboxDrop.shelfNothingToAdd"),
+            },
+            3200,
+          );
+        }
+      } catch (e) {
+        if (alive.current) {
+          const code = dragCodeOf(e);
+          pushDragNotice({
+            tone: "error",
+            title: dragNoticeTitle(code, "shelf"),
+            detail:
+              code === "DRAG_PAYLOAD_INVALID"
+                ? t("capsule.inboxDrop.noticeReadFailedDetail")
+                : compactDragDetail(errorMessage(e), code),
+            code,
+            operationId,
+          });
+        }
+      } finally {
+        if (alive.current) {
+          void useShelfStore.getState().loadRecent({ force: true });
+        }
+      }
+    },
+    [dragNoticeTitle, pushDragNotice, t],
+  );
+
+  /**
+   * 拖入「最近暂存」：默认引用模式，只登记原文件路径，绝不移动/删除源文件。
+   * 结果必须区分成功、失败与部分失败：部分失败只能说「部分」，不能冒充成功。
+   */
+  const addToShelf = useCallback(
+    async (paths: string[]) => {
+      try {
+        const result = await useShelfStore
+          .getState()
+          .addPaths(paths, "reference", "drag");
+        if (!alive.current) return;
+        const failed = result.failed.length;
+        const first = result.failed[0];
+        const code = dragCodeOf(first?.code) ?? dragCodeOf(first?.reason);
+        const reasonText =
+          code === "DRAG_PAYLOAD_INVALID"
+            ? t("capsule.inboxDrop.noticeReadFailedDetail")
+            : compactDragDetail(first?.reason, code);
+        if (failed > 0) {
+          pushDragNotice({
+            tone: result.added > 0 ? "warn" : "error",
+            title:
+              result.added > 0
+                ? t("capsule.inboxDrop.noticePartial")
+                : dragNoticeTitle(code, "shelf"),
+            detail: reasonText
+              ? result.added > 0
+                ? t("capsule.inboxDrop.shelfPartial", {
+                    added: result.added,
+                    failed,
+                    reason: reasonText,
+                  })
+                : t("capsule.inboxDrop.shelfFailed", {
+                    failed,
+                    reason: reasonText,
+                  })
+              : undefined,
+            code,
+          });
+        } else if (result.added > 0) {
+          pushDragNotice(
+            {
+              tone: "success",
+              title: t("capsule.inboxDrop.shelfAdded", { added: result.added }),
+            },
+            3200,
+          );
+        } else {
+          // added=0 且 failed=0（空批次/全部被过滤）：与完整暂存架 reportAdd
+          // 同口径提示，不得静默结束，也不能显示「已暂存」。
+          pushDragNotice(
+            {
+              tone: "info",
+              title: t("capsule.inboxDrop.shelfNothingToAdd"),
+            },
+            3200,
+          );
+        }
+      } catch (e) {
+        if (alive.current) {
+          const code = dragCodeOf(e);
+          pushDragNotice({
+            tone: "error",
+            title: dragNoticeTitle(code, "shelf"),
+            detail:
+              code === "DRAG_PAYLOAD_INVALID"
+                ? t("capsule.inboxDrop.noticeReadFailedDetail")
+                : compactDragDetail(errorMessage(e), code),
+            code,
+          });
+        }
+      } finally {
+        // 与文件选择器同一口径：以最近切片为准刷新（新增条目立即可见）。
+        if (alive.current) {
+          void useShelfStore.getState().loadRecent({ force: true });
+        }
+      }
+    },
+    [dragNoticeTitle, pushDragNotice, t],
+  );
+
+  /**
+   * 通用拖入载荷的落点路由（原生桥通道）。
+   *
+   * 唯一决定「这次松手做什么」的地方，与路径通道共用同样的命中函数：
+   * - 命中可见目录卡片：只有会变成真实文件的类型才提交；链接/文本明确拒绝并释放会话；
+   * - 命中最近暂存接收区：所有可识别类型都能成为暂存条目；
+   * - 未命中任何接收区：释放后端暂存副本，不留无主临时文件。
+   */
+  const routePayload = useCallback(
+    (payload: DragPayloadView, point: DropPoint | null, meta: DropPayloadMeta) => {
+      const targetId = point ? hitVisible(point) : null;
+      const shelfZone = point ? hitShelfZone(point) : false;
+      const failure = meta.failures[0];
+
+      /**
+       * 放弃会话并给出结构化失败反馈。
+       * 标题/码/详情分开：`DRAG_PAYLOAD_INVALID` 只显示固定说明，绝不把
+       * Rust 原始结构错误或路径塞进界面；其他码沿用后端已脱敏 reason。
+       */
+      const reportDroppedContent = () => {
+        const code =
+          payload.kind === "unsupported"
+            ? payload.code.trim() || failure?.code
+            : failure?.code;
+        const isInvalid = code === "DRAG_PAYLOAD_INVALID";
+        const rawReason =
+          payload.kind === "unsupported"
+            ? payload.reason.trim() || failure?.reason || ""
+            : failure?.reason || "";
+        const detail = isInvalid
+          ? t("capsule.inboxDrop.noticeReadFailedDetail")
+          : compactDragDetail(rawReason, code) ??
+            (payload.kind === "unsupported"
+              ? t("capsule.inboxDrop.dragUnsupported")
+              : undefined);
+        pushDragNotice({
+          tone: "error",
+          title: code
+            ? dragNoticeTitle(code, "read")
+            : t("capsule.inboxDrop.noticeUnsupported"),
+          detail,
+          code,
+          operationId: meta.operationId,
+        });
+      };
+
+      if (targetId) {
+        if (!canDropToDirectory(payload)) {
+          // 先区分「内容本身读不出来」与「类型不适合文件夹」：
+          // 前者必须给出准确码/详情/诊断入口，不能被一句 dirBlocked 覆盖。
+          if (payload.kind === "unsupported" || failure) {
+            reportDroppedContent();
+            void discardOperation(meta.operationId, "directory-kind-rejected");
+            return;
+          }
+          // 不做隐式转换：目录里不会出现「链接.txt」这种凭空生成的文件。
+          flash(t("capsule.inboxDrop.dirBlocked"));
+          void discardOperation(meta.operationId, "directory-kind-rejected");
+          return;
+        }
+        if (payload.kind === "local-files") {
+          // 本地路径沿用原有路径语义（预检、去重、在途守卫都在原通道里）。
+          void discardOperation(meta.operationId, "local-files-delegated");
+          void submit(targetId, payload.paths);
+          return;
+        }
+        void commitDirectory(targetId, meta.operationId, payloadCount(payload));
+        return;
+      }
+
+      if (shelfZone) {
+        if (payload.kind === "unsupported") {
+          reportDroppedContent();
+          void discardOperation(meta.operationId, "unsupported");
+          return;
+        }
+        if (payload.kind === "local-files") {
+          void discardOperation(meta.operationId, "local-files-delegated");
+          void addToShelf(payload.paths);
+          return;
+        }
+        void commitShelf(meta.operationId);
+        return;
+      }
+
+      void discardOperation(meta.operationId, "no-target");
+      if (payload.kind === "unsupported") {
+        // 可识别但不支持的内容必须明确说「没暂存」，不能静默失败。
+        reportDroppedContent();
+      } else if (failure) {
+        // 没命中接收区且拖入阶段确有读取失败：如实说明，不把「拖到空白处」
+        // 这种正常放弃误报成错误。
+        reportDroppedContent();
+      }
+    },
+    [
+      addToShelf,
+      commitDirectory,
+      commitShelf,
+      dragNoticeTitle,
+      flash,
+      hitShelfZone,
+      hitVisible,
+      pushDragNotice,
+      submit,
+      t,
+    ],
+  );
+
+  /**
+   * 结果条「查看诊断」：直达唯一工作台诊断中心并定位到本批次操作链。
+   * operationId 经跨窗协议 objectId 下发（形态收敛 P2 补全），由工作台窗口的
+   * DiagnosticsCenterPanel 消费一次性意图；导航事务自带草稿门禁与真实回执，
+   * failed 的可读原因就地提示，不静默、不经主窗交接页中转。
+   */
+  const showDiagnostics = useCallback(
+    (operationId: string) => {
+      void openDiagnosticsOperation(operationId).then((outcome) => {
+        if (outcome.status === "failed") {
+          flash(outcome.error ?? t("capsule.inboxDrop.diagnosticsBlocked"));
+        }
+      });
+    },
+    [flash, t],
+  );
+
+  // ── 拖入订阅（面板在即订阅，卸载即释放；全应用只有一条 Webview 监听）──
+  //
+  // 本面板是胶囊拖拽会话的**唯一消费者**：目录卡片与「最近暂存」都在它的
+  // 落点范围内，因此不能在两者各注册一个消费者（会出现一次拖入被处理两次，
+  // 或在 enter 时按优先级抢走整个会话）。由这里按松手坐标路由：
+  //   可见卡片 → 目录投递；最近暂存 → 引用暂存；空白/其它 → 不执行。
+  useEffect(() => {
+    return registerFileDropConsumer({
+      id: "capsule-inbox-drop",
+      priority: 20,
+      // 面板在即接管：即使没有可见目录卡片，「最近暂存」仍是有效接收区。
+      // 是否真的执行由 over/drop 的实时命中决定，未命中一律不碰文件。
+      claim: () => true,
+      onEnter: (point) => {
+        dropSession.current = { active: true, handled: false };
+        acceptedOp.current = null;
+        setDragging(true);
+        // 新会话开始：上一轮若停在「正在读取」，不能继续误导这一轮。
+        setDragNotice((n) => (n?.tone === "busy" ? null : n));
+        // 进入那一瞬间就按坐标命中一次：OLE 只在鼠标移动时发 over，
+        // 用户「拖进来后停在卡片上」不会有第二次机会；命中不到就保持无高亮。
+        applyOver(point);
+      },
+      onOver: (point) => {
+        const session = dropSession.current;
+        if (!session.active) {
+          // enter 时未认领（例如目标列表刚加载完）允许在 over 阶段补开一次；
+          // 已经 drop 过的会话不再接迟到 over，避免重复高亮。
+          if (session.handled) return;
+          dropSession.current = { active: true, handled: false };
+          acceptedOp.current = null;
+        }
+        // 收到 over 本身就是「拖拽正在进行」的证据：enter 被错过时也要进入可投递形态。
+        setDragging(true);
+        applyOver(point);
+      },
+      onLeave: () => {
+        dropSession.current = { active: false, handled: false };
+        lastPoint.current = null;
+        setOver(null);
+        setShelfOver(false);
+        setDragging(false);
+        setProbe(null);
+        endLocalDrag();
+      },
+      onDrop: (paths, point) => {
+        const session = dropSession.current;
+        lastPoint.current = null;
+        setOver(null);
+        setShelfOver(false);
+        setDragging(false);
+        setProbe(null);
+        endLocalDrag();
+        // 一次会话只执行一次：重复 drop 与 leave 后的迟到 drop 都不得再操作文件。
+        if (!session.active || session.handled) return;
+        session.handled = true;
+        session.active = false;
+        // 用**松手瞬间**的坐标重新命中：`over` 缓存可能已经过期（悬停 A 后快速移到
+        // B 直接松手，不会再收到 over），拿缓存会让文件落进上一张卡片/上一区域。
+        // 没有坐标、空 paths、空白/未命中时一律不执行文件操作。
+        if (!point || paths.length === 0) return;
+        const targetId = hitVisible(point);
+        if (targetId) {
+          void submit(targetId, paths);
+          return;
+        }
+        if (hitShelfZone(point)) void addToShelf(paths);
+      },
+      // 类型探测只更新提示：高亮与命中仍由坐标决定。
+      onProbe: (next) => {
+        setProbe(next);
+      },
+      // 松手已被受理、内容仍在后端读取：先如实说「读取中」，不预判成功。
+      onAccepted: (next, _point, meta) => {
+        dropSession.current = { active: false, handled: true };
+        acceptedOp.current = meta.operationId;
+        lastPoint.current = null;
+        setOver(null);
+        setShelfOver(false);
+        setDragging(false);
+        setProbe(next);
+        endLocalDrag();
+        // 松手已被受理、内容仍在后端读取：结构化「正在读取」带 spinner，
+        // 30s 上限避免桥异常时永久停在读取态。
+        pushDragNotice(
+          { tone: "busy", title: t("capsule.inboxDrop.dragReading") },
+          30_000,
+        );
+      },
+      // 载荷就绪：按松手坐标路由到暂存架或目录卡片，未命中则释放后端暂存副本。
+      onPayload: (payload, point, meta) => {
+        setProbe(null);
+        // 内容已就绪：只让**当前**会话清掉读取态；旧会话的迟到载荷不能把
+        // 新会话的「正在读取」提前抹掉（fileDrop 已按 operationId 路由）。
+        if (acceptedOp.current === meta.operationId) {
+          acceptedOp.current = null;
+          setDragNotice((n) => (n?.tone === "busy" ? null : n));
+        }
+        routePayload(payload, point, meta);
+      },
+    });
+  }, [
+    addToShelf,
+    applyOver,
+    endLocalDrag,
+    hitShelfZone,
+    hitVisible,
+    pushDragNotice,
+    routePayload,
+    submit,
+    t,
+  ]);
+
+  const lastReport = lastTargetId ? reports[lastTargetId] ?? null : null;
+  const lastTarget = lastTargetId ? targets.find((t) => t.id === lastTargetId) ?? null : null;
+  // 目标被移除后仍要能说明「这是哪次投递」：用投递时记录的名称兜底。
+  const lastTargetName = lastTarget?.name ?? (lastTargetId ? reportNames[lastTargetId] ?? "" : "");
+  /** 目标配置已不存在：不能再调 openDir（后端按 id 查不到），改为展示目标路径。 */
+  const targetGone = lastTargetId !== null && lastTarget === null;
+  // 跳过不是成功，部分完成也不是失败：三类都列出来，由用户判断是否需要处理。
+  const pendingEntries = (lastReport?.entries ?? []).filter((e) => e.status !== "ok");
+  const reportSummary = lastReport
+    ? lastReport.partial > 0
+      ? lastTargetName
+        ? t("capsule.inboxDrop.resultSummaryNamedPartial", {
+            name: lastTargetName,
+            success: lastReport.success,
+            skipped: lastReport.skipped,
+            partial: lastReport.partial,
+            failed: lastReport.failed,
+          })
+        : t("capsule.inboxDrop.resultSummaryPartial", {
+            success: lastReport.success,
+            skipped: lastReport.skipped,
+            partial: lastReport.partial,
+            failed: lastReport.failed,
+          })
+      : lastTargetName
+        ? t("capsule.inboxDrop.resultSummaryNamed", {
+            name: lastTargetName,
+            success: lastReport.success,
+            skipped: lastReport.skipped,
+            failed: lastReport.failed,
+          })
+        : t("capsule.inboxDrop.resultSummary", {
+            success: lastReport.success,
+            skipped: lastReport.skipped,
+            failed: lastReport.failed,
+          })
+    : "";
+
+  /**
+   * 重试失败项：把失败/跳过/部分完成条目的源路径**原样重投**到同一目标
+   * （entries[].source 是投递时的源路径，move 目标的残留已由 residual_source 提示）。
+   * 无 entries 或全部成功时不显示入口；重投复用 submit 的可用性探测与结果条。
+   */
+  const retryPending = useCallback(async () => {
+    if (!lastReport || retryBusy) return;
+    const paths = pendingEntries.map((e) => e.source).filter((p) => typeof p === "string" && p.length > 0);
+    if (paths.length === 0) return;
+    setRetryBusy(true);
+    try {
+      await submit(lastReport.target_id, paths);
+    } finally {
+      setRetryBusy(false);
+    }
+  }, [lastReport, pendingEntries, retryBusy, submit]);
+
+  const empty = visible.length === 0;
+  /**
+   * 当前拖入内容不能变成真实文件（链接/文本/未识别）：目录卡片必须提前说明
+   * 「这里不能投」，不能先给出「松开即复制」的成功承诺再在松手后拒绝。
+   * 探测缺失时为 false，保持原有交互不变。
+   */
+  const dirBlocked = Boolean(dragActive && probe && !probe.canDirectory);
+  /** 悬停「最近暂存」时的类型化文案；未识别时不猜类型，沿用默认标签。 */
+  const shelfHint = shelfOver ? shelfHintFor(probe, t) : undefined;
+  /**
+   * 读屏播报用的落点名：只在实际可投递时给出。
+   * 指向「目录不可用 / 正在投递 / 此类型不能投递到文件夹」的卡片却播报
+   * 「会投递到这里」是在骗读屏用户。
+   */
+  const overTarget = overId
+    ? visible.find((target) => target.id === overId)
+    : undefined;
+  const liveDropName =
+    overTarget && overTarget.available && !ops[overTarget.id] && !dirBlocked
+      ? overTarget.name
+      : "";
+
+  return (
+    <>
+      {error && (
+        <div className="cap-drop-error" role="alert">
+          <span>{error}</span>
+          <button
+            type="button"
+            className="cap-mini"
+            onClick={() => void load({ force: true })}
+          >
+            {t("common.retry")}
+          </button>
+        </div>
+      )}
+
+      <div className="cap-drop" ref={scrollRef}>
+      {editing !== null ? (
+        <DropTargetForm
+          target={editing === "new" ? null : targets.find((t) => t.id === editing) ?? null}
+          variant="capsule"
+          formId={FORM_ID}
+          hideActions
+          onBusyChange={setFormBusy}
+          onDone={(msg) => {
+            setEditing(null);
+            setFormBusy(false);
+            if (msg) flash(msg);
+          }}
+          onError={(msg) => flash(msg)}
+        />
+      ) : (
+        <>
+          {/* 空态只在「确实没有目标」或「首次读取中」出现：
+              读取失败由上方错误条负责（不冒充正在读取）；目标全部未勾选
+              「在工具面板显示」时由下方提示负责（不误报还没有目标、不诱导重复添加）。 */}
+          {empty && !loading && !error && targets.length === 0 && (
+            <EmptyState
+              icon={<FolderInput size={22} strokeWidth={1.6} aria-hidden="true" />}
+              text={
+                loaded
+                  ? t("capsule.inboxDrop.emptyNone")
+                  : t("capsule.inboxDrop.emptyLoading")
+              }
+              actionLabel={
+                loaded ? t("capsule.inboxDrop.addTargetFolder") : undefined
+              }
+              onAction={loaded ? () => setEditing("new") : undefined}
+            />
+          )}
+
+          {visible.length > 0 && (
+            <div
+              className={`cap-drop-grid${dragActive ? " is-dragging" : ""}`}
+              role="list"
+              aria-label={t("capsule.inboxDrop.listAria")}
+            >
+              {visible.map((target, index) => (
+                <DropCard
+                  key={target.id}
+                  target={target}
+                  over={overId === target.id}
+                  op={ops[target.id]}
+                  dragActive={dragActive}
+                  dirBlocked={dirBlocked}
+                  first={index === 0}
+                  last={index === visible.length - 1}
+                  confirming={confirmRemove === target.id}
+                  onOpen={() => {
+                    void openDir(target.id).catch((e) => flash(errorMessage(e)));
+                  }}
+                  onEdit={() => setEditing(target.id)}
+                  onMove={(dir) => {
+                    void move(target.id, dir).catch((e) => flash(errorMessage(e)));
+                  }}
+                  onAskRemove={() => setConfirmRemove(target.id)}
+                  onCancelRemove={() => setConfirmRemove(null)}
+                  onConfirmRemove={() => {
+                    setConfirmRemove(null);
+                    void remove(target.id)
+                      .then(() =>
+                        flash(
+                          t("capsule.inboxDrop.removed", {
+                            name: target.name,
+                          }),
+                        ),
+                      )
+                      .catch((e) => flash(errorMessage(e)));
+                  }}
+                />
+              ))}
+            </div>
+          )}
+
+          {/* 拖拽过程中的动态文案只放在目标自身（卡片 meta 行 / 接收区标题行标签）：
+              顶部已说明「拖文件到卡片即可投递 · N 个目标」，再插一条面板级提示
+              既与顶部重复，又会作为普通文档流元素改变下方接收区几何。
+              这也是 2026-11-10「提示条把卡片下移 32.7px 导致 drop 命中失败」
+              的同类风险点，因此不再渲染任何面板级拖入提示。 */}
+
+          {/* 拖入时唯一的读屏播报源：视觉文案分散在各卡片上，这里只播报「当前落点」
+              一次，避免多张卡的 live 区域重复播报。视觉隐藏、不占布局也不参与命中；
+              不悬停任何目标时内容为空（不播报与顶部重复的冗余信息）。 */}
+          <span className="sr-only cap-drop-live" role="status">
+            {dragActive && liveDropName
+              ? t("capsule.inboxDrop.releaseTo", { name: liveDropName })
+              : ""}
+          </span>
+
+          {visible.length === 0 && targets.length > 0 && (
+            <p className="cap-drop-hint">
+              {t("capsule.inboxDrop.hiddenTargets", { count: targets.length })}
+            </p>
+          )}
+
+          {lastReport && (
+            <div className={`cap-drop-result${lastReport.failed > 0 || lastReport.partial > 0 ? " is-warn" : ""}`}>
+              <button
+                type="button"
+                className="cap-drop-result-head"
+                aria-expanded={reportOpen}
+                aria-controls="cap-drop-result-detail"
+                onClick={() => setReportOpen((v) => !v)}
+              >
+                {lastReport.failed === 0 && lastReport.partial === 0 ? (
+                  <Check size={13} strokeWidth={2.4} aria-hidden="true" />
+                ) : (
+                  <AlertTriangle size={13} strokeWidth={2.2} aria-hidden="true" />
+                )}
+                <span className="cap-drop-result-text">{reportSummary}</span>
+                <ChevronDown
+                  size={12}
+                  strokeWidth={2.2}
+                  aria-hidden="true"
+                  className={reportOpen ? "is-open" : undefined}
+                />
+              </button>
+              {reportOpen && (
+                <ul className="cap-drop-result-list" id="cap-drop-result-detail">
+                  {pendingEntries.map((e, i) => (
+                    <li key={`${e.source}-${i}`}>
+                      <span className="cap-drop-result-name" title={e.source}>
+                        <span className={`cap-drop-result-tag is-${e.status}`}>
+                          {statusLabel[e.status] ?? e.status}
+                        </span>
+                        {e.display_name}
+                      </span>
+                      <span className="cap-drop-result-reason">
+                        {e.reason ?? statusLabel[e.status]}
+                      </span>
+                      {e.residual_source && (
+                        <span className="cap-drop-result-residual" title={e.residual_source}>
+                          {t("capsule.inboxDrop.residual", {
+                            path: e.residual_source,
+                          })}
+                        </span>
+                      )}
+                      {e.recovery && (
+                        <span className="cap-drop-result-recovery">{e.recovery}</span>
+                      )}
+                    </li>
+                  ))}
+                  {pendingEntries.length === 0 && (
+                    <li>
+                      <span className="cap-drop-result-reason">
+                        {t("capsule.inboxDrop.allWritten")}
+                      </span>
+                    </li>
+                  )}
+                </ul>
+              )}
+              {targetGone && (
+                <p className="cap-drop-result-reason">
+                  {t("capsule.inboxDrop.targetGone", {
+                    path: lastReport.target_path,
+                  })}
+                </p>
+              )}
+              <div className="cap-drop-result-actions">
+                {pendingEntries.length > 0 && (
+                  <button
+                    type="button"
+                    className="cap-link"
+                    aria-label={t("capsule.inboxDrop.retryFailedAria", { count: pendingEntries.length })}
+                    disabled={retryBusy || Boolean(lastTargetId && ops[lastTargetId])}
+                    onClick={() => void retryPending()}
+                  >
+                    {retryBusy ? (
+                      <Loader2 size={11} className="spin" aria-hidden="true" />
+                    ) : null}
+                    {t("capsule.inboxDrop.retryFailed", { count: pendingEntries.length })}
+                  </button>
+                )}
+                {(lastReport.failed > 0 || lastReport.partial > 0) && (
+                  <button
+                    type="button"
+                    className="cap-link"
+                    onClick={() => showDiagnostics(lastReport.batch_id)}
+                  >
+                    {t("capsule.inboxDrop.viewDiagnostics")}
+                  </button>
+                )}
+                {lastTarget ? (
+                  <button
+                    type="button"
+                    className="cap-link"
+                    onClick={() => {
+                      void openDir(lastReport.target_id).catch((e) => flash(errorMessage(e)));
+                    }}
+                  >
+                    {t("capsule.inboxDrop.openTargetFolder")}
+                  </button>
+                ) : (
+                  <span className="cap-drop-result-reason" title={lastReport.target_path}>
+                    {lastReport.target_path}
+                  </span>
+                )}
+                <button type="button" className="cap-link" onClick={() => clearReport(lastReport.target_id)}>
+                  {t("capsule.inboxDrop.collapse")}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* 结构化状态行：放在最近暂存之后，出现/消失不推动文件列表；
+              错误不会自动消失。轻提示（flash）仍是 3.2s 单行信息。 */}
+          <InboxRecentShelf
+            onNotice={flash}
+            dropZone
+            dropActive={dragActive}
+            dropOver={shelfOver}
+            dropHint={shelfHint}
+            onDragOutStart={beginLocalDrag}
+            onDragOutEnd={endLocalDrag}
+            onPasteCurrent={() => void pasteCurrent()}
+            pasteBusy={pasteBusy}
+          />
+
+          {dragNotice && (
+            <DragStatusNotice
+              key={dragNotice.id}
+              tone={dragNotice.tone}
+              title={dragNotice.title}
+              detail={dragNotice.detail}
+              code={dragNotice.code}
+              operationId={dragNotice.operationId}
+              onDiagnostics={
+                dragNotice.operationId ? showDiagnostics : undefined
+              }
+              onDismiss={dismissDragNotice}
+            />
+          )}
+
+          {notice && (
+            <p className="cap-drop-notice-flash" role="status">
+              {notice}
+            </p>
+          )}
+        </>
+      )}
+      </div>
+
+      {/* 底栏固定在面板底部：列表状态给「添加目标 / 管理」；表单状态只给
+          「保存 / 取消」，避免出现两套主操作或一个禁用的重复按钮。 */}
+      <div className={`cap-drop-foot${editing !== null ? " is-form" : ""}`}>
+        {editing !== null ? (
+          <>
+            <button
+              type="submit"
+              form={FORM_ID}
+              className="cap-mini is-primary"
+              disabled={formBusy}
+            >
+              {formBusy ? <Loader2 size={11} className="spin" aria-hidden="true" /> : null}
+              {editing === "new"
+                ? t("capsule.inboxDrop.addTarget")
+                : t("capsule.inboxDrop.save")}
+            </button>
+            <button
+              type="button"
+              className="cap-mini"
+              disabled={formBusy}
+              onClick={() => {
+                setEditing(null);
+                setFormBusy(false);
+              }}
+            >
+              {t("common.cancel")}
+            </button>
+          </>
+        ) : (
+          <>
+            <button type="button" className="cap-mini" onClick={() => setEditing("new")}>
+              <Plus size={12} strokeWidth={2.4} aria-hidden="true" />{" "}
+              {t("capsule.inboxDrop.addTarget")}
+            </button>
+            <button
+              type="button"
+              className="cap-link"
+              onClick={() => {
+                // 一次性意图必须绑定在导航事务上：切页被未保存草稿拦截/保存中
+                // 拒绝时不能提前置位，否则之后进入暂存架会突然展开管理面板。
+                openFullApp("shelf", () => requestManage());
+              }}
+            >
+              {t("capsule.inboxDrop.manage")}
+              <Folder size={12} strokeWidth={2.2} aria-hidden="true" />
+            </button>
+          </>
+        )}
+      </div>
+    </>
+  );
+}
+
+function DropCard({
+  target,
+  over,
+  op,
+  dragActive,
+  dirBlocked,
+  first,
+  last,
+  confirming,
+  onOpen,
+  onEdit,
+  onMove,
+  onAskRemove,
+  onCancelRemove,
+  onConfirmRemove,
+}: {
+  target: ShelfDropTarget;
+  over: boolean;
+  op?: { total: number };
+  dragActive: boolean;
+  /** 当前拖入内容不会变成真实文件：所有目录卡片都提前显示「不能投递」。 */
+  dirBlocked: boolean;
+  first: boolean;
+  last: boolean;
+  confirming: boolean;
+  onOpen: () => void;
+  onEdit: () => void;
+  onMove: (dir: "up" | "down") => void;
+  onAskRemove: () => void;
+  onCancelRemove: () => void;
+  onConfirmRemove: () => void;
+}) {
+  const { t } = useLocale();
+  const modeLabel =
+    target.op_mode === "move"
+      ? t("capsule.inboxDrop.modeMove")
+      : t("capsule.inboxDrop.modeCopy");
+  /** 投递中（正在复制/移动）与目录不可用的卡片不参与「可投递」形态。 */
+  const droppable = target.available && !op;
+  /**
+   * 拖拽期间的三态，只用这一处判定，避免「可投递」与「当前落点」互相矛盾：
+   * ready=可以接收但光标不在其上；over=松开就投递到这张卡；blocked=不可投递
+   * （目录不可用、正在投递、或当前拖入内容不能变成真实文件）。
+   */
+  const dropState = !dragActive
+    ? "idle"
+    : !droppable || dirBlocked
+      ? "blocked"
+      : over
+        ? "over"
+        : "ready";
+  // 图标换成语义更明确的「文件夹 + 向内箭头」：不靠透明度也能看出这是接收区。
+  const Icon = dragActive && target.available ? FolderInput : Folder;
+  /**
+   * 悬停时 meta 行只回答「松手会发生什么」；未悬停时保留完整模式说明
+   * （含「删除源文件」警告）。两者都是单行、同一字号，不改变卡片高度。
+   */
+  const releaseLabel =
+    dropState === "over"
+      ? target.op_mode === "move"
+        ? t("capsule.inboxDrop.releaseMove")
+        : t("capsule.inboxDrop.releaseCopy")
+      : null;
+  /** 指向一张放不进去的卡片：用警示描边说明「这里不能投」，而不是复用它 is-over 的强调样式。 */
+  const blockedOver = dragActive && over && (!target.available || dirBlocked);
+  return (
+    <div
+      className={[
+        "cap-drop-card",
+        dropState === "over" ? "is-over" : "",
+        op ? "is-busy" : "",
+        target.available ? "" : "is-off",
+        dropState === "ready" ? "is-idle" : "",
+        // 强调描边只加在**拖拽中且当前可投递**的卡片上；静止态/正在投递/不可用都不加
+        dragActive && droppable ? "is-dragging" : "",
+        blockedOver ? "is-over-blocked" : "",
+        confirming ? "is-confirming" : "",
+      ]
+        .filter(Boolean)
+        .join(" ")}
+      data-drop-target={target.id}
+      data-drop-state={dropState}
+      role="listitem"
+    >
+      <button
+        type="button"
+        className="cap-drop-main"
+        aria-label={t("capsule.inboxDrop.openTargetAria", { name: target.name })}
+        data-tip={target.path}
+        onClick={onOpen}
+      >
+        <span className="cap-drop-icon" aria-hidden="true">
+          <Icon size={15} strokeWidth={1.8} />
+        </span>
+        <span className="cap-drop-name" title={target.name}>
+          {target.name}
+        </span>
+        <span className="cap-drop-path" title={target.path}>
+          {shortPath(target.path)}
+        </span>
+      </button>
+
+      <span className="cap-drop-meta">
+        {op ? (
+          <span className="cap-drop-busy" role="status">
+            <Loader2 size={11} className="spin" aria-hidden="true" />
+            {target.op_mode === "move"
+              ? t("capsule.inboxDrop.busyMove", { count: op.total })
+              : t("capsule.inboxDrop.busyCopy", { count: op.total })}
+          </span>
+        ) : !target.available ? (
+          <span className="cap-drop-status is-bad">
+            {t("capsule.inboxDrop.unavailable")}
+          </span>
+        ) : dragActive && dirBlocked ? (
+          // 明确说「不能投递到文件夹」，不显示任何成功投递的承诺；
+          // 文案与 data-tip 同义，悬停可看完整句子，行高不变。
+          <span
+            className="cap-drop-status is-bad"
+            data-tip={t("capsule.inboxDrop.dirBlocked")}
+          >
+            {t("capsule.inboxDrop.dirBlocked")}
+          </span>
+        ) : releaseLabel ? (
+          <span
+            className="cap-drop-status is-release"
+            data-tip={
+              target.op_mode === "move"
+                ? t("capsule.inboxDrop.moveTip")
+                : t("capsule.inboxDrop.copyTip")
+            }
+          >
+            {releaseLabel}
+          </span>
+        ) : (
+          <span
+            className={`cap-drop-status is-mode ${target.op_mode === "move" ? "is-warn" : ""}`}
+            data-tip={
+              target.op_mode === "move"
+                ? t("capsule.inboxDrop.moveTip")
+                : t("capsule.inboxDrop.copyTip")
+            }
+          >
+            {modeLabel}
+          </span>
+        )}
+      </span>
+
+      {/* 菜单在拖入开始时重置：展开的弹层不能挡住落点命中 */}
+      {!confirming && (
+        <DropdownMenu
+          key={dragActive ? "drag" : "idle"}
+          menuLabel={t("capsule.inboxDrop.cardMenuAria", { name: target.name })}
+          placement="bottom-end"
+          menuMinWidth={132}
+          trigger={({ ref, onClick, onKeyDown, expanded }) => (
+            <button
+              ref={ref}
+              type="button"
+              className="cap-drop-more"
+              aria-label={t("capsule.inboxDrop.cardMoreAria", {
+                name: target.name,
+              })}
+              aria-expanded={expanded}
+              data-tip={t("capsule.inboxDrop.moreTip")}
+              onClick={onClick}
+              onKeyDown={onKeyDown}
+            >
+              <MoreVertical size={13} strokeWidth={2.2} aria-hidden="true" />
+            </button>
+          )}
+          items={[
+            {
+              key: "edit",
+              label: t("capsule.inboxDrop.edit"),
+              icon: <Pencil size={12} strokeWidth={2.2} aria-hidden="true" />,
+              onSelect: onEdit,
+            },
+            {
+              key: "up",
+              label: t("capsule.inboxDrop.moveUp"),
+              icon: <ArrowUp size={12} strokeWidth={2.2} aria-hidden="true" />,
+              disabled: first,
+              onSelect: () => onMove("up"),
+            },
+            {
+              key: "down",
+              label: t("capsule.inboxDrop.moveDown"),
+              icon: <ArrowDown size={12} strokeWidth={2.2} aria-hidden="true" />,
+              disabled: last,
+              onSelect: () => onMove("down"),
+            },
+            {
+              key: "remove",
+              label: t("capsule.inboxDrop.remove"),
+              icon: <Trash2 size={12} strokeWidth={2.2} aria-hidden="true" />,
+              danger: true,
+              onSelect: onAskRemove,
+            },
+          ]}
+        />
+      )}
+
+      {confirming && (
+        <span
+          className="cap-drop-confirm"
+          role="group"
+          aria-label={t("capsule.inboxDrop.removeAria", { name: target.name })}
+        >
+          <span className="cap-drop-confirm-text">
+            {t("capsule.inboxDrop.removeConfirm")}
+          </span>
+          <span className="cap-drop-confirm-actions">
+            <button type="button" className="cap-mini is-primary" onClick={onConfirmRemove}>
+              {t("capsule.inboxDrop.removeBtn")}
+            </button>
+            <button type="button" className="cap-mini" onClick={onCancelRemove}>
+              {t("common.cancel")}
+            </button>
+          </span>
+        </span>
+      )}
+    </div>
+  );
+}

@@ -1,0 +1,541 @@
+/*
+ * 任务页布局（2026-11-12「任务优先」重构）。
+ * 2026-11-14：概览三卡压成一行紧凑摘要；≥480px 概览摘要与快速添加同排，
+ * ≥900px 放宽行留白并让状态/排序靠右。仅动本文件与 TasksPanel 注释。
+ *
+ * 只负责布局与间距；颜色 / 圆角 / 阴影 / 材质一律沿用既有语义 Token，
+ * 不在此文件复制第二套皮肤。文件不带 @layer，天然高于 base/theme，因此
+ * 每条选择器都必须以 .tasks-panel 或 .tasks-subview 开头做作用域隔离，
+ * 避免改到其他页面共用的 .filter-bar / .task-card / .page-fill 行为。
+ */
+
+/* 页根：列表 / 专注 / 统计三种模式都填满内容区剩余高度。 */
+.tasks-panel {
+  min-height: 0;
+  gap: 6px;
+}
+
+/* 固定头部：紧凑概览 + 快速添加 + 工具行 + 搜索行。 */
+.tasks-panel .tasks-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* 任务概览大卡（2026-11-15 对齐效果图 01）：四张等宽统计卡，
+   数值 24px、标签 11px，卡片高度 80px；窄窗自动降为 2 列。
+   概览是页面第一视觉层，列表仍是主体。 */
+.tasks-panel .tasks-overview--stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+  gap: 10px;
+  min-width: 0;
+}
+
+.tasks-panel .tasks-overview--stats .overview-card {
+  flex: none;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 4px;
+  min-height: 80px;
+  padding: 13px 16px;
+  border-radius: var(--radius-card);
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-raised);
+}
+
+.tasks-panel .tasks-overview--stats .overview-value {
+  font-size: 24px;
+  line-height: 1.05;
+}
+
+.tasks-panel .tasks-overview--stats .overview-label {
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* 主窗 400×560：318px 内容宽下四张 145px 大卡会折成 2×2、吃掉 170px，
+   任务列表只剩一行。这里在窄窗把统计压成一行四格紧凑卡（≥361px 四列，
+   ≤360px 回两列），统计仍是参考层，列表重新成为主角。工作台 ≥900px 不受影响。 */
+@media (max-width: 560px) {
+  .tasks-panel .tasks-overview--stats {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .tasks-panel .tasks-overview--stats .overview-card {
+    min-height: 56px;
+    padding: 8px 10px;
+    gap: 2px;
+    border-radius: var(--radius-control);
+  }
+
+  .tasks-panel .tasks-overview--stats .overview-value {
+    font-size: 18px;
+  }
+
+  .tasks-panel .tasks-overview--stats .overview-label {
+    font-size: 10px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
+  }
+}
+
+@media (max-width: 360px) {
+  .tasks-panel .tasks-overview--stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* 概览大卡占据整行，快速添加落到第二行；避免 280px 的旧摘要列把四张卡挤碎。 */
+@media (min-width: 480px) {
+  .tasks-panel .tasks-head:has(> .tasks-overview--stats) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .tasks-panel .tasks-head > .tasks-overview--stats {
+    grid-column: 1 / -1;
+    grid-row: 1;
+  }
+
+  .tasks-panel .tasks-head:has(> .tasks-overview--stats) > .quick-add {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+}
+
+/* 紧凑统计摘要（2026-11-14）：三卡压成一行纯文本摘要 —— 去卡面边框/底色，
+   只留「数值 + 标签」chip，hover 才出现底色（可下钻 affordance 由 styles.css
+   的 .is-clickable:hover / .warn:hover 继续）。仍保留下钻点击与 warn 语义，
+   DOM（.overview-card×3）不变，只做视觉降权：统计是参考信息，列表才是主角。 */
+.tasks-panel .tasks-overview--compact {
+  /* 严格一行：显式压过 styles.css ≤280px 断点把概览降级为两列 grid 的规则 */
+  display: flex;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
+.tasks-panel .tasks-overview--compact .overview-card {
+  flex: 0 1 auto;
+  padding: 2px 7px;
+  gap: 4px;
+  border-radius: 6px;
+  border-color: transparent;
+  background: none;
+}
+
+.tasks-panel .tasks-overview--compact .overview-value {
+  font-size: 12.5px;
+}
+
+.tasks-panel .tasks-overview--compact .overview-label {
+  font-size: 10.5px;
+  /* 概览摘要必须严格一行：压过 styles.css ≤280px 断点里 label 换行的降级 */
+  white-space: nowrap;
+}
+
+/* 宽屏（≥480px）：概览摘要与快速添加同排，头部再省一行高度。
+   DOM 顺序不变（modes 测试契约守 overview → quick-add → viewbar → filterbar），
+   只由网格重排视觉行；<480px 回落为原有单列堆叠，320 窄窗不回归。
+   概览列用 fit-content(280px)：中英双语文案（zh≈209px / en≈242px）都放得下，
+   同时保证极端情况下 chips 收缩省略、快速添加列不吃到 0 宽。 */
+@media (min-width: 480px) {
+  .tasks-panel .tasks-head {
+    display: grid;
+    grid-template-columns: fit-content(280px) minmax(0, 1fr);
+    align-items: center;
+    column-gap: 10px;
+    row-gap: 5px;
+  }
+
+  .tasks-panel .tasks-head > .tasks-overview--compact {
+    grid-column: 1;
+    grid-row: 1;
+    min-width: 0;
+  }
+
+  .tasks-panel .tasks-head > .quick-add {
+    grid-column: 2;
+    grid-row: 1;
+    min-width: 0;
+  }
+
+  .tasks-panel .tasks-head > .tasks-viewbar,
+  .tasks-panel .tasks-head > .tasks-filterbar,
+  .tasks-panel .tasks-head > .quick-reminder {
+    grid-column: 1 / -1;
+  }
+
+  /* 解析预览/错误出现时快速添加占满整行：右列宽度放日期选择器太挤；
+     旧引擎不支持 :has 时静默不匹配，退化为右列内的原始行为。 */
+  .tasks-panel .tasks-head > .quick-add:has(> .quick-add-preview, > .preview-hint) {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+}
+
+/* 任务页内快速添加行收紧：只调本页（QuickAdd 还被首页/全视图等宿主复用）。 */
+.tasks-panel .quick-add-row {
+  padding: 3px 8px;
+  gap: 6px;
+}
+
+/* 日期筛选 + 工具操作安排在同一行；窄窗只允许日期分段横向滚动，
+   工具图标永远不换行掉到第二行。 */
+.tasks-panel .tasks-viewbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
+.tasks-panel .tasks-viewbar .seg-group {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+  /* 作为按钮 offsetLeft 的基准，激活项入视直接用 offsetLeft/offsetWidth 手算，
+     不调用 scrollIntoView，避免带动页面或父容器滚动。 */
+  position: relative;
+}
+
+.tasks-panel .tasks-viewbar .seg-group::-webkit-scrollbar {
+  display: none;
+}
+
+/* 横向溢出可发现性：只在还有隐藏内容的一侧淡化内容边缘（12px），
+   到起点/终点对应指示立即消失，正常宽度完全不出现。用 mask 而不是
+   叠加色块，主题/材质无关，也不会永久压在可见按钮文字上。
+   渐变宽度与 useViewsOverflow.ts 的 VIEW_REVEAL_MARGIN 保持一致。 */
+.tasks-panel .tasks-views[data-overflow-start="true"] {
+  mask-image: linear-gradient(to right, transparent 0, #000 12px);
+}
+
+.tasks-panel .tasks-views[data-overflow-end="true"] {
+  mask-image: linear-gradient(to left, transparent 0, #000 12px);
+}
+
+.tasks-panel .tasks-views[data-overflow-start="true"][data-overflow-end="true"] {
+  mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    #000 12px,
+    #000 calc(100% - 12px),
+    transparent 100%
+  );
+}
+
+/* 日期标签永不被省略号截断：宽度不足时让分段容器横向滚动、
+   标签保持完整可读。否则 320 宽下「全部/今日/明日」会被压成「全…」，
+   既丢了信息也无法分辨当前筛选。 */
+.tasks-panel .tasks-views .seg-btn {
+  flex: 0 0 auto;
+}
+
+.tasks-panel .tasks-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+/* 日期视图与状态筛选都是分段控件，选中态必须一致：
+   统一使用 subtle/accent 语义，避免一个白底、一个蓝底的两套选中样式。 */
+.tasks-panel .tasks-views .seg-btn.active {
+  background: var(--pill-soft-active-face);
+  color: var(--accent);
+  box-shadow: var(--pill-active-shadow);
+  font-weight: 600;
+}
+
+/* 搜索 + 状态 + 排序同一行：搜索吃掉剩余宽度，其余控件不被压扁。 */
+.tasks-panel .tasks-filterbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
+.tasks-panel .tasks-filterbar .search-box {
+  flex: 1 1 110px;
+  min-width: 0;
+}
+
+.tasks-panel .tasks-filterbar .seg-group {
+  flex: 0 0 auto;
+}
+
+.tasks-panel .tasks-filterbar .sort-select {
+  flex: 0 0 auto;
+  max-width: 84px;
+}
+
+@media (max-width: 360px) {
+  /* 320 窗宽下 5 个日期标签 + 3 个工具按钮差 32px，原设计靠横向滚动藏起
+     「逾期」。把日期分段的内边距从 8px 收到 4px，5 个标签全部露出，
+     不再需要滚动或渐隐遮罩。 */
+  .tasks-panel .tasks-viewbar .seg-btn {
+    padding: 3px 4px;
+    font-size: 10.5px;
+    letter-spacing: 0;
+  }
+}
+
+/* 窄窗（≤480px，含主窗 400 与 320）：400 窗口里搜索只剩 80px，已不可用。
+   让搜索独占一行、状态与排序落到第二行 —— 属于固定头内的合理收纳，
+   不是工具图标溢出换行；工作台 ≥900px 不受影响。 */
+@media (max-width: 480px) {
+  .tasks-panel .tasks-filterbar {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+
+  .tasks-panel .tasks-filterbar .search-box {
+    flex: 1 1 100%;
+  }
+
+  .tasks-panel .tasks-filterbar .seg-group {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .tasks-panel .tasks-filterbar .seg-btn {
+    padding: 3px 6px;
+  }
+
+  .tasks-panel .tasks-filterbar .sort-select {
+    max-width: 72px;
+  }
+}
+
+/* 任务卡密度（仅任务页）：把固定头部让出的高度还给列表，
+   同时保留标题行省略与元信息换行规则。 */
+.tasks-panel .task-item {
+  padding: 6px 8px;
+  gap: 7px;
+}
+
+.tasks-panel .task-meta {
+  margin-top: 2px;
+  gap: 6px;
+}
+
+.tasks-panel .task-nav-row {
+  margin-top: 3px;
+  gap: 3px;
+}
+
+/* 列表占据头部之外的剩余高度并独立滚动（.page-scroll 已给 overflow-y）。 */
+.tasks-panel > .task-list {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* 宽屏宿主（工作台 .wb-route，~900-1100px 内容宽）：任务行放宽水平留白，
+   搜索不再无限拉伸、状态/排序靠右（对齐效果图的工具行）。
+   窄窗行为不变；搜索 flex-shrink:1 保证英文等长文案下仍可收缩。
+   位置在密度/搜索基础规则之后：同特异性下靠源码顺序生效。 */
+@media (min-width: 900px) {
+  .tasks-panel .task-item {
+    padding: 7px 12px;
+  }
+
+  .tasks-panel .tasks-filterbar .search-box {
+    flex: 0 1 420px;
+  }
+
+  .tasks-panel .tasks-filterbar > .seg-group {
+    margin-left: auto;
+  }
+}
+
+/* 子视图头：返回按钮 + 模式标题；内容区占满剩余高度。 */
+.tasks-subview .tasks-subview-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.tasks-subview .tasks-subview-back {
+  flex: 0 0 auto;
+}
+
+.tasks-subview .tasks-subview-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  min-width: 0;
+}
+
+.tasks-subview .tasks-subview-title svg {
+  flex: 0 0 auto;
+}
+
+.tasks-subview .tasks-subview-body {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* 统计视图：容器负责占满高度，面板自身滚动、图表随宽度收缩。 */
+.tasks-subview .tasks-analytics-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.tasks-subview .tasks-analytics-body > .analytics-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* 提醒折叠摘要：默认只占一行；展开后的条目仍走原有卡片布局。 */
+.tasks-panel .active-reminders-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 11px;
+  text-align: left;
+}
+
+.tasks-panel .active-reminders-summary-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.tasks-panel .active-reminders-summary-count {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.tasks-panel .active-reminders-summary-next {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.tasks-panel .active-reminders-chevron {
+  flex: 0 0 auto;
+  transition: transform 0.12s;
+}
+
+.tasks-panel .active-reminders.is-expanded .active-reminders-chevron {
+  transform: rotate(180deg);
+}
+
+.tasks-panel .active-reminders-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 5px;
+  /* 到期提醒可能很多（每个带截止时间的任务都会产生一条）：条目区限高并内部
+     滚动，避免展开后把任务列表压成 0 高、条目本身又被窗口裁切。 */
+  max-height: 168px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tasks-panel .active-reminders-chevron {
+    transition: none;
+  }
+}
+
+/* 极矮窗口沿用 styles-themes.css 的整页滚动降级：那个 @media 位于 theme 层，
+   本文件无 @layer 会天然压过它，因此这里必须显式把列表/子视图内容还原为
+   自然高度，否则固定头部仍会吃掉全部可用高度。 */
+@media (max-height: 380px) {
+  .tasks-panel {
+    min-height: 100%;
+  }
+
+  .tasks-panel > .task-list {
+    flex: 0 0 auto;
+  }
+
+  .tasks-subview .tasks-subview-body {
+    flex: 0 0 auto;
+  }
+
+  .tasks-subview .tasks-analytics-body {
+    display: block;
+  }
+}
+
+/* ── 宽屏工作台：单一列表容器 + 选中态（2026-11-15，对照效果图 01） ──────
+   效果图的任务列表是「一个卡面 + 行间 hairline」，而这里原先每行各自一张卡，
+   行间还有 5px 缝——行数少时右侧留白被切成一格格白条，行数多时又显得碎。
+   只在工作台宿主（`.wb-route` 是大型工作台的页面槽位）生效，主窗口 / 胶囊
+   的窄面板保持原有卡片式布局，不动已经验收过的紧凑形态。
+   全部颜色/圆角走语义 Token；逐条选择器以 `.wb-route .tasks-panel` 开头做
+   作用域隔离。 */
+.wb-route .tasks-panel > .task-list {
+  gap: 0;
+  padding: 4px 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+}
+
+/* 行不再是独立卡片：去掉卡面、阴影、圆角与 hover 位移，只保留排版。 */
+.wb-route .tasks-panel .task-item {
+  border-radius: 8px;
+  background: none;
+  box-shadow: none;
+  transform: none;
+  padding: 8px 10px;
+}
+
+.wb-route .tasks-panel .task-item:not(.leaving):not(.is-leaving):not(.is-selected):hover {
+  transform: none;
+  box-shadow: none;
+  background: var(--surface-hover);
+}
+
+/* 行间分隔线：最后一行不画，避免与容器底边形成双线。 */
+.wb-route .tasks-panel .task-list > .task-item + .task-item {
+  box-shadow: inset 0 1px 0 var(--border-subtle);
+}
+
+/* 选中态：与效果图一致的低饱和强调底 + 左侧色条，不再叠阴影环。
+   分隔线与色条同时需要在同一元素上生效（否则选中行上方会缺一段 hairline），
+   但首行例外——首行上方是容器内边距，画线会形成双重边框。 */
+.wb-route .tasks-panel .task-item.is-selected {
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.wb-route .tasks-panel .task-list > .task-item.is-selected:not(:first-child) {
+  box-shadow: inset 2px 0 0 var(--accent), inset 0 1px 0 var(--border-subtle);
+}
+
+/* 选中行悬停：底色保持不变（悬停规则已用 :not(.is-selected) 排除，这里只做兜底）。 */
+.wb-route .tasks-panel .task-item.is-selected:hover {
+  background: var(--accent-soft);
+}
+
+/* 键盘用户：选中行给出明确焦点环（整行可选中不是唯一路径，编辑仍可走按钮）。 */
+.wb-route .tasks-panel .task-item.is-selected:focus-within {
+  outline: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  outline-offset: -1px;
+}

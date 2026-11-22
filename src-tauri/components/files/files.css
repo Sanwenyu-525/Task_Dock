@@ -1,0 +1,1430 @@
+/*! 文件工作区（多目录分栏）样式。组件规则只消费语义 Token（--surface/--border/--text/
+    --accent/--file-tone-*），不写零散硬编码颜色；独立文件避免触碰共享 styles.css。 */
+
+/* Flat 2D 表面标度：只在文件工作区内生效，不改共享主题 Token。
+   原因：某些主题的 `--card-face` 与 `--window-fill` 是渐变，`--surface-raised`
+   直接继承 `--card-face`，只改组件背景仍会残留上亮下暗的立体卡片效果。
+   这里用一组作用域内的纯色 Token（唯一允许写具体色值的定义处）收敛工作区表面，
+   其余组件仍引用语义 Token；其他页面继续走既有主题。 */
+.fw-root {
+  --fw-surface-base: #101320;
+  --fw-surface-raised: #171b28;
+  --fw-surface-overlay: #1e2333;
+  --fw-border-subtle: rgba(255, 255, 255, 0.08);
+  --fw-border-strong: rgba(255, 255, 255, 0.16);
+
+  /* 作用域内替换语义 Token，让所有子组件（按钮/标签/面包屑）统一平面化。 */
+  --surface-base: var(--fw-surface-base);
+  --surface-raised: var(--fw-surface-raised);
+  --surface-overlay: var(--fw-surface-overlay);
+  --border-subtle: var(--fw-border-subtle);
+  --border-strong: var(--fw-border-strong);
+  --shadow-raised: 0 1px 2px rgba(0, 0, 0, 0.22);
+
+  height: 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--fw-surface-base);
+  color: var(--text-primary);
+}
+
+html[data-theme="light"] .fw-root {
+  --fw-surface-base: #f2f4f8;
+  --fw-surface-raised: #ffffff;
+  --fw-surface-overlay: #f7f8fb;
+  --fw-border-subtle: rgba(17, 24, 39, 0.08);
+  --fw-border-strong: rgba(17, 24, 39, 0.16);
+  --shadow-raised: 0 1px 2px rgba(17, 24, 39, 0.06);
+}
+
+.fw-root-boot {
+  align-items: center;
+  justify-content: center;
+}
+
+/* ── 顶部工具栏 ─────────────────────────────────────────────────────── */
+
+.fw-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-raised);
+}
+
+.fw-toolbar-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.fw-toolbar-name {
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+/* 文件工作区是「工作台内的工作区」，没有整页大页头；用一个 32px 图标块
+   与工作台其他页的页头图标语言保持一致，而不是裸文字标题。 */
+.fw-toolbar-glyph {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid var(--border-subtle);
+}
+
+.fw-toolbar-project {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-overlay);
+  color: var(--text-secondary);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fw-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+}
+
+/* ── 分割树 ─────────────────────────────────────────────────────────── */
+
+.fw-workarea {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  padding: 8px;
+  display: flex;
+}
+
+.fw-split {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+
+.fw-split-horizontal {
+  flex-direction: row;
+}
+
+.fw-split-vertical {
+  flex-direction: column;
+}
+
+.fw-split-child {
+  flex: 0 0 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.fw-split-child-second {
+  flex: 1 1 auto;
+}
+
+.fw-divider {
+  flex: 0 0 6px;
+  background: transparent;
+  position: relative;
+  z-index: 1;
+  cursor: default;
+  outline: none;
+}
+
+.fw-divider::after {
+  content: "";
+  position: absolute;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--border-strong) 62%, transparent);
+  transition: background 120ms ease;
+}
+
+.fw-divider.is-horizontal {
+  cursor: col-resize;
+}
+
+.fw-divider.is-horizontal::after {
+  left: 2px;
+  right: 2px;
+  top: 4px;
+  bottom: 4px;
+}
+
+.fw-divider.is-vertical {
+  cursor: row-resize;
+}
+
+.fw-divider.is-vertical::after {
+  top: 2px;
+  bottom: 2px;
+  left: 4px;
+  right: 4px;
+}
+
+.fw-divider:hover::after,
+.fw-divider:focus-visible::after {
+  background: var(--accent);
+}
+
+body.fw-resizing {
+  cursor: inherit;
+  user-select: none;
+}
+
+/* ── 分栏 ───────────────────────────────────────────────────────────── */
+
+.fw-pane {
+  flex: 1 1 auto;
+  min-width: 120px;
+  min-height: 80px;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+  overflow: hidden;
+  position: relative;
+  /* 分栏可以窄到 350px 左右；工具栏与文件行都按窗格宽度而不是视口宽度收敛。 */
+  container-type: inline-size;
+  container-name: fw-pane;
+}
+
+.fw-pane.is-active {
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--fw-border-strong));
+}
+
+/* 布局编辑模式：区域边框轻微强调 + 顶部细把手（普通模式没有整窗格拖拽）。 */
+.fw-pane.is-edit {
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--fw-border-strong));
+  border-style: dashed;
+}
+
+.fw-edit-handle {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 18px;
+  cursor: grab;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  border-bottom: 1px solid var(--fw-border-subtle);
+  user-select: none;
+  touch-action: none;
+}
+
+.fw-edit-handle:hover {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.fw-edit-handle:active {
+  cursor: grabbing;
+}
+
+.fw-pane-loading {
+  flex: 1;
+}
+
+/* 标签栏 */
+.fw-pane-tabbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 4px 0;
+  min-height: 28px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.fw-pane-tabbar::-webkit-scrollbar {
+  display: none;
+}
+
+.fw-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 180px;
+  min-width: 0;
+  padding: 3px 6px 3px 10px;
+  border-radius: 6px 6px 0 0;
+  border: 1px solid transparent;
+  border-bottom: none;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+  flex: 0 1 auto;
+}
+
+.fw-tab:hover {
+  background: var(--surface-overlay);
+  color: var(--text-primary);
+}
+
+.fw-tab.is-active {
+  background: var(--surface-base);
+  border-color: var(--border-subtle);
+  color: var(--text-primary);
+}
+
+.fw-tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fw-tab-close {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  background: transparent;
+  border: none;
+}
+
+.fw-tab-close:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.fw-tab-add {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  background: transparent;
+  border: none;
+}
+
+.fw-tab-add:hover {
+  background: var(--surface-overlay);
+  color: var(--text-primary);
+}
+
+/* 导航工具栏 */
+.fw-pane-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border-subtle);
+  min-height: 30px;
+}
+
+.fw-navbtns {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+.fw-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.fw-icon-btn:hover:not(:disabled) {
+  background: var(--surface-overlay);
+  color: var(--text-primary);
+}
+
+.fw-icon-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.fw-icon-btn.is-on {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+/* 面包屑 */
+.fw-crumbs {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.fw-crumbs-inner {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px 8px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-overlay);
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: text;
+  overflow: hidden;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.fw-crumbs-inner:hover {
+  border-color: var(--border-strong);
+}
+
+.fw-crumb-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+}
+
+.fw-crumb {
+  padding: 1px 3px;
+  border-radius: 4px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fw-crumb:hover {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.fw-crumb-wrap:last-child {
+  /* 当前目录名不能被压成单个字符；窄分栏里只让中间层级省略。 */
+  flex: 0 0 auto;
+}
+
+.fw-crumb-sep {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+}
+
+.fw-crumb-ellipsis {
+  color: var(--text-tertiary);
+  flex: 0 0 auto;
+}
+
+.fw-path-input {
+  width: 100%;
+  padding: 3px 8px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--accent);
+  background: var(--surface-base);
+  color: var(--text-primary);
+  font-size: 12px;
+  outline: none;
+}
+
+/* 搜索 */
+.fw-searchbox {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 120px;
+  padding: 2px 6px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-overlay);
+  color: var(--text-tertiary);
+}
+
+.fw-searchbox:focus-within {
+  border-color: var(--accent);
+}
+
+.fw-searchbox input {
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 12px;
+  outline: none;
+  min-width: 0;
+}
+
+.fw-searchbox input::placeholder {
+  color: var(--text-tertiary);
+}
+
+/* ── 列表 / 网格 ────────────────────────────────────────────────────── */
+
+.fw-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  position: relative;
+  outline: none;
+  /* 容器查询锚点：窄分栏时次要列逐级让位（P2：338px 分栏时文件名被固定列压到 0）。 */
+  container-type: inline-size;
+}
+
+.fw-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  border-radius: 5px;
+  cursor: default;
+  user-select: none;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.fw-row:hover {
+  background: var(--surface-overlay);
+}
+
+.fw-row.is-selected {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.fw-row.is-active {
+  outline: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: -1px;
+}
+
+.fw-row.is-drop-folder {
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
+  outline: 1px dashed var(--accent);
+  outline-offset: -1px;
+}
+
+.fw-row-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+}
+
+.fw-row-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fw-row-time {
+  flex: 0 0 118px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fw-row-size {
+  flex: 0 0 76px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.fw-row-type {
+  flex: 0 0 88px;
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 网格 */
+.fw-grid-row {
+  display: flex;
+  align-items: flex-start;
+  padding: 0 4px;
+}
+
+.fw-cell {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 4px;
+  border-radius: 8px;
+  cursor: default;
+  user-select: none;
+}
+
+.fw-cell:hover {
+  background: var(--surface-overlay);
+}
+
+.fw-cell.is-selected {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.fw-cell.is-active {
+  outline: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: -1px;
+}
+
+.fw-cell.is-drop-folder {
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
+  outline: 1px dashed var(--accent);
+  outline-offset: -1px;
+}
+
+.fw-cell-thumb {
+  width: 72px;
+  height: 72px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: var(--surface-overlay);
+}
+
+.fw-cell-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.fw-cell-name {
+  max-width: 100%;
+  font-size: 11px;
+  line-height: 1.3;
+  max-height: 2.6em;
+  overflow: hidden;
+  text-align: center;
+  word-break: break-all;
+  color: var(--text-primary);
+}
+
+/* 空态 / 加载 / 错误 */
+.fw-body-empty,
+.fw-body-loading,
+.fw-body-error {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  padding: 16px;
+  text-align: center;
+}
+
+.fw-body-loading {
+  position: relative;
+}
+
+.fw-body-loading::after {
+  content: "";
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid var(--border-subtle);
+  border-top-color: var(--accent);
+  animation: fw-spin 0.9s linear infinite;
+}
+
+@keyframes fw-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fw-body-loading::after {
+    animation: none;
+  }
+}
+
+.fw-body-error {
+  color: var(--text-secondary);
+}
+
+.fw-error-path {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  word-break: break-all;
+  max-width: 90%;
+  user-select: text;
+}
+
+.fw-error-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.fw-empty-pane {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.fw-empty-icon {
+  color: var(--text-tertiary);
+  opacity: 0.7;
+}
+
+/* 状态条 */
+.fw-pane-status {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 10px;
+  border-top: 1px solid var(--border-subtle);
+  min-height: 22px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.fw-status-count {
+  white-space: nowrap;
+}
+
+.fw-status-truncated {
+  color: var(--status-waiting, var(--text-tertiary));
+}
+
+/* ── 拖拽视觉（Flat 2D）──────────────────────────────────────────── */
+/* 细边框 + 半透明方向区 + 小标签；方向区最多 38%，不遮挡目录内容。
+   取代旧的 5px 紫色粗条与整块中心遮罩（任务规范 §6.1）。 */
+
+.fw-drop-preview {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  border-radius: calc(var(--radius-card) - 1px);
+  border: 1px solid color-mix(in srgb, var(--accent) 50%, transparent);
+}
+
+.fw-drop-shade {
+  position: absolute;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.fw-drop-left .fw-drop-shade {
+  left: 2px;
+  top: 2px;
+  bottom: 2px;
+  width: 38%;
+}
+
+.fw-drop-right .fw-drop-shade {
+  right: 2px;
+  top: 2px;
+  bottom: 2px;
+  width: 38%;
+}
+
+.fw-drop-top .fw-drop-shade {
+  left: 2px;
+  right: 2px;
+  top: 2px;
+  height: 38%;
+}
+
+.fw-drop-bottom .fw-drop-shade {
+  left: 2px;
+  right: 2px;
+  bottom: 2px;
+  height: 38%;
+}
+
+.fw-drop-label {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--fw-border-subtle);
+  background: var(--fw-surface-overlay);
+  color: var(--text-primary);
+  font-size: 11px;
+  white-space: nowrap;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+}
+
+.fw-drop-left .fw-drop-label {
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.fw-drop-right .fw-drop-label {
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.fw-drop-top .fw-drop-label {
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.fw-drop-bottom .fw-drop-label {
+  bottom: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.fw-drop-center {
+  border-style: dashed;
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+.fw-drop-center .fw-drop-label {
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.fw-drop-swap {
+  border-color: color-mix(in srgb, var(--accent) 70%, transparent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.fw-drop-swap .fw-drop-label {
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.fw-tabbar-hint {
+  position: absolute;
+  top: 4px;
+  bottom: auto;
+  width: 2px;
+  z-index: 3;
+  pointer-events: none;
+  background: var(--accent);
+  border-radius: 1px;
+}
+
+.fw-drag-ghost {
+  position: fixed;
+  z-index: 90;
+  transform: translate(8px, 8px);
+  padding: 4px 10px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border-strong);
+  background: var(--surface-overlay);
+  color: var(--text-primary);
+  font-size: 12px;
+  pointer-events: none;
+  box-shadow: var(--shadow-raised);
+  white-space: nowrap;
+}
+
+/* 拒绝落点（自子树/无效目标）：危险色 + 虚线，明确「松手不会执行」。 */
+.fw-drag-ghost.is-denied {
+  border-color: color-mix(in srgb, var(--danger, #e5484d) 70%, transparent);
+  border-style: dashed;
+  color: color-mix(in srgb, var(--danger, #e5484d) 85%, var(--text-primary));
+}
+
+.fw-drag-ghost.is-tabs {
+  font-weight: 600;
+}
+
+/* 超限目录翻页（列表末尾内嵌）。 */
+.fw-load-more {
+  display: block;
+  margin: 6px auto;
+  padding: 4px 14px;
+  font-size: 12px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border);
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.fw-load-more:hover {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
+.fw-load-more:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* ── 布局抽屉 ───────────────────────────────────────────────────────── */
+
+.fw-layout-pop {
+  min-width: 240px;
+}
+
+.fw-layout-drawer {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: 60vh;
+  overflow: auto;
+}
+
+.fw-drawer-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.fw-drawer-title {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  letter-spacing: 0.02em;
+}
+
+.fw-preset-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+}
+
+.fw-preset-item {
+  padding: 7px 10px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-overlay);
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.fw-preset-item:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.fw-template-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.fw-template-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.fw-template-item:hover {
+  border-color: var(--accent);
+}
+
+.fw-template-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fw-drawer-foot {
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 10px;
+}
+
+/* ── 工具栏细节：主操作 + 打开方式（分割按钮）────────────────────────── */
+
+.fw-toolbar-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 2px;
+  border-left: 1px solid var(--fw-border-subtle);
+  border-right: 1px solid var(--fw-border-subtle);
+}
+
+.fw-split-btn {
+  display: inline-flex;
+  align-items: stretch;
+}
+
+.fw-split-btn .fw-open-btn {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.fw-open-caret {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  padding-left: 5px;
+  padding-right: 5px;
+  border-left: none;
+}
+
+/* 布局编辑提示条：只在编辑模式出现，退出即收起（不长期占空间）。 */
+.fw-edit-banner {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  font-size: 11px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--fw-surface-raised));
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
+.fw-edit-banner span {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── 空窗格（提高信息密度，主操作仍是浏览文件夹）────────────────────── */
+
+.fw-empty-pane {
+  gap: 8px;
+  padding: 16px 14px;
+  overflow: auto;
+}
+
+.fw-empty-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.fw-empty-hint {
+  margin: 0;
+  max-width: 320px;
+  line-height: 1.5;
+  text-align: center;
+  color: var(--text-tertiary);
+}
+
+.fw-empty-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.fw-empty-group {
+  width: 100%;
+  max-width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.fw-empty-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+}
+
+.fw-empty-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.fw-empty-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--fw-border-subtle);
+  background: var(--fw-surface-overlay);
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.fw-empty-chip:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  color: var(--text-primary);
+}
+
+.fw-empty-chip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fw-empty-drop {
+  margin: 2px 0 0;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  opacity: 0.85;
+}
+
+/* ── 打开文件夹对话框：模式 chips + 目录行 ─────────────────────────── */
+
+.fw-open-folder {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.fw-open-modes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.fw-mode-chip {
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--fw-border-subtle);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  text-align: center;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.fw-mode-chip:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.fw-mode-chip.is-on {
+  border-color: color-mix(in srgb, var(--accent) 65%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+}
+
+.fw-browse-btn {
+  align-self: flex-start;
+}
+
+.fw-pick-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--danger, #e5484d) 40%, transparent);
+  background: color-mix(in srgb, var(--danger, #e5484d) 8%, transparent);
+  color: color-mix(in srgb, var(--danger, #e5484d) 75%, var(--text-primary));
+  font-size: 11px;
+  line-height: 1.45;
+  word-break: break-all;
+}
+
+.fw-dir-section {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.fw-dir-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.fw-dir-row-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.fw-dir-row-main:hover {
+  background: var(--fw-surface-overlay);
+  border-color: var(--fw-border-subtle);
+  color: var(--text-primary);
+}
+
+.fw-dir-row-name {
+  flex: 0 0 auto;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+
+.fw-dir-row-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.fw-dir-row-pin {
+  flex: 0 0 auto;
+}
+
+.fw-drawer-hint {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-tertiary);
+}
+
+.fw-drawer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.fw-stash-restore {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--accent);
+}
+
+/* 关闭区域确认：列出将被关闭/收纳的目录（绝不静默丢弃）。 */
+.fw-close-prompt {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.fw-close-prompt p {
+  margin: 0;
+}
+
+.fw-close-warn {
+  color: color-mix(in srgb, var(--danger, #e5484d) 75%, var(--text-primary));
+}
+
+.fw-tab-list {
+  margin: 0;
+  padding: 6px 10px;
+  max-height: 180px;
+  overflow: auto;
+  border-radius: 6px;
+  border: 1px solid var(--fw-border-subtle);
+  background: var(--fw-surface-overlay);
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.fw-tab-list li {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 窄窗：工具栏次要操作收进「更多」（媒体查询按窗口宽度）。 */
+@media (max-width: 980px) {
+  .fw-hide-narrow {
+    display: none;
+  }
+}
+
+
+/* ── 对话框辅助 ─────────────────────────────────────────────────────── */
+
+.fw-dialog-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.fw-dialog-field span {
+  color: var(--text-secondary);
+}
+
+.fw-template-hint {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.fw-props {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.fw-props > div {
+  display: grid;
+  grid-template-columns: 72px 1fr;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.fw-props dt {
+  color: var(--text-tertiary);
+}
+
+.fw-props dd {
+  margin: 0;
+  color: var(--text-primary);
+  word-break: break-all;
+  user-select: text;
+}
+
+/* ── 窄窗适配 ───────────────────────────────────────────────────────── */
+
+@media (max-width: 700px) {
+  .fw-toolbar {
+    flex-wrap: wrap;
+  }
+
+  .fw-searchbox {
+    width: 90px;
+  }
+}
+
+/* 窄分栏（容器查询，按 .fw-body 实际宽度）：次要列逐级隐藏，文件名永不归零。
+   固定列合计约 345px（time 118 + size 76 + type 88 + 图标/间距）。 */
+@container (max-width: 560px) {
+  .fw-row-type {
+    display: none;
+  }
+}
+
+@container (max-width: 440px) {
+  .fw-row-size {
+    display: none;
+  }
+}
+
+@container (max-width: 360px) {
+  .fw-row-time {
+    flex-basis: 96px;
+    font-size: 10.5px;
+  }
+}
+
+/* 窄窗格：工具栏不能把所有控件硬塞进一行，否则面包屑会被挤成 0 宽。
+   第一行保留「导航按钮 + 路径 + 视图/排序」，搜索框整行落到第二行。 */
+@container fw-pane (max-width: 460px) {
+  .fw-pane-toolbar {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+  .fw-searchbox {
+    order: 10;
+    flex: 1 1 100%;
+    width: auto;
+  }
+  .fw-crumbs {
+    flex: 1 1 0;
+    min-width: 72px;
+  }
+  /* 折叠路径时（>3 段）只保留最后两级：先隐藏根段、首分隔符和省略号，
+     避免根段被压成空框、只留下「[]>[]>…」的残片。
+     2–3 段走的是 .fw-crumb-wrap 分支，根段是第一个 wrap 而不是裸 .fw-crumb；
+     窄分栏里同样隐藏根段与其后紧邻的分隔符，只留当前目录名。 */
+  .fw-crumbs-inner > .fw-crumb:first-child,
+  .fw-crumbs-inner > .fw-crumb-sep:first-of-type,
+  .fw-crumbs-inner > .fw-crumb-wrap:first-child,
+  .fw-crumbs-inner > .fw-crumb-wrap:first-child + .fw-crumb-wrap .fw-crumb-sep,
+  .fw-crumb-ellipsis {
+    display: none;
+  }
+}
+
+/* 极窄分栏（约 350px 双栏）里「父级 > 当前」仍放不下，父级会被压成「ta…」。
+   这时只保留当前目录，用前置省略号表示还有上层路径，比截断成两个字更可读。 */
+@container fw-pane (max-width: 380px) {
+  .fw-crumbs-inner > .fw-crumb-wrap:nth-last-child(2) {
+    display: none;
+  }
+
+  .fw-crumb-ellipsis {
+    display: inline;
+  }
+}

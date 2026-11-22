@@ -1,0 +1,838 @@
+
+[1m[46m RUN [49m[22m [36mv3.2.7 [39m[90mD:/Develop/task_dock[39m
+
+ [31m❯[39m src/components/devwork/DevHandoffSection.test.tsx [2m([22m[2m22 tests[22m[2m | [22m[31m1 failed[39m[2m | [22m[33m21 skipped[39m[2m)[22m[33m 1131[2mms[22m[39m
+   [2m[90m↓[39m[22m DevHandoffSection · 初始预填[2m > [22m任务标题/备注进「任务目标」，标题输入预填任务标题
+   [2m[90m↓[39m[22m DevHandoffSection · 初始预填[2m > [22m项目背景预填：项目名 + 路径 + 分支 + 未提交数
+   [2m[90m↓[39m[22m DevHandoffSection · 初始预填[2m > [22m关联功能的验收标准预填到「验收标准」节
+   [2m[90m↓[39m[22m DevHandoffSection · 初始预填[2m > [22m用户已编辑的节不被预填覆盖
+   [2m[90m↓[39m[22m DevHandoffSection · Markdown 预览[2m > [22m空节不输出：预览含已填节标题，不含未填节标题；标题行恒存在
+   [2m[90m↓[39m[22m DevHandoffSection · 敏感扫描[2m > [22m命中只显示节名 + 行号 + 类型，绝不渲染原文；输入文本按节序传入
+   [2m[90m↓[39m[22m DevHandoffSection · 敏感扫描[2m > [22m无命中显示绿色「未发现敏感模式」；truncated 显示截断提示
+   [2m[90m↓[39m[22m DevHandoffSection · 复制[2m > [22m复制成功：copyText 收到预览 Markdown；失败：错误提示且编辑内容不丢失
+   [2m[90m↓[39m[22m DevHandoffSection · 保存版本[2m > [22m保存：contentMd 与预览一致、sourceSummary 为来源 JSON；成功后刷新版本列表
+   [2m[90m↓[39m[22m DevHandoffSection · 保存版本[2m > [22m保存失败：错误提示且编辑内容不丢失
+   [2m[90m↓[39m[22m DevHandoffSection · 保存版本[2m > [22m版本列表操作：查看展开只读正文、删除走确认框
+   [2m[90m↓[39m[22m DevHandoffSection · 资料选择（Round 2a）[2m > [22m两数据源加载：笔记标题与暂存架名称出现在勾选列表
+   [2m[90m↓[39m[22m DevHandoffSection · 资料选择（Round 2a）[2m > [22m勾选 3 条 → 预览出现 3 行 bullet；取消 1 条 → 剩 2 行
+   [2m[90m↓[39m[22m DevHandoffSection · 资料选择（Round 2a）[2m > [22m已编辑「项目背景」后勾选仍追加，取消后基础内容保留
+   [2m[90m↓[39m[22m DevHandoffSection · 资料选择（Round 2a）[2m > [22m加载失败降级：notes 失败显示错误行，shelf 仍渲染，表单不受阻
+   [2m[90m↓[39m[22m DevHandoffSection · 资料选择（Round 2a）[2m > [22m无任务草稿：资料区隐藏，不发起两数据源请求
+   [2m[90m↓[39m[22m DevHandoffSection · 资料选择（Round 2a）[2m > [22msourceSummary 记录 selectedNotes 与 selectedShelfItems（id 列表）
+   [2m[90m↓[39m[22m DevHandoffSection · 资料选择（Round 2a）[2m > [22m全选把当前已加载条目全部勾选；清空一键移除
+   [2m[90m↓[39m[22m DevHandoffSection · Agent 会话关联（v50）[2m > [22m选择真实会话后保存：dev_handoff_save 携带 source/external 身份
+   [2m[90m↓[39m[22m DevHandoffSection · Agent 会话关联（v50）[2m > [22m选择「不关联」后保存：两个身份字段为 null
+[31m   [31m×[31m DevHandoffSection · Agent 会话关联（v50）[2m > [22m版本列表展示关联会话；失效时如实标注「会话已失效」[39m[33m 1128[2mms[22m[39m
+[31m     → Found multiple elements with the text: 会话：实现交接包关联
+
+Here are the matching elements:
+
+Ignored nodes: comments, script, style
+[36m<span[31m
+  [33mclass[31m=[32m"wb-meta-item"[31m
+[36m>[31m
+  [0m会话：实现交接包关联[0m
+[36m</span>[31m
+
+Ignored nodes: comments, script, style
+[36m<span>[31m
+  [0m会话：实现交接包关联[0m
+[36m</span>[31m
+
+(If this is intentional, then use the `*AllBy*` variant of the query (like `queryAllByText`, `getAllByText`, or `findAllByText`)).
+
+Ignored nodes: comments, script, style
+[36m<body>[31m
+  [36m<div>[31m
+    [36m<section[31m
+      [33maria-label[31m=[32m"任务交接包"[31m
+      [33mclass[31m=[32m"wb-card"[31m
+      [33mid[31m=[32m"dev-handoff"[31m
+    [36m>[31m
+      [36m<div[31m
+        [33mclass[31m=[32m"wb-section-head"[31m
+      [36m>[31m
+        [36m<h3[31m
+          [33mclass[31m=[32m"wb-section-title"[31m
+        [36m>[31m
+          [36m<svg[31m
+            [33maria-hidden[31m=[32m"true"[31m
+            [33mclass[31m=[32m"lucide lucide-clipboard-list"[31m
+            [33mfill[31m=[32m"none"[31m
+            [33mheight[31m=[32m"13"[31m
+            [33mstroke[31m=[32m"currentColor"[31m
+            [33mstroke-linecap[31m=[32m"round"[31m
+            [33mstroke-linejoin[31m=[32m"round"[31m
+            [33mstroke-width[31m=[32m"2"[31m
+            [33mviewBox[31m=[32m"0 0 24 24"[31m
+            [33mwidth[31m=[32m"13"[31m
+            [33mxmlns[31m=[32m"http://www.w3.org/2000/svg"[31m
+          [36m>[31m
+            [36m<rect[31m
+              [33mheight[31m=[32m"4"[31m
+              [33mrx[31m=[32m"1"[31m
+              [33mry[31m=[32m"1"[31m
+              [33mwidth[31m=[32m"8"[31m
+              [33mx[31m=[32m"8"[31m
+              [33my[31m=[32m"2"[31m
+            [36m/>[31m
+            [36m<path[31m
+              [33md[31m=[32m"M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"[31m
+            [36m/>[31m
+            [36m<path[31m
+              [33md[31m=[32m"M12 11h4"[31m
+            [36m/>[31m
+            [36m<path[31m
+              [33md[31m=[32m"M12 16h4"[31m
+            [36m/>[31m
+            [36m<path[31m
+              [33md[31m=[32m"M8 11h.01"[31m
+            [36m/>[31m
+            [36m<path[31m
+              [33md[31m=[32m"M8 16h.01"[31m
+            [36m/>[31m
+          [36m</svg>[31m
+          [0m [0m
+          [0m任务交接包[0m
+        [36m</h3>[31m
+        [36m<span[31m
+          [33mclass[31m=[32m"flex-spacer"[31m
+        [36m/>[31m
+        [36m<span[31m
+          [33mclass[31m=[32m"badge subtle"[31m
+        [36m>[31m
+          [0m关联当前任务[0m
+        [36m</span>[31m
+        [36m<button[31m
+          [33mclass[31m=[32m"btn sm"[31m
+          [33mdata-tip[31m=[32m"编辑"[31m
+          [33mtype[31m=[32m"button"[31m
+        [36m>[31m
+          [36m<svg[31m
+            [33maria-hidden[31m=[32m"true"[31m
+            [33mclass[31m=[32m"lucide lucide-pencil"[31m
+            [33mfill[31m=[32m"none"[31m
+            [33mheight[31m=[32m"12"[31m
+            [33mstroke[31m=[32m"currentColor"[31m
+            [33mstroke-linecap[31m=[32m"round"[31m
+            [33mstroke-linejoin[31m=[32m"round"[31m
+            [33mstroke-width[31m=[32m"2"[31m
+            [33mviewBox[31m=[32m"0 0 24 24"[31m
+            [33mwidth[31m=[32m"12"[31m
+            [33mxmlns[31m=[32m"http://www.w3.org/2000/svg"[31m
+          [36m>[31m
+            [36m<path[31m
+              [33md[31m=[32m"M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"[31m
+            [36m/>[31m
+            [36m<path[31m
+              [33md[31m=[32m"m15 5 4 4"[31m
+            [36m/>[31m
+          [36m</svg>[31m
+          [0m编辑[0m
+        [36m</button>[31m
+      [36m</div>[31m
+      [36m<div[31m
+        [33mclass[31m=[32m"wb-handoff-summary"[31m
+      [36m>[31m
+        [36m<div[31m
+          [33mclass[31m=[32m"wb-handoff-summary-head"[31m
+        [36m>[31m
+          [36m<span[31m
+            [33mclass[31m=[32m"wb-row-title"[31m
+            [33mtitle[31m=[32m"重构剪贴板模块"[31m
+          [36m>[31m
+            [0m重构剪贴板模块[0m
+          [36m</span>[31m
+          [36m<span[31m
+            [33mclass[31m=[32m"badge subtle"[31m
+          [36m>[31m
+            [0mv2[0m
+          [36m</span>[31m
+        [36m</div>[31m
+        [36m<div[31m
+          [33mclass[31m=[32m"wb-handoff-summary-meta"[31m
+        [36m>[31m
+          [36m<span[31m
+            [33mclass[31m=[32m"wb-meta-item"[31m
+          [36m>[31m
+            [0m会话：实现交接包关联[0m
+          [36m</span>[31m
+          [36m<span[31m
+            [33mclass[31m=[32m"wb-meta-item"[31m
+          [36m>[31m
+            [0m7 天前[0m
+          [36m</span>[31m
+        [36m</div>[31m
+      [36m</div>[31m
+      [36m<div[31m
+        [33mclass[31m=[32m"wb-handoff-body is-collapsed"[31m
+      [36m>[31m
+        [36m<p[31m
+          [33mclass[31m=[32m"endpoint-hint"[31m
+        [36m>[31m
+          [0m按固定模板整理交接信息；留空的节不会写入 Markdown。[0m
+        [36m</p>[31m
+        [36m<label[31m
+          [33mclass[31m=[32m"field"[31m
+        [36m>[31m
+          [36m<span>[31m
+            [0m交接包标题[0m
+          [36m</span>[31m
+          [36m<input[31m
+            [33maria-label[31m=[32m"交接包标题"[31m
+            [33mmaxlength[31m=[32m"200"[31m
+            [33mplaceholder[31m=[32m"重构剪贴板模块"[31m
+            [33mvalue[31m=[32m"重构剪贴板模块"[31m
+          [36m/>[31m
+        [36m</label>[31m
+        [36m<div[31m
+          [33mclass[31m=[32m"wb-accept-block wb-handoff-session"[31m
+        [36m>[31m
+          [36m<div[31m
+            [33mclass[31m=[32m"wb-links-title"[31m
+          [36m>[31m
+            [0m执行 Agent 会话（可选）[0m
+          [36m</div>[31m
+          [36m<p[31m
+            [33mclass[31m=[32m"endpoint-hint"[31m
+          [36m>[31m
+            [0m只登记这个交接包要交给哪个会话；不会自动执行，也不会自动生成验收记录。[0m
+          [36m</p>[31m
+          [36m<div[31m
+            [33mclass[31m=[32m"wb-accept-evidence-row"[31m
+          [36m>[31m
+            [36m<input[31m
+              [33maria-label[31m=[32m"搜索会话标题或 ID"[31m
+              [33mclass[31m=[32m"wb-accept-criteria-input"[31m
+              [33mplaceholder[31m=[32m"搜索会话标题或 ID"[31m
+              [33mvalue[31m=[32m""[31m
+            [36m/>[31m
+            [36m<button[31m
+              [33mclass[31m=[32m"btn sm"[31m
+              [33mtype[31m=[32m"button"[31m
+            [36m>[31m
+              [0m搜索[0m
+            [36m</button>[31m
+          [36m</div>[31m
+          [36m<div[31m
+            [33mclass[31m=[32m"ui-combobox size-sm  "[31m
+          [36m>[31m
+            [36m<svg[31m
+              [33maria-hidden[31m=[32m"true"[31m
+              [33mclass[31m=[32m"lucide lucide-search ui-combobox-icon"[31m
+              [33mfill[31m=[32m"none"[31m
+              [33mheight[31m=[32m"12"[31m
+              [33mstroke[31m=[32m"currentColor"[31m
+              [33mstroke-linecap[31m=[32m"round"[31m
+              [33mstroke-linejoin[31m=[32m"round"[31m
+              [33mstroke-width[31m=[32m"2"[31m
+              [33mviewBox[31m=[32m"0 0 24 24"[31m
+              [33mwidth[31m=[32m"12"[31m
+              ...
+
+Ignored nodes: comments, script, style
+[36m<body>[31m
+  [36m<div>[31m
+    [36m<section[31m
+      [33maria-label[31m=[32m"任务交接包"[31m
+      [33mclass[31m=[32m"wb-card"[31m
+      [33mid[31m=[32m"dev-handoff"[31m
+    [36m>[31m
+      [36m<div[31m
+        [33mclass[31m=[32m"wb-section-head"[31m
+      [36m>[31m
+        [36m<h3[31m
+          [33mclass[31m=[32m"wb-section-title"[31m
+        [36m>[31m
+          [36m<svg[31m
+            [33maria-hidden[31m=[32m"true"[31m
+            [33mclass[31m=[32m"lucide lucide-clipboard-list"[31m
+            [33mfill[31m=[32m"none"[31m
+            [33mheight[31m=[32m"13"[31m
+            [33mstroke[31m=[32m"currentColor"[31m
+            [33mstroke-linecap[31m=[32m"round"[31m
+            [33mstroke-linejoin[31m=[32m"round"[31m
+            [33mstroke-width[31m=[32m"2"[31m
+            [33mviewBox[31m=[32m"0 0 24 24"[31m
+            [33mwidth[31m=[32m"13"[31m
+            [33mxmlns[31m=[32m"http://www.w3.org/2000/svg"[31m
+          [36m>[31m
+            [36m<rect[31m
+              [33mheight[31m=[32m"4"[31m
+              [33mrx[31m=[32m"1"[31m
+              [33mry[31m=[32m"1"[31m
+              [33mwidth[31m=[32m"8"[31m
+              [33mx[31m=[32m"8"[31m
+              [33my[31m=[32m"2"[31m
+            [36m/>[31m
+            [36m<path[31m
+              [33md[31m=[32m"M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"[31m
+            [36m/>[31m
+            [36m<path[31m
+              [33md[31m=[32m"M12 11h4"[31m
+            [36m/>[31m
+            [36m<path[31m
+              [33md[31m=[32m"M12 16h4"[31m
+            [36m/>[31m
+            [36m<path[31m
+              [33md[31m=[32m"M8 11h.01"[31m
+            [36m/>[31m
+            [36m<path[31m
+              [33md[31m=[32m"M8 16h.01"[31m
+            [36m/>[31m
+          [36m</svg>[31m
+          [0m [0m
+          [0m任务交接包[0m
+        [36m</h3>[31m
+        [36m<span[31m
+          [33mclass[31m=[32m"flex-spacer"[31m
+        [36m/>[31m
+        [36m<span[31m
+          [33mclass[31m=[32m"badge subtle"[31m
+        [36m>[31m
+          [0m关联当前任务[0m
+        [36m</span>[31m
+        [36m<button[31m
+          [33mclass[31m=[32m"btn sm"[31m
+          [33mdata-tip[31m=[32m"编辑"[31m
+          [33mtype[31m=[32m"button"[31m
+        [36m>[31m
+          [36m<svg[31m
+            [33maria-hidden[31m=[32m"true"[31m
+            [33mclass[31m=[32m"lucide lucide-pencil"[31m
+            [33mfill[31m=[32m"none"[31m
+            [33mheight[31m=[32m"12"[31m
+            [33mstroke[31m=[32m"currentColor"[31m
+            [33mstroke-linecap[31m=[32m"round"[31m
+            [33mstroke-linejoin[31m=[32m"round"[31m
+            [33mstroke-width[31m=[32m"2"[31m
+            [33mviewBox[31m=[32m"0 0 24 24"[31m
+            [33mwidth[31m=[32m"12"[31m
+            [33mxmlns[31m=[32m"http://www.w3.org/2000/svg"[31m
+          [36m>[31m
+            [36m<path[31m
+              [33md[31m=[32m"M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"[31m
+            [36m/>[31m
+            [36m<path[31m
+              [33md[31m=[32m"m15 5 4 4"[31m
+            [36m/>[31m
+          [36m</svg>[31m
+          [0m编辑[0m
+        [36m</button>[31m
+      [36m</div>[31m
+      [36m<div[31m
+        [33mclass[31m=[32m"wb-handoff-summary"[31m
+      [36m>[31m
+        [36m<div[31m
+          [33mclass[31m=[32m"wb-handoff-summary-head"[31m
+        [36m>[31m
+          [36m<span[31m
+            [33mclass[31m=[32m"wb-row-title"[31m
+            [33mtitle[31m=[32m"重构剪贴板模块"[31m
+          [36m>[31m
+            [0m重构剪贴板模块[0m
+          [36m</span>[31m
+          [36m<span[31m
+            [33mclass[31m=[32m"badge subtle"[31m
+          [36m>[31m
+            [0mv2[0m
+          [36m</span>[31m
+        [36m</div>[31m
+        [36m<div[31m
+          [33mclass[31m=[32m"wb-handoff-summary-meta"[31m
+        [36m>[31m
+          [36m<span[31m
+            [33mclass[31m=[32m"wb-meta-item"[31m
+          [36m>[31m
+            [0m会话：实现交接包关联[0m
+          [36m</span>[31m
+          [36m<span[31m
+            [33mclass[31m=[32m"wb-meta-item"[31m
+          [36m>[31m
+            [0m7 天前[0m
+          [36m</span>[31m
+        [36m</div>[31m
+      [36m</div>[31m
+      [36m<div[31m
+        [33mclass[31m=[32m"wb-handoff-body is-collapsed"[31m
+      [36m>[31m
+        [36m<p[31m
+          [33mclass[31m=[32m"endpoint-hint"[31m
+        [36m>[31m
+          [0m按固定模板整理交接信息；留空的节不会写入 Markdown。[0m
+        [36m</p>[31m
+        [36m<label[31m
+          [33mclass[31m=[32m"field"[31m
+        [36m>[31m
+          [36m<span>[31m
+            [0m交接包标题[0m
+          [36m</span>[31m
+          [36m<input[31m
+            [33maria-label[31m=[32m"交接包标题"[31m
+            [33mmaxlength[31m=[32m"200"[31m
+            [33mplaceholder[31m=[32m"重构剪贴板模块"[31m
+            [33mvalue[31m=[32m"重构剪贴板模块"[31m
+          [36m/>[31m
+        [36m</label>[31m
+        [36m<div[31m
+          [33mclass[31m=[32m"wb-accept-block wb-handoff-session"[31m
+        [36m>[31m
+          [36m<div[31m
+            [33mclass[31m=[32m"wb-links-title"[31m
+          [36m>[31m
+            [0m执行 Agent 会话（可选）[0m
+          [36m</div>[31m
+          [36m<p[31m
+            [33mclass[31m=[32m"endpoint-hint"[31m
+          [36m>[31m
+            [0m只登记这个交接包要交给哪个会话；不会自动执行，也不会自动生成验收记录。[0m
+          [36m</p>[31m
+          [36m<div[31m
+            [33mclass[31m=[32m"wb-accept-evidence-row"[31m
+          [36m>[31m
+            [36m<input[31m
+              [33maria-label[31m=[32m"搜索会话标题或 ID"[31m
+              [33mclass[31m=[32m"wb-accept-criteria-input"[31m
+              [33mplaceholder[31m=[32m"搜索会话标题或 ID"[31m
+              [33mvalue[31m=[32m""[31m
+            [36m/>[31m
+            [36m<button[31m
+              [33mclass[31m=[32m"btn sm"[31m
+              [33mtype[31m=[32m"button"[31m
+            [36m>[31m
+              [0m搜索[0m
+            [36m</button>[31m
+          [36m</div>[31m
+          [36m<div[31m
+            [33mclass[31m=[32m"ui-combobox size-sm  "[31m
+          [36m>[31m
+            [36m<svg[31m
+              [33maria-hidden[31m=[32m"true"[31m
+              [33mclass[31m=[32m"lucide lucide-search ui-combobox-icon"[31m
+              [33mfill[31m=[32m"none"[31m
+              [33mheight[31m=[32m"12"[31m
+              [33mstroke[31m=[32m"currentColor"[31m
+              [33mstroke-linecap[31m=[32m"round"[31m
+              [33mstroke-linejoin[31m=[32m"round"[31m
+              [33mstroke-width[31m=[32m"2"[31m
+              [33mviewBox[31m=[32m"0 0 24 24"[31m
+              [33mwidth[31m=[32m"12"[31m
+              ...[39m
+   [2m[90m↓[39m[22m DevHandoffSection · Agent 会话关联（v50）[2m > [22m会话列表读取失败：如实提示，不伪造候选
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/components/devwork/DevHandoffSection.test.tsx > DevHandoffSection · Agent 会话关联（v50） > 版本列表展示关联会话；失效时如实标注「会话已失效」
+TestingLibraryElementError: Found multiple elements with the text: 会话：实现交接包关联
+
+Here are the matching elements:
+
+Ignored nodes: comments, script, style
+<span
+  class="wb-meta-item"
+>
+  会话：实现交接包关联
+</span>
+
+Ignored nodes: comments, script, style
+<span>
+  会话：实现交接包关联
+</span>
+
+(If this is intentional, then use the `*AllBy*` variant of the query (like `queryAllByText`, `getAllByText`, or `findAllByText`)).
+
+Ignored nodes: comments, script, style
+<body>
+  <div>
+    <section
+      aria-label="任务交接包"
+      class="wb-card"
+      id="dev-handoff"
+    >
+      <div
+        class="wb-section-head"
+      >
+        <h3
+          class="wb-section-title"
+        >
+          <svg
+            aria-hidden="true"
+            class="lucide lucide-clipboard-list"
+            fill="none"
+            height="13"
+            stroke="currentColor"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            viewBox="0 0 24 24"
+            width="13"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <rect
+              height="4"
+              rx="1"
+              ry="1"
+              width="8"
+              x="8"
+              y="2"
+            />
+            <path
+              d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"
+            />
+            <path
+              d="M12 11h4"
+            />
+            <path
+              d="M12 16h4"
+            />
+            <path
+              d="M8 11h.01"
+            />
+            <path
+              d="M8 16h.01"
+            />
+          </svg>
+           
+          任务交接包
+        </h3>
+        <span
+          class="flex-spacer"
+        />
+        <span
+          class="badge subtle"
+        >
+          关联当前任务
+        </span>
+        <button
+          class="btn sm"
+          data-tip="编辑"
+          type="button"
+        >
+          <svg
+            aria-hidden="true"
+            class="lucide lucide-pencil"
+            fill="none"
+            height="12"
+            stroke="currentColor"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            viewBox="0 0 24 24"
+            width="12"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <path
+              d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"
+            />
+            <path
+              d="m15 5 4 4"
+            />
+          </svg>
+          编辑
+        </button>
+      </div>
+      <div
+        class="wb-handoff-summary"
+      >
+        <div
+          class="wb-handoff-summary-head"
+        >
+          <span
+            class="wb-row-title"
+            title="重构剪贴板模块"
+          >
+            重构剪贴板模块
+          </span>
+          <span
+            class="badge subtle"
+          >
+            v2
+          </span>
+        </div>
+        <div
+          class="wb-handoff-summary-meta"
+        >
+          <span
+            class="wb-meta-item"
+          >
+            会话：实现交接包关联
+          </span>
+          <span
+            class="wb-meta-item"
+          >
+            7 天前
+          </span>
+        </div>
+      </div>
+      <div
+        class="wb-handoff-body is-collapsed"
+      >
+        <p
+          class="endpoint-hint"
+        >
+          按固定模板整理交接信息；留空的节不会写入 Markdown。
+        </p>
+        <label
+          class="field"
+        >
+          <span>
+            交接包标题
+          </span>
+          <input
+            aria-label="交接包标题"
+            maxlength="200"
+            placeholder="重构剪贴板模块"
+            value="重构剪贴板模块"
+          />
+        </label>
+        <div
+          class="wb-accept-block wb-handoff-session"
+        >
+          <div
+            class="wb-links-title"
+          >
+            执行 Agent 会话（可选）
+          </div>
+          <p
+            class="endpoint-hint"
+          >
+            只登记这个交接包要交给哪个会话；不会自动执行，也不会自动生成验收记录。
+          </p>
+          <div
+            class="wb-accept-evidence-row"
+          >
+            <input
+              aria-label="搜索会话标题或 ID"
+              class="wb-accept-criteria-input"
+              placeholder="搜索会话标题或 ID"
+              value=""
+            />
+            <button
+              class="btn sm"
+              type="button"
+            >
+              搜索
+            </button>
+          </div>
+          <div
+            class="ui-combobox size-sm  "
+          >
+            <svg
+              aria-hidden="true"
+              class="lucide lucide-search ui-combobox-icon"
+              fill="none"
+              height="12"
+              stroke="currentColor"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              viewBox="0 0 24 24"
+              width="12"
+              ...
+
+Ignored nodes: comments, script, style
+<body>
+  <div>
+    <section
+      aria-label="任务交接包"
+      class="wb-card"
+      id="dev-handoff"
+    >
+      <div
+        class="wb-section-head"
+      >
+        <h3
+          class="wb-section-title"
+        >
+          <svg
+            aria-hidden="true"
+            class="lucide lucide-clipboard-list"
+            fill="none"
+            height="13"
+            stroke="currentColor"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            viewBox="0 0 24 24"
+            width="13"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <rect
+              height="4"
+              rx="1"
+              ry="1"
+              width="8"
+              x="8"
+              y="2"
+            />
+            <path
+              d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"
+            />
+            <path
+              d="M12 11h4"
+            />
+            <path
+              d="M12 16h4"
+            />
+            <path
+              d="M8 11h.01"
+            />
+            <path
+              d="M8 16h.01"
+            />
+          </svg>
+           
+          任务交接包
+        </h3>
+        <span
+          class="flex-spacer"
+        />
+        <span
+          class="badge subtle"
+        >
+          关联当前任务
+        </span>
+        <button
+          class="btn sm"
+          data-tip="编辑"
+          type="button"
+        >
+          <svg
+            aria-hidden="true"
+            class="lucide lucide-pencil"
+            fill="none"
+            height="12"
+            stroke="currentColor"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            viewBox="0 0 24 24"
+            width="12"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <path
+              d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"
+            />
+            <path
+              d="m15 5 4 4"
+            />
+          </svg>
+          编辑
+        </button>
+      </div>
+      <div
+        class="wb-handoff-summary"
+      >
+        <div
+          class="wb-handoff-summary-head"
+        >
+          <span
+            class="wb-row-title"
+            title="重构剪贴板模块"
+          >
+            重构剪贴板模块
+          </span>
+          <span
+            class="badge subtle"
+          >
+            v2
+          </span>
+        </div>
+        <div
+          class="wb-handoff-summary-meta"
+        >
+          <span
+            class="wb-meta-item"
+          >
+            会话：实现交接包关联
+          </span>
+          <span
+            class="wb-meta-item"
+          >
+            7 天前
+          </span>
+        </div>
+      </div>
+      <div
+        class="wb-handoff-body is-collapsed"
+      >
+        <p
+          class="endpoint-hint"
+        >
+          按固定模板整理交接信息；留空的节不会写入 Markdown。
+        </p>
+        <label
+          class="field"
+        >
+          <span>
+            交接包标题
+          </span>
+          <input
+            aria-label="交接包标题"
+            maxlength="200"
+            placeholder="重构剪贴板模块"
+            value="重构剪贴板模块"
+          />
+        </label>
+        <div
+          class="wb-accept-block wb-handoff-session"
+        >
+          <div
+            class="wb-links-title"
+          >
+            执行 Agent 会话（可选）
+          </div>
+          <p
+            class="endpoint-hint"
+          >
+            只登记这个交接包要交给哪个会话；不会自动执行，也不会自动生成验收记录。
+          </p>
+          <div
+            class="wb-accept-evidence-row"
+          >
+            <input
+              aria-label="搜索会话标题或 ID"
+              class="wb-accept-criteria-input"
+              placeholder="搜索会话标题或 ID"
+              value=""
+            />
+            <button
+              class="btn sm"
+              type="button"
+            >
+              搜索
+            </button>
+          </div>
+          <div
+            class="ui-combobox size-sm  "
+          >
+            <svg
+              aria-hidden="true"
+              class="lucide lucide-search ui-combobox-icon"
+              fill="none"
+              height="12"
+              stroke="currentColor"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              viewBox="0 0 24 24"
+              width="12"
+              ...
+ ❯ waitForWrapper node_modules/@testing-library/dom/dist/wait-for.js:163:27
+ ❯ node_modules/@testing-library/dom/dist/query-helpers.js:86:33
+ ❯ src/components/devwork/DevHandoffSection.test.tsx:700:25
+    698|     });
+    699|     render(<DevHandoffSection />);
+    700|     expect(await screen.findByText("会话：实现交接包关联")).toBeTruthy();
+       |                         ^
+    701|     // 失效会话没有标题：退回展示 external id，并明确标注已失效
+    702|     expect(await screen.findByText("会话：sess-gone · 会话已失效")).toBeTruthy…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+[2m Test Files [22m [1m[31m1 failed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[31m1 failed[39m[22m[2m | [22m[33m21 skipped[39m[90m (22)[39m
+[2m   Start at [22m 13:52:20
+[2m   Duration [22m 15.97s[2m (transform 1.44s, setup 65ms, collect 4.53s, tests 1.13s, environment 8.29s, prepare 752ms)[22m
+

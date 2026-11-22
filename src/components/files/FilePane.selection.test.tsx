@@ -160,12 +160,9 @@ describe("FilePane 键盘焦点与选择", () => {
     await waitFor(() => expect(bridgeMocks.fsOpen).toHaveBeenCalledWith(`${DIR}\\file-01.txt`));
   });
 
-  it("选中前保留操作条占位：首次选中只切换内容，列表不发生位移", async () => {
+  it("无选中不渲染操作条；选中后操作条出现（悬浮层，不挤压列表）", async () => {
     await renderPane();
-    const before = document.querySelector<HTMLElement>(".fw-selection-bar");
-    expect(before).toBeTruthy();
-    expect(before!.classList.contains("is-empty")).toBe(true);
-    expect(before!.querySelector("button")).toBeNull();
+    expect(document.querySelector(".fw-selection-bar")).toBeNull();
 
     fireEvent.pointerDown(screen.getByText("file-00.txt").closest("[data-fw-path]")!, {
       button: 0,
@@ -176,9 +173,9 @@ describe("FilePane 键盘焦点与选择", () => {
     fireEvent.pointerUp(window, { pointerId: 1 });
     await waitFor(() => expect(selectionPaths()).toHaveLength(1));
 
-    const after = document.querySelector<HTMLElement>(".fw-selection-bar");
-    expect(after).toBe(before);
-    expect(after!.classList.contains("is-empty")).toBe(false);
+    const bar = document.querySelector<HTMLElement>(".fw-selection-bar");
+    expect(bar).toBeTruthy();
+    expect(bar!.querySelector("button")).toBeTruthy();
   });
 
   it("输入框内方向键不被文件选择消费", async () => {

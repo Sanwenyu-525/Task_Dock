@@ -1,6 +1,7 @@
 # 工作台窗口关闭 · 真机验收
 
-> 适用版本：2026-11-19 关闭专项（P0）之后。
+> 适用版本：2026-11-19 关闭专项（P0）之后；2026-11-22 增补关闭策略（`window_close_behavior`）、
+> 关闭保护就绪状态与托盘唤回（ADR-0009）。
 > 目标：证明「任何正常关闭入口都能可靠关闭」，且**未保存正文不会丢**，
 > 同时**不允许**通过 destroy、绕过保存或关闭 Rust 生命周期保护来换取表面成功。
 
@@ -53,3 +54,34 @@
 - `CLOSE_GEOMETRY_PERSIST_DEFERRED` 表示几何写入被推迟到后台线程（300ms 内未完成），
   窗口仍会正常关闭，下次启动读内存快照，不应视为失败。
 - Win10 上圆角裁剪没有外部投影，属已知视觉差异。
+- **close_window 模式下启动极早期（关闭协调器安装完成前）按 Alt+F4**：窗口按原生
+  关闭，不等正文 flush（协调器尚未注册）。正文有输入防抖/切换落盘兜底，丢稿风险
+  限于最近未落盘输入；X 按钮在此窗口期不可用并显示「初始化中」。
+- **quit_app 模式下正文保存时限是退出握手的 5 秒**（`EXIT_HANDSHAKE_TIMEOUT_MS`），
+  非 close_window 的 15s：超时取消退出并广播 `app-exit-blocked`，用户可重试。
+
+## 4. 2026-11-22 场景表（关闭策略 + 就绪状态 + 托盘唤回，14 项）
+
+> 使用 `npm run tauri dev`（Debug）+ `TASK_DOCK_DATA_DIR` 隔离数据目录，
+> `RUST_LOG=info` 保留终端 tracing。设置路径：设置中心 → 窗口与快捷键 →
+> 「关闭窗口时的行为」。
+
+| # | 操作 | 期望界面 | 必须出现的日志/信号 | 失败判定 |
+|---|---|---|---|---|
+| 1 | 启动后立即点 X（1 秒内） | 按钮短暂「关闭保护初始化中」；就绪后可正常关闭 | 就绪前点击：`close-guard-not-ready`（WARN）；就绪后走场景表第 1/3 项链路，含 `CLOSE_GUARD_INSTALLED` | 按钮永久禁用且无原因；或未就绪时仍发起关闭 |
+| 2 | 启动完成后点 X（close_window） | 窗口按正文守卫链路关闭 | `CLOSE_GUARD_INSTALLED → CLOSE_GUARD_REQUESTED → … → WINDOW_DESTROYED` | X 无反应 |
+| 3 | 无正文模块关闭 | 窗口立即关闭 | `CLOSE_GUARD_NO_FLUSH → CLOSE_REQUESTED → WINDOW_DESTROYED` | 出现 `CLOSE_GUARD_PREVENTED` 后无后续 |
+| 4 | 有未保存正文关闭 | 先「正在保存并关闭工作台」，随后关闭 | `CLOSE_GUARD_PREVENTED → FLUSH_STARTED → MANUSCRIPT_SAVE_COMPLETED → FLUSH_COMPLETED → WINDOW_DESTROYED` | 缺 `MANUSCRIPT_SAVE_COMPLETED` 即关窗 |
+| 5 | Alt+F4（close_window，正文有草稿） | 同 4（同一笔事务） | 同 4，`CLOSE_GUARD_REQUESTED` 的 `detail=native` | 两次 `FLUSH_STARTED` |
+| 6 | 设置切到 quit_app，点 X | 按钮「正在保存并退出应用…」，进程退出 | `quit-app-requested`；终端出现接入管线退出排空完成日志；进程消失 | 窗口关闭但进程驻留；或退出无保存 |
+| 7 | quit_app + 有未保存正文，点 X | 先保存后退出；保存失败时 toast「应用退出已取消」且按钮恢复可重试 | `app-before-exit` 握手（前端 flush 回执）；失败路径出现 `app-exit-blocked` | 退出成功但草稿丢失；或取消后按钮永久禁用 |
+| 8 | quit_app + Alt+F4 | 同 6（Rust 接管） | `CLOSE_REQUESTED_QUIT_APP`；无 `CLOSE_GUARD_PREVENTED`（协调器让路，`CLOSE_GUARD_YIELD_TO_QUIT_EXIT`） | 前端事务与退出握手互相等待 |
+| 9 | close_window：托盘左键 | 打开/聚焦完整工作台 | 工作台建窗日志或 `reveal`；窗口出现并聚焦 | 打开的是快捷工具面板 |
+| 10 | close_window：托盘右键「打开完整工作台」 | 同 9，失败时菜单行内报错 | `open_or_focus_workbench_with_result` 成功（菜单收起） | 主窗未就绪时误报失败 |
+| 11 | 关闭工作台后托盘重新打开 | 工作台重建并恢复上次位置/尺寸/最大化 | `WINDOW_DESTROYED` 后新 `window-create` 日志；无 `CLOSE_GEOMETRY_PERSIST_FAILED` | 几何回退默认；或重建出第二个工作台 |
+| 12 | 最小化后托盘左键唤回 | 还原并聚焦 | `reveal_workbench`（unminimize+show+focus） | 唤回后仍最小化 |
+| 13 | quit_app：托盘右键「退出」 | 进程结束（tasklist 无 task-dock.exe） | 管线排空完成日志；`last-shutdown-report.json` 更新 | 进程残留；或后台线程未收尾 |
+| 14 | 退出后后台收尾核对 | 无遗留粘贴/语音/管线线程 | `接入管线退出排空完成`、`剪贴板退出收尾完成` 日志 | 缺任一收尾日志 |
+
+通过标准：14 项全部符合；`close-metrics.mjs` 对 close_window 轮次输出
+「每次关闭请求都有明确结局」且「未解释」为 0；quit_app 轮次进程确认结束。

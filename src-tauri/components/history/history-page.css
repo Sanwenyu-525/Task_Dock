@@ -1,0 +1,82 @@
+/*
+ * 历史记录「页面态」布局（2026-11-15 视觉对齐）。
+ *
+ * 背景：原来筛选与未读统计分属两条 `.filter-bar`，第二行只剩一句「N 条未读 / 共 M」，
+ * 下方接着时间轴，视觉上悬空且把工具栏撑成两段。合并为一条工具栏后，筛选在左、
+ * 统计靠右同排；可用宽度不足时统计随筛选组一起换行，仍贴住右边缘。
+ *
+ * 作用域统一 `.history-panel`，颜色 / 间距沿用既有语义 Token，不新增皮肤。
+ */
+
+.history-panel .filter-bar.history-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.history-panel .history-toolbar-meta {
+  margin-left: 0;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 搜索范围必须常驻可见：没有后端全文检索，搜索只匹配已加载记录。 */
+.history-panel .history-scope-hint {
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  color: var(--text-tertiary);
+  font-size: 10.5px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+/* 搜索只过滤已加载记录（无后端全文检索接口），占位文案与统计都如实说明范围。 */
+.history-panel .history-search {
+  flex: 1 1 220px;
+  max-width: 300px;
+  min-width: 160px;
+  margin-left: auto;
+}
+
+/* 1180 带右栏 / 960 无右栏时工具栏会换行：搜索独占第二行并铺满，
+   避免只占右侧一小段、左侧留下空白，看起来像两条分散的工具栏。 */
+@container wb-content (max-width: 760px) {
+  .history-panel .history-search {
+    flex: 1 1 100%;
+    max-width: none;
+    margin-left: 0;
+  }
+}
+
+/* 2026-11-15 R2：按效果图把同一天的条目收进一张分组卡，避免每条记录都是
+   独立浮卡、时间轴被切得过碎；行间只留 1px 分隔线。 */
+.history-panel .history-day {
+  gap: 8px;
+}
+.history-panel .history-list {
+  gap: 0;
+  padding: 2px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+  overflow: hidden;
+}
+.history-panel .history-item.surface-card {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  padding: 11px 12px;
+}
+.history-panel .history-item.surface-card:hover {
+  background: var(--surface-hover);
+  transform: none;
+  box-shadow: none;
+}
+.history-panel .history-item + .history-item {
+  box-shadow: inset 0 1px 0 var(--border-subtle);
+}

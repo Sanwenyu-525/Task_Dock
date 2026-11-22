@@ -1,0 +1,1307 @@
+/* 桌面微件面板样式：只使用语义 Token（预设/明暗/材质切换自动跟随）。
+   命名空间统一 widget- / widgets-，不改写既有胶囊与全局组件样式。 */
+
+.widgets-page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 100%;
+  padding: 2px 2px 16px;
+
+  /* 微件页局部材质：柔光/清透玻璃预设下，半透明卡面会让底层页面文字透出。
+     这里仅把本页卡片提升为实色表面（取主题的胶囊实色），不改变全局胶囊与
+     其他面板；不使用阴影或模糊掩盖。 */
+  --widget-local-face: var(--capsule-face, var(--card-face));
+}
+
+.widgets-page .widget-card,
+.widgets-page .widget-library {
+  background: var(--widget-local-face);
+}
+
+/* ── 顶栏 ─────────────────────────────────────────────────── */
+
+.widgets-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.widgets-head-title {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  color: var(--accent);
+}
+
+.widgets-head-title h2 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 650;
+  color: var(--text-primary);
+  letter-spacing: 0.01em;
+}
+
+.widgets-head-title p {
+  margin: 3px 0 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.widgets-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.widgets-count {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-right: 2px;
+  white-space: nowrap;
+}
+
+/* ── 网格与尺寸 ───────────────────────────────────────────── */
+
+/* 2026-11-15：栅格改为按**内容区宽度**分档（容器查询），不再按窗口宽度。
+   原因：窗口 1180 时左导航 + 右详情栏占掉约 500px，内容区只剩 ~660px，
+   而原来的 @media (min-width:1180px) 会误判为宽屏并排 4 列（min 200px = 800px），
+   结果第 4 列被裁、右侧留下大片空白（用户截图即此现象）。
+   现在 660px → 2 列（铺满），900px+ → 3 列，1200px+ → 4 列。 */
+.widgets-body {
+  container-type: inline-size;
+  container-name: widgets-body;
+}
+
+.widgets-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  /* 卡片按内容自然高度排列，不为了填满行高而拉伸内容。 */
+  align-items: start;
+  align-content: start;
+}
+
+.widget-size-sm {
+  grid-column: span 1;
+}
+
+/* 工作台内所有微件同宽铺满网格：尺寸语义只作用于桌面独立窗口，
+   不在这里制造「大卡独占整行」导致内容区右侧大片空白。 */
+.widget-size-md,
+.widget-size-lg {
+  grid-column: span 1;
+}
+
+@container widgets-body (min-width: 900px) {
+  .widgets-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .widget-size-lg {
+    grid-column: span 1;
+  }
+}
+
+@container widgets-body (min-width: 1200px) {
+  .widgets-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .widget-size-lg {
+    grid-column: span 1;
+  }
+}
+
+@container widgets-body (max-width: 560px) {
+  .widgets-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .widget-size-sm,
+  .widget-size-md,
+  .widget-size-lg {
+    grid-column: span 1;
+  }
+}
+
+/* 旧的三档 @media 已由上面的容器查询替代（2026-11-15）：媒体查询看的是窗口
+   宽度，在「左导航 + 右详情栏」吃掉约 500px 后必然误判，故删除而不是叠加覆盖。 */
+
+/* ── 卡片 ─────────────────────────────────────────────────── */
+
+/* 微件卡：只读信息卡（可拖拽换序，但整卡没有点击行为），
+   卡面 / 圆角 / 阴影由 .surface-card 提供；不再做整卡 hover 抬升，
+   避免暗示一个不存在的点击。操作反馈只来自卡内图标按钮。 */
+.widget-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px 12px 9px;
+  align-self: start;
+}
+
+.widget-card.dragging {
+  opacity: 0.55;
+  transform: none;
+}
+
+.widget-card-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.widget-card-head h3 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 620;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+
+.widget-grip {
+  display: inline-flex;
+  color: var(--text-tertiary);
+  cursor: grab;
+  flex: 0 0 auto;
+}
+
+.widget-card.dragging .widget-grip {
+  cursor: grabbing;
+}
+
+.widget-card-tools {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  flex: 0 0 auto;
+}
+
+.widget-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+/* 统一轻量反馈：hover 只用低对比背景，不用整块强调色。 */
+.widget-icon-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--text-primary) 7%, transparent);
+  color: var(--text-primary);
+}
+
+.widget-icon-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.widget-icon-btn:active:not(:disabled) {
+  background: color-mix(in srgb, var(--text-primary) 11%, transparent);
+}
+
+/* 桌面显示开启：用强调色图标区分状态，但仍是低对比底色。 */
+.widget-icon-btn.is-on {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.widget-icon-btn.is-on:hover:not(:disabled) {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.widget-icon-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* 卡片内联配置区：低频项收在这里，默认收起，不新增模态弹窗。 */
+.widget-card-config {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 7px;
+  border-top: 1px solid var(--divider);
+}
+
+.widget-config-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.widget-config-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.widget-config-label {
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.widget-config-select {
+  min-width: 68px;
+}
+
+.widget-config-row > .ui-switch {
+  margin-left: auto;
+}
+
+.widget-config-actions {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  margin-left: auto;
+}
+.widget-config-actions .btn {
+  margin-left: 6px;
+}
+
+.widget-card-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+/* ── 通用小元素 ───────────────────────────────────────────── */
+
+.widget-status-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  min-width: 0;
+}
+
+.widget-warn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--status-error);
+}
+
+.widget-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.widget-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 24px;
+  padding: 5px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+  transition: background-color 0.12s ease;
+}
+
+/* 列表行统一轻量反馈：hover / active 只调整背景明度，不改行高与图标位置；
+   行不承载「选中」语义，因此不额外造 selected 样式。 */
+.widget-row:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--text-primary) 6%, transparent);
+}
+
+.widget-row:active:not(:disabled) {
+  background: color-mix(in srgb, var(--text-primary) 10%, transparent);
+}
+
+.widget-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.widget-row:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.widget-task-title {
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+
+.widget-task-meta {
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.widget-task-meta.overdue {
+  color: var(--status-error);
+}
+
+.widget-row-chevron {
+  color: var(--text-tertiary);
+  flex: 0 0 auto;
+}
+
+.widget-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 12px 6px;
+  border-radius: var(--radius-control);
+  color: var(--text-tertiary);
+  font-size: 11.5px;
+  text-align: center;
+}
+
+.widget-empty.compact {
+  padding: 4px;
+}
+
+.widget-foot {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: auto;
+}
+
+.widget-link {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: 10.5px;
+  color: var(--accent);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  /* 文字链接只有 15.8px 高：给 24px 命中高度（验收 UI-14），
+     视觉仍靠文字本身，不新增底色。 */
+  min-height: 24px;
+}
+
+.widget-link:hover {
+  text-decoration: underline;
+}
+
+.widget-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  line-height: 1.6;
+  background: var(--accent-soft);
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.widget-chip.muted {
+  background: var(--pill-face);
+  color: var(--text-secondary);
+}
+
+.widget-chip.waiting {
+  background: color-mix(in srgb, var(--icon-warn) 14%, transparent);
+  color: var(--icon-warn);
+}
+
+.widget-chip.failed {
+  background: color-mix(in srgb, var(--status-error) 14%, transparent);
+  color: var(--status-error);
+}
+
+.widget-chip.muted.waiting,
+.widget-chip.muted.failed {
+  background: var(--pill-face);
+  color: var(--text-tertiary);
+}
+
+.widget-state-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--text-tertiary);
+}
+
+.widget-state-dot.state-running,
+.widget-state-dot.state-focus {
+  background: var(--status-success);
+}
+
+.widget-state-dot.state-waiting,
+.widget-state-dot.state-paused {
+  background: var(--icon-warn);
+}
+
+.widget-state-dot.state-failed {
+  background: var(--status-error);
+}
+
+.widget-state-dot.state-break {
+  background: var(--accent);
+}
+
+.widget-state-dot.state-idle,
+.widget-state-dot.state-disconnected {
+  background: var(--text-tertiary);
+}
+
+/* ── 今日任务 / Agent ─────────────────────────────────────── */
+
+.widget-chips {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.widget-agents .widget-list {
+  margin-top: 2px;
+}
+
+/* ── 下一条提醒 ───────────────────────────────────────────── */
+
+.widget-reminder-main {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.widget-reminder-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent);
+  min-width: 0;
+}
+
+.widget-reminder-head .widget-task-title {
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.widget-reminder-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 10.5px;
+  color: var(--text-secondary);
+}
+
+.widget-reminder-meta > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.widget-countdown {
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+  color: var(--accent);
+  letter-spacing: 0.02em;
+}
+
+.widget-countdown.expired {
+  color: var(--status-error);
+}
+
+/* ── 快捷操作 ─────────────────────────────────────────────── */
+
+.widget-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.widget-action-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 9px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: var(--control-face);
+  box-shadow: var(--control-shadow);
+  color: var(--text-primary);
+  font-size: 11.5px;
+  cursor: pointer;
+  min-width: 0;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+/* 工作台内低对比反馈；桌面窗口在 widgets-desktop.css 中覆盖为柔和玻璃表面。 */
+.widget-action-btn:hover {
+  background: color-mix(in srgb, var(--text-primary) 7%, transparent);
+  color: var(--accent);
+}
+
+.widget-action-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.widget-action-btn span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── 依赖未接入 / 专注 / 效率 ─────────────────────────────── */
+
+.widget-unavailable {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 12px 8px;
+  border: 1px dashed var(--divider);
+  border-radius: var(--radius-control);
+  color: var(--text-tertiary);
+  text-align: center;
+}
+
+.widget-unavailable strong {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+
+.widget-unavailable span {
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.widget-focus {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.widget-focus-phase {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+
+.widget-focus .widget-countdown {
+  font-size: 22px;
+  line-height: 1.2;
+}
+
+.widget-efficiency {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* 刷新失败时保留旧数字，仅附加过期提示与重试入口。 */
+.widget-stale {
+  font-size: 10.5px;
+  color: var(--text-secondary);
+}
+
+.widget-stale-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  color: var(--status-error);
+}
+
+.widget-stale-retry {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--accent);
+  font-size: 10.5px;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.widget-stale-retry:hover {
+  text-decoration: underline;
+}
+
+.widget-rate {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.widget-rate-value {
+  font-size: 21px;
+  font-weight: 700;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.widget-bar {
+  width: 100%;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--pill-face);
+  overflow: hidden;
+}
+
+.widget-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 55%, transparent));
+}
+
+.widget-stat-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.widget-stat-grid li {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 4px 2px;
+  border-radius: var(--radius-control);
+  background: var(--control-face);
+}
+
+.widget-stat-grid strong {
+  font-size: 14px;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.widget-stat-grid span {
+  font-size: 9.5px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+/* ── 微件库 ───────────────────────────────────────────────── */
+
+.widget-library {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 11px 12px;
+  border-radius: var(--radius-card);
+  background: var(--card-face);
+  box-shadow: var(--card-shadow);
+}
+
+.widget-library-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: var(--accent);
+}
+
+.widget-library-head h3 {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-primary);
+}
+
+.widget-library-head p {
+  margin: 2px 0 0;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.widget-library-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 窄窗优先保证信息区有足够宽度：控件放不下时整行换行到下一行，
+   避免中文因宽度被压到只剩几个像素而逐字竖排。 */
+.widget-library-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 7px 2px;
+  border-top: 1px solid var(--divider);
+}
+
+.widget-library-row:first-child {
+  border-top: 0;
+}
+
+.widget-library-row.disabled .widget-library-info {
+  opacity: 0.72;
+}
+
+.widget-library-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 190px;
+  min-width: 0;
+}
+
+.widget-library-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.widget-library-title strong {
+  font-size: 11.5px;
+  color: var(--text-primary);
+}
+
+.widget-library-desc {
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--text-tertiary);
+}
+
+.widget-library-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  margin-left: auto;
+  max-width: 100%;
+}
+
+/* 窄窗：名称/说明占满一行，控件整体落到下一行左侧；不压缩字号，也不让
+   中文被挤成竖排。465px 及以下必须命中。 */
+@media (max-width: 560px) {
+  .widget-library-row {
+    align-items: stretch;
+  }
+
+  .widget-library-info {
+    flex-basis: 100%;
+  }
+
+  .widget-library-controls {
+    flex: 1 1 100%;
+    justify-content: flex-start;
+    margin-left: 0;
+  }
+}
+
+/* 桌面微件管理：位置重置与「看板/桌面」说明 */
+.widget-library-reset {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-sm, 8px);
+  color: var(--text-tertiary);
+  background: transparent;
+  border: 1px solid transparent;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.widget-library-reset:hover {
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--text-primary) 8%, transparent);
+}
+
+.widget-library-reset:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.widget-library-hint {
+  margin: 6px 2px 0;
+  font-size: 10.5px;
+  line-height: 1.55;
+  color: var(--text-tertiary);
+}
+
+/* 全部添加完成态：不再重复列已启用项，只保留简洁结论与恢复默认入口。 */
+.widget-library-done {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 2px 0;
+  color: var(--status-success);
+}
+
+.widget-library-done > svg {
+  flex: 0 0 auto;
+}
+
+.widget-library-done-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1;
+  min-width: 0;
+}
+
+.widget-library-done-text strong {
+  font-size: 11.5px;
+  color: var(--text-primary);
+}
+
+.widget-library-done-text span {
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--text-tertiary);
+}
+
+/* 桌面窗口真实状态：配置开启 != 窗口已建成。 */
+.widget-desktop-chip.pending,
+.widget-desktop-chip.creating {
+  background: var(--pill-face);
+  color: var(--text-secondary);
+}
+
+.widget-desktop-chip.shown {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+}
+
+.widget-desktop-chip.failed {
+  background: color-mix(in srgb, var(--status-error) 14%, transparent);
+  color: var(--status-error);
+}
+
+.widgets-count.warn {
+  color: var(--status-error);
+}
+
+.widgets-desktop-unavailable {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 2px 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm, 8px);
+  border: 1px solid color-mix(in srgb, var(--icon-warn) 30%, transparent);
+  background: color-mix(in srgb, var(--icon-warn) 8%, transparent);
+  color: var(--text-secondary);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.widgets-desktop-unavailable svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--icon-warn);
+}
+
+/* 刷新失败但保留旧数据时的可见提示，不只是 tooltip。 */
+.widget-warn-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  color: var(--status-error);
+  white-space: nowrap;
+}
+
+.widget-status-line > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.widgets-persist-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 2px 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm, 8px);
+  border: 1px solid color-mix(in srgb, var(--warning, #f59e0b) 34%, transparent);
+  background: color-mix(in srgb, var(--warning, #f59e0b) 10%, transparent);
+  color: var(--text-secondary);
+}
+
+.widgets-persist-error svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: var(--warning, #f59e0b);
+}
+
+.widgets-persist-error div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.widgets-persist-error strong {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.widgets-persist-error span {
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+}
+
+/* ── 空态 ─────────────────────────────────────────────────── */
+
+.widgets-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 30px 18px;
+  border: 1px dashed var(--divider);
+  border-radius: var(--radius-card);
+  color: var(--text-tertiary);
+  text-align: center;
+}
+
+.widgets-empty strong {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.widgets-empty span {
+  font-size: 11.5px;
+  max-width: 360px;
+  line-height: 1.6;
+}
+
+@media (max-width: 620px) {
+  .widget-stat-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .widget-card,
+  .widget-icon-btn,
+  .widget-row,
+  .widget-action-btn {
+    transition: none;
+  }
+}
+
+/* ── 第三轮：大数字摘要 / tabs / 布局设置 / 右栏配置 ── */
+.widgets-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.widgets-stat-card {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  padding: 9px 11px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--card-face);
+  box-shadow: var(--card-shadow);
+}
+
+.widgets-stat-card span {
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+}
+
+.widgets-stat-card strong {
+  font-size: 24px;
+  line-height: 1.05;
+  font-weight: 700;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.widgets-stat-card em {
+  overflow: hidden;
+  font-style: normal;
+  font-size: 9.5px;
+  color: var(--text-tertiary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.widgets-stat-card.is-success strong {
+  color: var(--status-success);
+}
+
+.widgets-stat-card.is-danger {
+  border-color: color-mix(in srgb, var(--status-error) 30%, var(--border-subtle));
+}
+
+.widgets-stat-card.is-danger strong {
+  color: var(--status-error);
+}
+
+.widgets-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  margin-bottom: 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--surface-raised);
+}
+
+.widgets-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 9px;
+  border: 1px solid transparent;
+  border-radius: calc(var(--radius-control) - 2px);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.widgets-tab:hover {
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+}
+
+.widgets-tab.is-active {
+  border-color: var(--border-subtle);
+  background: var(--card-face);
+  color: var(--text-primary);
+  box-shadow: var(--card-shadow);
+}
+
+.widgets-tabs-meta {
+  margin-left: auto;
+  padding-right: 6px;
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+.widgets-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.widgets-layout-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.widgets-layout-head h3 {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.widgets-layout-head p {
+  margin: 2px 0 0;
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+}
+
+.widgets-layout-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.widgets-layout-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--card-face);
+}
+
+.widgets-layout-index,
+.widgets-rail-index {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.widgets-layout-info {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.widgets-layout-info strong {
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--text-primary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.widgets-layout-info span {
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+.widgets-layout-actions {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.widgets-rail-hero {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding-bottom: 9px;
+  margin-bottom: 9px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.widgets-rail-hero > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.widgets-rail-hero strong {
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.widgets-rail-hero span {
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--text-tertiary);
+}
+
+.widgets-rail-form {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.widgets-rail-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 10.5px;
+  color: var(--text-secondary);
+}
+
+.widgets-rail-switch {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 7px 0;
+  border-top: 1px dashed var(--border-subtle);
+}
+
+.widgets-rail-switch > span {
+  font-size: 9.5px;
+  color: var(--text-tertiary);
+}
+
+.widgets-rail-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-top: 9px;
+  margin-top: 9px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.widgets-rail-disable {
+  width: 100%;
+  margin-top: 9px;
+}
+
+.widget-card.is-configured {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border-subtle));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent), var(--card-shadow);
+}
+
+.widgets-empty.compact {
+  min-height: 180px;
+}
+
+@media (max-width: 980px) {
+  .widgets-stat-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .widgets-tabs-meta {
+    display: none;
+  }
+}
+

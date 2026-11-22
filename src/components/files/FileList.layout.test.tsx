@@ -11,7 +11,7 @@
  */
 
 import { readFileSync } from "node:fs";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { useFilesWorkspaceStore } from "../../store/useFilesWorkspaceStore";
@@ -67,10 +67,11 @@ describe("FileList 列表表头", () => {
 
     const head = container.querySelector(".fw-list-head");
     expect(head).toBeTruthy();
-    expect(head?.querySelector(".fw-row-name")?.textContent).toBe("fw.sort.name");
-    expect(head?.querySelector(".fw-row-time")?.textContent).toBe("fw.sort.modified");
-    expect(head?.querySelector(".fw-row-size")?.textContent).toBe("fw.sort.size");
-    expect(head?.querySelector(".fw-row-type")?.textContent).toBe("fw.sort.type");
+    // 表头列名不带「按」字（排序菜单的 fw.sort.* 保留给排序入口；列名暂走代码内双语映射）。
+    expect(head?.querySelector(".fw-row-name")?.textContent).toBe("名称");
+    expect(head?.querySelector(".fw-row-time")?.textContent).toBe("修改日期");
+    expect(head?.querySelector(".fw-row-size")?.textContent).toBe("大小");
+    expect(head?.querySelector(".fw-row-type")?.textContent).toBe("类型");
 
     rerender(<FileList {...baseProps} entries={many} dirPath="D:\\a-list" viewMode="grid" />);
     expect(container.querySelector(".fw-list-head")).toBeNull();
@@ -198,19 +199,24 @@ describe("表头与文件行共用列定义", () => {
     expect(size).not.toContain("text-align: right");
   });
 
-  it("表头列显式锚定轨道；拖拽手柄与列同轨；窄栏断点隐藏对应手柄", () => {
+  it("表头列显式锚定轨道；拖拽手柄贴列左缘；窄栏断点隐藏对应手柄", () => {
+    // 名称表头跨「图标+名称」两轨与文件行图标左缘对齐；其余列锚定各自轨道。
+    const nameAnchor = ruleBlock(/\.fw-list-head \.fw-row-name\s*\{ grid-column: 1 \/ 3; grid-row: 1;/);
+    expect(nameAnchor).toBeTruthy();
     for (const [cls, track] of [
-      [".fw-row-icon", 1],
-      [".fw-row-name", 2],
       [".fw-row-time", 3],
       [".fw-row-size", 4],
       [".fw-row-type", 5],
     ] as const) {
       expect(ruleBlock(new RegExp(`\\.fw-list-head \\${cls}\\s*\\{ grid-column: ${track};`))).toBeTruthy();
     }
-    expect(ruleBlock(/\.fw-col-handle\s*\{/)).toContain("cursor: col-resize");
-    // 分隔线静止可见（Windows 习惯），悬停/拖拽/聚焦变强调色。
-    expect(ruleBlock(/\.fw-col-handle::after\s*\{/)).toContain("var(--border-subtle)");
+    const handle = ruleBlock(/\.fw-col-handle\s*\{/);
+    expect(handle).toContain("cursor: col-resize");
+    // 边界语义：手柄贴列左缘（分隔线=两列边界，随光标移动、两侧列互补）。
+    expect(handle).toContain("justify-self: start");
+    expect(handle).toContain("margin-left: -6px");
+    // 分隔线静止可见（加强色），悬停/拖拽/聚焦变强调色。
+    expect(ruleBlock(/\.fw-col-handle::after\s*\{/)).toContain("var(--border-strong)");
     expect(ruleBlock(/\.fw-col-handle--time\s*\{/)).toContain("grid-column: 3");
     expect(ruleBlock(/\.fw-col-handle--size\s*\{/)).toContain("grid-column: 4");
     expect(ruleBlock(/\.fw-col-handle--type\s*\{/)).toContain("grid-column: 5");
@@ -222,50 +228,52 @@ describe("表头与文件行共用列定义", () => {
   });
 });
 
-describe("表头列宽拖拽手柄", () => {
+describe("表头列宽拖拽手柄（边界语义）", () => {
   const renderList = () =>
-    render(<FileList {...baseProps} entries={many} dirPath="D:\\a-handle" viewMode="list" />);
+    render(<FileList {...baseProps} entries={many} dirPath="D:\a-handle" viewMode="list" />);
 
-  it("列表视图渲染 3 个分隔线手柄（time/size/type），网格视图不渲染；手柄暴露 aria", () => {
+  it("列表视图渲染 3 个边界手柄（name-time/time-size/size-type），网格视图不渲染；手柄暴露 aria", () => {
     const { container, rerender } = renderList();
     const handles = container.querySelectorAll(".fw-col-handle");
     expect(handles.length).toBe(3);
-    expect(handles[0].classList.contains("fw-col-handle--time")).toBe(true);
-    expect(handles[0].getAttribute("role")).toBe("separator");
-    expect(handles[0].getAttribute("aria-orientation")).toBe("vertical");
-    // useLocale mock 返回 key 原文：验证手柄文案由 fw.sort.* key 组合而成。
-    expect(handles[0].getAttribute("aria-label")).toBe("调整fw.sort.modified列宽");
-    expect(handles[0].getAttribute("aria-valuenow")).toBe("118");
-    expect(handles[0].getAttribute("tabindex")).toBe("0");
-    expect(handles[0].getAttribute("data-tip")).toContain("双击");
+    const timeHandle = container.querySelector<HTMLElement>(".fw-col-handle--time")!;
+    expect(timeHandle.getAttribute("role")).toBe("separator");
+    expect(timeHandle.getAttribute("aria-orientation")).toBe("vertical");
+    // 边界手柄文案描述两侧列（名称/修改日期）。
+    expect(timeHandle.getAttribute("aria-label")).toBe("调整名称与修改日期列宽");
+    expect(timeHandle.getAttribute("tabindex")).toBe("0");
+    expect(timeHandle.getAttribute("data-tip")).toContain("双击");
 
-    rerender(<FileList {...baseProps} entries={many} dirPath="D:\\a-handle" viewMode="grid" />);
+    rerender(<FileList {...baseProps} entries={many} dirPath="D:\a-handle" viewMode="grid" />);
     expect(container.querySelectorAll(".fw-col-handle").length).toBe(0);
   });
 
-  it("store 列宽以内联 CSS 变量注入（仅定制列）；双击手柄恢复默认", () => {
-    useFilesWorkspaceStore.setState({ colWidths: { time: 200 } });
+  it("store 列宽以内联 CSS 变量注入（仅定制列，未定制走 CSS 默认）", () => {
+    act(() => useFilesWorkspaceStore.setState({ colWidths: { time: 200 } }));
     const { container } = renderList();
     const body = container.querySelector<HTMLElement>(".fw-body")!;
     expect(body.style.getPropertyValue("--fw-col-time")).toBe("200px");
     expect(body.style.getPropertyValue("--fw-col-size")).toBe("");
-
-    const handle = container.querySelector<HTMLElement>(".fw-col-handle--time")!;
-    expect(handle.getAttribute("aria-valuenow")).toBe("200");
-    fireEvent.doubleClick(handle);
-    expect(useFilesWorkspaceStore.getState().colWidths).toEqual({});
-    expect(body.style.getPropertyValue("--fw-col-time")).toBe("");
   });
 
-  it("键盘 ←/→ 调宽；容器无布局信息时按名称列保底钳到列下限", () => {
+  it("双击边界手柄恢复两侧列默认；键盘 ←/→ 沿边界互补调宽", () => {
+    useFilesWorkspaceStore.setState({ colWidths: { time: 200, size: 120 } });
     const { container } = renderList();
-    // jsdom clientWidth = 0 → maxByName 为负 → 钳回 48（size 下限）。
-    const handle = container.querySelector<HTMLElement>(".fw-col-handle--size")!;
-    fireEvent.keyDown(handle, { key: "ArrowRight" });
-    expect(useFilesWorkspaceStore.getState().colWidths.size).toBe(48);
-    expect(handle.getAttribute("aria-valuenow")).toBe("48");
-    fireEvent.keyDown(handle, { key: "ArrowUp" });
-    expect(useFilesWorkspaceStore.getState().colWidths).toEqual({ size: 48 });
+    fireEvent.doubleClick(container.querySelector<HTMLElement>(".fw-col-handle--time")!);
+    // name-time 边界只复位日期列；time-size 边界复位日期+大小两列。
+    expect(useFilesWorkspaceStore.getState().colWidths).toEqual({ size: 120 });
+    fireEvent.doubleClick(container.querySelector<HTMLElement>(".fw-col-handle--size")!);
+    expect(useFilesWorkspaceStore.getState().colWidths).toEqual({});
+
+    const sizeHandle = container.querySelector<HTMLElement>(".fw-col-handle--size")!;
+    fireEvent.keyDown(sizeHandle, { key: "ArrowRight" });
+    // 边界互补：time +8 / size -8（time-size 边界只受两列上下限钳制）。
+    expect(useFilesWorkspaceStore.getState().colWidths).toEqual({ time: 126, size: 68 });
+    expect(sizeHandle.getAttribute("aria-label")).toBe("调整修改日期与大小列宽");
+
+    // name-time 边界：jsdom 容器宽 0 → 名称保底（96）不可能满足，位移被钳到
+    // hi（日期列自身下限 72），分隔线停在钳制点（与 Windows 一致）。
+    fireEvent.keyDown(container.querySelector<HTMLElement>(".fw-col-handle--time")!, { key: "ArrowRight" });
+    expect(useFilesWorkspaceStore.getState().colWidths).toEqual({ time: 72, size: 68 });
   });
 });
-

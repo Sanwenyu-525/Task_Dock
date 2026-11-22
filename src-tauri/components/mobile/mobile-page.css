@@ -1,0 +1,72 @@
+/*
+ * 手机互传页布局（2026-11-14 统一工作台改造）。
+ * 只负责页面骨架与宽屏两栏；MobileSyncSection / VirtualDisplaySection 内部
+ * 样式在 styles.css / virtual-display.css，不在此重复。文件不带 @layer，
+ * 每条选择器以 .mobile-transfer-panel 前缀做作用域隔离。
+ */
+
+.mobile-transfer-panel.page-fill {
+  gap: 10px;
+}
+
+/* 页面级页头：图标 + 标题 + 副标题（复用 wf-head-row 的既有排版语义）。
+   页面容器已有 .tab-content 的 10px 内边距，这里不叠加。 */
+.mobile-transfer-panel .mobile-page-head .wf-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+/* 宽屏两栏：主列（配对/设备/传输）+ 右列（虚拟屏与扩展能力）。
+   2026-11-15：宽窄判断由 @media（视口）改为容器查询（内容区实际宽度）。
+   原写法在 1180 窗口下视口 1180 > 1080 仍判为两栏，但内容区只有约 620px，
+   右列被压到 ~230px，虚拟屏区块的分辨率行换行后被裁掉。改容器查询后，
+   内容区 <760px 直接回落单列，右列拿到整行宽度。 */
+.mobile-transfer-panel .mobile-body {
+  min-height: 0;
+  container-type: inline-size;
+  container-name: mobile-body;
+}
+.mobile-transfer-panel .mobile-body-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+  max-width: 1280px;
+}
+.mobile-transfer-panel .mobile-body-main,
+.mobile-transfer-panel .mobile-body-side {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+@container mobile-body (max-width: 760px) {
+  .mobile-transfer-panel .mobile-body-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* 传输中：在文件行底部显示真实进度条（总进度来自 received_chunks/chunks）。
+   只在手机互传页生效，设置页里的同款文件行保持原高度。 */
+.mobile-transfer-panel .mobile-file-item:has(.mobile-file-progress) {
+  position: relative;
+  padding-bottom: 12px;
+}
+.mobile-transfer-panel .mobile-file-progress {
+  position: absolute;
+  left: 44px;
+  right: 10px;
+  bottom: 5px;
+  height: 3px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--border-subtle);
+}
+.mobile-transfer-panel .mobile-file-progress > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent-gradient);
+}

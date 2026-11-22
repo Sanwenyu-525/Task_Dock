@@ -1,0 +1,312 @@
+.voice-pack-manager {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+  color: var(--text-primary);
+}
+
+.voice-pack-heading,
+.voice-pack-route-row,
+.voice-pack-input-row,
+.voice-pack-card-head,
+.voice-pack-import-row,
+.voice-pack-confirm {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.voice-pack-heading > div,
+.voice-pack-card-main {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.voice-pack-heading h3,
+.voice-pack-card h4 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.voice-pack-heading p,
+.voice-pack-note,
+.voice-pack-empty,
+.voice-pack-meta,
+.voice-pack-binding-label small {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.voice-pack-route-row > span,
+.voice-pack-create > label,
+.voice-pack-import-row > strong {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.voice-pack-create,
+.voice-pack-card-body {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.voice-pack-input-row input,
+.voice-pack-inline-form input {
+  box-sizing: border-box;
+  min-width: 0;
+  width: 100%;
+  height: 30px;
+  padding: 0 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-control);
+  outline: none;
+  background: var(--surface-base);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 11px;
+}
+
+.voice-pack-input-row input:focus-visible,
+.voice-pack-inline-form input:focus-visible {
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+.voice-pack-input-row .btn,
+.voice-pack-actions .btn,
+.voice-pack-confirm .btn,
+.voice-pack-inline-form .btn,
+.voice-pack-assets .btn,
+.voice-pack-binding .btn {
+  flex: 0 0 auto;
+}
+
+.voice-pack-list {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.voice-pack-card {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--surface-base);
+}
+
+.voice-pack-card-main strong,
+.voice-pack-asset-name {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.voice-pack-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.voice-pack-current,
+.voice-pack-enabled {
+  width: fit-content;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 10px;
+  line-height: 1.3;
+}
+
+.voice-pack-enabled {
+  background: var(--surface-hover);
+  color: var(--text-secondary);
+}
+
+.voice-pack-inline-form {
+  display: flex;
+  gap: 5px;
+  min-width: 0;
+}
+
+.voice-pack-confirm {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  padding: 8px;
+  border-radius: var(--radius-control);
+  background: var(--surface-hover);
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.voice-pack-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-danger, var(--text-primary));
+  font-size: 11px;
+}
+
+.voice-pack-assets,
+.voice-pack-import-results {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.voice-pack-assets > li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.voice-pack-assets > li > .voice-pack-meta {
+  grid-column: 1 / 2;
+  grid-row: 2;
+}
+
+.voice-pack-assets > li > .btn:first-of-type {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+}
+
+.voice-pack-assets > li > .btn:last-of-type {
+  grid-column: 3;
+  grid-row: 1 / span 2;
+}
+
+.voice-pack-import-results li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+  gap: 6px;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.voice-pack-import-results li > span {
+  overflow-wrap: anywhere;
+}
+
+.voice-pack-import-results .is-success > span:last-child {
+  color: var(--accent);
+}
+
+.voice-pack-import-results .is-warning > span:last-child {
+  color: var(--text-secondary);
+}
+
+.voice-pack-import-results .is-failure > span:last-child {
+  color: var(--text-danger, var(--text-secondary));
+}
+
+.voice-pack-card h4 {
+  margin-top: 4px;
+}
+
+.voice-pack-binding-list {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.voice-pack-binding {
+  display: grid;
+  grid-template-columns: minmax(70px, 1fr) minmax(92px, 1.5fr) auto auto;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.voice-pack-binding-label {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: 10px;
+  line-height: 1.3;
+}
+
+.voice-pack-binding-label > span {
+  overflow-wrap: anywhere;
+}
+
+.voice-pack-binding-label small {
+  font-size: 9px;
+}
+
+.voice-pack-binding .ui-select {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.voice-pack-live {
+  min-height: 0;
+  color: var(--text-tertiary);
+  font-size: 10px;
+}
+
+@media (max-width: 400px) {
+  .voice-pack-manager {
+    padding: 9px;
+  }
+
+  .voice-pack-card-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .voice-pack-actions {
+    justify-content: flex-start;
+  }
+
+  .voice-pack-binding {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+  }
+
+  .voice-pack-binding-label {
+    grid-column: 1 / -1;
+  }
+
+  .voice-pack-binding .ui-select {
+    grid-column: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .voice-pack-manager *,
+  .voice-pack-manager *::before,
+  .voice-pack-manager *::after {
+    scroll-behavior: auto !important;
+  }
+}

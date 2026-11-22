@@ -1,0 +1,107 @@
+[2m2026-11-18T17:21:38.885003Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v1
+[2m2026-11-18T17:21:38.891397Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v2
+[2m2026-11-18T17:21:38.893261Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v3
+[2m2026-11-18T17:21:38.896116Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v4
+[2m2026-11-18T17:21:38.898142Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v5
+[2m2026-11-18T17:21:38.901601Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v6
+[2m2026-11-18T17:21:38.904126Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v7
+[2m2026-11-18T17:21:38.906519Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v8
+[2m2026-11-18T17:21:38.909136Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v9
+[2m2026-11-18T17:21:38.911225Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v10
+[2m2026-11-18T17:21:38.912565Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v11
+[2m2026-11-18T17:21:38.917902Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v12
+[2m2026-11-18T17:21:38.919836Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v13
+[2m2026-11-18T17:21:38.920498Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v14
+[2m2026-11-18T17:21:38.922449Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v15
+[2m2026-11-18T17:21:38.924752Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v16
+[2m2026-11-18T17:21:38.926002Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v17
+[2m2026-11-18T17:21:38.927819Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v18
+[2m2026-11-18T17:21:38.929292Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v19
+[2m2026-11-18T17:21:38.930722Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v20
+[2m2026-11-18T17:21:38.931499Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v21
+[2m2026-11-18T17:21:38.932635Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v22
+[2m2026-11-18T17:21:38.934163Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v23
+[2m2026-11-18T17:21:38.935895Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v24
+[2m2026-11-18T17:21:38.936916Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v25
+[2m2026-11-18T17:21:38.937651Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v26
+[2m2026-11-18T17:21:38.938713Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v27
+[2m2026-11-18T17:21:38.940605Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v28
+[2m2026-11-18T17:21:38.941704Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v29
+[2m2026-11-18T17:21:38.943777Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v30
+[2m2026-11-18T17:21:38.944267Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v31
+[2m2026-11-18T17:21:38.944742Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v32
+[2m2026-11-18T17:21:38.947742Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v33
+[2m2026-11-18T17:21:38.948631Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v34
+[2m2026-11-18T17:21:38.949949Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v35
+[2m2026-11-18T17:21:38.950729Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v36
+[2m2026-11-18T17:21:38.954526Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v37
+[2m2026-11-18T17:21:38.955283Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v38
+[2m2026-11-18T17:21:38.957063Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v39
+[2m2026-11-18T17:21:38.959450Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v40
+[2m2026-11-18T17:21:38.960529Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v41
+[2m2026-11-18T17:21:38.961983Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v42
+[2m2026-11-18T17:21:38.963678Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v43
+[2m2026-11-18T17:21:38.965155Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v44
+[2m2026-11-18T17:21:38.966420Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v45
+[2m2026-11-18T17:21:38.969249Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v46
+[2m2026-11-18T17:21:38.999147Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v47
+[2m2026-11-18T17:21:39.000812Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v48
+[2m2026-11-18T17:21:39.002278Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v49
+[2m2026-11-18T17:21:39.011686Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v50
+[2m2026-11-18T17:21:39.014743Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v51
+[2m2026-11-18T17:21:39.020732Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v52
+[2m2026-11-18T17:21:39.023399Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v53
+[2m2026-11-18T17:21:39.031776Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v54
+[2m2026-11-18T17:21:39.036787Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v55
+[2m2026-11-18T17:21:39.039241Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v56
+[2m2026-11-18T17:21:39.049966Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v57
+[2m2026-11-18T17:21:39.051672Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v58
+[2m2026-11-18T17:21:39.053474Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v59
+[2m2026-11-18T17:21:39.055852Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v60
+[2m2026-11-18T17:21:39.059532Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v61
+[2m2026-11-18T17:21:39.062871Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v62
+[2m2026-11-18T17:21:39.068025Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v63
+[2m2026-11-18T17:21:39.070769Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v64
+[2m2026-11-18T17:21:39.128920Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v65
+[2m2026-11-18T17:21:39.143521Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v66
+[2m2026-11-18T17:21:39.195377Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v67
+[2m2026-11-18T17:21:39.202254Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v68
+[2m2026-11-18T17:21:39.211332Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v69
+[2m2026-11-18T17:21:39.265960Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v70
+[2m2026-11-18T17:21:39.274926Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v71
+[2m2026-11-18T17:21:39.280837Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v72
+[2m2026-11-18T17:21:39.333404Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v73
+[2m2026-11-18T17:21:39.345643Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v74
+[2m2026-11-18T17:21:39.401872Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v75
+[2m2026-11-18T17:21:39.473800Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v76
+[2m2026-11-18T17:21:39.480081Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v77
+[2m2026-11-18T17:21:39.542582Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v78
+[2m2026-11-18T17:21:39.545294Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 已回填事件来源分类（v12）
+[2m2026-11-18T17:21:40.033567Z[0m [32m INFO[0m [2mtask_dock_lib[0m[2m:[0m setup: Agent 接入设置已应用（REST/监听）
+[2m2026-11-18T17:21:40.033745Z[0m [32m INFO[0m [2mtask_dock_lib[0m[2m:[0m setup: 中断恢复检查完成
+[2m2026-11-18T17:21:40.048288Z[0m [32m INFO[0m [2mtask_dock_lib::clipboard[0m[2m:[0m 剪贴板监听已启动
+[2m2026-11-18T17:21:40.048396Z[0m [32m INFO[0m [2mtask_dock_lib[0m[2m:[0m setup: 剪贴板模块已托管
+[2m2026-11-18T17:21:40.063420Z[0m [32m INFO[0m [2mtask_dock_lib[0m[2m:[0m setup: 暂存架与拖入模块已就绪
+[2m2026-11-18T17:21:40.063470Z[0m [32m INFO[0m [2mtask_dock_lib[0m[2m:[0m setup: AgentHub 已托管
+[2m2026-11-18T17:21:40.177021Z[0m [32m INFO[0m [2mtask_dock_lib[0m[2m:[0m setup: 主窗口已创建
+[2m2026-11-18T17:21:40.177446Z[0m [32m INFO[0m [2mtask_dock_lib::commands::system[0m[2m:[0m 模式窗口尺寸已应用 [3mmode[0m[2m=[0m"full" [3mtarget_w[0m[2m=[0m400.0 [3mtarget_h[0m[2m=[0m560.0 [3mactual_w[0m[2m=[0m500 [3mactual_h[0m[2m=[0m700
+[2m2026-11-18T17:21:40.178664Z[0m [32m INFO[0m [2mtask_dock_lib[0m[2m:[0m setup: 窗口恢复完成
+[2m2026-11-18T17:21:40.180977Z[0m [32m INFO[0m [2mtask_dock_lib[0m[2m:[0m 通用拖入原生接收桥已安装（替换 wry 的路径专用处理器） [3mwindows[0m[2m=[0m7 [3mfailed[0m[2m=[0m0 [3mrecovered[0m[2m=[0m0 [3mtop_level_ok[0m[2m=[0mtrue
+[2m2026-11-18T17:21:40.182410Z[0m [33m WARN[0m [2mtask_dock_lib::hotkeys[0m[2m:[0m 快捷键启动注册失败: 该组合已被其他程序占用 [3maction[0m[2m=[0m"toggle_main_window" [3maccelerator[0m[2m=[0m"Ctrl+Alt+T"
+[2m2026-11-18T17:21:40.182817Z[0m [33m WARN[0m [2mtask_dock_lib::hotkeys[0m[2m:[0m 快捷键启动注册失败: 该组合已被其他程序占用 [3maction[0m[2m=[0m"open_quick_capture" [3maccelerator[0m[2m=[0m"Ctrl+Shift+Space"
+[2m2026-11-18T17:21:40.183364Z[0m [33m WARN[0m [2mtask_dock_lib::hotkeys[0m[2m:[0m 快捷键启动注册失败: 该组合已被其他程序占用 [3maction[0m[2m=[0m"collect_to_shelf" [3maccelerator[0m[2m=[0m"Ctrl+Alt+G"
+[2m2026-11-18T17:21:40.183598Z[0m [32m INFO[0m [2mtask_dock_lib[0m[2m:[0m setup: 快捷键初始化完成
+[2m2026-11-18T17:21:40.205497Z[0m [32m INFO[0m [2mtask_dock_lib[0m[2m:[0m setup: 托盘初始化完成
+[2m2026-11-18T17:21:40.286985Z[0m [32m INFO[0m [2mtask_dock_lib[0m[2m:[0m setup: 右键菜单模块初始化完成
+[2m2026-11-18T17:21:40.289848Z[0m [32m INFO[0m [2mtask_dock_lib[0m[2m:[0m setup: 标签提示模块初始化完成
+[2m2026-11-18T17:21:40.290223Z[0m [32m INFO[0m [2mtask_dock_lib[0m[2m:[0m setup: 通知窗口模块初始化完成
+[2m2026-11-18T17:21:40.292522Z[0m [32m INFO[0m [2mtask_dock_lib[0m[2m:[0m setup: 窗口辅助模块初始化完成
+[2m2026-11-18T17:21:40.292692Z[0m [32m INFO[0m [2mtask_dock_lib::mcp::bridge[0m[2m:[0m MCP bridge 生命周期任务已启动
+[2m2026-11-18T17:21:40.292724Z[0m [32m INFO[0m [2mtask_dock_lib::agents::mock[0m[2m:[0m Mock Adapter 启动（仅手动触发，不再自动生成模拟事件）
+[2m2026-11-18T17:21:40.293077Z[0m [32m INFO[0m [2mtask_dock_lib::mcp::bridge[0m[2m:[0m MCP bridge 设置已读取 [3menabled[0m[2m=[0mfalse
+[2m2026-11-18T17:21:40.293125Z[0m [32m INFO[0m [2mtask_dock_lib::agents::file_drop[0m[2m:[0m 文件投递 Adapter 启动，监听目录 "D:\\Develop\\task_dock\\tmp\\acceptance\\projection-unify\\native\\data\\agent-inbox"
+[2m2026-11-18T17:21:40.326363Z[0m [32m INFO[0m [2mtask_dock_lib::scheduler[0m[2m:[0m 提醒调度引擎启动（1s 粒度）
+[2m2026-11-18T17:21:40.389199Z[0m [32m INFO[0m [2mtask_dock_lib::commands::data[0m[2m:[0m 本地备份完成: D:\Develop\task_dock\tmp\acceptance\projection-unify\native\data\backups\backup-20261119-012140-quick.json（quick，部分=true，42459 字节，SHA-256 c3bc497799715f1d055fb8138bd7d8cb640d250629225b0153428f811430fede）
+[2m2026-11-18T17:21:40.389272Z[0m [32m INFO[0m [2mtask_dock_lib::commands::data[0m[2m:[0m 启动自动备份完成: D:\Develop\task_dock\tmp\acceptance\projection-unify\native\data\backups\backup-20261119-012140-quick.json
+[2m2026-11-18T17:21:40.433972Z[0m [32m INFO[0m [2mtask_dock_lib[0m[2m:[0m Task Dock 启动完成（数据目录: "D:\\Develop\\task_dock\\tmp\\acceptance\\projection-unify\\native\\data"）
+[2m2026-11-18T17:21:40.436434Z[0m [33m WARN[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m 127.0.0.1:47821 已被另一个 Task Dock 实例占用（第 1 次尝试）；本实例会在端口释放后自动接入

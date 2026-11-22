@@ -1,0 +1,424 @@
+/* 专注与休息：全部使用语义 Token，明暗主题与四种视觉预设自动跟随。
+   不使用 backdrop-filter / 原生颜色，避免与液态玻璃材质叠加。 */
+
+.focus-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  color: var(--text-primary);
+  min-width: 0;
+}
+
+.focus-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.focus-head-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  border-radius: var(--radius-control);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.focus-head-text {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.focus-head-text h3 {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.focus-head-text p {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.focus-head > .btn {
+  flex: 0 0 auto;
+}
+
+.focus-error,
+.focus-hint {
+  padding: 7px 9px;
+  border-radius: var(--radius-control);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.focus-error {
+  background: color-mix(in srgb, var(--status-error) 10%, transparent);
+  color: var(--status-error);
+  border: 1px solid color-mix(in srgb, var(--status-error) 30%, transparent);
+}
+
+.focus-hint {
+  color: var(--text-tertiary);
+  background: var(--surface-hover);
+}
+
+.focus-timer-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 12px;
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  box-shadow: var(--shadow-raised);
+  min-width: 0;
+}
+
+.focus-workspace.is-break .focus-timer-card {
+  border-color: color-mix(in srgb, var(--status-success) 28%, var(--border-subtle));
+}
+
+.focus-phase {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.focus-state-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--text-tertiary);
+  flex: 0 0 auto;
+}
+
+.focus-state-dot.is-running {
+  background: var(--accent);
+}
+
+.focus-state-dot.is-paused {
+  background: var(--status-waiting);
+}
+
+.focus-countdown {
+  font-variant-numeric: tabular-nums;
+  font-size: 34px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1.1;
+  color: var(--text-primary);
+}
+
+.focus-progress {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--surface-hover);
+  overflow: hidden;
+}
+
+.focus-progress-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 0.25s linear;
+}
+
+.focus-workspace.is-break .focus-progress-fill {
+  background: var(--status-success);
+}
+
+.focus-current-task {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.focus-current-label {
+  color: var(--text-tertiary);
+  font-size: 11px;
+  flex: 0 0 auto;
+}
+
+.focus-current-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.focus-pause-reason {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--status-waiting);
+}
+
+.focus-task-picker {
+  min-width: 0;
+}
+
+.focus-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.focus-actions .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.focus-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.focus-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+  border-radius: var(--radius-control);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  min-width: 0;
+}
+
+.focus-stat-label {
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+.focus-stat strong {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.focus-prefs {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+}
+
+.focus-prefs-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+}
+
+.focus-prefs-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.focus-toggles,
+.focus-sedentary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.focus-sedentary {
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.focus-prefs-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.focus-history {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.focus-history-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+}
+
+.focus-history-head h4 {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.focus-history ul {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.focus-history li {
+  display: grid;
+  grid-template-columns: auto auto auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 7px;
+  border-radius: var(--radius-control);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.focus-history li:hover {
+  background: var(--surface-hover);
+}
+
+.focus-history-kind {
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.focus-history-kind.kind-short_break,
+.focus-history-kind.kind-long_break {
+  background: color-mix(in srgb, var(--status-success) 12%, transparent);
+  color: var(--status-success);
+}
+
+.focus-history-state {
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.focus-history-duration {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.focus-history-task {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.focus-history-time {
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.focus-empty {
+  padding: 8px 0;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+/* ── 窄窗（320 / 400）：统计改两列，历史隐藏状态与开始时间，倒计时等比收小 ── */
+@media (max-width: 400px) {
+  .focus-workspace {
+    padding: 10px;
+    gap: 8px;
+  }
+
+  .focus-countdown {
+    font-size: 28px;
+  }
+
+  .focus-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .focus-history li {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .focus-history-state,
+  .focus-history-time {
+    display: none;
+  }
+}
+
+/* ══ 胶囊徽标：极小高度，只承载状态 + 剩余时间 ══ */
+
+/* 集成时挂在胶囊面板顶部的布局挂钩（无活动会话时徽标整体返回 null，不占位）。 */
+.capsule-focus-slot {
+  margin: 6px 8px 0;
+}
+
+.focus-capsule-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  max-width: 118px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  cursor: default;
+}
+
+button.focus-capsule-badge {
+  cursor: pointer;
+}
+
+button.focus-capsule-badge:hover {
+  background: var(--surface-hover);
+}
+
+.focus-capsule-badge.state-paused {
+  color: var(--status-waiting);
+  border-color: color-mix(in srgb, var(--status-waiting) 36%, var(--border-subtle));
+}
+
+.focus-capsule-badge.kind-short_break,
+.focus-capsule-badge.kind-long_break {
+  color: var(--status-success);
+  border-color: color-mix(in srgb, var(--status-success) 30%, var(--border-subtle));
+}
+
+.focus-capsule-label {
+  flex: 0 0 auto;
+}
+
+.focus-capsule-time {
+  flex: 0 0 auto;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.focus-capsule-badge.state-paused .focus-capsule-time {
+  color: var(--status-waiting);
+}

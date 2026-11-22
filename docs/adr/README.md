@@ -29,6 +29,8 @@ ADR 记录"为什么这样决策"，让未来 Agent 理解取舍、避免反复�
 | [0005](0005-architecture-guard-phased.md) | 架构守卫三阶段渐进启用，禁大量忽略规则 | Accepted |
 | [0006](0006-cqrs-rejected.md) | 当前拒绝 CQRS，仅统计聚合未来评估 | Accepted |
 | [0007](0007-remove-build-scheduler.md) | 删除构建调度器，命令直接执行 | Accepted |
+| [0008](0008-unified-project-identity-and-creation.md) | 统一项目身份与统一项目创建服务 | Accepted |
+| [0009](0009-window-close-behavior-and-tray-recall.md) | 窗口关闭策略（window_close_behavior）与托盘唤回入口 | Accepted |
 
 ## 战略草案决策（未正式 Accepted，待用户确认）
 

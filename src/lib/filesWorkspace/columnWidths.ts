@@ -1,48 +1,85 @@
-//! 文件列表列宽（列表视图表头拖拽调宽，Windows 资源管理器习惯）。
+//! 文件列表列宽（列表视图表头拖拽调宽）。
 //!
-//! 列宽是文件工作区全局状态：所有分栏共用一套，只记录被用户改过的列，
-//! 未改列回默认。默认值与 files.css `.fw-body.fw-list` 的 `--fw-col-*`
-//! 一一对应，两处必须同步修改。
+//! 交互语义（2026-11-22 用户确认）：手柄在**列边界**上，拖动只移动被抓住的
+//! 那条分隔线——它左右两列互补增减（总宽恒定），其余列与其他分隔线不动。
+//! 名称列保持 minmax(0,1fr) 弹性占满（自动吸收总宽变化），不参与存储。
 
-/** 可拖拽调宽的列（名称列是 1fr 弹性列，自动吸收剩余空间，不直接调宽）。 */
 export type ListColumn = "time" | "size" | "type";
+/** 可拖拽的列边界（分隔线两侧的列）。 */
+export type ListBoundary = "name-time" | "time-size" | "size-type";
 
 export const DEFAULT_COL_WIDTHS: Record<ListColumn, number> = { time: 118, size: 76, type: 88 };
 export const MIN_COL_WIDTHS: Record<ListColumn, number> = { time: 72, size: 48, type: 40 };
 export const MAX_COL_WIDTHS: Record<ListColumn, number> = { time: 280, size: 200, type: 200 };
-/** 名称列保底宽度：拖宽固定列时文件名不得被挤成 0。 */
+/** 名称列保底宽：拖 name-time 边界把日期列拖宽时，文件名不得被挤穿。 */
 export const MIN_NAME_WIDTH = 96;
 /** 表头/行左右内边距(16) + 图标列(15) + 4×8 列间距，与 files.css 保持一致。 */
 export const GRID_CHROME = 63;
 
 export type ColWidths = Partial<Record<ListColumn, number>>;
 
-const LIST_COLUMNS = Object.keys(DEFAULT_COL_WIDTHS) as ListColumn[];
+const LIST_COLUMNS: ListColumn[] = ["time", "size", "type"];
+
+const BOUNDARY_COLS: Record<ListBoundary, { left: ListColumn | "name"; right: ListColumn }> = {
+  "name-time": { left: "name", right: "time" },
+  "time-size": { left: "time", right: "size" },
+  "size-type": { left: "size", right: "type" },
+};
 
 export function effectiveColWidth(widths: ColWidths, col: ListColumn): number {
   const width = widths[col];
   return typeof width === "number" ? width : DEFAULT_COL_WIDTHS[col];
 }
 
-/**
- * 拖拽/键盘调宽的唯一钳制入口：列自身上下限 + 名称列保底。
- * `maxByName` 是按容器宽换算出的上限；容器过窄时上限低于下限，按下限兜底
- * （窄分栏断点会隐藏次要列，实际溢出风险由容器查询兜住）。
- */
-export function clampColWidth(col: ListColumn, width: number, maxByName = Number.POSITIVE_INFINITY): number {
-  const min = MIN_COL_WIDTHS[col];
-  // NaN/±Infinity 输入回下限：拖拽坐标异常时不产生 "NaNpx" 之类的非法宽度。
-  if (!Number.isFinite(width)) return min;
-  const max = Math.max(min, Math.min(MAX_COL_WIDTHS[col], maxByName));
-  return Math.round(Math.min(Math.max(width, min), max));
+/** 一次边界拖拽的结果：受影响列的新宽（总宽恒定，未触及列不出现）。 */
+export interface BoundaryDragResult {
+  widths: ColWidths;
+  /** 实际生效的位移：被两侧列上下限与名称保底钳制后，可能与光标位移不同。 */
+  applied: number;
 }
 
-/** 名称列保底允许的某列最大宽度：容器宽 − 图标/内边距/间距 − 其余固定列 − 名称保底。 */
-export function maxForName(containerWidth: number, widths: ColWidths, col: ListColumn): number {
-  const others = LIST_COLUMNS
-    .filter((c) => c !== col)
-    .reduce((sum, c) => sum + effectiveColWidth(widths, c), 0);
-  return containerWidth - GRID_CHROME - MIN_NAME_WIDTH - others;
+const round = (value: number) => Math.round(value);
+
+/**
+ * 边界拖拽的唯一计算入口：`delta` 为光标位移（向右为正）。
+ * 分隔线随光标移动：左列 +delta、右列 -delta，两侧各自钳制上下限；
+ * name-time 边界的左列是弹性名称列——只施加名称保底约束，不落存储。
+ * 任何一侧钳到限后位移停在钳制点（与 Windows 一致）。
+ */
+export function applyBoundaryDrag(
+  containerWidth: number,
+  widths: ColWidths,
+  boundary: ListBoundary,
+  delta: number,
+): BoundaryDragResult {
+  if (!Number.isFinite(delta)) return { widths: {}, applied: 0 };
+  const { left, right } = BOUNDARY_COLS[boundary];
+  const width = (col: ListColumn) => effectiveColWidth(widths, col);
+
+  let lo = -Number.MAX_VALUE;
+  let hi = Number.MAX_VALUE;
+  if (left === "name") {
+    const rightWidth = width(right);
+    const nameNow = containerWidth - GRID_CHROME - width("time") - width("size") - width("type");
+    // 右列自身上下限（右列 = time - delta）与名称保底（名称 = nameNow + delta）。
+    lo = Math.max(rightWidth - MAX_COL_WIDTHS[right], MIN_NAME_WIDTH - nameNow);
+    hi = rightWidth - MIN_COL_WIDTHS[right];
+  } else {
+    const leftWidth = width(left);
+    const rightWidth = width(right);
+    lo = Math.max(MIN_COL_WIDTHS[left] - leftWidth, rightWidth - MAX_COL_WIDTHS[right]);
+    hi = Math.min(MAX_COL_WIDTHS[left] - leftWidth, rightWidth - MIN_COL_WIDTHS[right]);
+  }
+  const applied = round(Math.min(Math.max(delta, lo), hi));
+
+  const next: ColWidths = {};
+  if (left === "name") {
+    next[right] = round(width(right) - applied);
+  } else {
+    next[left] = round(width(left) + applied);
+    next[right] = round(width(right) - applied);
+  }
+  return { widths: next, applied };
 }
 
 /** 持久化归一：非法/越界列丢弃（该列回默认），全部无效返回 undefined。 */

@@ -254,12 +254,11 @@ describe("行视觉与状态通道（CSS 契约 + active/selected 分离）", ()
     return css.slice(open + 1, close);
   }
 
-  it("空选择操作条保持占位高度，首次选中不压缩列表可视区", () => {
+  it("选中操作条为底部悬浮层：绝对定位不参与布局流，选中/清空不位移列表", () => {
     const bar = rule(".fw-selection-bar {");
-    expect(bar).toContain("flex: 0 0 auto");
-    expect(bar).toContain("min-height: 28px");
-    const empty = rule(".fw-selection-bar.is-empty");
-    expect(empty).toContain("visibility: hidden");
+    expect(bar).toContain("position: absolute");
+    expect(bar).toContain("bottom: 0");
+    expect(bar).not.toContain("flex: 0 0 auto");
   });
 
   it("行槽不增加外边距，交互背景用 inset ::before 绘制", () => {
