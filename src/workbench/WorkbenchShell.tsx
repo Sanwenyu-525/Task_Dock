@@ -725,20 +725,26 @@ export default function WorkbenchShell() {
       }
       setSelectedId(id);
       // 选择即所有权：串行写入，最后一次选择最终落库（旧写入不会覆盖新选择）。
-      void activeWriterRef.current?.submit(id).then((result) => {
-        if (result.error) {
-          // 只有本次仍是最后一次意图时才回滚 UI；已被更新选择取代时不打扰用户。
-          if (projectIntentSeq.current === intent) {
-            setSelectedId(previous);
-            toastErrorRef.current("workbench.projectRecordFailed", result.error);
-          }
-          return;
+      // ADR-0010 返回契约：等待真实落库结果，true = 本次选择已落库且未被更新选择取代。
+      const result = await activeWriterRef.current?.submit(id);
+      // writer 未初始化（理论不可达：首渲染即创建）时无法保证持久化，如实报告失败。
+      if (!result) return false;
+      if (result.error) {
+        // 落库失败：仅当本次仍是最后一次意图时才回滚 UI 并明确提示；
+        // 已被更新选择取代时不打扰用户、不回滚（新选择拥有 UI，不能写回过期目标）。
+        if (projectIntentSeq.current === intent) {
+          setSelectedId(previous);
+          toastErrorRef.current("workbench.projectRecordFailed", result.error);
         }
-        if (!result.applied) return;
-        void setWorkbenchProject(id).catch((e) =>
-          toastErrorRef.current("workbench.projectRecordFailed", e),
-        );
-      });
+        return false;
+      }
+      if (!result.applied) {
+        // 被更新选择取代：新选择拥有 UI，不回滚；本次切换不能宣称成功。
+        return false;
+      }
+      void setWorkbenchProject(id).catch((e) =>
+        toastErrorRef.current("workbench.projectRecordFailed", e),
+      );
       return true;
     },
     [],

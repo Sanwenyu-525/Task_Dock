@@ -19,7 +19,13 @@ export interface ProjectContextValue {
   projects: WorkspaceProject[];
   projectsLoading: boolean;
   projectsError: string | null;
-  /** 直通 Shell 的项目切换（含离开守卫与持久化），不绕过 latest-wins 队列。 */
+  /**
+   * 直通 Shell 的项目切换（含离开守卫与持久化），不绕过 latest-wins 队列。
+   * 返回 true = 本次选择已真实落库（applied）且未被更新选择取代；
+   * false = 正文守卫拒绝/保存失败、`workspace_active_project` 落库失败
+   * （仅最后一次意图会回滚 UI 并提示），或已被更新选择取代（UI 归新选择，
+   * 调用方不得再基于本次目标继续导航）。
+   */
   selectProject: (projectId: string | null) => Promise<boolean>;
   /** 直通 Shell 的项目列表刷新（其他窗口删除项目后校验当前选择）。 */
   refreshProjects: () => Promise<WorkspaceProject[]>;

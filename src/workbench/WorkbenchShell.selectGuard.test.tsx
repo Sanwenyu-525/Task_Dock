@@ -155,10 +155,12 @@ function unlisten(): Promise<() => void> {
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((res) => {
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
     resolve = res;
+    reject = rej;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 function saved(content: string) {
@@ -309,5 +311,143 @@ describe("WorkbenchShell · 项目切换正文守卫", () => {
     firstSave.resolve(saved("切换中的草稿"));
     await waitFor(() => expect(bridge.workspaceSetActiveProject).toHaveBeenCalledWith("p3"));
     expect(bridge.workspaceSetActiveProject).not.toHaveBeenCalledWith("p2");
+  });
+});
+
+describe("WorkbenchShell · selectProject 持久化返回契约（ADR-0010）", () => {
+  const switcher = () => screen.getByRole("combobox", { name: "工作空间项目" });
+
+  /** 首页路由：项目卡片走 onSelectProjectAndOpen，返回 true 才放行 goRoute("workspace")。 */
+  async function openHome() {
+    // 默认路由即 home，无需改 Tab；渲染后隔离挂载期的 hydration 写入。
+    render(<WorkbenchShell />);
+    await screen.findByRole("heading", { name: "工作台首页", level: 2 });
+    // 本组只断言用户选择后的落库结果。
+    bridge.workspaceSetActiveProject.mockClear();
+  }
+
+  it("契约1：正常切换，workspace_active_project 落库成功后返回 true", async () => {
+    await openHome();
+    const persist = deferred<{ ok: boolean }>();
+    bridge.workspaceSetActiveProject.mockReturnValueOnce(persist.promise);
+    fireEvent.click(screen.getByRole("button", { name: /项目二/ }));
+
+    // 乐观 UI 先行：落库未完成时选择器已显示新项目。
+    await waitFor(() => expect(switcher().textContent).toContain("项目二"));
+    // selectProject 尚未返回（await 落库中）：首页卡片回调不得提前放行导航。
+    expect(screen.getByRole("heading", { name: "工作台首页", level: 2 })).toBeTruthy();
+    expect(screen.queryByText("第一卷")).toBeNull();
+
+    persist.resolve({ ok: true });
+    // 返回 true → onSelectProjectAndOpen 放行 goRoute("workspace")：首页路由槽隐藏。
+    // 目标项目是开发类，其领域模块不在本契约范围且 jsdom 未为其准备 bridge mock，
+    // 因此只断言导航门控结果，不断言工作空间页内容。
+    await waitFor(() =>
+      expect((document.querySelector(".wb-home-slot") as HTMLElement | null)?.hidden).toBe(true),
+    );
+    expect(screen.queryByRole("heading", { name: "工作台首页", level: 2 })).toBeNull();
+    expect(bridge.workspaceSetActiveProject).toHaveBeenCalledWith("p2");
+  });
+
+  it("契约2：正文守卫保存失败时返回 false，活跃项目零写入", async () => {
+    await openWorkspace();
+    const flushSave = deferred<ReturnType<typeof saved>>();
+    bridge.novelChapterSaveContent.mockReturnValueOnce(flushSave.promise);
+    const textarea = screen.getByLabelText("第一章正文") as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "契约2的草稿" } });
+
+    const persistCalls = bridge.workspaceSetActiveProject.mock.calls.length;
+    await chooseProject("项目二");
+    await waitFor(() =>
+      expect(bridge.novelChapterSaveContent).toHaveBeenCalledWith("c1", "契约2的草稿"),
+    );
+    // 守卫仍在途：不得提前写活跃项目。
+    expect(bridge.workspaceSetActiveProject.mock.calls.length).toBe(persistCalls);
+
+    flushSave.reject(new Error("磁盘只读"));
+    await waitFor(() => expect(screen.getByText("保存失败，可重试")).toBeTruthy());
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    // 守卫失败 → selectProject 返回 false：不落库、不切 UI、不丢草稿。
+    expect(bridge.workspaceSetActiveProject.mock.calls.length).toBe(persistCalls);
+    expect(switcher().textContent).toContain("项目一");
+    expect((screen.getByLabelText("第一章正文") as HTMLTextAreaElement).value).toBe("契约2的草稿");
+  });
+
+  it("契约3：workspace_active_project 落库失败时返回 false 并回滚 UI", async () => {
+    await openHome();
+    bridge.workspaceSetActiveProject.mockRejectedValueOnce(new Error("设置写入失败"));
+    fireEvent.click(screen.getByRole("button", { name: /项目二/ }));
+
+    // 失败回执后回滚到原项目（仅最后一次意图回滚；此处无新选择）。
+    await waitFor(() => expect(switcher().textContent).toContain("项目一"));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    // 返回 false → 不放行路由：仍停留在首页，工作空间页未挂载。
+    expect(screen.getByRole("heading", { name: "工作台首页", level: 2 })).toBeTruthy();
+    expect(screen.queryByText("第一卷")).toBeNull();
+  });
+
+  it("契约4：A→B→C 快速切换，B 的落库不得覆盖 C（applied=false 不回滚 C）", async () => {
+    await openWorkspace();
+    const persistB = deferred<{ ok: boolean }>();
+    bridge.workspaceSetActiveProject.mockReturnValueOnce(persistB.promise);
+    await chooseProject("项目二");
+    await waitFor(() => expect(bridge.workspaceSetActiveProject).toHaveBeenCalledWith("p2"));
+
+    // B 在途时选择 C：UI 乐观归 C；队列串行，B 完成后才发 C。
+    await chooseProject("项目三");
+    await waitFor(() => expect(switcher().textContent).toContain("项目三"));
+    persistB.resolve({ ok: true });
+
+    // B 落库完成但已被取代（applied=false）；C 随后串行落库成功。
+    await waitFor(() => expect(bridge.workspaceSetActiveProject).toHaveBeenLastCalledWith("p3"));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    // B 的 applied=false 不触发任何回滚/UI 覆盖，且没有对 p2 的第二次写入。
+    expect(switcher().textContent).toContain("项目三");
+    const p2Writes = bridge.workspaceSetActiveProject.mock.calls.filter(
+      (call) => call[0] === "p2",
+    ).length;
+    expect(p2Writes).toBe(1);
+  });
+
+  it("契约5：旧请求落库失败（已被新选择取代）不回滚最后一次成功的选择", async () => {
+    await openWorkspace();
+    const persistB = deferred<{ ok: boolean }>();
+    bridge.workspaceSetActiveProject.mockReturnValueOnce(persistB.promise);
+    await chooseProject("项目二");
+    await waitFor(() => expect(bridge.workspaceSetActiveProject).toHaveBeenCalledWith("p2"));
+
+    await chooseProject("项目三");
+    persistB.reject(new Error("B 落库失败"));
+    // B 失败已被 C 取代：不回滚 UI、不覆盖持久化；C 串行落库成功。
+    await waitFor(() => expect(bridge.workspaceSetActiveProject).toHaveBeenLastCalledWith("p3"));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(switcher().textContent).toContain("项目三");
+    expect(switcher().textContent).not.toContain("项目二");
+  });
+
+  it("契约6：切换被守卫取消时不改变持久化项目，取消后可重试成功", async () => {
+    await openWorkspace();
+    const flushSave = deferred<ReturnType<typeof saved>>();
+    bridge.novelChapterSaveContent.mockReturnValueOnce(flushSave.promise);
+    const textarea = screen.getByLabelText("第一章正文") as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "契约6的草稿" } });
+
+    const persistCalls = bridge.workspaceSetActiveProject.mock.calls.length;
+    await chooseProject("项目二");
+    await waitFor(() =>
+      expect(bridge.novelChapterSaveContent).toHaveBeenCalledWith("c1", "契约6的草稿"),
+    );
+    // 守卫以失败收场（返回 false）：本次切换被取消，持久化保持原项目。
+    flushSave.reject(new Error("守卫取消"));
+    await waitFor(() => expect(screen.getByText("保存失败，可重试")).toBeTruthy());
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(bridge.workspaceSetActiveProject.mock.calls.length).toBe(persistCalls);
+    expect(switcher().textContent).toContain("项目一");
+
+    // 取消不破坏状态：重试同一目标，本次保存成功后切换完成。
+    await chooseProject("项目二");
+    await waitFor(() => expect(bridge.workspaceSetActiveProject).toHaveBeenCalledWith("p2"));
+    await waitFor(() => expect(switcher().textContent).toContain("项目二"));
+    await waitFor(() => expect(screen.queryByText("保存失败，可重试")).toBeNull());
   });
 });
