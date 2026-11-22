@@ -167,6 +167,7 @@ import {
 import { formatBytes } from "../lib/clipboardUi";
 // 底部状态栏「包信息」：构建溯源与包标识独立成组件，外壳只负责摆放。
 import WorkbenchBuildStatus from "./WorkbenchBuildStatus";
+import { ProjectContextProvider } from "./ProjectContext";
 import { createActiveProjectWriter, type ActiveProjectWriter } from "../workspace/activeProjectWriter";
 import {
   buildCreatePayload,
@@ -760,6 +761,21 @@ export default function WorkbenchShell() {
   const selected = useMemo(
     () => projects.find((p) => p.id === selectedId) ?? null,
     [projects, selectedId],
+  );
+
+  // 统一项目上下文（ADR-0010）：把 Shell 唯一持有的项目根状态透传给路由页面。
+  // Provider 覆盖 <main> 内全部 RouteSlot 页面；Context 不复制状态、不写持久化。
+  const projectContextValue = useMemo(
+    () => ({
+      projectId: selectedId,
+      selectedProject: selected,
+      projects,
+      projectsLoading,
+      projectsError,
+      selectProject,
+      refreshProjects,
+    }),
+    [selectedId, selected, projects, projectsLoading, projectsError, selectProject, refreshProjects],
   );
 
   // ── 导航操作 ────────────────────────────────────────────────────────
@@ -2698,6 +2714,7 @@ export default function WorkbenchShell() {
         <div className="wb-workarea">
           <WorkbenchDetailHostProvider host={detailHost}>
           <main className="wb-content" aria-labelledby="wb-page-heading">
+            <ProjectContextProvider value={projectContextValue}>
             <TabLeaveGuard />
             <WorkbenchPageActiveContext.Provider value={route === "home"}>
               <div className="wb-home-slot wb-route" hidden={route !== "home"}>
@@ -2843,6 +2860,7 @@ export default function WorkbenchShell() {
             <RouteSlot label={t("nav.settings")} id="settings" feature="page:settings" active={route === "settings"}>
               {(Panel) => <Panel />}
             </RouteSlot>
+            </ProjectContextProvider>
           </main>
 
           {trayDockVisible && (
