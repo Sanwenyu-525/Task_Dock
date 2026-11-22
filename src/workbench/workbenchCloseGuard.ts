@@ -440,9 +440,13 @@ export async function installWorkbenchCloseGuard(
       return;
     }
     // quit_app 策略：CloseRequested 由 Rust 侧 prevent_close + request_exit
-    // 统一接管（app-before-exit 握手负责正文保存）。这里绝不能 preventDefault，
-    // 否则退出流程认为窗口无法关闭而与前端守卫互相等待。
+    // 统一接管（app-before-exit 握手负责正文保存）。这里仍必须**同步
+    // preventDefault**：tauri 的 JS 包装在 handler 放行后会自动调用
+    // `window.destroy()`，窗口会先于退出握手销毁，正文保存回执无人应答 →
+    // 5s 超时取消退出，但窗口已经没了。preventDefault 只阻止 JS destroy，
+    // Rust 的 quit 分支自行 prevent_close + request_exit，两者不冲突。
     if (options.isQuitExit?.() === true) {
+      event.preventDefault();
       trace("CLOSE_GUARD_YIELD_TO_QUIT_EXIT", { detail: "native" });
       return;
     }

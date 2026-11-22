@@ -365,14 +365,16 @@ describe("installWorkbenchCloseGuard · 诊断", () => {
 });
 
 describe("installWorkbenchCloseGuard · quit_app 让路（2026-11-22 关闭策略）", () => {
-  it("quit_app 模式：CloseRequested 不拦截，Rust 统一退出流程接管", async () => {
+  it("quit_app 模式：同步 preventDefault（阻止 JS destroy）但不跑事务", async () => {
     const flush = vi.fn().mockResolvedValue(true);
     const { fake } = await install({ flush, isQuitExit: () => true });
 
     const e = event();
     fake.fire(e);
-    // 绝不能 preventDefault：Rust 侧 prevent_close + request_exit 依赖事件不被拦截。
-    expect(e.preventDefault).not.toHaveBeenCalled();
+    // 必须同步 preventDefault：tauri JS 包装在 handler 放行后会调 window.destroy()，
+    // 窗口会先于退出握手销毁（真机 S8 复现的缺陷）。preventDefault 只阻止 JS destroy，
+    // Rust quit 分支自行 prevent_close + request_exit。
+    expect(e.preventDefault).toHaveBeenCalledTimes(1);
     expect(fake.close).not.toHaveBeenCalled();
     expect(flush).not.toHaveBeenCalled();
   });
@@ -387,20 +389,24 @@ describe("installWorkbenchCloseGuard · quit_app 让路（2026-11-22 关闭策�
     expect(guard.getState().state).toBe("idle");
   });
 
-  it("运行中切换到 quit_app：下一次事件立即让路", async () => {
+  it("运行中切换到 quit_app：下一次事件立即切换为 preventDefault + 让路", async () => {
     let quit = false;
-    const flush = vi.fn().mockResolvedValue(true);
-    const { fake } = await install({ flush, isQuitExit: () => quit });
+    // 第一笔事务用永挂 flush：保证 close/flush 调用都来自第一笔，断言基准干净。
+    const flush = vi.fn(() => new Promise<boolean>(() => {}));
+    const { fake, guard } = await install({ flush, isQuitExit: () => quit });
 
     const first = event();
     fake.fire(first);
     expect(first.preventDefault).toHaveBeenCalledTimes(1);
+    expect(guard.getState().state).toBe("saving");
 
     quit = true;
     const second = event();
     fake.fire(second);
-    expect(second.preventDefault).not.toHaveBeenCalled();
+    // 仍要同步 preventDefault（阻止 JS destroy），但不再跑事务。
+    expect(second.preventDefault).toHaveBeenCalledTimes(1);
     expect(fake.close).not.toHaveBeenCalled();
+    expect(flush).toHaveBeenCalledTimes(1);
   });
 });
 
