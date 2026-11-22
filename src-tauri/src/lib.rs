@@ -307,7 +307,7 @@ pub fn refresh_tray(app: &AppHandle, state: AgentState) {
 
 fn setup_tray(app: &App) -> std::result::Result<(), Box<dyn std::error::Error>> {
     // 液态玻璃右键菜单（context_menu.rs）已取代原生 Menu：
-    // 左键切换主窗显示，右键在托盘图标上方弹出玻璃菜单（无原生菜单入口残留）。
+    // 左键打开/聚焦完整工作台（不切换主窗），右键在托盘图标上方弹出玻璃菜单（无原生菜单入口残留）。
     let tray = TrayIconBuilder::new()
         .icon(app.default_window_icon().unwrap().clone())
         .tooltip("Task Dock")
@@ -325,6 +325,7 @@ fn setup_tray(app: &App) -> std::result::Result<(), Box<dyn std::error::Error>> 
                     // 还原最小化/隐藏），已销毁则经统一创建入口重建并恢复几何；
                     // 不再切换旧版快捷工具面板（右键菜单「显示/隐藏快捷工具面板」仍保留）。
                     MouseButton::Left => {
+                        tracing::info!("TRAY_LEFT_OPEN_WORKBENCH");
                         project_workspace_window::focus_or_open_workbench(app);
                     }
                     // 锚点：托盘图标上缘中点，菜单在其上方展开并按工作区收边
@@ -421,30 +422,35 @@ fn restore_window(app: &AppHandle, db: &Db) {
         }
     }
 
-    // 关闭行为按设置（window_close_behavior）分支：
-    // - close_window（默认）：隐藏到托盘（Tauri v2 事件回调为单参数）；
-    // - quit_app：所有主界面关闭入口统一走 request_exit（正文保存握手 +
-    //   事件管线排空后退出进程），不再隐藏。
+    // 关闭行为按设置（window_close_behavior）分支（2026-11-22 P1 统一）：
+    // - close_window（默认）：隐藏到托盘 + 保险箱锁定；
+    // - quit_app：转入 request_exit（正文保存握手 + 事件管线排空后退出）。
+    //
+    // 所有分支都**先 prevent_close**：旧实现 close_window 分支只 hide()，没有
+    // 阻止原生销毁，窗口随后仍被销毁（驻留托盘失效）。hide() 是动作，不是
+    // 阻止关闭的手段。自绘 X 走 `request_main_window_close` 命令，与本事件
+    // 共用同一条策略（commands::system::main_window_close_plan）。
     let win_for_close = win.clone();
     win.on_window_event(move |event| {
         if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
             let quit_on_close = win_for_close
                 .app_handle()
                 .try_state::<std::sync::Arc<Db>>()
                 .map(|db| commands::settings::window_close_behavior_is_quit(db.inner()))
                 .unwrap_or(false);
+            let behavior = if quit_on_close { "quit_app" } else { "close_window" };
+            tracing::info!(source = "native", behavior, "MAIN_CLOSE_REQUESTED");
             if quit_on_close {
-                api.prevent_close();
+                tracing::info!("MAIN_QUIT_REDIRECTED");
                 tracing::info!("主窗关闭请求（quit_app）：转入统一退出流程");
                 crate::request_exit(win_for_close.app_handle());
                 return;
             }
-            let _ = win_for_close.hide();
-            if let Some(st) = win_for_close
-                .app_handle()
-                .try_state::<std::sync::Arc<secure_vault::VaultState>>()
+            if let Err(error) = commands::system::hide_main_window_inner(win_for_close.app_handle())
             {
-                st.lock(secure_vault::session::LockReason::WindowHidden);
+                // 已 prevent_close：隐藏失败窗口仍在，如实记录，用户可重试。
+                tracing::warn!(%error, "主窗关闭请求（close_window）：隐藏到托盘失败");
             }
         }
     });
@@ -1533,6 +1539,7 @@ pub fn run() {
             commands::hotkeys::hotkeys_change,
             commands::hotkeys::hotkeys_reset,
             commands::system::quit_app,
+            commands::system::request_main_window_close,
             commands::system::app_exit_ack,
             commands::system::set_autostart,
             commands::system::apply_mode,
@@ -2329,31 +2336,46 @@ async fn flush_workbench_before_exit(app: &AppHandle) -> Result<(), String> {
         .get_webview_window(project_workspace_window::WINDOW_LABEL)
         .is_none()
     {
+        tracing::info!("APP_BEFORE_EXIT_SKIPPED reason=no_workspace_window");
         return Ok(());
     }
     let request_id = NEXT_EXIT_REQUEST_ID.fetch_add(1, Ordering::SeqCst) + 1;
     if !EXIT_HANDSHAKE.begin(request_id) {
+        tracing::warn!(request_id, "APP_BEFORE_EXIT_REJECTED reason=handshake_busy");
         return Err("已有退出保存请求正在处理，请稍后重试".into());
     }
     let payload = serde_json::json!({ "requestId": request_id });
+    tracing::info!(request_id, "APP_BEFORE_EXIT");
     if let Err(error) = app.emit_to(
         project_workspace_window::WINDOW_LABEL,
         EVENT_APP_BEFORE_EXIT,
         payload,
     ) {
         EXIT_HANDSHAKE.cancel(request_id);
+        tracing::warn!(request_id, %error, "APP_BEFORE_EXIT_EMIT_FAILED");
         return Err(format!("无法通知工作台保存正文：{error}"));
     }
-    match EXIT_HANDSHAKE
+    let waited = EXIT_HANDSHAKE
         .wait(
             request_id,
             std::time::Duration::from_millis(EXIT_HANDSHAKE_TIMEOUT_MS),
         )
-        .await
-    {
-        Ok(true) => Ok(()),
-        Ok(false) => Err("工作台正文保存失败，退出已取消".into()),
+        .await;
+    match waited {
+        Ok(true) => {
+            tracing::info!(request_id, "APP_EXIT_HANDSHAKE_COMPLETED result=true");
+            Ok(())
+        }
+        Ok(false) => {
+            tracing::warn!(request_id, "APP_EXIT_HANDSHAKE_COMPLETED result=false");
+            Err("工作台正文保存失败，退出已取消".into())
+        }
         Err(exit_handshake::WaitError::Timeout) => {
+            tracing::warn!(
+                request_id,
+                timeout_ms = EXIT_HANDSHAKE_TIMEOUT_MS,
+                "APP_EXIT_HANDSHAKE_TIMEOUT"
+            );
             Err("工作台正文保存回执超时（5 秒），退出已取消".into())
         }
     }
@@ -2363,8 +2385,10 @@ async fn flush_workbench_before_exit(app: &AppHandle) -> Result<(), String> {
 /// 立即返回，不阻塞调用方（托盘事件循环 / Tauri 命令线程）。
 pub fn request_exit(app: &AppHandle) {
     if EXIT_REQUESTED.swap(true, Ordering::SeqCst) {
+        tracing::info!("APP_EXIT_REQUEST_DUPLICATE");
         return;
     }
+    tracing::info!("PROCESS_EXIT_REQUESTED");
     // 独立工作空间窗口不会走主窗口的关闭流程：退出前强制落一次几何。
     project_workspace_window::persist_geometry_on_exit(app);
     let app = app.clone();
@@ -2375,6 +2399,7 @@ pub fn request_exit(app: &AppHandle) {
             EXIT_REQUESTED.store(false, Ordering::SeqCst);
             EXIT_READY.store(false, Ordering::SeqCst);
             tracing::warn!(reason, "退出前正文保存未完成，已取消退出");
+            tracing::warn!("APP_EXIT_BLOCKED");
             let _ = app.emit(
                 EVENT_APP_EXIT_BLOCKED,
                 serde_json::json!({ "reason": reason }),
@@ -2417,6 +2442,11 @@ pub fn request_exit(app: &AppHandle) {
             elapsed_ms = report.elapsed_ms,
             "接入管线退出排空完成"
         );
+        tracing::info!(
+            timed_out = report.timed_out,
+            unsaved = report.unsaved_events,
+            "PIPELINE_DRAIN_COMPLETED"
+        );
         // 剪贴板模块收尾：停监听线程并等待粘贴工作线程结束。
         // 若跳过这一步，进程被杀会留下「永远运行中」的粘贴任务，
         // 以及被残留粘贴内容覆盖的用户剪贴板。
@@ -2433,6 +2463,7 @@ pub fn request_exit(app: &AppHandle) {
         .await
         .unwrap_or(true);
         tracing::info!("剪贴板退出收尾完成（粘贴线程已停止={clipboard_stopped}）");
+        tracing::info!(stopped = clipboard_stopped, "CLIPBOARD_SHUTDOWN_COMPLETED");
         // 保留机器可读的退出证据，供验收与故障复盘
         {
             let dir = app_data_dir(&app);
@@ -2474,6 +2505,7 @@ pub fn request_exit(app: &AppHandle) {
             diag.shutdown();
         }
         EXIT_READY.store(true, Ordering::SeqCst);
+        tracing::info!("PROCESS_EXIT");
         app.exit(0);
     });
 }
@@ -2584,8 +2616,10 @@ pub(crate) fn toggle_main(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
         // 最小化中的窗口 is_visible 仍为 true，必须先判最小化，否则托盘/热键会误执行隐藏
         if win.is_minimized().unwrap_or(false) || !win.is_visible().unwrap_or(false) {
+            tracing::info!(action = "show", "MAIN_WINDOW_TOGGLED");
             show_and_focus(&win);
         } else {
+            tracing::info!(action = "hide", "MAIN_WINDOW_TOGGLED");
             let _ = win.hide();
         }
     }

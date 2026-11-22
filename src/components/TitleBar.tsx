@@ -19,7 +19,7 @@ import { useSettingsStore } from "../store/useSettingsStore";
 import { useTransferStore } from "../store/useTransferStore";
 import { useEdgeSnapStore } from "../store/useEdgeSnapStore";
 import { useUiStore } from "../store/useUiStore";
-import { applyMode } from "../lib/bridge";
+import { applyMode, requestMainWindowClose } from "../lib/bridge";
 import { openWorkbenchHome } from "../lib/workbenchNav";
 import { openMobilePairing } from "../lib/mobilePairing";
 import { attachDragCursorSession } from "../lib/dragCursorSession";
@@ -226,6 +226,21 @@ export default function TitleBar({ inert = false }: { inert?: boolean }) {
 
   const titleRef = useWindowDragCursor();
 
+  // 主窗关闭入口（2026-11-22）：X 不再直接 hide()。策略由 Rust 统一读取
+  // window_close_behavior：close_window → 隐藏到托盘 + 保险箱锁定；
+  // quit_app → request_exit。Esc 的「隐藏到托盘」是独立动作，不受此设置影响。
+  const closeTip =
+    settings?.window_close_behavior === "quit_app" ? "关闭并退出应用" : "关闭到托盘";
+  const requestClose = useCallback(() => {
+    void requestMainWindowClose().catch((e: unknown) => {
+      useUiStore
+        .getState()
+        .showToast(`关闭窗口失败：${e instanceof Error ? e.message : String(e)}`, {
+          kind: "error",
+        });
+    });
+  }, []);
+
   // 完整面板 → 极简标签没有直接相位转移（转移表契约：docked-full 只到
   // hidden/visible/free），按既有路径链式执行：先收成胶囊轨道，再收为标签。
   // 两步都是引擎原子事务：中途失败停在合法形态（引擎对形态切换失败有
@@ -355,7 +370,7 @@ export default function TitleBar({ inert = false }: { inert?: boolean }) {
         <button className="icon-btn win-btn" data-tip="最小化" aria-label="最小化" onClick={() => getCurrentWindow().minimize()}>
           <Minus size={14} />
         </button>
-        <button className="icon-btn win-btn" data-tip="隐藏到托盘 (Esc)" aria-label="隐藏到托盘" onClick={() => getCurrentWindow().hide()}>
+        <button className="icon-btn win-btn" data-tip={closeTip} aria-label="关闭窗口" onClick={requestClose}>
           <X size={14} />
         </button>
       </div>

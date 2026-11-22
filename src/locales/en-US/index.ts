@@ -906,6 +906,7 @@ export const enUS: Record<MessageKey, string> = {
   "workbench.windowClose": "Close workbench",
   "workbench.windowCloseSaving": "Saving and closing the workbench",
   "workbench.windowCloseInitializing": "Close protection is initializing…",
+  "workbench.windowCloseRetryHint": "Click to retry",
   "workbench.windowQuitInFlight": "Saving and quitting the app…",
   "workbench.titlebarTools": "Title bar tools",
   "workbench.toolbarMore": "More tools",

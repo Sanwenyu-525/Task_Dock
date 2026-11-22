@@ -314,6 +314,40 @@ describe("WorkbenchWindowControls · 关闭链路就绪状态（P0 2026-11-22）
     expect(onRequestClose).not.toHaveBeenCalled();
   });
 
+  it("监听注册失败且提供重试入口：按钮可点，点击只重试注册、不发起关闭", () => {
+    const onRequestClose = vi.fn();
+    const onRetrySetup = vi.fn();
+    const view = render(
+      <WorkbenchWindowControls
+        window={fakeWindow()}
+        onRequestClose={onRequestClose}
+        closeReady={false}
+        closeMessage="退出保存监听（app-exit-blocked）注册失败：IPC 断连"
+        onRetrySetup={onRetrySetup}
+      />,
+    );
+
+    const closeBtn = screen.getByRole("button", { name: "关闭工作台" }) as HTMLButtonElement;
+    expect(closeBtn.disabled).toBe(false);
+    expect(closeBtn.getAttribute("title")).toContain("app-exit-blocked");
+    expect(closeBtn.getAttribute("title")).toContain("点击重试");
+    fireEvent.click(closeBtn);
+    expect(onRetrySetup).toHaveBeenCalledTimes(1);
+    expect(onRequestClose).not.toHaveBeenCalled();
+
+    // 重新注册成功后恢复为正常关闭入口。
+    view.rerender(
+      <WorkbenchWindowControls
+        window={fakeWindow()}
+        onRequestClose={onRequestClose}
+        closeReady={true}
+        onRetrySetup={onRetrySetup}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "关闭工作台" }));
+    expect(onRequestClose).toHaveBeenCalledTimes(1);
+  });
+
   it("quitBusy：退出请求在途时保持 disabled + aria-busy；取消后恢复可重试", () => {
     const onRequestClose = vi.fn();
     const view = render(

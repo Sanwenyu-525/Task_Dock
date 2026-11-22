@@ -2,8 +2,10 @@
 
 - 状态：Accepted（2026-11-22）
 - 决策者：窗口生命周期专项
-- 影响范围：`src/workbench/workbenchCloseGuard.ts`、`WorkbenchShell.tsx`、
-  `WorkbenchWindowControls.tsx`、`src-tauri/src/lib.rs`（主窗 CloseRequested / 托盘）、
+- 影响范围：`src/components/TitleBar.tsx`、`src/lib/bridge.ts`、
+  `src/workbench/workbenchCloseGuard.ts`、`workbenchExitGuard.ts`、`WorkbenchShell.tsx`、
+  `WorkbenchWindowControls.tsx`、`src-tauri/src/commands/system.rs`（主窗统一关闭入口）、
+  `src-tauri/src/lib.rs`（主窗 CloseRequested / 托盘 / request_exit）、
   `src-tauri/src/project_workspace_window.rs`（workspace CloseRequested / 统一创建入口）、
   `src-tauri/src/context_menu.rs`（托盘右键菜单）、`db::Settings` / `commands/settings.rs`
   （`window_close_behavior` 设置）
@@ -50,13 +52,27 @@
 
 - `request_exit` 是唯一退出实现：`persist_geometry_on_exit` → app-before-exit 正文
   保存握手（5s 有界，失败/超时广播 `app-exit-blocked` 并取消退出）→ 接入管线排空 →
-  剪贴板/语音/诊断收尾 → `EXIT_READY` → `app.exit(0)`。**禁止**任何入口直接调
-  `app.exit(0)` 替代该流程；**禁止**创建第二套正文保存服务。
+  剪贴板/语音/诊断收尾 → `EXIT_READY` → `app.exit(0)`。主窗 quit_app、工作台 quit_app、
+  托盘退出全部汇入本流程；**禁止**任何入口直接调 `app.exit(0)` 替代该流程；
+  **禁止**创建第二套正文保存服务。
 - 前端协调器新增 `isQuitExit` 动态回调：quit_app 模式下 CloseRequested 处理器
-  **不 preventDefault、不跑事务**（trace `CLOSE_GUARD_YIELD_TO_QUIT_EXIT`，已登记
-  Rust `CLOSE_TRACE_STAGES` 白名单），由 Rust 统一接管，两条入口不会互相等待。
-- quit_app 下 X 按钮的就绪依据是 `app-before-exit` 监听注册完成（`exitListenerReady`）；
-  退出请求在途用 `quitBusy` 保持按钮 busy，`app-exit-blocked` 后复位可重试。
+  **同步 `preventDefault()` 后直接返回，不跑关闭事务**（trace
+  `CLOSE_GUARD_YIELD_TO_QUIT_EXIT`，已登记 Rust `CLOSE_TRACE_STAGES` 白名单）。
+  这里的 `preventDefault` 只阻止 Tauri JS 包装在 handler 放行后自动调用
+  `window.destroy()`；Rust `CloseRequested` 分支已 `prevent_close`，随后由
+  `request_exit` 统一接管。**不允许**改成「前端协调器直接 destroy 窗口」：窗口若先于
+  退出握手销毁，`app-before-exit` 回执无人应答，会复现「窗口已消失但进程驻留」的历史 P0。
+- quit_app 下 X 按钮的就绪依据是**两个**监听都注册成功：`app-before-exit`（保存回执）
+  与 `app-exit-blocked`（取消退出后复位按钮）。外壳用显式状态机
+  `initializing → ready / failed` 管理，失败时记录真实异常、Toast + tooltip 暴露原因，
+  X 按钮提供「点击重试」重新注册；成功后恢复为正常关闭入口。`quitBusy` 在退出请求
+  在途时保持按钮 busy，`app-exit-blocked` 后复位可重试，绝不出现「窗口已销毁但进程驻留
+  且看不到工作台」的状态。
+- 主窗自绘 X 与 Alt+F4 走同一策略：X 调 `request_main_window_close` 命令（不产生原生
+  `CloseRequested`，没有待阻止的销毁）；Alt+F4/系统关闭走 `CloseRequested`，一律先
+  `prevent_close`。两条路径随后遵循 `main_window_close_plan(window_close_behavior)` 的
+  语义执行 `hide + vault lock` 或 `request_exit`，分支互斥。旧实现 X 直接 `hide()` 且
+  原生事件不 `prevent_close`，`hide` 不能阻止原生销毁，close_window 的「驻留托盘」会失效。
 
 ### 3. 托盘唤回与统一创建入口（P1）
 

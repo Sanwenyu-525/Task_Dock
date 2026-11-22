@@ -842,6 +842,7 @@ pub async fn context_menu_action(app: AppHandle, action: String) -> MenuActionRe
             }
         }
         "quit" => {
+            tracing::info!("TRAY_RIGHT_QUIT");
             crate::request_exit(&app);
             ok_result(&db)
         }

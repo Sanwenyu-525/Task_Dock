@@ -628,6 +628,11 @@ export const auditTestData = (apply = false) =>
   invoke<TestDataAudit>("audit_test_data", { apply });
 
 export const quitApp = () => invoke<void>("quit_app");
+/**
+ * 主窗口统一关闭入口（自绘 X）：Rust 读取 `window_close_behavior` 后执行
+ * 隐藏到托盘或 `request_exit`。前端不再自行决定关闭策略。
+ */
+export const requestMainWindowClose = () => invoke<void>("request_main_window_close");
 export const onAppBeforeExit = (cb: (request: AppExitRequest) => void): Promise<UnlistenFn> =>
   listen<AppExitRequest>("app-before-exit", (event) => cb(event.payload));
 /** 回执：true=草稿已落盘或无需落盘；false=保存失败/无守卫，Rust 取消本次退出。 */

@@ -11,6 +11,8 @@
 //!   （因此用原始 `invoke`，不走 `invokeCommand`）；
 //! - 非 Tauri 环境（浏览器预览 / 单测）直接 no-op，不产生无效 IPC。
 
+import { invoke } from "@tauri-apps/api/core";
+
 export interface CloseTraceFields {
   attemptId?: string | null;
   windowLabel?: string | null;
@@ -46,13 +48,12 @@ export function traceWorkbenchClose(stage: string, fields: CloseTraceFields = {}
   if (!isTauriRuntime()) return;
   try {
     const payload = { stage, ...fields };
-    // 动态导入：不使用本通道的窗口不为它付出启动成本。
-    void import("@tauri-apps/api/core")
-      .then(({ invoke }) => invoke<void>("workbench_close_trace", { payload }))
-      .catch(() => {
-        // 窗口正在销毁时 IPC 可能直接失败：关闭通道，避免后续反复报错。
-        available = false;
-      });
+    // 必须同步投递：动态 import 会让末段（FLUSH_COMPLETED / ALLOWED）晚于
+    // 窗口销毁，或在关闭事务之间乱序，验收无法据此还原真实顺序。
+    void invoke<void>("workbench_close_trace", { payload }).catch(() => {
+      // 窗口正在销毁时 IPC 可能直接失败：关闭通道，避免后续反复报错。
+      available = false;
+    });
   } catch {
     available = false;
   }

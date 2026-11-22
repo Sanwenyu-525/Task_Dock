@@ -14,7 +14,87 @@ use crate::error::AppResult;
 pub fn quit_app(app: tauri::AppHandle) {
     // 统一走异步排空（QUIESCING→DRAINING→STOPPED），完成后由后台任务真正退出；
     // 命令本身立即返回，不阻塞 UI/命令线程。
+    tracing::info!(source = "command", "QUIT_APP_REQUESTED");
     crate::request_exit(&app);
+}
+
+// ── 主窗口关闭策略（2026-11-22 P1）──────────────────────────
+//
+// 主窗有两条原生入口：自绘 X（经 `request_main_window_close` 命令）与
+// Alt+F4/系统关闭（经 `CloseRequested` 事件）。两者必须落在同一套策略上：
+// 先阻止原生销毁，再按 `window_close_behavior` 执行隐藏或统一退出。
+// 旧实现里 X 直接 `hide()`、`CloseRequested` 的 close_window 分支也只
+// `hide()` 不 `prevent_close()`——hide 不是阻止销毁的手段，窗口随后仍会被
+// 原生销毁，close_window 的「关窗驻留托盘」形同虚设。
+
+/// 主窗关闭步骤（纯数据，Rust 事件与命令共用；单测锁定顺序与互斥性）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MainCloseStep {
+    /// 必须先阻止原生窗口销毁；任何分支都不得以 hide/close 的副作用代替。
+    PreventNativeClose,
+    /// close_window：隐藏主窗到托盘。
+    HideMainWindow,
+    /// 隐藏后锁保险箱（WindowHidden；`VaultState::lock` 幂等，重复调用不重复广播）。
+    LockVault,
+    /// quit_app：转入唯一退出流程 `request_exit`。
+    RequestExit,
+}
+
+/// `window_close_behavior` → 主窗关闭步骤。
+///
+/// 非法值沿用读侧同一口径（`normalized_window_close_behavior`）回退默认
+/// `close_window`，绝不因为设置损坏而意外退出进程。
+pub fn main_window_close_plan(behavior: &str) -> &'static [MainCloseStep] {
+    use MainCloseStep::*;
+    match crate::db::normalized_window_close_behavior(behavior) {
+        "quit_app" => &[PreventNativeClose, RequestExit],
+        _ => &[PreventNativeClose, HideMainWindow, LockVault],
+    }
+}
+
+/// 隐藏主窗到托盘 + 锁定保险箱（close_window 的统一动作，命令与事件共用）。
+///
+/// 隐藏失败时返回错误但不销毁窗口：调用方（CloseRequested）已 `prevent_close`，
+/// 用户仍可重试；绝不把「隐藏失败」伪装成关闭成功。
+pub fn hide_main_window_inner<R: tauri::Runtime>(app: &AppHandle<R>) -> AppResult<()> {
+    let win = app
+        .get_webview_window("main")
+        .ok_or_else(|| crate::error::AppError::NotFound("主窗口不存在".to_string()))?;
+    win.hide()?;
+    tracing::info!("MAIN_HIDDEN_TO_TRAY");
+    match app.try_state::<Arc<crate::secure_vault::VaultState>>() {
+        Some(st) => {
+            // 已锁定时 `lock_now` 返回 Ignored，不重复广播/清除；自绘 X 与 Alt+F4
+            // 连续触发也只会产生一次有效的 WindowHidden 锁定。
+            let locked = st.lock(crate::secure_vault::session::LockReason::WindowHidden);
+            tracing::info!(locked, "MAIN_VAULT_LOCKED");
+        }
+        None => tracing::info!(available = false, "MAIN_VAULT_LOCKED"),
+    }
+    tracing::info!("主窗关闭请求（close_window）：已隐藏到托盘");
+    Ok(())
+}
+
+/// 主窗统一关闭入口：自绘 X 调用本命令，Alt+F4 在 `lib.rs` 的
+/// `CloseRequested` 中先 `prevent_close` 再调用同一策略。
+///
+/// close_window：隐藏到托盘，进程/托盘/后台 Agent 继续运行；
+/// quit_app：转入 `request_exit`（正文保存握手 + 管线排空后退出）。
+#[tauri::command]
+pub fn request_main_window_close(
+    app: AppHandle,
+    db: State<'_, Arc<Db>>,
+) -> AppResult<()> {
+    let quit = crate::commands::settings::window_close_behavior_is_quit(&db);
+    let behavior = if quit { "quit_app" } else { "close_window" };
+    tracing::info!(source = "command", behavior, "MAIN_CLOSE_REQUESTED");
+    if quit {
+        tracing::info!("MAIN_QUIT_REDIRECTED");
+        tracing::info!("主窗关闭请求（quit_app）：转入统一退出流程");
+        crate::request_exit(&app);
+        return Ok(());
+    }
+    hide_main_window_inner(&app)
 }
 
 /// 工作台正文保存握手回执：Rust 只在 requestId 匹配且尚未回执时接受。
@@ -1160,6 +1240,71 @@ pub fn apply_menu_material<R: tauri::Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 主窗关闭策略（2026-11-22 P1）：所有分支第一步必须是阻止原生销毁，
+    /// 绝不能用 hide()/close() 的副作用代替 prevent_close。
+    #[test]
+    fn main_close_plan_always_prevents_native_destroy_first() {
+        for behavior in ["close_window", "quit_app", "exit", ""] {
+            let plan = main_window_close_plan(behavior);
+            assert_eq!(
+                plan.first(),
+                Some(&MainCloseStep::PreventNativeClose),
+                "behavior={behavior} 必须先阻止原生销毁"
+            );
+        }
+    }
+
+    /// close_window：prevent_close + 隐藏 + 保险箱锁定，不退出进程。
+    #[test]
+    fn main_close_plan_close_window_hides_and_locks() {
+        let plan = main_window_close_plan("close_window");
+        assert_eq!(
+            plan,
+            &[
+                MainCloseStep::PreventNativeClose,
+                MainCloseStep::HideMainWindow,
+                MainCloseStep::LockVault,
+            ]
+        );
+        assert!(!plan.contains(&MainCloseStep::RequestExit));
+    }
+
+    /// quit_app：prevent_close + request_exit，不隐藏（隐藏会留下进程驻留、
+    /// 窗口不可见的中间态）。
+    #[test]
+    fn main_close_plan_quit_app_requests_exit_without_hide() {
+        let plan = main_window_close_plan("quit_app");
+        assert_eq!(
+            plan,
+            &[
+                MainCloseStep::PreventNativeClose,
+                MainCloseStep::RequestExit,
+            ]
+        );
+        assert!(!plan.contains(&MainCloseStep::HideMainWindow));
+        assert!(!plan.contains(&MainCloseStep::LockVault));
+    }
+
+    /// 两条路径互斥：不存在「先隐藏再退出」或「隐藏与退出都执行」的计划。
+    /// 未知/损坏设置按 close_window 处理，绝不猜成退出。
+    #[test]
+    fn main_close_plan_paths_are_mutually_exclusive() {
+        for behavior in ["close_window", "quit_app", "exit", "", "1"] {
+            let plan = main_window_close_plan(behavior);
+            let hides = plan.contains(&MainCloseStep::HideMainWindow);
+            let exits = plan.contains(&MainCloseStep::RequestExit);
+            assert!(
+                hides ^ exits,
+                "behavior={behavior} 的隐藏与退出分支必须互斥: {plan:?}"
+            );
+        }
+        assert_eq!(
+            main_window_close_plan("exit"),
+            main_window_close_plan("close_window"),
+            "非法值必须回退 close_window"
+        );
+    }
 
     #[test]
     fn capsule_geometry_contract_matches_frontend() {

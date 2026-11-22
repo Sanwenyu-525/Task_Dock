@@ -1306,6 +1306,25 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
 | `notification` | 桌面通知 | 400×400，固定 | 隐藏后复用 |
 | `capture` | 快速捕获（v0.7） | 640×360，固定、不占任务栏 | `prevent_close` + hide 复用同一 WebView |
 
+**关闭与退出（2026-11-22 第二轮）**：
+- 主窗 `CloseRequested` 一律先 `api.prevent_close()`，再按 `window_close_behavior`
+  （纯函数 `main_window_close_plan`）分支：`close_window` → `hide_main_window_inner`
+  （hide + `VaultState::lock(WindowHidden)`，锁幂等）；`quit_app` → `request_exit`。
+  自绘 X 调 `request_main_window_close` 命令，与 Alt+F4/系统关闭共用同一策略；
+  X 不再直接 `getCurrentWindow().hide()`，也不存在第二套策略。
+- 工作台 quit_app 的前端 `CloseRequested` 处理器必须同步 `preventDefault()` 后让路
+  （只阻止 Tauri JS 包装自动 `destroy()`），由 Rust `prevent_close` + `request_exit`
+  接管；`request_exit` 是唯一退出实现：几何落盘 → `app-before-exit` 正文握手（5s）→
+  管线排空 → 剪贴板/语音收尾 → `PROCESS_EXIT`。
+- 工作台退出监听（`app-before-exit` / `app-exit-blocked`）分别注册、显式
+  `initializing|ready|failed`；失败记录真实异常、Toast + tooltip 暴露原因，X 可点击
+  重试注册，成功后恢复关闭入口；`app-exit-blocked` 取消退出并复位 `quitBusy`。
+- 托盘左键只打开/聚焦完整工作台（不再切换主窗）；隐藏后的主窗经「显示/隐藏快捷工具
+  面板」或热键 `show_and_focus` 唤回。验收令牌：`MAIN_CLOSE_REQUESTED source=…`、
+  `MAIN_HIDDEN_TO_TRAY`、`MAIN_VAULT_LOCKED`、`APP_BEFORE_EXIT request_id=…`、
+  `APP_EXIT_HANDSHAKE_COMPLETED`、`PIPELINE_DRAIN_COMPLETED`、
+  `CLIPBOARD_SHUTDOWN_COMPLETED`、`PROCESS_EXIT`。
+
 捕获窗口 capability 为 `core:default` + `core:event:default` + `core:window:allow-start-dragging`
 （`src-tauri/capabilities/capture.json`），业务调用走自定义命令，不在窗口内直接调 Tauri
 window API；唯一的窗口 API 是 drag-region 触发的原生拖动（2026-11-11）。

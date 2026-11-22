@@ -1418,6 +1418,7 @@ fn reveal_workbench(win: &WebviewWindow) -> AppResult<()> {
         }
     }
     let _ = win.set_focus();
+    tracing::info!(label = WINDOW_LABEL, "WORKBENCH_REVEALED");
     Ok(())
 }
 
@@ -1619,6 +1620,10 @@ const CLOSE_TRACE_STAGES: &[&str] = &[
     "CLOSE_GUARD_DESTROY_TIMEOUT",
     "CLOSE_GUARD_DISPOSED",
     "CLOSE_GUARD_YIELD_TO_QUIT_EXIT",
+    "EXIT_LISTENER_READY",
+    "EXIT_LISTENER_FAILED",
+    "EXIT_BEFORE_EXIT_RECEIVED",
+    "EXIT_BLOCKED_RECEIVED",
     "MANUSCRIPT_FLUSH_STARTED",
     "MANUSCRIPT_FLUSH_SKIPPED_CLEAN",
     "MANUSCRIPT_FLUSH_WAIT_EXISTING_SAVE",
@@ -1834,6 +1839,7 @@ fn open_or_focus_workbench(
             // 首帧耗时的计时起点：`workbench_ui_ready` 用它算出「创建→就绪」的真实时长，
             // 这是判断「慢在前端还是慢在窗口创建」的唯一依据。
             WORKBENCH_CREATED_MS.store(build_t0, Ordering::SeqCst);
+            tracing::info!(label = WINDOW_LABEL, reveal = ?reveal, "WORKBENCH_WINDOW_CREATED");
             crate::diagnostics::event(
                 crate::diagnostics::DiagLevel::Info,
                 "workbench",

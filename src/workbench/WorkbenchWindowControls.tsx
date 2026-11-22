@@ -52,6 +52,7 @@ export default function WorkbenchWindowControls({
   closeMessage = null,
   closeReady = true,
   quitBusy = false,
+  onRetrySetup,
   onRequestClose,
 }: {
   /** 测试注入点；不传时取当前 WebView 窗口。 */
@@ -62,11 +63,16 @@ export default function WorkbenchWindowControls({
   closeMessage?: string | null;
   /**
    * 关闭链路是否就绪（P0 2026-11-22）：close_window 策略 = 关闭协调器安装
-   * 成功；quit_app 策略 = app-before-exit 退出握手监听已注册。未就绪时不得
-   * 发起关闭请求，按钮呈现明确的「初始化中」；安装失败时保持未就绪并在
-   * tooltip/Toast 给出原因，绝不静默失去关闭能力。
+   * 成功；quit_app 策略 = app-before-exit 与 app-exit-blocked 监听都已注册。
+   * 未就绪且没有重试入口时按钮 disabled；有 `onRetrySetup` 时按钮保持可点，
+   * 点击只会重新注册监听，绝不绕过保护直接关闭。
    */
   closeReady?: boolean;
+  /**
+   * quit_app 策略下监听注册失败后的显式重试入口（P1 2026-11-22）：
+   * 传入后未就绪按钮可点，点击执行重试而不是关闭窗口。
+   */
+  onRetrySetup?: () => void;
   /**
    * quit_app 策略下退出请求已发出：退出握手/管线排空期间按钮保持 busy，
    * 退出被取消（app-exit-blocked）后由外壳复位，恢复可重试。
@@ -143,8 +149,13 @@ export default function WorkbenchWindowControls({
   })();
 
   const close = () => {
-    // 未就绪（初始化中/安装失败）绝不能发起关闭请求：宁可不动也不绕过保护。
-    if (!closeReady || busy || clickLock.current) return;
+    if (busy) return;
+    if (!closeReady) {
+      // 失败后提供显式重试：只重新注册监听，不发关闭请求。
+      onRetrySetup?.();
+      return;
+    }
+    if (clickLock.current) return;
     clickLock.current = true;
     setFallbackError(null);
     logEvent({
@@ -209,7 +220,9 @@ export default function WorkbenchWindowControls({
 
   const saving =
     closeState === "saving" || closeState === "retrying-close";
-  const tip =
+  const canRetrySetup = !closeReady && !busy && typeof onRetrySetup === "function";
+  const notReadyReason = closeMessage ?? t("workbench.windowCloseInitializing");
+  const baseTip =
     closeMessage ??
     fallbackError ??
     (quitBusy
@@ -217,8 +230,11 @@ export default function WorkbenchWindowControls({
       : saving
         ? t("workbench.windowCloseSaving")
         : !closeReady
-          ? t("workbench.windowCloseInitializing")
+          ? notReadyReason
           : t("workbench.windowClose"));
+  const tip = canRetrySetup
+    ? `${baseTip} · ${t("workbench.windowCloseRetryHint")}`
+    : baseTip;
 
   return (
     // 整簇显式禁用拖动：按钮之间的间隙也不能触发窗口移动，否则误拖会盖掉点击。
@@ -262,7 +278,7 @@ export default function WorkbenchWindowControls({
         aria-busy={(saving || quitBusy) || undefined}
         data-tip={tip}
         title={tip}
-        disabled={!closeReady || busy}
+        disabled={busy || (!closeReady && !canRetrySetup)}
         onClick={close}
       >
         <X size={14} strokeWidth={2} aria-hidden="true" />

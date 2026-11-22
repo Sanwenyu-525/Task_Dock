@@ -443,11 +443,23 @@ export default function WorkbenchShell() {
   const [closeGuardReady, setCloseGuardReady] = useState(false);
   /**
    * quit_app 关闭策略（window_close_behavior）：X 与 Alt+F4 都统一走
-   * `quitApp` 命令（request_exit 握手），协调器让路。就绪依据是
-   * app-before-exit 监听注册完成；`quitBusy` 表示退出请求已发出，
-   * 退出被取消（app-exit-blocked）后复位恢复可重试。
+   * `quitApp` 命令（request_exit 握手），协调器让路。
+   *
+   * 退出握手监听是显式状态机（2026-11-22 P1）：
+   * - initializing：两个监听正在注册，X 不得发起退出；
+   * - ready：app-before-exit 与 app-exit-blocked 都已注册，X 可用；
+   * - failed：记录真实异常、Toast + tooltip 给出原因，X 变为「点击重试」
+   *   重新注册监听，绝不把初始化态无限期挂在按钮上。
    */
-  const [exitListenerReady, setExitListenerReady] = useState(false);
+  type ExitListenerPhase = "initializing" | "ready" | "failed";
+  const [exitListenerPhase, setExitListenerPhase] =
+    useState<ExitListenerPhase>("initializing");
+  /** quit_app 监听失败的明确原因（与关闭协调器的 closeMessage 分开，避免串台）。 */
+  const [exitListenerError, setExitListenerError] = useState<string | null>(null);
+  const [exitListenerRetrySeq, setExitListenerRetrySeq] = useState(0);
+  const retryExitListener = useCallback(() => {
+    setExitListenerRetrySeq((value) => value + 1);
+  }, []);
   const [quitBusy, setQuitBusy] = useState(false);
   const showToastRef = useRef(showToast);
   showToastRef.current = showToast;
@@ -1374,44 +1386,100 @@ export default function WorkbenchShell() {
   // 旧 IPC `open_project_workspace_window` 已在 Rust 侧转换为同一条导航队列请求；
   // 不再监听 `project-selected`（该事件会绕过草稿门禁直接改路由/项目）。
 
-  // 关闭/退出前的正文保存握手：复用 workspaceLeaveGuardRef，不新建第二套保存器。
-  // - 窗口关闭由 Tauri onCloseRequested 先 preventDefault，flush 成功才真正 close；
-  // - 应用退出由 Rust 发 app-before-exit，回执失败时 Rust 取消退出并保持窗口。
+  // 退出握手监听（独立于关闭协调器）：复用 workspaceLeaveGuardRef，不新建
+  // 第二套保存器。两个监听职责不同，必须分别注册、分别报告失败：
+  // - app-before-exit：接收 Rust 的正文保存请求并按 requestId 回执；
+  // - app-exit-blocked：接收「退出已取消」通知，复位 quitBusy 允许重试。
+  // 任一失败都进入 failed：记录真实异常 + Toast + 原因；X 提供「点击重试」
+  // 重新走本 effect（cleanup 会先摘除已注册的另一个监听，避免半套监听残留）。
   useEffect(() => {
+    // 浏览器预览/单测没有 Tauri 事件桥：不把它当成注册失败（否则每次挂载
+    // 都会弹错误 Toast）。真实 App 内 __TAURI_INTERNALS__ 恒存在，失败路径
+    // 仍会进入 failed 并给出原因与重试。
+    if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) {
+      setExitListenerPhase("ready");
+      return;
+    }
     let disposed = false;
     const stops: Array<() => void> = [];
-    const track = (subscription: Promise<() => void>) => {
-      void subscription
-        .then((stop) => {
-          if (disposed) stop();
-          else stops.push(stop);
-        })
-        .catch(() => {});
+    setExitListenerPhase("initializing");
+    setExitListenerError(null);
+    if (quitOnCloseRef.current) setCloseMessage(null);
+
+    const fail = (channel: string, error: unknown) => {
+      if (disposed) return;
+      const reason = `退出保存监听（${channel}）注册失败：${errorMessage(error)}`;
+      traceWorkbenchClose("EXIT_LISTENER_FAILED", { detail: channel, result: "failed" });
+      logEvent({
+        level: "ERROR",
+        module: "workbench",
+        action: "window-control",
+        event: "exit-listener-failed",
+        status: "failed",
+        window_id: "workspace",
+        message: reason,
+      });
+      console.error(`[workbench] ${reason}`, error);
+      setExitListenerPhase("failed");
+      setExitListenerError(reason);
+      showToastRef.current(`退出保存监听未就绪，无法安全退出：${reason}`, {
+        kind: "error",
+      });
     };
 
-    track(
-      onAppExitBlocked((reason) => {
-        if (disposed) return;
-        // quit_app 的退出握手失败/超时：退出已取消，恢复按钮可重试并解释原因。
-        setQuitBusy(false);
-        setCloseMessage(String(reason));
-        showToastRef.current(`应用退出已取消：${reason}`, { kind: "error" });
-      }),
-    );
-    void onAppBeforeExit((request) => {
-      void appExitHandler(request.requestId);
-    })
-      .then((stop) => {
+    void (async () => {
+      try {
+        const stopBefore = await onAppBeforeExit((request) => {
+          traceWorkbenchClose("EXIT_BEFORE_EXIT_RECEIVED", {
+            detail: `request=${request.requestId}`,
+          });
+          void appExitHandler(request.requestId);
+        });
         if (disposed) {
-          stop();
+          stopBefore();
           return;
         }
-        stops.push(stop);
-        // 退出握手监听就绪：quit_app 策略下 X 按钮的就绪依据。
-        setExitListenerReady(true);
-      })
-      .catch(() => {});
+        stops.push(stopBefore);
+      } catch (error) {
+        fail("app-before-exit", error);
+        return;
+      }
+      try {
+        const stopBlocked = await onAppExitBlocked((reason) => {
+          if (disposed) return;
+          traceWorkbenchClose("EXIT_BLOCKED_RECEIVED", {
+            result: "blocked",
+            detail: String(reason).slice(0, 64),
+          });
+          // quit_app 的退出握手失败/超时：退出已取消，恢复按钮可重试并解释原因。
+          setQuitBusy(false);
+          setCloseMessage(String(reason));
+          showToastRef.current(`应用退出已取消：${reason}`, { kind: "error" });
+        });
+        if (disposed) {
+          stopBlocked();
+          return;
+        }
+        stops.push(stopBlocked);
+      } catch (error) {
+        fail("app-exit-blocked", error);
+        return;
+      }
+      if (disposed) return;
+      setExitListenerPhase("ready");
+      traceWorkbenchClose("EXIT_LISTENER_READY");
+    })();
 
+    return () => {
+      disposed = true;
+      stops.forEach((stop) => stop());
+    };
+  }, [appExitHandler, exitListenerRetrySeq]);
+
+  // 关闭协调器（close_window 策略）：安装成功才放行自绘 X；失败保持未就绪
+  // 并在 closeMessage 给出原因，绝不静默失去关闭能力。
+  useEffect(() => {
+    let disposed = false;
     let guard: WorkbenchCloseGuardHandle | null = null;
     try {
       const current = getCurrentWindow();
@@ -1469,14 +1537,12 @@ export default function WorkbenchShell() {
 
     return () => {
       disposed = true;
-      stops.forEach((stop) => stop());
       closeGuardRef.current = null;
       guard?.stop();
       setCloseGuardReady(false);
-      setExitListenerReady(false);
       setQuitBusy(false);
     };
-  }, [appExitHandler]);
+  }, []);
 
 
   // 主题/预设/材质跨窗口同步 + 设置键广播（只带键名）。
@@ -2679,8 +2745,9 @@ export default function WorkbenchShell() {
           </div>
           <WorkbenchWindowControls
             closeState={closeState}
-            closeMessage={closeMessage}
-            closeReady={quitOnClose ? exitListenerReady : closeGuardReady}
+            closeMessage={quitOnClose ? (exitListenerError ?? closeMessage) : closeMessage}
+            closeReady={quitOnClose ? exitListenerPhase === "ready" : closeGuardReady}
+            onRetrySetup={quitOnClose ? retryExitListener : undefined}
             quitBusy={quitBusy}
             onRequestClose={() => {
               // quit_app 策略：关闭入口统一走 request_exit（正文保存握手 +

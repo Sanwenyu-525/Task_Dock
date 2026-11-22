@@ -888,6 +888,7 @@ export const zhCN = {
   "workbench.windowClose": "关闭工作台",
   "workbench.windowCloseSaving": "正在保存并关闭工作台",
   "workbench.windowCloseInitializing": "关闭保护初始化中，请稍候…",
+  "workbench.windowCloseRetryHint": "点击重试",
   "workbench.windowQuitInFlight": "正在保存并退出应用…",
   "workbench.titlebarTools": "标题栏工具",
   "workbench.toolbarMore": "更多工具",
