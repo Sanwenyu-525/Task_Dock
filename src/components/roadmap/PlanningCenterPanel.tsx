@@ -16,6 +16,7 @@ import PlanningWorkspace from "./PlanningWorkspace";
 import ProjectHubPanel from "./ProjectHubPanel";
 import CollabPanel from "../collab/CollabPanel";
 import WorkbenchPageHeader from "../../workbench/WorkbenchPageHeader";
+import { SectionTabs } from "../ui";
 import "./planning-page.css";
 
 type Source = "hub" | "mine" | "builtin" | "collab";
@@ -38,48 +39,39 @@ export default function PlanningCenterPanel() {
         subtitle={t("planning.pageSubtitle")}
         actions={<ContextHelpButton articleId="help.workflows.planning-center" />}
       />
+      {/* 数据来源是四个互斥内容面板的切换：统一 SectionTabs（升级为 tablist/tab/tabpanel 语义，
+          原 seg-group + aria-pressed 结构废弃）。source / openPlanning / planningTarget 逻辑不变。 */}
       <div className="planning-source-switch">
         <span className="planning-source-label">数据来源</span>
-        <div className="seg-group subtle" role="group" aria-label="项目中枢数据来源">
-          <button
-            className={`seg-btn ${source === "hub" ? "active" : ""}`}
-            onClick={() => setSource("hub")}
-            aria-pressed={source === "hub"}
-          >
-            项目中枢
-          </button>
-          <button
-            className={`seg-btn ${source === "mine" ? "active" : ""}`}
-            onClick={() => setSource("mine")}
-            aria-pressed={source === "mine"}
-          >
-            规划编辑
-          </button>
-          <button
-            className={`seg-btn ${source === "builtin" ? "active" : ""}`}
-            onClick={() => setSource("builtin")}
-            aria-pressed={source === "builtin"}
-          >
-            内置路线图
-          </button>
-          <button
-            className={`seg-btn ${source === "collab" ? "active" : ""}`}
-            onClick={() => setSource("collab")}
-            aria-pressed={source === "collab"}
-          >
-            协作中心
-          </button>
-        </div>
+        <SectionTabs
+          items={[
+            { id: "hub", label: "项目中枢" },
+            { id: "mine", label: "规划编辑" },
+            { id: "builtin", label: "内置路线图" },
+            { id: "collab", label: "协作中心" },
+          ]}
+          activeId={source}
+          onChange={setSource}
+          aria-label="项目中枢数据来源"
+          idPrefix="planning-source"
+        />
       </div>
-      {source === "hub" ? (
-        <ProjectHubPanel onOpenPlanning={openPlanning} />
-      ) : source === "mine" ? (
-        <PlanningWorkspace initialProjectId={planningTarget} />
-      ) : source === "builtin" ? (
-        <FeatureRoadmapPanel />
-      ) : (
-        <CollabPanel />
-      )}
+      <div
+        id={`planning-source-panel-${source}`}
+        role="tabpanel"
+        aria-labelledby={`planning-source-tab-${source}`}
+        className="page-fill"
+      >
+        {source === "hub" ? (
+          <ProjectHubPanel onOpenPlanning={openPlanning} />
+        ) : source === "mine" ? (
+          <PlanningWorkspace initialProjectId={planningTarget} />
+        ) : source === "builtin" ? (
+          <FeatureRoadmapPanel />
+        ) : (
+          <CollabPanel />
+        )}
+      </div>
     </div>
   );
 }

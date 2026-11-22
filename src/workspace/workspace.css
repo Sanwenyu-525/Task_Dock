@@ -154,29 +154,9 @@
   margin-bottom: 12px;
   min-width: 0;
 }
-.ws-tab {
-  padding: 0 12px;
-  min-height: var(--btn-height);
-  display: inline-flex;
-  align-items: center;
-  border: 1px solid var(--btn-secondary-border);
-  background: var(--btn-secondary-face);
-  border-radius: var(--radius-control);
-  cursor: pointer;
-  font-size: var(--font-size-secondary);
-  color: var(--btn-secondary-text);
-}
-.ws-tab:hover { background: var(--btn-secondary-face-hover); border-color: var(--btn-secondary-border-hover); }
-.ws-tab.is-active {
-  background: var(--color-brand-subtle);
-  color: var(--color-brand-text);
-  border-color: var(--color-brand-subtle);
-  font-weight: 600;
-}
-.ws-tab.is-active:hover {
-  background: var(--color-brand-subtle);
-  border-color: var(--color-brand-subtle);
-}
+
+/* 一级模块导航改用公共 SectionNavigation（section-navigation.css），
+   原 .ws-tab 独立按钮样式已废弃（docs/ui-themes/15-section-navigation.md）。 */
 
 .ws-empty { color: var(--ws-muted); font-size: 13px; padding: 16px; text-align: center; }
 

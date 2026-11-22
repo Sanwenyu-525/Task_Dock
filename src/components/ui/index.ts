@@ -34,3 +34,13 @@ export {
   type StatusBadgeProps,
   type StatusTone,
 } from "./StatusBadge";
+export {
+  default as SectionTabs,
+  type SectionTabItem,
+  type SectionTabsProps,
+} from "./SectionTabs";
+export {
+  default as SectionNavigation,
+  type SectionNavItem,
+  type SectionNavigationProps,
+} from "./SectionNavigation";

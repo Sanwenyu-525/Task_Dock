@@ -54,7 +54,7 @@ import {
 } from "../../lib/bridge";
 import { errorMessage } from "../../lib/errors";
 import { useLocale } from "../../hooks/useLocale";
-import { EmptyState, Select } from "../ui";
+import { EmptyState, SectionTabs, Select } from "../ui";
 import "./agent-access.css";
 
 type Row = Record<string, unknown>;
@@ -458,25 +458,25 @@ export default function AgentAccessSection() {
         等资源关联在「项目中枢 → 项目资源」中管理。
       </p>
 
-      <div className="cap-tabs agent-access-tabs" role="tablist" aria-label={t("cap.tab.agent")}>
-        {SUB_TABS.map((item) => {
-          const Icon = item.icon;
-          return (
-            <button
-              key={item.id}
-              type="button"
-              role="tab"
-              className="cap-tab"
-              aria-selected={tab === item.id}
-              onClick={() => setTab(item.id)}
-            >
-              <Icon size={13} strokeWidth={1.8} aria-hidden="true" />
-              {t(item.key as Parameters<typeof t>[0])}
-            </button>
-          );
-        })}
-      </div>
+      {/* 内容面板切换：统一 SectionTabs；ID 前缀 agent-access，面板见下方 tabpanel 包裹层。 */}
+      <SectionTabs
+        items={SUB_TABS.map((item) => ({
+          id: item.id,
+          label: t(item.key as Parameters<typeof t>[0]),
+          icon: item.icon,
+        }))}
+        activeId={tab}
+        onChange={setTab}
+        aria-label={t("cap.tab.agent")}
+        idPrefix="agent-access"
+        className="agent-access-tabs"
+      />
 
+      <div
+        id={`agent-access-panel-${tab}`}
+        role="tabpanel"
+        aria-labelledby={`agent-access-tab-${tab}`}
+      >
       {tab === "overview" ? (
         <div className="agent-access-grid">
           <div className="cap-card">
@@ -1172,6 +1172,7 @@ export default function AgentAccessSection() {
           </div>
         </div>
       ) : null}
+      </div>
     </div>
   );
 }

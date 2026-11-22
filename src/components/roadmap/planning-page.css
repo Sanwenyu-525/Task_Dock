@@ -18,12 +18,6 @@
   min-width: 0;
 }
 
-.planning-panel .planning-source-switch .seg-group {
-  min-width: 0;
-  max-width: 100%;
-  flex-wrap: wrap;
-}
-
 .planning-panel .planning-source-label {
   font-size: 11px;
   letter-spacing: 0.04em;

@@ -1,0 +1,86 @@
+/*
+ * SectionTabs / SectionNavigation 共享导航轨道（docs/ui-themes/15-section-navigation.md）。
+ *
+ * 统一视觉：沉降轨道（--surface-sunken + --border-subtle）+ raised 选中项 + accent 文字。
+ * 颜色 / 圆角 / 阴影全部走语义 Token；两套预设与明暗主题共用本文件，不做局部覆盖。
+ * 轨道宽度随内容自适应（fit-content），溢出单行横向滚动、隐藏滚动条；项不压缩不换行。
+ */
+
+.section-nav {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  width: fit-content;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.section-nav::-webkit-scrollbar {
+  display: none;
+}
+
+.section-nav-item {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  min-height: var(--btn-height-sm);
+  padding: 0 11px;
+  border: 1px solid transparent;
+  border-radius: calc(var(--radius-control) - 2px);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--font-size-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s, color 0.12s;
+}
+
+.section-nav-item:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.section-nav-item:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.section-nav-item.is-active {
+  background: var(--surface-raised);
+  color: var(--accent);
+  border-color: var(--border-subtle);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+  font-weight: var(--font-weight-medium, 600);
+}
+
+.section-nav-item:disabled {
+  color: var(--text-disabled);
+  background: transparent;
+  cursor: not-allowed;
+}
+
+/* 二级导航：更轻的层级（更矮、更小字号），不与一级混淆 */
+.section-nav[data-size="sm"] {
+  padding: 2px;
+}
+
+.section-nav[data-size="sm"] .section-nav-item {
+  gap: 5px;
+  min-height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .section-nav-item {
+    transition: none;
+  }
+}

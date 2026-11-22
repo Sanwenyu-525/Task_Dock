@@ -14,6 +14,7 @@ import SkillsSection from "./SkillsSection";
 import McpServersSection from "./McpServersSection";
 import ContextSection from "./ContextSection";
 import RecipesSection from "./RecipesSection";
+import { SectionTabs } from "../ui";
 import { useUiStore } from "../../store/useUiStore";
 import "./capability.css";
 
@@ -45,27 +46,15 @@ export default function CapabilityCenterPanel() {
         title={t("cap.title")}
         subtitle={t("cap.subtitle")}
       />
-      <div className="cap-tabs" role="tablist" aria-label={t("cap.title")}>
-        {SECTIONS.map((item) => {
-          const Icon = item.icon;
-          const active = item.id === section;
-          return (
-            <button
-              key={item.id}
-              type="button"
-              role="tab"
-              className="cap-tab"
-              aria-selected={active}
-              aria-controls={`cap-panel-${item.id}`}
-              id={`cap-tab-${item.id}`}
-              onClick={() => setSection(item.id)}
-            >
-              <Icon size={14} strokeWidth={1.8} aria-hidden="true" />
-              {t(item.labelKey)}
-            </button>
-          );
-        })}
-      </div>
+      {/* 内容面板切换：统一 SectionTabs（docs/ui-themes/15-section-navigation.md），
+          tab/panel ID 沿用既有 cap-tab-* / cap-panel-* 前缀，数据状态不变。 */}
+      <SectionTabs
+        items={SECTIONS.map((item) => ({ id: item.id, label: t(item.labelKey), icon: item.icon }))}
+        activeId={section}
+        onChange={setSection}
+        aria-label={t("cap.title")}
+        idPrefix="cap"
+      />
       <div
         className="cap-body"
         id={`cap-panel-${section}`}

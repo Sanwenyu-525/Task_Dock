@@ -1,8 +1,9 @@
 /*
- * 项目工作空间面板的局部样式（2026-11-20）。
+ * 项目工作空间面板的局部样式（2026-11-20；2026-11-22 导航收编公共组件）。
  *
  * 范围：
- * - 小说一级/二级导航：`.ws-subtabs`（分组 Tab 仍复用 workspace.css 的 .ws-tab）；
+ * - 一级/二级导航已改用公共 SectionNavigation（section-navigation.css），
+ *   本文件不再定义 .ws-tab-nav / .ws-subtabs / .ws-subtab；
  * - 小说概览：快捷操作、真实统计、项目信息/写作事项/任务关联紧凑卡片；
  * - 推进（写作事项 / 任务关联）与项目设置（事实行、危险区、高级能力信息）。
  *
@@ -23,56 +24,7 @@
   color: var(--text-tertiary);
 }
 
-/* ── 二级 Tab（设定 / 推进）───────────────────────────────────────── */
-/* 一级入口的导航容器：Tab 按钮组包在 <nav> 里（布局/加载指示是同级操作，不在导航内），
-   换行仍发生在按钮之间，视觉与原来的平铺按钮行一致。 */
-.ws-tab-nav {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  row-gap: 6px;
-  min-width: 0;
-}
-
-.ws-subtabs {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  flex-wrap: wrap;
-  margin: -4px 0 12px;
-  padding: 2px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-control);
-  background: color-mix(in srgb, var(--surface-raised) 66%, transparent);
-  width: fit-content;
-  max-width: 100%;
-}
-
-.ws-subtab {
-  appearance: none;
-  border: 1px solid transparent;
-  border-radius: calc(var(--radius-control) - 2px);
-  background: transparent;
-  color: var(--text-secondary);
-  min-height: calc(var(--btn-height) - 4px);
-  padding: 0 12px;
-  font-size: var(--font-size-secondary);
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.ws-subtab:hover {
-  background: var(--surface-hover);
-  color: var(--text-primary);
-}
-
-.ws-subtab.is-active {
-  background: var(--accent-soft);
-  border-color: color-mix(in srgb, var(--accent) 28%, transparent);
-  color: var(--text-primary);
-  font-weight: var(--font-weight-medium, 600);
-}
+/* ── 一级/二级导航：改用公共 SectionNavigation，样式见 section-navigation.css ── */
 
 /* ── 小说概览 ─────────────────────────────────────────────────────── */
 .ws-overview-novel {
@@ -478,19 +430,5 @@
 
   .ws-item-title {
     flex: 1 1 100%;
-  }
-
-  .ws-subtabs {
-    width: 100%;
-  }
-
-  .ws-subtab {
-    flex: 1 1 auto;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .ws-subtab {
-    transition: none;
   }
 }

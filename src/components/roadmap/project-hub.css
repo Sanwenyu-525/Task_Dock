@@ -163,19 +163,7 @@
   font-size: 18px;
 }
 
-.project-hub .ph-tabs {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  border-bottom: 1px solid var(--border-subtle);
-  padding-bottom: 6px;
-}
-
-.project-hub .ph-tabs .seg-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-}
+/* 视图切换改用公共 SectionTabs（section-navigation.css），此处不再自定义 ph-tabs 样式。 */
 
 .project-hub .ph-view {
   display: flex;

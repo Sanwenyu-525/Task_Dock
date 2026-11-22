@@ -42,6 +42,7 @@ import {
   type ProjectHubResourceLink,
   type ProjectHubSnapshot,
 } from "../../lib/bridge";
+import { SectionTabs } from "../ui";
 import {
   buildCapabilityInput,
   buildCreatePayload,
@@ -302,25 +303,21 @@ export default function ProjectHubPanel({ onOpenPlanning }: ProjectHubPanelProps
             <Metric label="交付物" value={String(active.project.deliverableCount)} hint="已记录" />
           </div>
 
-          <div className="ph-tabs" role="tablist" aria-label="项目中枢视图">
-            {VIEW_TABS.map((tab) => {
-              const Icon = tab.icon;
-              return (
-                <button
-                  key={tab.key}
-                  role="tab"
-                  aria-selected={view === tab.key}
-                  className={`seg-btn ${view === tab.key ? "active" : ""}`}
-                  onClick={() => setView(tab.key)}
-                >
-                  <Icon size={14} /> {tab.label}
-                </button>
-              );
-            })}
-          </div>
+          <SectionTabs
+            items={VIEW_TABS.map((tab) => ({ id: tab.key, label: tab.label, icon: tab.icon }))}
+            activeId={view}
+            onChange={setView}
+            aria-label="项目中枢视图"
+            idPrefix="ph"
+          />
 
           {view === "overview" ? (
-            <div className="ph-view ph-overview">
+            <div
+              id="ph-panel-overview"
+              role="tabpanel"
+              aria-labelledby="ph-tab-overview"
+              className="ph-view ph-overview"
+            >
               <section className="ph-section">
                 <h3><Target size={16} /> 下一步</h3>
                 {active.risks.length > 0 ? (
@@ -368,7 +365,7 @@ export default function ProjectHubPanel({ onOpenPlanning }: ProjectHubPanelProps
           ) : null}
 
           {view === "planning" ? (
-            <div className="ph-view">
+            <div id="ph-panel-planning" role="tabpanel" aria-labelledby="ph-tab-planning" className="ph-view">
               <div className="ph-section-head">
                 <div className="seg-group" role="group" aria-label="规划视图">
                   <button
@@ -469,7 +466,7 @@ export default function ProjectHubPanel({ onOpenPlanning }: ProjectHubPanelProps
           ) : null}
 
           {view === "features" ? (
-            <div className="ph-view">
+            <div id="ph-panel-features" role="tabpanel" aria-labelledby="ph-tab-features" className="ph-view">
               <section className="ph-section">
                 <h3><KanbanSquare size={16} /> 功能与看板</h3>
                 {active.features.length === 0 ? (
@@ -503,7 +500,7 @@ export default function ProjectHubPanel({ onOpenPlanning }: ProjectHubPanelProps
           ) : null}
 
           {view === "capability" ? (
-            <div className="ph-view">
+            <div id="ph-panel-capability" role="tabpanel" aria-labelledby="ph-tab-capability" className="ph-view">
               <section className="ph-section">
                 <h3><Boxes size={16} /> 能力需求与缺口</h3>
                 {active.capabilities.length === 0 ? (
@@ -540,11 +537,13 @@ export default function ProjectHubPanel({ onOpenPlanning }: ProjectHubPanelProps
           ) : null}
 
           {view === "resources" ? (
-            <ResourceView projectId={active.project.id} capabilities={active.capabilities} />
+            <div id="ph-panel-resources" role="tabpanel" aria-labelledby="ph-tab-resources">
+              <ResourceView projectId={active.project.id} capabilities={active.capabilities} />
+            </div>
           ) : null}
 
           {view === "execution" ? (
-            <div className="ph-view">
+            <div id="ph-panel-execution" role="tabpanel" aria-labelledby="ph-tab-execution" className="ph-view">
               <section className="ph-section">
                 <h3><ListChecks size={16} /> 项目任务</h3>
                 {active.tasks.length === 0 ? <p className="ph-muted">还没有任务。</p> : (
