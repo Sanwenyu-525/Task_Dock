@@ -85,3 +85,48 @@
 
 通过标准：14 项全部符合；`close-metrics.mjs` 对 close_window 轮次输出
 「每次关闭请求都有明确结局」且「未解释」为 0；quit_app 轮次进程确认结束。
+
+## 5. 2026-11-22 真机验收记录（Debug 包）
+
+> 隔离实例：`target-close-lifecycle/debug/task-dock.exe` + 独立 `TASK_DOCK_DATA_DIR` /
+> WebView2 profile / CDP 端口；日志 `tmp/acceptance/close-lifecycle-20261122/terminal.log`。
+> 结论：**Dev 功能验收通过**（14/14，含两期真机修复）；`close-metrics.mjs` 输出
+> 「每次关闭请求都有明确结局，未发现无解释终止」。
+
+**P0 原始根因（真机定位，两期修复，提交 52433f7 / c75c7ab）**：
+
+1. **workspace capability 缺 `core:window:allow-destroy`**：tauri v2 契约是前端注册
+   `onCloseRequested` 后 Rust 无条件 `prevent_close`（`tauri-2.12.5/src/manager/window.rs`
+   `has_js_listener` 分支），放行路径由 JS API 调 `destroy()`；该命令被 ACL 拒绝
+   （`window.destroy not allowed`），窗口永不销毁 → Debug 包点 X 无反应、日志只有
+   `CLOSE_GUARD_RETRY_CLOSE_ACCEPTED → CLOSE_GUARD_DESTROY_TIMEOUT`。
+2. **quit_app 让路缺陷**：guard 对 CloseRequested 直接 return（不 preventDefault）时，
+   tauri JS 包装在 handler 放行后自动调 `window.destroy()` → 窗口先于退出握手销毁 →
+   正文保存回执无人应答 → 5s 超时取消退出且窗口已死。修复为同步 `preventDefault`
+   （只阻止 JS destroy，Rust quit 分支自行接管）。
+
+**场景结果**：1 ✓（就绪门控由单测锁定；真机 guard 安装 <2s 未采到初始化窗口期）；
+2 ✓；3 ✓（`NO_FLUSH → WINDOW_DESTROYED`）；4 ✓（`MANUSCRIPT_SAVE_COMPLETED` +
+`FLUSH_COMPLETED` + destroyed，防抖自动保存先落库 → clean flush）；5 ✓（WM_CLOSE 与
+Alt+F4 同链：`detail=native` 同一笔事务）；6 ✓（Rust 接管 → `CLOSE_GEOMETRY_EXIT_FLUSH`
+→ 排空 → 进程消失）；7 ✓（首轮真机复现「回执超时 → 取消退出」fail-safe；正常路径由
+6/8 覆盖；显式注入保存失败未做，前端握手失败回执由 workbenchExitGuard 单测锁定）；
+8 ✓（复测：`YIELD_TO_QUIT_EXIT` + 握手回执 + 排空 + 进程退出）；9 ✓（真实鼠标点击托盘
+图标 → 重建 + 聚焦）；10 ✓（物理右键菜单弹出 + 菜单项真实点击 → `open_or_focus_workbench_
+with_result` ok:true + 窗口聚焦）；11 ✓（重开精确恢复 (100,80,1600×1000) 内存快照）；
+12 ✓（最小化 → 托盘左键还原；focused=False 为 Windows 托盘点击前台锁既有限制）；
+13 ✓（tasklist 无本实例进程 + `last-shutdown-report.json` 更新）；14 ✓（管线排空/剪贴板/
+手机接入收尾日志齐全）。
+
+**发现的既有缺陷（非本任务回归，待另行整改）**：
+
+- `workspace_window_rect` DB 存储值比实测窗口物理矩形大 1.25×（125% DPI 下物理像素被
+  再乘 scale_factor 落库）；内存快照优先路径使同进程重开正确恢复（roundtrip 抵消），
+  但跨进程重启走 DB 路径时窗口会比关闭前大 25%。修复涉及 `resolve_geometry_snapshot`
+  的 DPI 换算，超出本次范围。
+- 托盘点击唤回后 `set_focus` 受 Windows 前台锁限制可能不抢前台（第二实例路径正常），
+  与主窗 `show_and_focus` 同一既有行为。
+
+**环境说明**：验收期间存在并行会话实例与定时提交（689b1a7 把工作区在途改动打包入库），
+一次实例被外部终止后重启继续；窗口枚举按 PID 过滤消除干扰。托盘图标经
+`NotifyIconSettings\IsPromoted` 临时提升为常驻以稳定真机点击，验收后已恢复。
