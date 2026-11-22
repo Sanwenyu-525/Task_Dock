@@ -5,11 +5,13 @@
 //! - 创建项目携带功能草案（features + phaseIndex），重试复用同一 clientRequestId；
 //! - 参数变化时请求 ID 变化；
 //! - 项目切换不串数据（代际保护）；
+//! - 竞态与空态用 deferred Promise 精确控制时序：切换等待期不显示旧项目、
+//!   迟到响应不覆盖当前快照、创建后切换失败停留原项目、列表失败有错误态与重试；
 //! - 进度口径：阶段按功能完成度、里程碑无依据时待评估；
 //! - 项目资源视图：真实查询、绑定、解除绑定与可用性校验。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import ProjectHubPanel from "./ProjectHubPanel";
@@ -44,8 +46,24 @@ vi.mock("../../lib/bridge", async (importOriginal) => ({
 function nameOf(id: string): string {
   if (id === "p-a") return "项目 A";
   if (id === "p-b") return "项目 B";
+  if (id === "p-c") return "项目 C";
   if (id === "new") return "新建项目";
   return `项目 ${id}`;
+}
+
+/** 外部可控的 Promise：用 resolve/reject 精确控制时序，不靠 setTimeout 猜。 */
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (cause: unknown) => void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (cause: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
 }
 
 function summary(id: string, name: string): ProjectHubProjectSummary {
@@ -184,6 +202,23 @@ function SwitchableHub({
     <div>
       <button onClick={() => setCurrent(1)}>switch-global</button>
       <ProjectContextProvider value={contexts[current]}>
+        <ProjectHubPanel />
+      </ProjectContextProvider>
+    </div>
+  );
+}
+
+/** 多份上下文切换模拟：按钮 switch-<i> 把 Provider 切到第 i 份上下文。 */
+function MultiContextHub({ contexts }: { contexts: ProjectContextValue[] }) {
+  const [index, setIndex] = useState(0);
+  return (
+    <div>
+      {contexts.map((_, i) => (
+        <button key={i} onClick={() => setIndex(i)}>
+          switch-{i}
+        </button>
+      ))}
+      <ProjectContextProvider value={contexts[index]}>
         <ProjectHubPanel />
       </ProjectContextProvider>
     </div>
@@ -443,5 +478,241 @@ describe("项目中枢面板", () => {
     await user.click(screen.getByRole("tab", { name: /能力/ }));
     const section = await screen.findByText("能力需求与缺口");
     expect(within(section.parentElement as HTMLElement).getByText(/尚未校验可用性/)).toBeTruthy();
+  });
+});
+
+/** 三份项目上下文：A 已选 / B 已选 / C 已选，供快速连续切换用例复用。 */
+function threeContexts(): ProjectContextValue[] {
+  return [
+    makeContext(),
+    makeContext({
+      projectId: "p-b",
+      selectedProject: workspaceProject("p-b", "项目 B"),
+      projects: [workspaceProject("p-a", "项目 A"), workspaceProject("p-b", "项目 B")],
+    }),
+    makeContext({
+      projectId: "p-c",
+      selectedProject: workspaceProject("p-c", "项目 C"),
+      projects: [
+        workspaceProject("p-a", "项目 A"),
+        workspaceProject("p-b", "项目 B"),
+        workspaceProject("p-c", "项目 C"),
+      ],
+    }),
+  ];
+}
+
+describe("项目中枢竞态与空态", () => {
+  it("A 加载完成切到 B：B 延迟返回期间不显示 A 的数据", async () => {
+    const gateB = deferred<ProjectHubSnapshot>();
+    bridge.projectHubGetProject.mockImplementation(async (id: string) => {
+      if (id === "p-b") return gateB.promise;
+      return snapshot(id);
+    });
+    const user = userEvent.setup();
+    render(
+      <SwitchableHub
+        contexts={[
+          makeContext(),
+          makeContext({
+            projectId: "p-b",
+            selectedProject: workspaceProject("p-b", "项目 B"),
+            projects: [workspaceProject("p-a", "项目 A"), workspaceProject("p-b", "项目 B")],
+          }),
+        ]}
+      />,
+    );
+    await screen.findByRole("heading", { name: "项目 A" });
+
+    await user.click(screen.getByText("switch-global"));
+    // B 未返回：等待期间不得显示 A 的旧数据，只保留加载态
+    expect(screen.queryByRole("heading", { name: "项目 A" })).toBeNull();
+    expect(screen.getByRole("status")).toBeTruthy();
+
+    await act(async () => {
+      gateB.resolve(snapshot("p-b"));
+    });
+    expect(await screen.findByRole("heading", { name: "项目 B" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "项目 A" })).toBeNull();
+  });
+
+  it("切到未选择（null）后，A 的迟到响应不得恢复 A 快照", async () => {
+    const gateA = deferred<ProjectHubSnapshot>();
+    bridge.projectHubGetProject.mockImplementation(async (id: string) => {
+      if (id === "p-a") return gateA.promise;
+      return snapshot(id);
+    });
+    const user = userEvent.setup();
+    render(
+      <SwitchableHub
+        contexts={[
+          makeContext(),
+          makeContext({
+            projectId: null,
+            selectedProject: null,
+            projects: [workspaceProject("p-a", "项目 A")],
+          }),
+        ]}
+      />,
+    );
+    // A 在途：只有加载态，没有项目数据
+    expect(screen.getByRole("status")).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "项目 A" })).toBeNull();
+
+    await user.click(screen.getByText("switch-global"));
+    expect(await screen.findByText("尚未选择项目")).toBeTruthy();
+
+    await act(async () => {
+      gateA.resolve(snapshot("p-a"));
+    });
+    // 迟到的 A 响应已被代际作废，不得恢复任何项目数据
+    expect(screen.queryByRole("heading", { name: "项目 A" })).toBeNull();
+    expect(screen.getByText("尚未选择项目")).toBeTruthy();
+  });
+
+  it("A 切到 B、B 加载失败：不得回退显示 A，错误与空态可区分", async () => {
+    bridge.projectHubGetProject.mockImplementation(async (id: string) => {
+      if (id === "p-b") throw new Error("快照读取失败");
+      return snapshot(id);
+    });
+    const user = userEvent.setup();
+    render(
+      <SwitchableHub
+        contexts={[
+          makeContext(),
+          makeContext({
+            projectId: "p-b",
+            selectedProject: workspaceProject("p-b", "项目 B"),
+            projects: [workspaceProject("p-a", "项目 A"), workspaceProject("p-b", "项目 B")],
+          }),
+        ]}
+      />,
+    );
+    await screen.findByRole("heading", { name: "项目 A" });
+
+    await user.click(screen.getByText("switch-global"));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("快照读取失败");
+    expect(screen.queryByRole("heading", { name: "项目 A" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "项目 B" })).toBeNull();
+    // 失败不是「无数据」空态：错误态存在，加载态已结束
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("创建成功但全局切换失败：停留原项目 A，给出明确警告且不重复创建", async () => {
+    const user = userEvent.setup();
+    const ctx = makeContext({ selectProject: vi.fn().mockResolvedValue(false) });
+    renderHub(ctx);
+    await screen.findByRole("heading", { name: "项目 A" });
+    const loadBaseline = bridge.projectHubGetProject.mock.calls.length;
+    const createBaseline = bridge.projectHubCreateProject.mock.calls.length;
+
+    await user.click(screen.getByRole("button", { name: /新建项目/ }));
+    await user.type(await screen.findByPlaceholderText(/2D Roguelike/), "我要写一本科幻小说");
+    await user.click(screen.getByRole("button", { name: "开始规划" }));
+    await user.click(await screen.findByRole("button", { name: "确认并创建" }));
+
+    await waitFor(() => expect(ctx.selectProject).toHaveBeenCalledWith("new"), WAIT);
+    await waitFor(
+      () =>
+        expect(
+          useUiStore.getState().toasts.some((toast) =>
+            toast.message.includes("已创建，但全局项目切换未完成"),
+          ),
+        ).toBe(true),
+      WAIT,
+    );
+    // 仍显示原项目 A：不强插新项目快照、不加载新项目快照、不重复创建
+    expect(screen.getByRole("heading", { name: "项目 A" })).toBeTruthy();
+    expect(bridge.projectHubCreateProject.mock.calls.length).toBe(createBaseline + 1);
+    expect(bridge.projectHubGetProject.mock.calls.length).toBe(loadBaseline);
+  });
+
+  it("项目列表读取失败：显示错误态与重试，不显示「还没有项目」", async () => {
+    const ctx = makeContext({
+      projectId: null,
+      selectedProject: null,
+      projects: [],
+      projectsError: "数据库不可用",
+    });
+    renderHub(ctx);
+
+    expect(screen.queryByText("还没有项目")).toBeNull();
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toContain("项目列表加载失败");
+    expect(alert.textContent).toContain("数据库不可用");
+
+    const refreshBaseline = vi.mocked(ctx.refreshProjects).mock.calls.length;
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "重试" }));
+    // 重试复用全局上下文的 refreshProjects
+    expect(vi.mocked(ctx.refreshProjects).mock.calls.length).toBe(refreshBaseline + 1);
+  });
+
+  it("快速 A→B→C：等待期间不显示旧项目，最终只显示 C", async () => {
+    const gateB = deferred<ProjectHubSnapshot>();
+    const gateC = deferred<ProjectHubSnapshot>();
+    bridge.projectHubGetProject.mockImplementation(async (id: string) => {
+      if (id === "p-b") return gateB.promise;
+      if (id === "p-c") return gateC.promise;
+      return snapshot(id);
+    });
+    const user = userEvent.setup();
+    render(<MultiContextHub contexts={threeContexts()} />);
+    await screen.findByRole("heading", { name: "项目 A" });
+
+    await user.click(screen.getByText("switch-1"));
+    expect(screen.queryByRole("heading", { name: "项目 A" })).toBeNull();
+    await user.click(screen.getByText("switch-2"));
+    expect(screen.queryByRole("heading", { name: "项目 A" })).toBeNull();
+    expect(screen.getByRole("status")).toBeTruthy();
+
+    // 迟到的 B 不得显示
+    await act(async () => {
+      gateB.resolve(snapshot("p-b"));
+    });
+    expect(screen.queryByRole("heading", { name: "项目 B" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "项目 A" })).toBeNull();
+
+    await act(async () => {
+      gateC.resolve(snapshot("p-c"));
+    });
+    expect(await screen.findByRole("heading", { name: "项目 C" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "项目 A" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "项目 B" })).toBeNull();
+  });
+
+  it("C 已显示后，B 的迟到响应不得覆盖当前快照", async () => {
+    const gateB = deferred<ProjectHubSnapshot>();
+    bridge.projectHubGetProject.mockImplementation(async (id: string) => {
+      if (id === "p-b") return gateB.promise;
+      return snapshot(id);
+    });
+    const user = userEvent.setup();
+    render(<MultiContextHub contexts={threeContexts()} />);
+    await screen.findByRole("heading", { name: "项目 A" });
+
+    await user.click(screen.getByText("switch-1"));
+    await user.click(screen.getByText("switch-2"));
+    expect(await screen.findByRole("heading", { name: "项目 C" })).toBeTruthy();
+
+    await act(async () => {
+      gateB.resolve(snapshot("p-b"));
+    });
+    expect(screen.getByRole("heading", { name: "项目 C" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "项目 B" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "项目 A" })).toBeNull();
+  });
+
+  it("返回快照与请求项目不一致时：清空并明确报错，不渲染错误项目", async () => {
+    // 请求 p-a，但后端返回了 p-b 的快照
+    bridge.projectHubGetProject.mockResolvedValue(snapshot("p-b"));
+    renderHub(makeContext());
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("项目快照与请求的项目不一致");
+    expect(screen.queryByRole("heading", { name: "项目 A" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "项目 B" })).toBeNull();
+    expect(screen.queryByRole("status")).toBeNull();
   });
 });

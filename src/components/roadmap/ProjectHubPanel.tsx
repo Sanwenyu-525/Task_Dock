@@ -127,8 +127,15 @@ export interface ProjectHubPanelProps {
 export default function ProjectHubPanel({ onOpenPlanning }: ProjectHubPanelProps = {}) {
   // 全局项目上下文（ADR-0010）：本面板不再维护第二份项目列表/选择状态，
   // 快照只由全局 projectId 驱动；列表与选择器统一由 Shell 顶栏提供。
-  const { projectId, selectedProject, projects, projectsLoading, selectProject, refreshProjects } =
-    useProjectContext();
+  const {
+    projectId,
+    selectedProject,
+    projects,
+    projectsLoading,
+    projectsError,
+    selectProject,
+    refreshProjects,
+  } = useProjectContext();
   const showToast = useUiStore((s) => s.showToast);
   const [snapshot, setSnapshot] = useState<ProjectHubSnapshot | null>(null);
   const [view, setView] = useState<HubView>("overview");
@@ -138,14 +145,20 @@ export default function ProjectHubPanel({ onOpenPlanning }: ProjectHubPanelProps
   // 规划编辑视图：默认概览；编辑模式复用 PlanningWorkspace，不复制第二套 CRUD。
   const [planningMode, setPlanningMode] = useState<"summary" | "edit">("summary");
   const loadSeq = useRef(0);
+  // 刷新按钮等延迟回调需要「最新」projectId，不能捕获点击时的旧值。
+  const projectIdRef = useRef<string | null>(projectId);
 
   // 快照加载：代际防乱序 + 归属校验（返回的 project.id 必须等于请求的 projectId）。
+  // 每次请求先递增代际并丢弃旧快照；无 id 也递增，让在途旧请求返回时自然失效。
   const reloadSnapshot = useCallback(async (id: string | null) => {
+    const seq = ++loadSeq.current;
     if (!id) {
       setSnapshot(null);
+      setLoading(false);
+      setError(null);
       return;
     }
-    const seq = ++loadSeq.current;
+    setSnapshot(null);
     setLoading(true);
     setError(null);
     try {
@@ -153,12 +166,15 @@ export default function ProjectHubPanel({ onOpenPlanning }: ProjectHubPanelProps
       if (seq !== loadSeq.current) return;
       if (next.project.id !== id) {
         // 一致性错误不落地：宁可如实报错，也不用错项目数据渲染。
+        setSnapshot(null);
         setError("项目快照与请求的项目不一致，请重试");
         return;
       }
       setSnapshot(next);
     } catch (cause) {
       if (seq === loadSeq.current) {
+        // 失败不是「无数据」：清掉旧快照，给出可区分的错误态。
+        setSnapshot(null);
         setError(cause instanceof Error ? cause.message : String(cause));
       }
     } finally {
@@ -167,10 +183,12 @@ export default function ProjectHubPanel({ onOpenPlanning }: ProjectHubPanelProps
   }, []);
 
   useEffect(() => {
+    projectIdRef.current = projectId;
     void reloadSnapshot(projectId);
   }, [projectId, reloadSnapshot]);
 
-  const active = snapshot;
+  // 渲染归属保护：快照只属于当前全局 projectId，竞态漏网时也不串数据。
+  const active = snapshot?.project.id === projectId ? snapshot : null;
 
   // 进度口径统一走领域函数：阶段按功能 + 交付物，整体按阶段等权。
   const progress = useMemo(
@@ -184,11 +202,11 @@ export default function ProjectHubPanel({ onOpenPlanning }: ProjectHubPanelProps
     [active],
   );
 
-  // 创建项目（ADR-0010）：先刷新 Shell 项目列表，再经全局上下文切换到新项目根；
-  // 切换失败时如实提示「已创建但未切换」，不伪装成功也不重复创建。
+  // 创建项目（ADR-0010）：创建成功后先关闭表单，再刷新 Shell 项目列表并经全局
+  // 上下文切换到新项目根；快照由 projectId 变化触发重载，不手动强插 created。
+  // 切换失败时如实提示「已创建但未切换」，保留当前项目上下文且不重复创建。
   const onCreate = async (input: ProjectHubCreateInput) => {
     const created = await projectHubCreateProject(input);
-    setSnapshot(created);
     setCreateMode(null);
     setView("overview");
     await refreshProjects();
@@ -216,7 +234,7 @@ export default function ProjectHubPanel({ onOpenPlanning }: ProjectHubPanelProps
         </div>
         <button
           className="btn btn-ghost btn-sm"
-          onClick={() => void refreshProjects().then(() => reloadSnapshot(projectId))}
+          onClick={() => void refreshProjects().then(() => reloadSnapshot(projectIdRef.current))}
         >
           刷新
         </button>
@@ -234,7 +252,17 @@ export default function ProjectHubPanel({ onOpenPlanning }: ProjectHubPanelProps
         </div>
       ) : null}
 
-      {!projectsLoading && projects.length === 0 ? (
+      {/* 列表加载失败：明确错误态 + 重试，绝不伪装成「还没有项目」。 */}
+      {!projectsLoading && projectsError ? (
+        <div className="ph-error" role="alert">
+          <AlertTriangle size={16} /> 项目列表加载失败：{projectsError}
+          <button className="btn btn-ghost btn-sm" onClick={() => void refreshProjects()}>
+            重试
+          </button>
+        </div>
+      ) : null}
+
+      {!projectsLoading && !projectsError && projects.length === 0 ? (
         <div className="ph-empty">
           <Sparkles size={28} />
           <h3>还没有项目</h3>
