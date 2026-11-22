@@ -155,6 +155,10 @@ fn project_summary(db: &Db, project: &WorkspaceProject) -> AppResult<ProjectSumm
 
 /// 项目列表：**每个项目根一行**，计划不再作为独立项目出现。
 ///
+/// 授权过滤（统一模型）：全局 `projects.read`（readonly 或授权了全部项目）返回所有项目；
+/// 只有项目级授权（能力 resource_id 或 `mcp_agent_grants`）的 Agent 只看到被授权的项目；
+/// 什么授权都没有返回 FORBIDDEN。`total` 是过滤后的数量。
+///
 /// `kind` 参数保留兼容：`planning` / `workspace` 是旧调用方的伪类型，按「全部项目」处理；
 /// 其他值按项目类型过滤（general / novel / ...）。
 pub fn list_projects(
@@ -165,13 +169,19 @@ pub fn list_projects(
     limit: u32,
     offset: u32,
 ) -> AppResult<(Vec<ProjectSummary>, Page)> {
-    perms::require(db, principal, Capability::ProjectsRead, "")?;
+    let reads = perms::authorized_reads(db, principal)?;
+    if reads.projects.is_empty() {
+        return Err(perms::denial(Capability::ProjectsRead));
+    }
     let keyword = q.map(|v| v.trim().to_lowercase()).filter(|v| !v.is_empty());
     let kind_filter = kind
         .map(str::trim)
         .filter(|v| !v.is_empty() && *v != "planning" && *v != "workspace");
     let mut out: Vec<ProjectSummary> = Vec::new();
     for project in workspace_project_list_impl(db, None)? {
+        if !reads.projects.allows(&project.id) {
+            continue;
+        }
         let summary = project_summary(db, &project)?;
         if let Some(kind) = kind_filter {
             if summary.kind != kind {
@@ -200,12 +210,11 @@ fn resolve_or_repair_project(db: &Db, id: &str) -> AppResult<Option<(String, Opt
     let resolved = db.with_read(|conn| crate::project_hub::service::resolve_project_ref(conn, id))?;
     match resolved {
         Some(crate::project_hub::service::ProjectRef::Project(project_id)) => {
-            Ok(Some((project_id, None)))
+            Ok(Some((project_id.0, None)))
         }
-        Some(crate::project_hub::service::ProjectRef::Plan {
-            plan_id,
-            project_id,
-        }) => Ok(Some((project_id, Some(plan_id)))),
+        Some(crate::project_hub::service::ProjectRef::Plan { plan_id, project_id }) => {
+            Ok(Some((project_id.0, Some(plan_id.0))))
+        }
         None => {
             let repaired = db.with_transaction(|conn| {
                 crate::project_hub::service::ensure_project_for_plan_tx(conn, id)
@@ -942,11 +951,11 @@ pub fn get_plan(db: &Db, principal: &Principal, id: &str) -> AppResult<PlanView>
     let (root, plan_hint) = match db
         .with_read(|conn| crate::project_hub::service::resolve_project_ref(conn, id))?
     {
-        Some(crate::project_hub::service::ProjectRef::Project(root)) => (root, None),
+        Some(crate::project_hub::service::ProjectRef::Project(root)) => (root.0, None),
         Some(crate::project_hub::service::ProjectRef::Plan {
             plan_id,
             project_id,
-        }) => (project_id, Some(plan_id)),
+        }) => (project_id.0, Some(plan_id.0)),
         None => return Err(AppError::NotFound(format!("项目/计划不存在: {id}"))),
     };
     perms::require(db, principal, Capability::PlansRead, &root)?;
@@ -1027,13 +1036,13 @@ pub fn list_decisions_authorized(
 ) -> AppResult<(Vec<store::Decision>, Page)> {
     let limit = limit.clamp(1, 200);
     if let Some(pid) = project.map(str::trim).filter(|v| !v.is_empty()) {
-        let kind = db.with_read(|conn| perms::project_exists(conn, pid))?;
-        if kind.is_none() {
-            return Err(AppError::NotFound(format!("项目不存在: {pid}")));
-        }
+        // 过滤入参兼容计划 ID：解析到项目根后按根判定与查询。
+        let root = db
+            .with_read(|conn| perms::resolve_project_root(conn, pid))?
+            .ok_or_else(|| AppError::NotFound(format!("项目不存在: {pid}")))?;
         // 精确项目读取：能力必须覆盖该项目；未授权直接 FORBIDDEN。
-        perms::require(db, principal, Capability::DecisionsRead, pid)?;
-        return store::list_decisions(db, Some(pid), status, limit, offset);
+        perms::require(db, principal, Capability::DecisionsRead, &root)?;
+        return store::list_decisions(db, Some(&root), status, limit, offset);
     }
     let reads = perms::authorized_reads(db, principal)?;
     if reads.decisions.global {
@@ -1059,9 +1068,12 @@ pub fn get_decision_authorized(
         perms::require(db, principal, Capability::DecisionsRead, "")?;
         return Ok(decision);
     }
-    let exists = db.with_read(|conn| perms::project_exists(conn, project))?;
-    let scope = if exists.is_some() { project } else { "" };
-    perms::require(db, principal, Capability::DecisionsRead, scope)?;
+    // 历史行可能以计划 ID 归属：解析到项目根再判定；解析不出（悬空旧数据）
+    // 按无授权处理，不静默放行。
+    let scope = db
+        .with_read(|conn| perms::resolve_project_root(conn, project))?
+        .unwrap_or_default();
+    perms::require(db, principal, Capability::DecisionsRead, &scope)?;
     Ok(decision)
 }
 

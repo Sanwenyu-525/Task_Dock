@@ -690,3 +690,141 @@ describe("WorkbenchShell", () => {
     );
   });
 });
+
+describe("WorkbenchShell 创建幂等（§九 参数摘要派生 requestId）", () => {
+  beforeEach(() => {
+    bridge.projectCreate.mockClear();
+  });
+
+  const created = (id: string) => ({
+    project: { id, name: "项目" },
+    activePlan: { id: `plan-${id}` },
+    provisioningStatus: "metadata_only",
+  });
+
+  async function openCreateDialog(name: string): Promise<HTMLElement> {
+    fireEvent.click(screen.getByRole("button", { name: "打开快速创建菜单" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "新建项目" }));
+    const dialog = await screen.findByRole("dialog", { name: "新建项目" });
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "项目名称" }), {
+      target: { value: name },
+    });
+    return dialog;
+  }
+
+  function submit(dialog: HTMLElement) {
+    fireEvent.click(within(dialog).getByRole("button", { name: "确认" }));
+  }
+
+  function requestIdOf(call: number): string {
+    return bridge.projectCreate.mock.calls[call][0].clientRequestId;
+  }
+
+  it("失败后原参数重试 → 两次调用 clientRequestId 相同（后端幂等返回原项目）", async () => {
+    bridge.projectCreate
+      .mockRejectedValueOnce(new Error("超时"))
+      .mockResolvedValueOnce(created("p1"));
+    render(<WorkbenchShell />);
+    await screen.findByRole("heading", { name: "工作台首页", level: 2 });
+
+    submit(await openCreateDialog("幂等项目"));
+    await waitFor(() => expect(bridge.projectCreate).toHaveBeenCalledTimes(1));
+    // 失败：弹层保留，参数未变，直接重试。
+    submit(await screen.findByRole("dialog", { name: "新建项目" }));
+    await waitFor(() => expect(bridge.projectCreate).toHaveBeenCalledTimes(2));
+
+    expect(requestIdOf(1)).toBe(requestIdOf(0));
+  });
+
+  it("失败后修改项目名称再提交 → clientRequestId 变化", async () => {
+    bridge.projectCreate
+      .mockRejectedValueOnce(new Error("失败"))
+      .mockResolvedValueOnce(created("p2"));
+    render(<WorkbenchShell />);
+    await screen.findByRole("heading", { name: "工作台首页", level: 2 });
+
+    const dialog = await openCreateDialog("初稿名称");
+    submit(dialog);
+    await waitFor(() => expect(bridge.projectCreate).toHaveBeenCalledTimes(1));
+
+    const retry = await screen.findByRole("dialog", { name: "新建项目" });
+    fireEvent.change(within(retry).getByRole("textbox", { name: "项目名称" }), {
+      target: { value: "改后名称" },
+    });
+    submit(retry);
+    await waitFor(() => expect(bridge.projectCreate).toHaveBeenCalledTimes(2));
+
+    expect(requestIdOf(1)).not.toBe(requestIdOf(0));
+  });
+
+  it("创建成功后再创建另一个项目 → clientRequestId 变化（成功清空缓存）", async () => {
+    bridge.projectCreate
+      .mockResolvedValueOnce(created("p1"))
+      .mockResolvedValueOnce(created("p2"));
+    render(<WorkbenchShell />);
+    await screen.findByRole("heading", { name: "工作台首页", level: 2 });
+
+    submit(await openCreateDialog("第一个项目"));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "新建项目" })).toBeNull(),
+    );
+
+    submit(await openCreateDialog("第二个项目"));
+    await waitFor(() => expect(bridge.projectCreate).toHaveBeenCalledTimes(2));
+
+    expect(requestIdOf(1)).not.toBe(requestIdOf(0));
+  });
+
+  it("处理中名称输入 disabled（防改参数破坏幂等重试）", async () => {
+    let resolveCreate!: (value: unknown) => void;
+    bridge.projectCreate.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveCreate = resolve;
+        }),
+    );
+    render(<WorkbenchShell />);
+    await screen.findByRole("heading", { name: "工作台首页", level: 2 });
+
+    submit(await openCreateDialog("进行中项目"));
+    await waitFor(() => expect(bridge.projectCreate).toHaveBeenCalledTimes(1));
+
+    const busy = await screen.findByRole("dialog", { name: "新建项目" });
+    const nameInput = within(busy).getByRole("textbox", {
+      name: "项目名称",
+    }) as HTMLInputElement;
+    expect(nameInput.disabled).toBe(true);
+
+    // 收尾放行，避免悬挂 promise 干扰后续用例。
+    resolveCreate(created("p9"));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "新建项目" })).toBeNull(),
+    );
+  });
+
+  it("取消关闭弹窗后重开：参数未变时 requestId 保持（缓存只在成功后清空）", async () => {
+    bridge.projectCreate
+      .mockRejectedValueOnce(new Error("第一次失败"))
+      .mockResolvedValueOnce(created("p3"));
+    render(<WorkbenchShell />);
+    await screen.findByRole("heading", { name: "工作台首页", level: 2 });
+
+    submit(await openCreateDialog("取消重试项目"));
+    await waitFor(() => expect(bridge.projectCreate).toHaveBeenCalledTimes(1));
+
+    // 取消关闭弹窗（非成功路径，不清缓存），重新打开后名称仍保留。
+    fireEvent.click(
+      within(await screen.findByRole("dialog", { name: "新建项目" })).getByRole("button", {
+        name: "取消",
+      }),
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "新建项目" })).toBeNull(),
+    );
+    // 重新打开并填入同一名称 → 参数摘要不变 → 复用同一 requestId。
+    submit(await openCreateDialog("取消重试项目"));
+    await waitFor(() => expect(bridge.projectCreate).toHaveBeenCalledTimes(2));
+
+    expect(requestIdOf(1)).toBe(requestIdOf(0));
+  });
+});

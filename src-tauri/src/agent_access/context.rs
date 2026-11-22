@@ -392,8 +392,10 @@ fn resolve_context_scope(
                     return Err(AppError::Validation("任务未关联到指定项目".into()));
                 }
             }
-            let kind = db.with_read(|conn| perms::project_exists(conn, &project_id))?;
-            if kind.is_none() {
+            let known = db.with_read(|conn| {
+                Ok(perms::resolve_project_root(conn, &project_id)?.is_some())
+            })?;
+            if !known {
                 return Err(AppError::NotFound(format!("项目不存在: {project_id}")));
             }
             if !(task_linked && exact_task_read) && !project_read_scope_covers(&reads, &project_id) {

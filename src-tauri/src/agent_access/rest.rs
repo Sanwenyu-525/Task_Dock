@@ -42,7 +42,7 @@ use crate::mcp::permissions::Capability;
 
 use super::{
     context, error_code, handoff, http_status, operations, permissions as perms, service, store,
-    sync as file_sync, workspace, Envelope, Meta, Page, Principal, Source,
+    sync as file_sync, workspace, Envelope, Identity, Meta, Page, Principal, Source,
 };
 
 pub const MAX_BODY: usize = 1024 * 1024;
@@ -88,6 +88,7 @@ pub const ROUTES: &[(&str, &str, &str)] = &[
     ("GET", "/api/v1/projects", "项目列表（每个项目根一行，含 activePlanId）"),
     ("POST", "/api/v1/projects", "创建项目（需 projects.create）"),
     ("GET", "/api/v1/projects/{id}", "项目详情"),
+    ("PATCH", "/api/v1/projects/{id}", "更新项目（需 projects.write）"),
     ("GET", "/api/v1/projects/{id}/status", "项目状态与下一步"),
     ("GET", "/api/v1/tasks", "任务列表（支持 status/search/limit/offset）"),
     ("GET", "/api/v1/tasks/{id}", "任务详情"),
@@ -1702,6 +1703,30 @@ struct RestInitialPlan {
     capabilities: Vec<crate::project_hub::service::CreateCapabilityInput>,
 }
 
+/// `PATCH /api/v1/projects/{id}` 请求体（§7.3 projects.write 链路）。
+///
+/// 字段语义与 IPC `planning::ProjectPatch` 一致：name/description/status 可选，
+/// targetDate 三态（缺省 = 保持原值；null = 清除；值 = 设置）。
+/// expectedRevision 缺省 = 当前 revision（不做并发假设）；显式传入时由
+/// `update_project_tx` 做乐观并发判定，不匹配返回 Conflict（→ 409）。
+#[derive(serde::Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+struct RestPatchProject {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "crate::commands::tasks::deserialize_optional_field"
+    )]
+    target_date: Option<Option<String>>,
+    #[serde(default)]
+    expected_revision: Option<i64>,
+}
+
 async fn dispatch<G>(
     state: &RestState,
     principal: &Principal,
@@ -1796,6 +1821,14 @@ where
                 },
                 agent_access_policy:
                     crate::project_hub::creation::AgentAccessPolicy::CreatorProjectAndPlan,
+                principal: match principal.identity {
+                    Identity::RegisteredAgent => {
+                        crate::project_hub::creation::RequestPrincipal::agent(
+                            principal.agent_row_id.as_deref().unwrap_or_default(),
+                        )
+                    }
+                    _ => crate::project_hub::creation::RequestPrincipal::local_human(),
+                },
             };
             let created = crate::project_hub::creation::create(db, request)?;
             if let Some(row_id) = principal.agent_row_id.as_deref() {
@@ -1814,6 +1847,43 @@ where
         ("GET", ["projects", _]) => {
             let id = seg(1);
             Ok((serde_json::to_value(service::get_project(db, principal, id)?)?, None))
+        }
+        ("PATCH", ["projects", _]) => {
+            let id = seg(1);
+            // 先解析项目根（入参兼容计划 ID）：统一授权第三层按项目根判定 grant。
+            let root = db
+                .with_read(|conn| perms::resolve_project_root(conn, id))?
+                .ok_or_else(|| AppError::NotFound(format!("项目不存在: {id}")))?;
+            // LocalHuman 直接过；RegisteredAgent 需 projects.write 能力 + 项目根 grant。
+            perms::require(db, principal, Capability::ProjectsWrite, &root)?;
+            let patch: RestPatchProject = parse_body(body)?;
+            let updated = db.with_transaction(|conn| {
+                // expectedRevision 缺省 = 当前 revision（同一行、同一判定点）：
+                // update_project_tx 的并发判定读 planning_projects.id = 入参。
+                let current_revision: Option<i64> = conn
+                    .query_row(
+                        "SELECT revision FROM planning_projects WHERE id = ?1",
+                        rusqlite::params![id],
+                        |r| r.get(0),
+                    )
+                    .optional()
+                    .map_err(AppError::from)?;
+                let current_revision = current_revision
+                    .ok_or_else(|| AppError::NotFound(format!("项目不存在: {id}")))?;
+                crate::commands::planning::update_project_tx(
+                    conn,
+                    id.to_string(),
+                    crate::commands::planning::ProjectPatch {
+                        name: patch.name,
+                        description: patch.description,
+                        status: patch.status,
+                        target_date: patch.target_date,
+                        sort_order: None,
+                        expected_revision: patch.expected_revision.or(Some(current_revision)),
+                    },
+                )
+            })?;
+            Ok((serde_json::to_value(updated)?, None))
         }
         ("GET", ["tasks"]) => {
             let filter = crate::commands::tasks::TaskFilter {
@@ -2095,4 +2165,209 @@ fn openapi() -> Value {
         },
         "paths": Value::Object(paths),
     })
+}
+
+/// 项目 PATCH/创建门禁的入口级测试：直接驱动 `dispatch`，不绑端口。
+/// 身份覆盖 HTTP 无法构造的 LocalHuman（REST 真实请求只会是 RegisteredAgent）。
+#[cfg(test)]
+mod project_patch_tests {
+    use super::*;
+    use std::str::FromStr;
+    use std::time::Instant;
+
+    fn rest_state(db: &Arc<Db>) -> RestState {
+        RestState {
+            db: db.clone(),
+            port: 0,
+            shutdown: Arc::new(Notify::new()),
+            rate: Mutex::new(RateState {
+                window: Instant::now(),
+                count: 0,
+            }),
+        }
+    }
+
+    fn agent_with_capabilities(
+        db: &Db,
+        suffix: &str,
+        capabilities: &[(&str, &str)],
+    ) -> (Principal, String) {
+        let created = auth::create_agent(db, &format!("rest-patch-{suffix}"), "REST PATCH 测试")
+            .expect("创建 Agent");
+        auth::set_agent_scope(db, &created.info.id, "project_rw").expect("设置 scope");
+        for (capability, resource) in capabilities {
+            crate::mcp::permissions::grant(db, &created.info.id, capability, resource)
+                .expect("授予能力");
+        }
+        (
+            Principal::agent(
+                created.info.id.clone(),
+                created.info.agent_id.clone(),
+                Source::Rest,
+            ),
+            created.info.id,
+        )
+    }
+
+    /// 项目根 + 关联计划（同 ID，v91/v92 规则：grant 与授权都锚定项目根）。
+    fn seed_project(db: &Db, id: &str) {
+        let now = crate::agents::now_iso();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO workspace_projects
+                   (id, name, kind, status, root_path, dev_project_id, note, created_at, updated_at)
+                 VALUES (?1, ?1, 'general', 'active', '', NULL, '', ?2, ?2)",
+                rusqlite::params![id, now],
+            )?;
+            conn.execute(
+                "INSERT INTO planning_projects
+                   (id, name, workspace_project_id, is_active, revision, created_at, updated_at)
+                 VALUES (?1, ?1, ?1, 1, 3, ?2, ?2)",
+                rusqlite::params![id, now],
+            )?;
+            Ok(())
+        })
+        .expect("写入项目根与计划");
+    }
+
+    fn grant_project(db: &Db, row_id: &str, project: &str) {
+        auth::grant_project(db, row_id, project).expect("授予项目根授权");
+    }
+
+    async fn call(
+        state: &RestState,
+        principal: &Principal,
+        method: &'static str,
+        path: &str,
+        body: &Value,
+    ) -> AppResult<Value> {
+        let method = hyper::Method::from_str(method).expect("合法方法");
+        let (data, _) = dispatch(
+            state,
+            principal,
+            &method,
+            path,
+            &HashMap::new(),
+            serde_json::to_vec(body).expect("序列化").as_slice(),
+            &store::NoGuard,
+        )
+        .await?;
+        Ok(data)
+    }
+
+    #[tokio::test]
+    async fn agent_with_capability_and_grant_updates_project() {
+        let db = Arc::new(Db::open_in_memory().expect("内存库"));
+        seed_project(&db, "proj-patch");
+        let (principal, _) =
+            agent_with_capabilities(&db, "ok", &[("projects.write", "")]);
+        grant_project(&db, &principal.agent_row_id.as_deref().expect("row_id"), "proj-patch");
+
+        let data = call(
+            &rest_state(&db),
+            &principal,
+            "PATCH",
+            "/api/v1/projects/proj-patch",
+            &json!({ "name": "改名后", "expectedRevision": 3 }),
+        )
+        .await
+        .expect("有能力 + 授权必须成功");
+        assert_eq!(data["name"], json!("改名后"));
+        assert_eq!(data["revision"], json!(4), "写成功 revision +1");
+    }
+
+    #[tokio::test]
+    async fn agent_without_grant_is_forbidden() {
+        let db = Arc::new(Db::open_in_memory().expect("内存库"));
+        seed_project(&db, "proj-nogrant");
+        // 有能力但无项目根授权 → 403（统一授权第三层）。
+        let (principal, _) =
+            agent_with_capabilities(&db, "nogrant", &[("projects.write", "")]);
+
+        let err = call(
+            &rest_state(&db),
+            &principal,
+            "PATCH",
+            "/api/v1/projects/proj-nogrant",
+            &json!({ "name": "越权改名" }),
+        )
+        .await
+        .expect_err("无 grant 必须拒绝");
+        assert_eq!(error_code(&err), "FORBIDDEN", "{err:?}");
+        assert_eq!(http_status(error_code(&err)), 403);
+    }
+
+    #[tokio::test]
+    async fn expected_revision_conflict_maps_to_409() {
+        let db = Arc::new(Db::open_in_memory().expect("内存库"));
+        seed_project(&db, "proj-conflict");
+        let (principal, row_id) =
+            agent_with_capabilities(&db, "conflict", &[("projects.write", "")]);
+        grant_project(&db, &row_id, "proj-conflict");
+
+        let err = call(
+            &rest_state(&db),
+            &principal,
+            "PATCH",
+            "/api/v1/projects/proj-conflict",
+            &json!({ "name": "迟到提交", "expectedRevision": 2 }),
+        )
+        .await
+        .expect_err("过期 revision 必须冲突");
+        assert_eq!(error_code(&err), "CONFLICT", "{err:?}");
+        assert_eq!(http_status(error_code(&err)), 409);
+    }
+
+    #[tokio::test]
+    async fn local_human_updates_directly() {
+        let db = Arc::new(Db::open_in_memory().expect("内存库"));
+        seed_project(&db, "proj-local");
+        // 本机人类身份不要求能力/grant（统一授权：LocalHuman 直接过）。
+        let principal = Principal::local(Source::Rest);
+
+        let data = call(
+            &rest_state(&db),
+            &principal,
+            "PATCH",
+            "/api/v1/projects/proj-local",
+            &json!({ "name": "本地改名", "status": "in_progress" }),
+        )
+        .await
+        .expect("LocalHuman 直接成功");
+        assert_eq!(data["name"], json!("本地改名"));
+        assert_eq!(data["status"], json!("in_progress"));
+    }
+
+    #[tokio::test]
+    async fn create_new_is_rejected_and_creates_no_directory() {
+        let db = Arc::new(Db::open_in_memory().expect("内存库"));
+        let (principal, _) =
+            agent_with_capabilities(&db, "gate", &[("projects.create", "")]);
+        let parent = std::env::temp_dir()
+            .join(format!("td-rest-gate-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&parent).expect("建立父目录");
+        let target = parent.join("不得创建");
+
+        let err = call(
+            &rest_state(&db),
+            &principal,
+            "POST",
+            "/api/v1/projects",
+            &json!({
+                "name": "越权建目录",
+                "rootPath": target.to_str().expect("utf8 路径"),
+                "directoryMode": "create_new"
+            }),
+        )
+        .await
+        .expect_err("REST Agent 不得 create_new");
+        assert_eq!(error_code(&err), "VALIDATION", "{err:?}");
+        assert!(
+            err.user_message().contains("create_new"),
+            "错误必须明确拒绝 create_new: {}",
+            err.user_message()
+        );
+        assert!(!target.exists(), "拒绝后不得落目录");
+        std::fs::remove_dir_all(&parent).ok();
+    }
 }

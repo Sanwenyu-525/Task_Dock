@@ -269,3 +269,37 @@ activePlanId → 自动选中新项目 → CLI 交叉读取同一项目与同一
 
 未完成：MCP/REST 真机调用（需外部客户端；服务端与 CLI/REST 共用创建服务，已由集成测试覆盖）、
 Agent Token 写链路演练（需注册 Token）。
+
+## 2026-11-22：第二轮架构治理（v92）
+
+已完成：幂等请求归属 `IdempotencyScope` + `project_create_requests`（跨 Agent 幂等隔离）；
+统一授权四层（`require` 增加 grant 层、`authorized_reads` grant 交集）；
+`ProjectId`/`PlanId` 强类型与旧 `project_kind` 契约收敛（v92 重建 agent_decisions/agent_handoffs，
+新数据写 `'project'`）；MCP grant/revoke 归一根（v91 外键对齐）+ McpAccessSection 换项目根列表 +
+能力清单补齐；CLI `create_new` 身份门禁 + `cli_operation_result` 复用 `from_value`；
+REST `PATCH /api/v1/projects/{projectId}`；Agent 项目列表授权过滤；
+Workbench 创建 requestId 按参数摘要派生；备份注册表补登记（project_create_requests 与
+导入三表）+ `db::tests` 迁移断言修复。
+
+修复的存量断裂（v90/v91 之后产生）：带项目的交接创建 CHECK 失败、文件导入任务/决策被旧
+字符串比较拒绝、MCP grant 直插计划 ID 触发 v91 外键失败。
+
+验证：`agent_access` 139+112+5+4 全过；`mcp` 81/0（修复 18 个 FK 夹具失败 + 8 个新测试）；
+`collab` 19/0；`project_hub::creation` 36/0（含 6 个幂等归属新测试）；`db::tests` 51/0；
+`commands::planning` 12/0（修复 v0.7 时代遗留的归档不变量过期断言）；`commands::project_workspace`
+13/0；前端 `McpAccessSection.test.tsx` 14/0、WorkbenchShell 用例追加。
+
+真实场景验收（CLI 端到端，隔离库 tmp/debug/agent-gov-round3/，证据
+tmp/acceptance/agent-gov-round3/）：A/B/C/D/E/G/H/I/J 十场景中九项直接通过——跨 Agent 同
+requestId 独立创建、同 Agent 重试返回原项目、Agent create_new 拒绝且目录未建、人类 create_new
+真实建目录（事件主体=local）、Decision/Handoff/文件协议导入落项目根（project_kind='project'）、
+B 授权后接受交接（未授权 FORBIDDEN）、未授权项目读取拒绝；场景 I（操作记录项目指针）首次
+运行为空 → 修复 CLI 项目上下文回填（--project / task create 位置参数解析为根，
+complete_tx COALESCE 回填）后复验通过。场景 F（MCP 设置真实窗口走查）以组件测试覆盖，
+真实窗口受单实例协议阻塞。
+
+未完成 / 存量：`tests/mcp_e2e.rs` 与 `tests/project_creation_identity.rs` 已修复/待运行
+（ENVIRONMENT BLOCKED：并行会话实例锁 target/debug/task-dock.exe，os error 5，锁释放后补跑）；
+`commands::settings` 布局宽度文案、`commands::projection_window` 吸附宽度、
+backup/restore/shelf 的 voice 资产三处为其他在途任务存量失败，未在本轮范围；CLI `project update`
+子命令未实现（REST/MCP 已覆盖，见 feature-matrix「projects.write 更新链路」）。

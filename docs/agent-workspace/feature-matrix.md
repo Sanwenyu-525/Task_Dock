@@ -70,5 +70,15 @@
 | 计划列表独立 | 已实现 | `GET /plans` 条目带 `projectId`、`isActive` |
 | 四入口共用创建服务 | 已实现 | UI IPC / CLI / MCP / REST 同一事务与幂等 |
 | `projects.create` 独立授权 | 已实现 | 无该能力时 `project_rw` 也不能创建 |
-| 目录三模式 + 补偿 | 已实现 | `create_new` 仅 UI/CLI；REST/MCP 只关联已有目录 |
+| 目录三模式 + 补偿 | 已实现 | `create_new` 仅本机人类：UI 弹窗与未带 token 的 CLI；Agent 在 CLI/MCP/REST 一律拒绝（v92 统一门禁） |
 | Agent 文件协议按项目根 | 已实现 | `projects/{projectId}/plans/{planId}/plan.md` |
+
+## 统一授权与幂等归属（2026-11-22，v92）
+
+| 能力 | 状态 | 说明 |
+|---|---|---|
+| 幂等请求归属隔离 | 已实现 | `project_create_requests`（v92）：同主体重试返回原项目，跨主体相同 requestId 独立创建，无跨 Agent 授权 |
+| 授权判定统一 | 已实现 | `require` 四层（身份→scope→capability→grant），CLI/MCP/REST 同规则；`taskdock_update_project` 需 `projects.write` 能力 |
+| 项目列表授权过滤 | 已实现 | 全局能力返回全部；项目级授权返回被授权项目；无授权 FORBIDDEN |
+| `projects.write` 更新链路 | 部分 | MCP + REST PATCH 已实现（expectedRevision→409）；CLI `project update` 为后续项 |
+| MCP 设置 UI 项目根授权 | 已实现 | 数据源改项目根列表，授权按根 ID 匹配名称；能力清单补齐项目族 |

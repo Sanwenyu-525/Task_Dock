@@ -64,12 +64,29 @@ fn principal_agent_snapshot(principal: &Principal) -> (Option<String>, String) {
     (principal.agent_row_id.clone(), agent_id)
 }
 
-fn project_kind_for(db: &Db, project_id: &str) -> AppResult<&'static str> {
-    if project_id.trim().is_empty() {
-        return Ok("none");
+/// 解析入参项目 ID（兼容计划 ID）为项目根，并返回应持久化的 `project_kind`。
+///
+/// 统一项目身份后，交接的归属、授权与持久化只用项目根：
+/// - `project_id` 一律存项目根 ID（入参是计划 ID 时先解析）；
+/// - `project_kind` 收敛为 `none` / `project`；旧值 `planning` / `workspace` 只在
+///   历史行中保留可读（v92 迁移），新数据不再产生，入参声明值不参与判定。
+fn resolve_persist_project(db: &Db, project_id: &str) -> AppResult<(String, &'static str)> {
+    let trimmed = project_id.trim();
+    if trimmed.is_empty() {
+        return Ok((String::new(), "none"));
     }
-    let kind = db.with_read(|conn| perms::project_exists(conn, project_id))?;
-    kind.ok_or_else(|| AppError::NotFound(format!("项目不存在: {project_id}")))
+    let root = db
+        .with_read(|conn| perms::resolve_project_root(conn, trimmed))?
+        .ok_or_else(|| AppError::NotFound(format!("项目不存在: {project_id}")))?;
+    Ok((root, "project"))
+}
+
+/// 历史交接行可能仍以计划 ID 归属（v92 之前写入）：授权与归属比较前先解析为
+/// 项目根；解析不出（项目已删除/悬空旧行）时保持原值，由授权层按现行为拒绝。
+fn handoff_project_root(db: &Db, project_id: &str) -> AppResult<String> {
+    Ok(db
+        .with_read(|conn| perms::resolve_project_root(conn, project_id))?
+        .unwrap_or_else(|| project_id.to_string()))
 }
 
 // ── 交接创建 ─────────────────────────────────────────────────────
@@ -107,11 +124,11 @@ pub fn create_handoff_guarded(
     ] {
         store::check_items(field, items)?;
     }
-    let project_id = input.project_id.unwrap_or_default();
-    let project_kind = match input.project_kind.as_deref() {
-        Some("planning") | Some("workspace") => project_kind_for(db, &project_id)?,
-        _ => project_kind_for(db, &project_id)?,
-    };
+    // 归属只认项目根：入参是计划 ID 时先解析；入参声明的 project_kind（旧契约）
+    // 不参与判定，持久化值由真实归属推导。
+    let (project_id, project_kind) =
+        resolve_persist_project(db, input.project_id.as_deref().unwrap_or_default())?;
+    let _ = input.project_kind;
     perms::require(db, principal, Capability::HandoffsWrite, &project_id)?;
     let target = resolve_target_agent(db, &input.to_agent_id)?;
     let (from_row, from_id) = principal_agent_snapshot(principal);
@@ -195,9 +212,26 @@ pub fn list_handoffs(
             }
         }
     }
-    if scope.is_empty() || project_id.is_some_and(|id| !scope.allows(id)) {
+    if scope.is_empty() {
         return Err(perms::denial(Capability::HandoffsRead));
     }
+    // 过滤入参兼容计划 ID：解析到项目根后再做授权与过滤（归属只存项目根）。
+    // 空过滤 =「只看无项目行」：只对全局授权有意义；项目授权不得借空过滤
+    // 扩大可见范围（保持 v81 以来的 FORBIDDEN 契约）。
+    let project_root = match project_id.map(str::trim) {
+        Some(id) if id.is_empty() => {
+            if !scope.global {
+                return Err(perms::denial(Capability::HandoffsRead));
+            }
+            Some(String::new())
+        }
+        Some(id) => Some(
+            db.with_read(|conn| perms::resolve_project_root(conn, id))?
+                .filter(|root| scope.allows(root))
+                .ok_or_else(|| perms::denial(Capability::HandoffsRead))?,
+        ),
+        None => None,
+    };
     if let Some(status) = status {
         if !matches!(
             status,
@@ -207,10 +241,17 @@ pub fn list_handoffs(
         }
     }
     if scope.global {
-        store::list_handoffs(db, status, project_id, limit, offset)
+        store::list_handoffs(db, status, project_root.as_deref(), limit, offset)
     } else {
         let projects: Vec<String> = scope.ids.into_iter().collect();
-        store::list_handoffs_in_projects(db, status, project_id, &projects, limit, offset)
+        store::list_handoffs_in_projects(
+            db,
+            status,
+            project_root.as_deref(),
+            &projects,
+            limit,
+            offset,
+        )
     }
 }
 
@@ -225,16 +266,19 @@ pub fn get_handoff(db: &Db, principal: &Principal, id: &str) -> AppResult<store:
 /// 已注册 Agent 按「能力 + 项目范围」判定（`resource_id = ''` 的全局授权可覆盖
 /// 任何项目，项目授权只能覆盖同一项目）。文件导入同样要过能力与项目范围两道
 /// 校验：读能力缺失的导入授权不能借交接详情/报告读取越权。
+/// 授权一律在项目根域上进行：历史行仍以计划 ID 归属时先解析（见
+/// [`handoff_project_root`]）。
 fn ensure_handoff_access(
     db: &Db,
     principal: &Principal,
     handoff: &store::Handoff,
     capability: Capability,
 ) -> AppResult<()> {
-    perms::require(db, principal, capability, &handoff.project_id)?;
+    let project_root = handoff_project_root(db, &handoff.project_id)?;
+    perms::require(db, principal, capability, &project_root)?;
     if principal.identity == Identity::FileImport {
         if let Some(grant) = principal.import.as_ref() {
-            perms::check_import_project_scope(grant, &handoff.project_id)?;
+            perms::check_import_project_scope(grant, &project_root)?;
         }
     }
     Ok(())
@@ -460,20 +504,25 @@ fn resolve_report_handoff(db: &Db, handoff_id: Option<&str>) -> AppResult<store:
 }
 
 /// 报告项目 = 交接项目。载荷声明的项目不一致时直接拒绝（不静默改写归属）。
-fn derive_report_project(handoff: &store::Handoff, declared: Option<&str>) -> AppResult<String> {
+/// 历史交接行可能仍以计划 ID 归属：比较与持久化都先解析到项目根。
+fn derive_report_project(
+    db: &Db,
+    handoff: &store::Handoff,
+    declared: Option<&str>,
+) -> AppResult<String> {
+    let handoff_project = handoff_project_root(db, &handoff.project_id)?;
     let declared = declared.map(str::trim).unwrap_or("");
-    if !declared.is_empty() && declared != handoff.project_id {
-        if handoff.project_id.is_empty() {
+    if !declared.is_empty() && declared != handoff_project {
+        if handoff_project.is_empty() {
             return Err(validation(format!(
                 "交接没有项目归属，报告不得声明项目 {declared}"
             )));
         }
         return Err(validation(format!(
-            "报告项目 {declared} 与交接项目 {} 不一致（报告项目由交接推导）",
-            handoff.project_id
+            "报告项目 {declared} 与交接项目 {handoff_project} 不一致（报告项目由交接推导）"
         )));
     }
-    Ok(handoff.project_id.clone())
+    Ok(handoff_project)
 }
 
 /// 报告提交者的身份校验：登记身份必须与库内记录一致（防冒用/防已撤销）。
@@ -529,30 +578,32 @@ fn ensure_report_participant(principal: &Principal, handoff: &store::Handoff) ->
 /// - **身份匹配**：注册 Agent 必须与库内登记一致（未撤销、agent_id 相符）；
 ///   直接调用接口时还必须是该交接的参与方；
 /// - **能力**：必须持有 `handoffs.write`；
-/// - **项目范围**：按交接真实归属的项目判定——全局授权可覆盖任何项目，
-///   项目授权只能覆盖同一项目；无项目（全局）交接只接受全局授权。
+/// - **项目范围**：按交接真实归属的项目根判定——全局授权可覆盖任何项目，
+///   项目授权只能覆盖同一项目；无项目（全局）交接只接受全局授权；
+///   历史行仍以计划 ID 归属时先解析到项目根。
 fn ensure_report_access(
     db: &Db,
     principal: &Principal,
     handoff: &store::Handoff,
 ) -> AppResult<()> {
+    let project_root = handoff_project_root(db, &handoff.project_id)?;
     match principal.identity {
         Identity::RegisteredAgent => {
             verify_registered_agent(db, principal)?;
             if principal.import.is_none() {
                 ensure_report_participant(principal, handoff)?;
             }
-            perms::require(db, principal, Capability::HandoffsWrite, &handoff.project_id)?;
+            perms::require(db, principal, Capability::HandoffsWrite, &project_root)?;
         }
         Identity::FileImport => {
             // 文件导入：能力集合来自导入授权；项目范围同样按交接真实归属判定。
-            perms::require(db, principal, Capability::HandoffsWrite, &handoff.project_id)?;
+            perms::require(db, principal, Capability::HandoffsWrite, &project_root)?;
             if let Some(grant) = principal.import.as_ref() {
-                perms::check_import_project_scope(grant, &handoff.project_id)?;
+                perms::check_import_project_scope(grant, &project_root)?;
             }
         }
         Identity::LocalHuman | Identity::SystemInternal => {
-            perms::require(db, principal, Capability::HandoffsWrite, &handoff.project_id)?;
+            perms::require(db, principal, Capability::HandoffsWrite, &project_root)?;
         }
     }
     Ok(())
@@ -598,8 +649,9 @@ pub fn create_report_guarded(
     }
     // 1) 报告必须关联真实存在的交接。
     let handoff = resolve_report_handoff(db, input.handoff_id.as_deref())?;
-    // 2) 项目归属只能来自交接；载荷声明的项目只做一致性校验。
-    let project_id = derive_report_project(&handoff, input.project_id.as_deref())?;
+    // 2) 项目归属只能来自交接（历史计划 ID 归属先解析为项目根）；
+    //    载荷声明的项目只做一致性校验。
+    let project_id = derive_report_project(db, &handoff, input.project_id.as_deref())?;
     // 3) 身份匹配 + 能力 + 项目范围。
     ensure_report_access(db, principal, &handoff)?;
     let (agent_row, agent_id) = principal_agent_snapshot(principal);
@@ -679,7 +731,9 @@ pub fn list_reports(
     if let Some(handoff_id) = handoff_id {
         let handoff = store::get_handoff(db, handoff_id)?;
         ensure_handoff_access(db, principal, &handoff, Capability::HandoffsRead)?;
-        if !scope.allows(&handoff.project_id) {
+        // 范围按项目根表达：历史交接行仍是计划 ID 归属时先解析再比较。
+        let handoff_project = handoff_project_root(db, &handoff.project_id)?;
+        if !scope.allows(&handoff_project) {
             return Err(perms::denial(Capability::HandoffsRead));
         }
     } else if scope.is_empty() {

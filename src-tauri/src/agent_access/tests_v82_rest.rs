@@ -1405,17 +1405,45 @@ fn request_fingerprint(method: &hyper::Method, path: &str, body: &[u8]) -> Strin
     rest::fingerprint(method, path, &HashMap::new(), &body_hash)
 }
 
+/// 建一个可解析的项目：项目根（workspace_projects）+ 关联计划。
+/// v92 统一项目身份后，授权与归属都锚定项目根；只建无根的历史计划行
+/// 会被 `resolve_project_root` 判为不存在。
 fn seed_project(db: &Db, id: &str) {
     let now = crate::agents::now_iso();
     db.with_conn(|conn| {
         conn.execute(
-            "INSERT INTO planning_projects (id, name, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?3)",
-            rusqlite::params![id, id, now],
+            "INSERT INTO workspace_projects
+               (id, name, kind, status, root_path, dev_project_id, note, created_at, updated_at)
+             VALUES (?1, ?1, 'general', 'active', '', NULL, '', ?2, ?2)",
+            rusqlite::params![id, now],
+        )?;
+        conn.execute(
+            "INSERT INTO planning_projects
+               (id, name, workspace_project_id, is_active, created_at, updated_at)
+             VALUES (?1, ?1, ?1, 1, ?2, ?2)",
+            rusqlite::params![id, now],
         )?;
         Ok(())
     })
-    .expect("写入规划项目");
+    .expect("写入项目根与计划");
+}
+
+/// 授予项目根授权（v92 统一授权第三层：`mcp_agent_grants`）。
+fn grant_project(db: &Db, row_id: &str, project: &str) {
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT OR IGNORE INTO mcp_agent_grants (id, agent_row_id, project_id, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![
+                uuid::Uuid::new_v4().to_string(),
+                row_id,
+                project,
+                crate::agents::now_iso()
+            ],
+        )?;
+        Ok(())
+    })
+    .expect("授予项目授权");
 }
 
 fn handoff_count(db: &Db) -> i64 {
@@ -1631,6 +1659,8 @@ fn rest_decision_reads_are_project_scoped() {
     seed_project(&db, "proj-b");
     let (row_id, _, token) = bare_agent(&db, "decision");
     mcp_perm::grant(&db, &row_id, "decisions.read", "proj-a").expect("授权项目 A 决策读");
+    // v92 统一授权第三层：project_rw 的项目型读取还要求项目根授权。
+    grant_project(&db, &row_id, "proj-a");
 
     let local = Principal::local(Source::Ui);
     let other = crate::agent_access::store::create_decision(
@@ -1681,6 +1711,8 @@ fn rest_activity_requires_read_and_filters_other_projects() {
     // 只有项目 A 决策读 → 活动只可见项目 A。
     let (row_id, _, token) = bare_agent(&db, "activity-scoped");
     mcp_perm::grant(&db, &row_id, "decisions.read", "proj-a").expect("授权项目 A 决策读");
+    // v92 统一授权第三层：project_rw 的项目型读取还要求项目根授权。
+    grant_project(&db, &row_id, "proj-a");
 
     let local = Principal::local(Source::Ui);
     for (project, action) in [("proj-a", "decision.create"), ("proj-b", "decision.create")] {

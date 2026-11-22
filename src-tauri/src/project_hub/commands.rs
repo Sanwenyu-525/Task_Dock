@@ -132,6 +132,8 @@ pub async fn project_create(
             capabilities: draft.capabilities,
         },
         agent_access_policy: policy,
+        // Tauri 命令只来自本机 UI：可信本机人类。
+        principal: super::creation::RequestPrincipal::local_human(),
     };
     let db = db.inner().clone();
     tauri::async_runtime::spawn_blocking(move || super::creation::create(db.as_ref(), request))

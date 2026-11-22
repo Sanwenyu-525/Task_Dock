@@ -2175,6 +2175,8 @@ CREATE INDEX idx_sec_audit_cat ON security_audit_log(category, created_at);
     crate::agent_access::schema::MIGRATION_90,
     // 统一项目身份（v91）：授权表外键从计划改到项目根，历史计划先补根再映射。
     crate::agent_access::schema::MIGRATION_91,
+    // 统一项目身份第二轮（v92）：幂等请求归属表 + project_kind 收敛为 'project'。
+    crate::agent_access::schema::MIGRATION_92,
 ];
 
 /// 历史测试数据的保守回填（幂等）。
@@ -4600,7 +4602,8 @@ mod tests {
                     .map_err(AppError::from)
             })
             .unwrap();
-        assert_eq!(version, MIGRATIONS.len() as i64, "应依次迁移至最新版");
+        // 「最新版」以最后一条迁移的真实版本号为准：v87 被跳过后 len 不再等于版本号。
+        assert_eq!(version, MIGRATIONS[MIGRATIONS.len() - 1].0, "应依次迁移至最新版");
         // v3：transport_verified 分层验证列已加入
         let cols: i64 = db
             .with_conn(|c| {
@@ -4841,20 +4844,23 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// 逐个历史 schema 版本（v1…v13）升级到最新：版本推进、任务行不丢、
+    /// 逐个历史 schema 版本升级到最新：版本推进、任务行不丢、
     /// 外键零违规、重复打开幂等。覆盖 v0.1–v0.4 各历史库的真实升级入口。
+    ///
+    /// 前缀长度与版本号不再假设相等：v87 被有意跳过（v86.1 占用 v88），
+    /// 夹具版本必须取「前缀最后一条迁移的真实版本号」。
     #[test]
     fn every_historical_schema_version_upgrades_to_latest_without_losing_rows() {
         let latest = MIGRATIONS[MIGRATIONS.len() - 1].0;
         let now = "2026-10-27T09:00:00+00:00";
-        for from in 1..=MIGRATIONS.len() {
+        for (idx, (from, _)) in MIGRATIONS.iter().enumerate() {
             let dir = std::env::temp_dir().join(format!("td-migall-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(&dir).unwrap();
             let path = dir.join("t.db");
             {
                 let conn = Connection::open(&path).unwrap();
                 conn.pragma_update(None, "foreign_keys", "ON").unwrap();
-                apply_migrations(&conn, 0, &MIGRATIONS[..from]).unwrap();
+                apply_migrations(&conn, 0, &MIGRATIONS[..idx + 1]).unwrap();
                 // 每个历史版本都放一条任务：验证升级前后任务行不丢
                 conn.execute(
                     "INSERT INTO tasks (id, title, created_at, updated_at)
@@ -4865,7 +4871,7 @@ mod tests {
                 let version: i64 = conn
                     .query_row("PRAGMA user_version", [], |r| r.get(0))
                     .unwrap();
-                assert_eq!(version, from as i64, "夹具的 schema 版本应等于 {}", from);
+                assert_eq!(version, *from, "夹具的 schema 版本应等于 {}", from);
             }
 
             let db = Db::open(&path).unwrap();
@@ -5149,7 +5155,7 @@ CREATE INDEX idx_shelf_file_ops_created ON shelf_file_ops(created_at);
                     .map_err(AppError::from)
             })
             .unwrap();
-        assert_eq!(version, MIGRATIONS.len() as i64);
+        assert_eq!(version, MIGRATIONS[MIGRATIONS.len() - 1].0);
         // 旧关联原样保留
         let old_links: i64 = db2
             .with_conn(|c| {

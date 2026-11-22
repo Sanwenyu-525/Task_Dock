@@ -148,6 +148,10 @@ pub fn touch_last_seen(conn: &Connection, row_id: &str) {
 }
 
 /// scope=project_rw 的 Agent 是否持有某项目的写授权。
+///
+/// 精确匹配 `mcp_agent_grants.project_id`，**不做计划 → 根解析**：
+/// v91 起授权键恒为项目根（`workspace_projects.id`），调用方必须传根
+/// （入参可能是计划 ID 时改用 `agent_access::permissions::ensure_project_grant`）。
 pub fn has_project_grant(conn: &Connection, row_id: &str, project_id: &str) -> AppResult<bool> {
     let n: i64 = conn
         .query_row(
@@ -332,26 +336,21 @@ pub fn set_agent_scope(db: &Db, row_id: &str, scope: &str) -> AppResult<McpAgent
 }
 
 /// 授予项目写授权（project_rw 生效）；重复授予幂等。
+///
+/// `project_id` 入参兼容计划 ID：先统一解析为项目根（v91 起授权键是
+/// `workspace_projects.id`，外键也指向它），解析不出 → Validation；
+/// 解析成功即项目根真实存在。落库的 `project_id` 恒为项目根。
 pub fn grant_project(db: &Db, row_id: &str, project_id: &str) -> AppResult<McpAgentInfo> {
     db.with_conn(|conn| {
-        let exists: Option<i64> = conn
-            .query_row(
-                "SELECT 1 FROM planning_projects WHERE id = ?1",
-                rusqlite::params![project_id],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(AppError::from)?;
-        if exists.is_none() {
-            return Err(AppError::Validation(format!("项目不存在: {project_id}")));
-        }
+        let root = crate::project_hub::service::resolve_project_root(conn, project_id)?
+            .ok_or_else(|| AppError::Validation(format!("项目不存在: {project_id}")))?;
         conn.execute(
             "INSERT OR IGNORE INTO mcp_agent_grants (id, agent_row_id, project_id, created_at)
              VALUES (?1, ?2, ?3, ?4)",
             rusqlite::params![
                 uuid::Uuid::new_v4().to_string(),
                 row_id,
-                project_id,
+                root,
                 crate::agents::now_iso()
             ],
         )
@@ -373,6 +372,10 @@ pub fn grant_project(db: &Db, row_id: &str, project_id: &str) -> AppResult<McpAg
 }
 
 /// 撤销单个项目授权；重复撤销幂等，返回更新后的身份和授权列表。
+///
+/// `project_id` 入参兼容计划 ID：先解析为项目根再删；同时清理该根下
+/// 历史计划 ID 的残留授权行（v91 之前可能按计划 ID 落库）。
+/// 解析不出（项目已删除/未知 ID）时没有可撤销的授权，按幂等返回当前状态。
 pub fn revoke_project(db: &Db, row_id: &str, project_id: &str) -> AppResult<McpAgentInfo> {
     db.with_transaction(|conn| {
         let exists: bool = conn.query_row(
@@ -383,10 +386,15 @@ pub fn revoke_project(db: &Db, row_id: &str, project_id: &str) -> AppResult<McpA
         if !exists {
             return Err(AppError::NotFound(format!("MCP Agent 不存在: {row_id}")));
         }
-        conn.execute(
-            "DELETE FROM mcp_agent_grants WHERE agent_row_id = ?1 AND project_id = ?2",
-            rusqlite::params![row_id, project_id],
-        )?;
+        let root = crate::project_hub::service::resolve_project_root(conn, project_id)?;
+        if let Some(root) = root.as_deref() {
+            conn.execute(
+                "DELETE FROM mcp_agent_grants WHERE agent_row_id = ?1
+                   AND (project_id = ?2 OR project_id IN (
+                       SELECT id FROM planning_projects WHERE workspace_project_id = ?2))",
+                rusqlite::params![row_id, root],
+            )?;
+        }
         agent_info_by_row_id(conn, row_id)
     })
 }

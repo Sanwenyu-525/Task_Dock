@@ -18,7 +18,7 @@ use crate::mcp::permissions::Capability;
 
 use super::{
     context, error_code, handoff, operations, permissions as perms, projection, service, store,
-    sync as file_sync, workspace, ActorKind, Envelope, Meta, Page, Principal, Source,
+    sync as file_sync, workspace, ActorKind, Envelope, Identity, Meta, Page, Principal, Source,
 };
 
 pub const USAGE: &str = r#"Task Dock Agent CLI
@@ -265,18 +265,31 @@ fn classify_cli_write(args: &[String]) -> Option<(&'static str, &'static str, St
 }
 
 /// 从 CLI 输出数据中提取真实资源指针（不猜：只认返回对象里明确存在的字段）。
-fn cli_operation_result(data: &Value) -> operations::OperationResult {
-    let mut result = operations::OperationResult::new();
-    if let Some(id) = data.get("id").and_then(|v| v.as_str()) {
-        result = result.resource("", id);
-    } else if let Some(id) = data
-        .get("handoff")
-        .and_then(|h| h.get("id"))
-        .and_then(|v| v.as_str())
-    {
-        result = result.resource("handoff", id);
+///
+/// 提取复用 `operations::OperationResult::from_value`，与统一创建服务的返回形状对齐：
+/// - 交接/报告：资源指针来自嵌套 `handoff`，顶层 revision 优先（HandoffCreated 形状）；
+/// - 项目创建：统一创建形状（嵌套 `project.id` 是项目根），旧实现取不到顶层 `id`，
+///   会丢掉资源指针导致 UI 无法定位；
+/// - 其余（决策/任务/知识）：顶层 `id`，资源类型由写命令注册表（classify_cli_write）给出。
+fn cli_operation_result(data: &Value, kind: &str) -> operations::OperationResult {
+    if let Some(handoff) = data.get("handoff") {
+        let mut result = operations::OperationResult::from_value("handoff", handoff);
+        // 顶层 revision 优先：HandoffCreated 的 revision 在外层，不在 handoff 对象里。
+        if let Some(revision) = data.get("revision").and_then(|v| v.as_i64()) {
+            result.revision = Some(revision);
+        }
+        return result;
     }
-    result.revision(data.get("revision").and_then(|v| v.as_i64()))
+    let mut result = if kind.is_empty() {
+        operations::OperationResult::new()
+    } else {
+        operations::OperationResult::from_value(kind, data)
+    };
+    // 顶层 revision 优先（决策/任务/报告都带顶层 revision，既有语义）。
+    if let Some(revision) = data.get("revision").and_then(|v| v.as_i64()) {
+        result.revision = Some(revision);
+    }
+    result
 }
 
 fn open_db() -> AppResult<Db> {
@@ -349,6 +362,32 @@ pub fn main_entry(args: Vec<String>) -> i32 {
     // **必须在 start 之前启用**：`start` 只在运行期已启动时登记操作；
     // 顺序颠倒会让整个 CLI 进程的操作都不被续租。
     let write_action = classify_cli_write(&argv);
+    // 操作终态提取需要写命令的资源类型：项目创建返回嵌套形状（project.id），
+    // 与任务/决策等顶层 id 形状的提取路径不同。
+    let write_kind = write_action
+        .as_ref()
+        .map(|(_, kind, _)| *kind)
+        .unwrap_or("");
+    // 项目上下文提示（场景 I）：--project 值或 `task create <project_id>` 位置参数，
+    // 解析为项目根后用于操作记录的 project_id（任务/决策/报告的返回 JSON 不含项目指针，
+    // 只能来自命令参数；结果对象自带 projectId 时以真实值为准）。
+    let write_project_hint = write_action.as_ref().and_then(|(action, kind, _)| {
+        let raw = argv
+            .iter()
+            .position(|a| a == "--project")
+            .and_then(|i| argv.get(i + 1))
+            .cloned()
+            .or_else(|| {
+                if *action == "task.create" && *kind == "task" {
+                    argv.iter().skip(2).find(|a| !a.starts_with("--")).cloned()
+                } else {
+                    None
+                }
+            })?;
+        db.with_read(|conn| perms::resolve_project_root(conn, raw.trim()))
+            .ok()
+            .flatten()
+    });
     if write_action.is_some() {
         operations::start_runtime(db.clone(), false);
     }
@@ -362,7 +401,7 @@ pub fn main_entry(args: Vec<String>) -> i32 {
                 action,
                 resource_kind: kind,
                 resource_id: &target,
-                project_id: "",
+                project_id: write_project_hint.as_deref().unwrap_or(""),
                 request_id: &request_id,
                 detail: "",
             },
@@ -381,7 +420,14 @@ pub fn main_entry(args: Vec<String>) -> i32 {
     match execute(&db, &principal, &cli, argv, &operation_guard) {
         Ok(outcome) => {
             if let Some(op) = &operation {
-                let result = cli_operation_result(&outcome.data);
+                let mut result = cli_operation_result(&outcome.data, write_kind);
+                // 项目上下文回填（场景 I）：命令参数声明的项目 ID 已解析为项目根；
+                // 结果对象自带 projectId 时以真实值为准（from_value 已提取）。
+                if result.project_id.is_none() {
+                    if let Some(root) = write_project_hint.as_deref() {
+                        result = result.project(root);
+                    }
+                }
                 // 事务内已完成 → `complete` 返回 None（未广播），补发一次事件。
                 match operations::complete(&db, &op.id, &result) {
                     Ok(Some(_)) => {}
@@ -614,6 +660,17 @@ fn execute_inner(
                         usage_err("--dir-mode 允许 metadata_only | attach_existing | create_new")
                     })?
                 };
+                // 统一创建门禁（与 MCP/REST 同规则）：目录创建是文件系统副作用，
+                // 只能由人类在 UI 明确发起。判定依据是已解析的 principal.identity，
+                // 绝不回读环境变量。scope=disabled / 只读 / 缺 projects.create
+                // 已由上方 perms::require（统一授权三层）覆盖，不重复造轮子。
+                if principal.identity == Identity::RegisteredAgent
+                    && mode == crate::project_hub::creation::DirectoryMode::CreateNew
+                {
+                    return Err(AppError::Agent(
+                        "CLI Agent 不能创建新目录；请改用 metadata_only / attach_existing，目录创建需由人类在 UI（工作台创建弹窗）完成".into(),
+                    ));
+                }
                 let client_request_id = take_flag(args, "--request-id").unwrap_or_default();
                 let request = crate::project_hub::creation::CreateProjectRequest {
                     client_request_id,
@@ -633,6 +690,14 @@ fn execute_inner(
                     draft: Default::default(),
                     agent_access_policy:
                         crate::project_hub::creation::AgentAccessPolicy::CreatorProjectAndPlan,
+                    principal: match principal.identity {
+                        Identity::RegisteredAgent => {
+                            crate::project_hub::creation::RequestPrincipal::agent(
+                                principal.agent_row_id.as_deref().unwrap_or_default(),
+                            )
+                        }
+                        _ => crate::project_hub::creation::RequestPrincipal::local_human(),
+                    },
                 };
                 let created = crate::project_hub::creation::create(db, request)?;
                 if let Some(row_id) = principal.agent_row_id.as_deref() {
@@ -1443,19 +1508,269 @@ mod operation_tests {
 
     #[test]
     fn operation_result_uses_only_returned_fields() {
-        let data = serde_json::json!({ "id": "t1", "revision": 3 });
-        let result = cli_operation_result(&data);
-        assert_eq!(result.resource_id.as_deref(), Some("t1"));
+        // 决策/任务：顶层 id + 顶层 revision（kind 来自写命令注册表）。
+        let decision = serde_json::json!({ "id": "d1", "project_id": "p1", "revision": 3 });
+        let result = cli_operation_result(&decision, "decision");
+        assert_eq!(result.resource_kind.as_deref(), Some("decision"));
+        assert_eq!(result.resource_id.as_deref(), Some("d1"));
+        assert_eq!(result.project_id.as_deref(), Some("p1"));
         assert_eq!(result.revision, Some(3));
 
-        let handoff = serde_json::json!({ "handoff": { "id": "h1" } });
-        assert_eq!(
-            cli_operation_result(&handoff).resource_id.as_deref(),
-            Some("h1")
-        );
+        // 交接：资源指针来自嵌套 handoff，顶层 revision 优先（HandoffCreated 形状）。
+        let handoff = serde_json::json!({ "handoff": { "id": "h1" }, "revision": 7 });
+        let result = cli_operation_result(&handoff, "handoff");
+        assert_eq!(result.resource_kind.as_deref(), Some("handoff"));
+        assert_eq!(result.resource_id.as_deref(), Some("h1"));
+        assert_eq!(result.revision, Some(7));
+
+        // 项目创建：统一创建返回形状（嵌套 project.id），旧实现取不到资源指针。
+        let project = serde_json::json!({
+            "created": true,
+            "project": { "id": "proj-1", "name": "新项目" },
+            "activePlan": { "id": "plan-1", "revision": 1 }
+        });
+        let result = cli_operation_result(&project, "project");
+        assert_eq!(result.resource_kind.as_deref(), Some("project"));
+        assert_eq!(result.resource_id.as_deref(), Some("proj-1"));
+        assert_eq!(result.project_id.as_deref(), Some("proj-1"));
+        assert_eq!(result.revision, Some(1), "回退到 activePlan.revision");
 
         // 无法识别时保持空目标，不猜测 ID。
         let unknown = serde_json::json!({ "message": "ok" });
-        assert!(cli_operation_result(&unknown).resource_id.is_none());
+        let result = cli_operation_result(&unknown, "task");
+        assert!(result.resource_id.is_none());
+        assert!(result.project_id.is_none());
+    }
+}
+
+#[cfg(test)]
+mod create_gate_tests {
+    use super::*;
+
+    fn args(raw: &[&str]) -> Vec<String> {
+        raw.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn cli() -> Cli {
+        Cli {
+            json: false,
+            limit: 50,
+            offset: 0,
+            fields: Vec::new(),
+        }
+    }
+
+    /// 创建 project_rw Agent（可再授权能力），返回 (principal, row_id)。
+    fn agent_principal(
+        db: &Db,
+        suffix: &str,
+        capabilities: &[(&str, &str)],
+    ) -> (Principal, String) {
+        let created =
+            crate::mcp::auth::create_agent(db, &format!("cli-gate-{suffix}"), "CLI 门禁测试 Agent")
+                .expect("创建 Agent");
+        crate::mcp::auth::set_agent_scope(db, &created.info.id, "project_rw").expect("设置 scope");
+        for (capability, resource) in capabilities {
+            crate::mcp::permissions::grant(db, &created.info.id, capability, resource)
+                .expect("授予能力");
+        }
+        (
+            Principal::agent(
+                created.info.id.clone(),
+                created.info.agent_id.clone(),
+                Source::Cli,
+            ),
+            created.info.id,
+        )
+    }
+
+    #[test]
+    fn local_human_can_create_new_directory() {
+        let db = Db::open_in_memory().expect("内存库");
+        let parent = std::env::temp_dir().join(format!(
+            "td-cli-create-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&parent).expect("建立父目录");
+        let target = parent.join("新目录");
+
+        let outcome = execute(
+            &db,
+            &Principal::local(Source::Cli),
+            &cli(),
+            args(&[
+                "project",
+                "create",
+                "--name",
+                "本地创建",
+                "--root",
+                target.to_str().expect("utf8 路径"),
+                "--dir-mode",
+                "create_new",
+            ]),
+            &store::NoGuard,
+        )
+        .expect("本机用户允许 create_new");
+
+        assert_eq!(outcome.data["created"], serde_json::json!(true));
+        assert_eq!(outcome.data["project"]["name"], serde_json::json!("本地创建"));
+        assert_eq!(
+            outcome.data["provisioningStatus"],
+            serde_json::json!("created"),
+            "目录应真实创建"
+        );
+        assert!(target.is_dir(), "create_new 必须落目录");
+        std::fs::remove_dir_all(&parent).ok();
+    }
+
+    #[test]
+    fn registered_agent_cannot_create_new_directory() {
+        let db = Db::open_in_memory().expect("内存库");
+        let (principal, _) = agent_principal(&db, "gate", &[("projects.create", "")]);
+        let parent = std::env::temp_dir().join(format!(
+            "td-cli-agent-gate-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&parent).expect("建立父目录");
+        let target = parent.join("不得创建");
+
+        let err = match execute(
+            &db,
+            &principal,
+            &cli(),
+            args(&[
+                "project",
+                "create",
+                "--name",
+                "越权创建",
+                "--root",
+                target.to_str().expect("utf8 路径"),
+                "--dir-mode",
+                "create_new",
+            ]),
+            &store::NoGuard,
+        ) {
+            Err(err) => err,
+            Ok(_) => panic!("RegisteredAgent 的 create_new 必须被拒绝"),
+        };
+
+        assert!(matches!(err, AppError::Agent(_)), "{err:?}");
+        assert!(
+            err.user_message().contains("CLI Agent 不能创建新目录"),
+            "错误文案必须明确指引: {}",
+            err.user_message()
+        );
+        assert!(err.user_message().contains("metadata_only"));
+        assert!(!target.exists(), "拒绝后不得创建目录");
+        std::fs::remove_dir_all(&parent).ok();
+    }
+
+    #[test]
+    fn registered_agent_can_attach_existing_with_capability_and_grant() {
+        let db = Db::open_in_memory().expect("内存库");
+        let (principal, row_id) =
+            agent_principal(&db, "attach", &[("projects.create", "")]);
+        // attach_existing 允许离线目录：路径不存在不是失败，而是 attached_offline。
+        let missing = std::env::temp_dir()
+            .join(format!("td-cli-offline-{}", uuid::Uuid::new_v4().simple()))
+            .join("不存在");
+
+        let outcome = execute(
+            &db,
+            &principal,
+            &cli(),
+            args(&[
+                "project",
+                "create",
+                "--name",
+                "离线关联",
+                "--root",
+                missing.to_str().expect("utf8 路径"),
+                "--dir-mode",
+                "attach_existing",
+            ]),
+            &store::NoGuard,
+        )
+        .expect("有 projects.create 能力的 Agent 允许 attach_existing");
+
+        let project_id = outcome.data["project"]["id"].as_str().expect("项目根 ID");
+        assert_eq!(
+            outcome.data["provisioningStatus"],
+            serde_json::json!("attached_offline"),
+            "目录不存在不能被当成创建成功，而是离线关联"
+        );
+        // 创建后自动授予该项目根（capability 决定能不能建，grant 落到具体项目）。
+        let granted: i64 = db
+            .with_read(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM mcp_agent_grants WHERE agent_row_id = ?1 AND project_id = ?2",
+                    rusqlite::params![row_id, project_id],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)
+            })
+            .expect("查询授权");
+        assert_eq!(granted, 1, "创建者应自动获得该项目根授权");
+    }
+
+    #[test]
+    fn registered_agent_metadata_only_passes() {
+        let db = Db::open_in_memory().expect("内存库");
+        let (principal, _) = agent_principal(&db, "meta", &[("projects.create", "")]);
+
+        let outcome = execute(
+            &db,
+            &principal,
+            &cli(),
+            args(&[
+                "project",
+                "create",
+                "--name",
+                "仅元数据",
+                "--dir-mode",
+                "metadata_only",
+            ]),
+            &store::NoGuard,
+        )
+        .expect("有 projects.create 能力的 Agent 允许 metadata_only");
+
+        assert_eq!(outcome.data["project"]["name"], serde_json::json!("仅元数据"));
+        let status = outcome.data["provisioningStatus"].as_str().expect("状态");
+        assert!(
+            status == "metadata_only" || status == "none",
+            "仅元数据不落目录: {status}"
+        );
+    }
+
+    #[test]
+    fn registered_agent_without_create_capability_is_rejected() {
+        let db = Db::open_in_memory().expect("内存库");
+        // scope=project_rw 但未授予 projects.create：统一授权第二/三层必须拒绝。
+        let (principal, _) = agent_principal(&db, "nocap", &[]);
+
+        let err = match execute(
+            &db,
+            &principal,
+            &cli(),
+            args(&[
+                "project",
+                "create",
+                "--name",
+                "无能力创建",
+                "--dir-mode",
+                "metadata_only",
+            ]),
+            &store::NoGuard,
+        ) {
+            Err(err) => err,
+            Ok(_) => panic!("缺 projects.create 必须拒绝"),
+        };
+
+        assert!(matches!(err, AppError::Agent(_)), "{err:?}");
+        assert!(
+            err.user_message().contains("projects.create"),
+            "错误必须指明缺失的能力: {}",
+            err.user_message()
+        );
     }
 }

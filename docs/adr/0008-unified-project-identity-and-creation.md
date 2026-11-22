@@ -125,7 +125,12 @@ TaskDock 同时存在三个「项目」相关实体：`workspace_projects`（工
 - `create_new` 记录建目录前的真实父目录，建后 `canonicalize` 核对父目录未被替换；
   目标为文件/目录/符号链接一律 `Conflict`，`attach_existing` 始终只读。
 
-### 5. 数据库层面原子性（选型说明）
+### 5. 数据库层面原子性（选型说明；2026-11-22 已被第三轮更新）
+
+> **2026-11-22 更新**：本节的「不建唯一索引」选型只针对 `project_events` 上的历史约束，
+> 已被第三轮的 `project_create_requests`（数据库级 `UNIQUE(principal_kind, principal_id,
+> client_request_id)`，全新表无历史脏数据）取代；`project_events` 只保留审计与
+> LocalHuman 历史兜底职责。见下文第三轮 §7.1。
 
 未新增唯一索引：`check_replay + insert` 始终在同一个 `BEGIN IMMEDIATE` 事务内，
 写事务由单写连接串行化，跨进程由 SQLite 写锁串行化，因此「同一请求 ID 只能产生一条项目」
@@ -136,4 +141,60 @@ TaskDock 同时存在三个「项目」相关实体：`workspace_projects`（工
 
 已实现且有单元测试覆盖的项见 `docs/project-hub/06-验收标准.md` §13；
 未经真实 Dev 实例与原生窗口验证的项在该节标为「未验证」，不以单元测试替代。
+
+## 第三轮治理（2026-11-22，v92）
+
+第一轮独立验收发现四类 P1 缺陷，本轮在**不改变第一轮身份与创建决策**的前提下修复，
+详细行为口径见 `docs/project-hub/10-统一项目身份与创建服务.md` §14 与
+`docs/agent-workspace/permission-model.md` §3。
+
+### 7.1 幂等必须有主体归属（新增决策）
+
+- **问题**：`check_replay` 只按 `clientRequestId` 匹配——同一请求 ID、同一摘要会让 Agent B
+  命中 Agent A 创建的项目；CLI / REST / MCP 随后都会对重放结果执行自动授权，形成跨主体越权。
+- **决策**：幂等作用域 = 主体 × 请求 ID（`IdempotencyScope`：`PrincipalKind{LocalHuman,
+  RegisteredAgent}` + `mcp_agents.id` + `client_request_id`），持久化在专用表
+  `project_create_requests`（v92，数据库级 UNIQUE 约束）；摘要冲突返回 `Conflict`；
+  不同主体相同请求 ID 各自独立创建。历史事件只对本机人类兜底（`actor='user'`），
+  Agent 请求永不进入兜底——宁可重放视为新请求，也不给「跨主体命中旧事件」留通道。
+- **事件真实主体**：`project_events` payload 记录 `principal{principalKind, principalId}`，
+  授权审计能定位到具体 Agent；`actor` 列保留 `user/agent` 枚举（UI 兼容）。
+- **入口纪律**：创建入口必须从**已解析的 Principal** 构造身份，禁止读
+  `TASKDOCK_AGENT_TOKEN` 环境变量猜测。
+
+### 7.2 授权判定统一为四层（新增决策）
+
+- **问题**：MCP 写工具只查 grant 不查 capability，CLI/REST 只查 capability 不查 grant——
+  同一个 token 换协议权限不同。
+- **决策**：`agent_access::permissions::require` 是唯一授权入口，四层判定
+  身份 → scope → capability（全局或该项目根）→ grant（项目型能力必须持该项目根授权；
+  readonly 读豁免）。`authorized_reads` 在 project_rw 下与 grant 求交集。
+  capability 回答「会什么」，grant 回答「能动哪个项目」，scope 回答「总开关」，互相不可替代。
+
+### 7.3 旧 project_kind 契约收敛（新增决策）
+
+- **问题**：`project_exists` 语义改为 `project/plan` 后，`agent_handoffs` / `agent_decisions`
+  的 CHECK（`none|planning|workspace`）让**带项目的交接创建直接失败**，文件导入任务/决策
+  被旧字符串比较拒绝——旧契约与新身份模型冲突。
+- **决策**：v92 将两表 CHECK 扩为含 `'project'`，新数据统一写 `project_kind='none'|'project'`
+  （归属只认项目根）；旧值保留可读、不删历史；列表过滤用计划反查子句兼容历史行。
+  `ProjectId` / `PlanId` 强类型落地（`project_hub::service`），计划 ID 只是入参兼容。
+
+### 7.4 目录创建门禁与入口对齐（新增决策）
+
+- CLI `RegisteredAgent` 拒绝 `create_new`（与 MCP/REST 对齐），错误提示人类在 UI 完成；
+  LocalHuman 放行。身份判定只用已解析的 Principal。
+- CLI 操作追踪复用 `OperationResult::from_value`：项目创建得到
+  `resourceKind=project` / `resourceId=projectId` / `projectId=projectId`。
+- REST 新增 `PATCH /api/v1/projects/{projectId}`（`projects.write` + expectedRevision → 409）。
+- Workbench 快速创建 requestId 按参数摘要派生：同参数重试保持、参数变化重新生成、
+  成功清空、处理中禁改关键字段、关闭弹窗保留。
+
+### 7.5 已知边界（如实记录）
+
+- 运行中的 dev 实例锁定 `target/debug/task-dock.exe` 期间，需要链接 bin 的集成测试
+  （`tests/mcp_e2e.rs` 等）标记 `ENVIRONMENT BLOCKED`，锁释放后补跑；
+- `commands::settings`（布局宽度文案）、`commands::projection_window`（吸附宽度）、
+  `commands::backup` voice 资产、`commands::restore` voice 资产、`shelf` 备份往返
+  五处失败为其他在途任务的存量问题，与本轮改动无交互，未在本轮范围内修复。
 

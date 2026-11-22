@@ -128,6 +128,19 @@ fn require_agent(
                 }
             )));
         }
+        // 统一授权第三层（v92）：项目型能力还要求该项目根上有显式授权（mcp_agent_grants）。
+        // capability 描述「会什么」，grant 描述「能动哪个项目」；缺一不可。
+        // 计划 ID 入参先解析到项目根；readonly 是用户显式选择的全局只读，不逐项目要 grant
+        // （与 MCP 读路径一致）。授权按项目根判定，不能跨项目继承。
+        if capability_scoped_by_project(capability) && !resource_id.is_empty() && scope != McpScope::ReadOnly {
+            let root = crate::project_hub::service::resolve_project_root(conn, resource_id)?
+                .ok_or_else(|| forbidden(format!("项目不存在: {resource_id}")))?;
+            if !crate::mcp::auth::has_project_grant(conn, row_id, &root)? {
+                return Err(forbidden(format!(
+                    "未授权项目: {root}（请在 Task Dock「设置 → MCP 接入」中授予该项目）"
+                )));
+            }
+        }
         Ok(())
     })
 }
@@ -294,27 +307,35 @@ pub fn task_project(conn: &Connection, task_id: &str) -> AppResult<Option<String
     Ok(row)
 }
 
-/// 项目存在性判定（统一身份）：接受项目根 ID **或** 计划 ID。
-///
-/// 返回值语义已收敛：
-/// - `Some("project")` = 传入的是项目根（`workspace_projects.id`）；
-/// - `Some("plan")` = 传入的是计划 ID，且能解析到项目根（授权按项目根判定）；
-/// - `None` = 不存在，或旧计划缺项目链（调用方需在事务内补建后再判定）。
-///
-/// 旧的 `"planning"` / `"workspace"` 取值不再返回：那会让同一项目被当成两个实体。
-pub fn project_exists(conn: &Connection, project_id: &str) -> AppResult<Option<&'static str>> {
-    match crate::project_hub::service::resolve_project_ref(conn, project_id)? {
-        Some(crate::project_hub::service::ProjectRef::Project(_)) => Ok(Some("project")),
-        Some(crate::project_hub::service::ProjectRef::Plan { .. }) => Ok(Some("plan")),
-        None => Ok(None),
-    }
-}
-
 /// 把「项目 ID 或计划 ID」统一解析为项目根 ID。
 ///
 /// 授权、操作记录、上下文装配一律使用项目根；计划 ID 只作为入参兼容。
+/// 旧 `project_exists`（返回 project/plan 字符串）已废弃：持久化不再存类型字符串，
+/// 存在性判定用 `resolve_project_root(...).is_some()`。
 pub fn resolve_project_root(conn: &Connection, id: &str) -> AppResult<Option<String>> {
     crate::project_hub::service::resolve_project_root(conn, id)
+}
+
+/// 解析并校验项目根授权（MCP 工具层与统一 `require` 共用的 grant 判定）。
+///
+/// 输入可以是项目根 ID 或计划 ID（入参兼容）；返回解析出的项目根。
+/// readonly 主体不做逐项目 grant 校验（全局只读模式）。
+pub fn ensure_project_grant(
+    conn: &Connection,
+    row_id: &str,
+    project_or_plan_id: &str,
+    scope: McpScope,
+) -> AppResult<String> {
+    let root = crate::project_hub::service::resolve_project_root(conn, project_or_plan_id)?
+        .ok_or_else(|| forbidden(format!("项目不存在: {project_or_plan_id}")))?;
+    if scope != McpScope::ReadOnly
+        && !crate::mcp::auth::has_project_grant(conn, row_id, &root)?
+    {
+        return Err(forbidden(format!(
+            "未授权项目: {root}（请在 Task Dock「设置 → MCP 接入」中授予该项目）"
+        )));
+    }
+    Ok(root)
 }
 
 /// 创建成功后的自动授权：**只覆盖刚创建的项目根**。
@@ -517,10 +538,36 @@ pub fn authorized_reads(db: &Db, principal: &Principal) -> AppResult<AuthorizedR
                         slot.ids.insert(resource_id);
                     }
                 }
+                // 统一授权（v92）：project_rw 的项目型读取还要求项目根授权（mcp_agent_grants）。
+                // 与 `require` 的 grant 层同一规则；readonly 是用户显式选择的全局只读，不受影响。
+                if scope == McpScope::ProjectRw {
+                    let granted = granted_project_roots(conn, row_id)?;
+                    for slot in [&mut out.projects, &mut out.plans, &mut out.decisions, &mut out.handoffs] {
+                        if slot.global {
+                            slot.global = false;
+                            slot.ids = granted.clone();
+                        } else {
+                            slot.ids.retain(|id| granted.contains(id));
+                        }
+                    }
+                }
                 Ok(out)
             })
         }
     }
+}
+
+/// 该 Agent 已授权的项目根集合（`mcp_agent_grants`，v91 起外键指向项目根）。
+pub fn granted_project_roots(conn: &Connection, row_id: &str) -> AppResult<std::collections::HashSet<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT project_id FROM mcp_agent_grants WHERE agent_row_id = ?1",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![row_id], |r| r.get::<_, String>(0))?;
+    let mut ids = std::collections::HashSet::new();
+    for row in rows {
+        ids.insert(row?);
+    }
+    Ok(ids)
 }
 
 /// 是否可读取项目元数据（名称/目标/规划）。**只认 `projects.read`**。
@@ -908,10 +955,13 @@ pub fn check_import_resource_scope(
         return Ok(effective);
     };
     // 1) 归属项目必须真实存在（fail-closed：推导不出 / 项目已删除 → 拒绝）。
+    //    计划 ID 入参可解析到项目根即视为存在。
     let target = effective.trim();
     if !target.is_empty() {
-        let kind_of = db.with_read(|conn| project_exists(conn, target))?;
-        if kind_of.is_none() {
+        let exists = db.with_read(|conn| {
+            Ok(resolve_project_root(conn, target)?.is_some())
+        })?;
+        if !exists {
             return Err(forbidden(format!(
                 "导入目标项目 {target} 不存在（项目已删除或从未存在）"
             )));
@@ -1018,8 +1068,9 @@ pub fn authorize_file_import(
             // 目录授权不得继续放行「写进幽灵项目」的导入。
             let scope_project = auth.project_id.trim();
             if !scope_project.is_empty() {
-                let kind_of = db.with_read(|conn| project_exists(conn, scope_project))?;
-                if kind_of.is_none() {
+                let exists =
+                    db.with_read(|conn| Ok(resolve_project_root(conn, scope_project)?.is_some()))?;
+                if !exists {
                     return Ok(FileImportDecision::Rejected {
                         reason: format!("导入授权限定的项目 {scope_project} 不存在"),
                         authorization_id: auth.id,
@@ -1030,8 +1081,9 @@ pub fn authorize_file_import(
             // 指向不存在的项目意味着这次导入会留下一条悬空归属。
             let declared = project_id.trim();
             if !declared.is_empty() {
-                let kind_of = db.with_read(|conn| project_exists(conn, declared))?;
-                if kind_of.is_none() {
+                let exists =
+                    db.with_read(|conn| Ok(resolve_project_root(conn, declared)?.is_some()))?;
+                if !exists {
                     return Ok(FileImportDecision::Rejected {
                         reason: format!("文件声明的项目 {declared} 不存在"),
                         authorization_id: auth.id,

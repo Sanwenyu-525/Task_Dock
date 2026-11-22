@@ -536,6 +536,9 @@ pub(crate) fn effective_import_project(
 /// 报告所关联交接的真实项目归属（`agent_handoffs.project_id`）。
 ///
 /// 报告的归属**只能**来自 handoff：文件声明的 `project_id` 不构成授权依据。
+/// 「报告归属 → 授权项目」的比较必须在项目根域上进行：历史交接行可能仍以
+/// 计划 ID 归属（v92 之前写入），这里先解析为项目根；解析不出（项目已删除/
+/// 悬空旧行）保持现行为返回原值，由导入链路的存在性校验拒绝。
 fn handoff_project(db: &Db, doc: &ParsedDocument) -> AppResult<Option<String>> {
     let handoff_id = payload(doc, "handoff_id")
         .map(str::trim)
@@ -543,7 +546,7 @@ fn handoff_project(db: &Db, doc: &ParsedDocument) -> AppResult<Option<String>> {
     let Some(handoff_id) = handoff_id else {
         return Ok(None);
     };
-    db.with_read(|conn| {
+    let project_id = db.with_read(|conn| {
         Ok(non_empty(
             conn.query_row(
                 "SELECT project_id FROM agent_handoffs WHERE id = ?1",
@@ -552,7 +555,13 @@ fn handoff_project(db: &Db, doc: &ParsedDocument) -> AppResult<Option<String>> {
             )
             .optional()?,
         ))
-    })
+    })?;
+    let Some(project_id) = project_id else {
+        return Ok(None);
+    };
+    let root = db
+        .with_read(|conn| crate::project_hub::service::resolve_project_root(conn, &project_id))?;
+    Ok(Some(root.unwrap_or(project_id)))
 }
 
 fn claimed_identity(doc: &ParsedDocument) -> ImportIdentity {
@@ -571,16 +580,6 @@ fn claimed_identity(doc: &ParsedDocument) -> ImportIdentity {
 /// 创建类落库时的项目字段：以已校验的**有效归属**为准，文件声明只在校验阶段使用。
 fn project_field(project_id: &str) -> Option<String> {
     non_empty(Some(project_id.to_string()))
-}
-
-/// 项目的真实类型（`planning` / `workspace`），用于补齐 `project_kind`。
-fn project_kind_of(db: &Db, project_id: &str) -> AppResult<Option<String>> {
-    if project_id.trim().is_empty() {
-        return Ok(None);
-    }
-    Ok(db
-        .with_read(|conn| perms::project_exists(conn, project_id))?
-        .map(str::to_string))
 }
 
 /// 导入一份已通过校验的文档。返回一条可读摘要，供扫描报告展示。
@@ -640,18 +639,23 @@ pub fn import_document_guarded(
                     .get("advance_minutes")
                     .and_then(|v| v.as_i64()),
             };
-            // 关联是项目工作空间语义：先确认项目真实存在，再做业务写入，
-            // 避免「任务已建、关联失败」留下半条数据（失败会释放租约并允许重试）。
-            if !project_id.trim().is_empty() {
-                let project_kind = db.with_read(|conn| perms::project_exists(conn, &project_id))?;
-                if project_kind != Some("workspace") {
-                    return Err(validation(format!(
+            // 关联是项目工作空间语义：先把入参（兼容计划 ID）解析为项目根并确认真实存在，
+            // 再做业务写入，避免「任务已建、关联失败」留下半条数据（失败会释放租约并允许重试）。
+            // 不能再用旧 project_kind 字符串比较判断项目有效性。
+            let attach_project = if project_id.trim().is_empty() {
+                String::new()
+            } else {
+                db.with_read(|conn| {
+                    crate::project_hub::service::resolve_project_root(conn, &project_id)
+                })?
+                .ok_or_else(|| {
+                    validation(format!(
                         "授权项目 {project_id} 不是项目工作空间中的项目，无法关联导入任务"
-                    )));
-                }
-            }
+                    ))
+                })?
+            };
             // 建任务 + 关联项目 + 租约收尾在同一个事务内（守卫贯穿其中）。
-            let task = service::create_task_guarded(db, principal, input, guard, &project_id)?;
+            let task = service::create_task_guarded(db, principal, input, guard, &attach_project)?;
             Ok(format!("创建任务 {}（{}）", task.id, task.title))
         }
         "task.update" => {
@@ -705,10 +709,8 @@ pub fn import_document_guarded(
             let input = store::DecisionInput {
                 title: payload(doc, "title").unwrap_or_default().to_string(),
                 project_id: project_field(&project_id),
-                project_kind: match payload(doc, "project_kind") {
-                    Some(kind) => Some(kind.to_string()),
-                    None => project_kind_of(db, &project_id)?,
-                },
+                // 归属与类型由 store 按项目根推导，文件声明的旧 project_kind 不参与判定。
+                project_kind: None,
                 context: payload(doc, "context").unwrap_or_default().to_string(),
                 decision: payload(doc, "decision").unwrap_or_default().to_string(),
                 consequences: payload(doc, "consequences").unwrap_or_default().to_string(),
@@ -725,7 +727,8 @@ pub fn import_document_guarded(
                 summary: payload(doc, "summary").unwrap_or_default().to_string(),
                 task_id: payload(doc, "task_id").map(str::to_string),
                 project_id: project_field(&project_id),
-                project_kind: payload(doc, "project_kind").map(str::to_string),
+                // 交接归属由 handoff 层解析为项目根，旧 project_kind 声明不参与判定。
+                project_kind: None,
                 completed_items: payload_strings(doc, "completed_items"),
                 pending_items: payload_strings(doc, "pending_items"),
                 decisions: Vec::new(),

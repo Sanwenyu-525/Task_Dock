@@ -436,6 +436,81 @@ fn project_scoped_create_links_task_to_authorized_project() {
     );
 }
 
+/// v92 统一项目身份：文件导入按项目根落库——任务关联
+/// （workspace_task_links）指向项目根，决策归属项目根且 project_kind='project'。
+#[test]
+fn import_writes_project_root_for_task_and_decision() {
+    let fx = Fixture::new("v92-root-import");
+    fx.project("proj-root");
+    fx.policy(
+        "inbox",
+        ImportMode::Trusted,
+        &["tasks.write", "decisions.write"],
+        "proj-root",
+    );
+    fx.write_import(
+        "a-task.json",
+        r#"{"schema":"taskdock.import/1","kind":"task.create","project_id":"proj-root","payload":{"title":"根项目任务"}}"#,
+    );
+    fx.write_import(
+        "b-decision.json",
+        r#"{"schema":"taskdock.import/1","kind":"decision.create","project_id":"proj-root","payload":{"title":"根项目决策","decision":"采用方案 A"}}"#,
+    );
+    let report = fx.scan();
+    assert_eq!(report.imported, 2, "两份文件都应导入：{report:?}");
+
+    // 任务落库且 workspace_task_links 指向项目根。
+    let links: Vec<String> = fx
+        .db
+        .with_read(|conn| {
+            let mut stmt =
+                conn.prepare("SELECT task_id FROM workspace_task_links WHERE project_id = ?1")?;
+            let rows = stmt.query_map(rusqlite::params!["proj-root"], |r| {
+                r.get::<_, String>(0)
+            })?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row?);
+            }
+            Ok(out)
+        })
+        .expect("读取任务关联");
+    assert_eq!(links.len(), 1, "任务必须关联到项目根：{links:?}");
+
+    // 决策落库归属项目根，project_kind 收敛为 'project'（新数据不再写 planning/workspace）。
+    let (project_id, kind): (String, String) = fx
+        .db
+        .with_read(|conn| {
+            Ok(conn.query_row(
+                "SELECT project_id, project_kind FROM agent_decisions
+                 ORDER BY created_at DESC LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?)
+        })
+        .expect("读取决策归属");
+    assert_eq!(project_id, "proj-root", "决策归属必须是项目根");
+    assert_eq!(kind, "project", "新决策的 project_kind 必须是 'project'");
+}
+
+/// 跨项目拒绝：授权限项目 P1 的导入授权写入 P2 → FORBIDDEN，业务表零写入。
+#[test]
+fn project_scoped_import_cannot_write_other_project() {
+    let fx = Fixture::new("v92-cross-import");
+    fx.project("proj-p1");
+    fx.project("proj-p2");
+
+    let task_raw = r#"{"schema":"taskdock.import/1","kind":"task.create","project_id":"proj-p2","payload":{"title":"越权任务"}}"#;
+    let err = import_with_manual_grant(&fx, task_raw, "task.json", "proj-p1").unwrap_err();
+    assert_eq!(error_code(&err), "FORBIDDEN", "{err:?}");
+    assert_eq!(fx.task_count(), 0, "越权任务不得落库");
+
+    let decision_raw = r#"{"schema":"taskdock.import/1","kind":"decision.create","project_id":"proj-p2","payload":{"title":"越权决策","decision":"x"}}"#;
+    let err = import_with_manual_grant(&fx, decision_raw, "decision.json", "proj-p1").unwrap_err();
+    assert_eq!(error_code(&err), "FORBIDDEN", "{err:?}");
+    assert_eq!(fx.decision_count(), 0, "越权决策不得落库");
+}
+
 /// 4) 全局授权（`project_id=""`）正常创建，且不强行绑定项目。
 #[test]
 fn global_grant_creates_task_without_project() {

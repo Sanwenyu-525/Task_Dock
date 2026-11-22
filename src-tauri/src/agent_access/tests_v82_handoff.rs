@@ -44,6 +44,35 @@ impl Fixture {
         mcp_perm::grant(&self.db, row_id, capability, resource).expect("授权");
     }
 
+    /// 授予项目根授权（v92 统一授权第三层：`mcp_agent_grants`，外键指向项目根）。
+    fn grant_project(&self, row_id: &str, project: &str) {
+        self.db
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT OR IGNORE INTO mcp_agent_grants
+                       (id, agent_row_id, project_id, created_at)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    rusqlite::params![
+                        uuid::Uuid::new_v4().to_string(),
+                        row_id,
+                        project,
+                        crate::agents::now_iso()
+                    ],
+                )?;
+                Ok(())
+            })
+            .expect("授予项目授权");
+    }
+
+    /// 当前交接总数（验证被拒写入不落库）。
+    fn handoff_total(&self) -> i64 {
+        self.db
+            .with_read(|conn| {
+                Ok(conn.query_row("SELECT COUNT(*) FROM agent_handoffs", [], |r| r.get(0))?)
+            })
+            .expect("统计交接")
+    }
+
     /// 建一个真实存在的项目工作空间项目（项目级授权与交接归属的前提）。
     fn project(&self, id: &str) {
         let now = crate::agents::now_iso();
@@ -171,6 +200,8 @@ fn only_target_agent_can_transition_handoff() {
     for row in [&a_row, &b_row, &c_row] {
         fx.grant(row, "handoffs.write", "proj-ho");
         fx.grant(row, "handoffs.read", "proj-ho");
+        // v92 统一授权第三层：project_rw 的项目型读写要求项目根授权。
+        fx.grant_project(row, "proj-ho");
     }
     let created = fx.handoff("proj-ho", &fx.agent_principal(&a_row, &a_id), &b_id);
     let id = created.handoff.id.clone();
@@ -206,6 +237,7 @@ fn stale_revision_conflicts_and_keeps_state() {
     fx.project("proj-rev");
     let (b_row, b_id) = fx.agent("ho-rev-target");
     fx.grant(&b_row, "handoffs.write", "proj-rev");
+    fx.grant_project(&b_row, "proj-rev");
     let created = fx.handoff("proj-rev", &Principal::local(Source::Ui), &b_id);
     let id = created.handoff.id.clone();
     let rev = created.handoff.revision;
@@ -271,6 +303,8 @@ fn handoff_discovery_filters_projects_before_pagination() {
     let (row, agent) = fx.agent("discovery-reader");
     fx.grant(&row, "handoffs.read", "discovery-a");
     fx.grant(&row, "handoffs.read", "discovery-c");
+    fx.grant_project(&row, "discovery-a");
+    fx.grant_project(&row, "discovery-c");
     let local = Principal::local(Source::Ui);
     let a = fx.handoff("discovery-a", &local, &agent).handoff;
     let b = fx.handoff("discovery-b", &local, &agent).handoff;
@@ -315,6 +349,7 @@ fn handoff_discovery_requires_own_capability_and_live_identity() {
     let principal = fx.agent_principal(&row, &agent);
     fx.grant(&row, "projects.read", "");
     fx.grant(&row, "handoffs.write", "discovery-auth");
+    fx.grant_project(&row, "discovery-auth");
     let err = handoff::list_handoffs(&fx.db, &principal, None, None, 10, 0).unwrap_err();
     assert_eq!(error_code(&err), "FORBIDDEN");
     fx.grant(&row, "handoffs.read", "discovery-auth");
@@ -330,21 +365,34 @@ fn handoff_discovery_requires_own_capability_and_live_identity() {
     assert_eq!(error_code(&err), "FORBIDDEN");
 }
 
+/// v92 统一授权后的可见范围：本机身份看到全部行（含无项目行）；
+/// project_rw + 全局能力 的 Agent 收敛到已授权项目根，无项目行不再可见。
 #[test]
 fn handoff_discovery_global_and_local_include_projectless_rows() {
     let fx = Fixture::new();
     fx.project("discovery-global");
     let (row, agent) = fx.agent("discovery-global-reader");
     fx.grant(&row, "handoffs.read", "");
+    // 全局能力 + 项目根授权：读取范围收敛到已授权项目（authorized_reads 与 grant 交集）。
+    fx.grant_project(&row, "discovery-global");
     let local = Principal::local(Source::Ui);
     fx.handoff("discovery-global", &local, &agent);
     fx.handoff("", &local, &agent);
-    for principal in [local, fx.agent_principal(&row, &agent)] {
-        let (items, page) = handoff::list_handoffs(&fx.db, &principal, None, None, 10, 0).unwrap();
-        assert_eq!(items.len(), 2);
-        assert_eq!(page.total, 2);
-        assert!(items.iter().any(|h| h.project_id.is_empty()));
-    }
+    // 本机身份不受 Agent 授权限制：全部行可见。
+    let (items, page) = handoff::list_handoffs(&fx.db, &local, None, None, 10, 0).unwrap();
+    assert_eq!(items.len(), 2);
+    assert_eq!(page.total, 2);
+    assert!(items.iter().any(|h| h.project_id.is_empty()));
+    // 已授权 Agent 只看到已授权项目根下的交接；无项目行只对全局可见范围开放。
+    let principal = fx.agent_principal(&row, &agent);
+    let (items, page) = handoff::list_handoffs(&fx.db, &principal, None, None, 10, 0).unwrap();
+    assert_eq!(
+        items.len(),
+        1,
+        "project_rw + 全局能力只能看到已授权项目根的交接：{items:?}"
+    );
+    assert_eq!(page.total, 1);
+    assert_eq!(items[0].project_id, "discovery-global");
 }
 
 #[test]
@@ -390,6 +438,66 @@ fn handoff_discovery_file_import_requires_explicit_read_and_project_scope() {
     assert_eq!(error_code(&err), "FORBIDDEN");
 }
 
+/// v92 统一授权：对未授权项目创建交接必须 FORBIDDEN——
+/// 能力层（无该项目能力）与 grant 层（有能力但无项目根授权）各自拦截，且不落库。
+#[test]
+fn handoff_create_requires_capability_and_project_grant_on_target_project() {
+    let fx = Fixture::new();
+    fx.project("ho-auth-a");
+    fx.project("ho-auth-b");
+    let (row, agent) = fx.agent("ho-auth-creator");
+    let (_, target) = fx.agent("ho-auth-target");
+    let creator = fx.agent_principal(&row, &agent);
+
+    // 只授权项目 A：创建项目 B 的交接 → 能力层拦截。
+    fx.grant(&row, "handoffs.write", "ho-auth-a");
+    fx.grant_project(&row, "ho-auth-a");
+    let err = handoff::create_handoff(
+        &fx.db,
+        &creator,
+        handoff_input_for("ho-auth-b", &target),
+    )
+    .unwrap_err();
+    assert_eq!(error_code(&err), "FORBIDDEN", "{err:?}");
+    assert_eq!(fx.handoff_total(), 0, "被拒交接不得落库");
+
+    // 再补项目 B 的能力但无 grant → grant 层拦截。
+    fx.grant(&row, "handoffs.write", "ho-auth-b");
+    let err = handoff::create_handoff(
+        &fx.db,
+        &creator,
+        handoff_input_for("ho-auth-b", &target),
+    )
+    .unwrap_err();
+    assert_eq!(error_code(&err), "FORBIDDEN", "{err:?}");
+    assert_eq!(fx.handoff_total(), 0, "被拒交接不得落库");
+
+    // 同项目（已授权）创建仍然成功。
+    let created = handoff::create_handoff(
+        &fx.db,
+        &creator,
+        handoff_input_for("ho-auth-a", &target),
+    )
+    .expect("已授权项目可创建交接");
+    assert_eq!(created.handoff.project_id, "ho-auth-a");
+}
+
+fn handoff_input_for(project: &str, target: &str) -> store::HandoffInput {
+    store::HandoffInput {
+        to_agent_id: target.to_string(),
+        summary: "跨项目授权测试".into(),
+        task_id: None,
+        project_id: Some(project.to_string()),
+        project_kind: None,
+        completed_items: Vec::new(),
+        pending_items: Vec::new(),
+        decisions: Vec::new(),
+        files_changed: Vec::new(),
+        risks: Vec::new(),
+        next_steps: Vec::new(),
+    }
+}
+
 /// 项目 A 的 Agent 列/取报告都看不到项目 B；B 的报告 get 被 FORBIDDEN。
 #[test]
 fn project_scoped_agent_cannot_read_other_project_reports() {
@@ -399,6 +507,7 @@ fn project_scoped_agent_cannot_read_other_project_reports() {
     let (_t_row, t_id) = fx.agent("ho-scope-target");
     let (r_row, r_id) = fx.agent("ho-scope-reader");
     fx.grant(&r_row, "handoffs.read", "proj-a");
+    fx.grant_project(&r_row, "proj-a");
     let local = Principal::local(Source::Ui);
     let ha = fx.handoff("proj-a", &local, &t_id);
     let hb = fx.handoff("proj-b", &local, &t_id);
@@ -439,6 +548,7 @@ fn report_pagination_filters_before_paging() {
 
     let (r_row, r_id) = fx.agent("ho-page-reader");
     fx.grant(&r_row, "handoffs.read", "proj-page-a");
+    fx.grant_project(&r_row, "proj-page-a");
     let reader = fx.agent_principal(&r_row, &r_id);
 
     let (first, page0) =

@@ -31,7 +31,7 @@ import {
   agentMcpSetScope,
   agentMcpStatus,
   agentMcpWorkspaceRoots,
-  planningListProjects,
+  workspaceProjectList,
   type McpAgentCreated,
   type McpAgentInfo,
   type McpAgentScope,
@@ -42,7 +42,6 @@ import {
   type McpDiagnosticsReport,
   type McpStatus,
   type McpWorkspaceRoot,
-  type PlanningProject,
 } from "../../lib/bridge";
 import { localizedErrorMessage } from "../../i18n/errors";
 import { useLocale } from "../../hooks/useLocale";
@@ -64,6 +63,16 @@ const CAPABILITIES: readonly { id: McpCapability; label: MessageKey }[] = [
   { id: "workspace.read", label: "settings.mcpAccess.capabilities.workspaceRead" },
   { id: "knowledge.read", label: "settings.mcpAccess.capabilities.knowledgeRead" },
   { id: "skills.read", label: "settings.mcpAccess.capabilities.skillsRead" },
+  // v76 项目协作族 + v90/v92 项目创建与项目写（与后端 CAPABILITIES 对齐）。
+  { id: "projects.read", label: "settings.mcpAccess.capabilities.projectsRead" },
+  { id: "plans.read", label: "settings.mcpAccess.capabilities.plansRead" },
+  { id: "decisions.read", label: "settings.mcpAccess.capabilities.decisionsRead" },
+  { id: "decisions.write", label: "settings.mcpAccess.capabilities.decisionsWrite" },
+  { id: "context.read", label: "settings.mcpAccess.capabilities.contextRead" },
+  { id: "handoffs.read", label: "settings.mcpAccess.capabilities.handoffsRead" },
+  { id: "handoffs.write", label: "settings.mcpAccess.capabilities.handoffsWrite" },
+  { id: "projects.create", label: "settings.mcpAccess.capabilities.projectsCreate" },
+  { id: "projects.write", label: "settings.mcpAccess.capabilities.projectsWrite" },
 ];
 const AUDIT_PAGE_SIZE = 20;
 
@@ -91,6 +100,12 @@ function asList<T>(value: T[] | null | undefined): T[] {
   return Array.isArray(value) ? value : [];
 }
 
+/** MCP 授权 UI 只需要项目根的 id/name。 */
+interface ProjectOption {
+  id: string;
+  name: string;
+}
+
 /** 单条身份数据做结构兜底（后端旧数据可能缺项目列表字段）。 */
 function normalizeAgent(agent: McpAgentInfo): McpAgentInfo {
   return {
@@ -105,7 +120,7 @@ export default function McpAccessSection() {
   const updateSettings = useSettingsStore((s) => s.update);
   const [status, setStatus] = useState<McpStatus | null>(null);
   const [agents, setAgents] = useState<McpAgentInfo[]>([]);
-  const [projects, setProjects] = useState<PlanningProject[]>([]);
+  const [projects, setProjects] = useState<ProjectOption[]>([]);
   const [audit, setAudit] = useState<McpAuditPage | null>(null);
   const [auditLoading, setAuditLoading] = useState(true);
   const [loading, setLoading] = useState(true);
@@ -162,12 +177,18 @@ export default function McpAccessSection() {
       const [nextStatus, nextAgents, nextProjects] = await Promise.all([
         agentMcpStatus(),
         agentMcpList(),
-        planningListProjects(false),
+        // v91 授权键统一为项目根：可授权列表来自项目工作空间（status=null 拉全量）。
+        workspaceProjectList(null),
       ]);
       if (!mounted.current || request !== requestId.current) return;
       setStatus(nextStatus ?? null);
       setAgents(asList(nextAgents).map(normalizeAgent));
-      setProjects(asList(nextProjects));
+      setProjects(
+        asList(nextProjects?.projects).map((project) => ({
+          id: project.id,
+          name: project.name,
+        })),
+      );
       void loadAudit(0);
     } catch (reason) {
       if (!mounted.current || request !== requestId.current) return;

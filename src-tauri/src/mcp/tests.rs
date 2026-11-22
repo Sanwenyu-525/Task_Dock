@@ -6,7 +6,9 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
 
-use crate::commands::planning::{create_feature_impl, create_project_impl, ProjectInput};
+use crate::commands::planning::{
+    create_feature_impl, create_project_impl, create_project_outcome_impl, ProjectInput,
+};
 use crate::db::Db;
 use crate::error::AppResult;
 use crate::mcp::auth::{self, McpAgentRow, McpScope};
@@ -115,6 +117,24 @@ fn proj_input(name: &str) -> ProjectInput {
     }
 }
 
+/// 创建「项目根 + 活动计划」，返回 (根 ID, 计划 ID, 计划 revision)。
+/// v91 起授权键是项目根；业务工具入参兼容计划 ID。
+fn make_rooted_project(db: &Db, name: &str) -> (String, String, i64) {
+    let outcome = create_project_outcome_impl(db, proj_input(name)).unwrap();
+    (
+        outcome.project_id,
+        outcome.active_plan_id,
+        outcome.active_plan.revision,
+    )
+}
+
+/// 授予项目创建/项目写全局能力（v90 能力层：创建项目与写项目根元数据必需）。
+fn grant_project_capabilities(db: &Db, row_id: &str) {
+    for capability in ["projects.create", "projects.write"] {
+        crate::mcp::permissions::grant(db, row_id, capability, "").unwrap();
+    }
+}
+
 // ── 工具发现 ─────────────────────────────────────────────────────────
 
 #[test]
@@ -153,6 +173,16 @@ fn tool_defs_are_complete_and_unique() {
         "taskdock_create_note",
         "taskdock_link_note_task",
         "taskdock_add_task_progress",
+        // 协作中心创建/追加/生成类工具：靠 requestId 幂等或内容去重防重复，
+        // 不存在可校验的「当前版本」，与上面创建类工具同一豁免规则。
+        "taskdock_collab_create_issue",
+        "taskdock_collab_create_bug",
+        "taskdock_collab_attach_evidence",
+        "taskdock_collab_create_plan",
+        "taskdock_collab_create_visualization",
+        "taskdock_collab_generate_visualization",
+        "taskdock_collab_create_prototype",
+        "taskdock_collab_create_tasks_from_plan",
     ];
     for d in defs.iter().filter(|d| d.write) {
         // 无必填参数的写入工具（如创建笔记）可以省略 required 键，视为空集合。
@@ -228,6 +258,11 @@ fn project_rw_without_grant_cannot_write_existing_project() {
     let p = create_project_impl(&db, proj_input("用户项目")).unwrap();
     let (agent, _) = make_agent(&db, "rw", "project_rw");
     let ctx = ctx_for(&db, &agent);
+    // v91 起拒绝消息携带的是授权键（项目根 ID），入参计划 ID 会被解析到根。
+    let root = db
+        .with_read(|conn| crate::project_hub::service::resolve_project_root(conn, &p.id))
+        .unwrap()
+        .unwrap();
 
     // project_rw 只读取已授权项目；未授权项目名称不能出现在列表中。
     let listed = call_ok(&ctx, "taskdock_list_projects", json!({}));
@@ -245,7 +280,7 @@ fn project_rw_without_grant_cannot_write_existing_project() {
         }),
     );
     assert_eq!(e.code, crate::mcp::protocol::ERR_FORBIDDEN);
-    assert!(e.message.contains(&p.id), "拒绝消息应包含项目 id");
+    assert!(e.message.contains(&root), "拒绝消息应包含项目根 id");
     // 内容未被改动
     let after = db
         .with_read(|c| crate::commands::planning::load_project_tx(c, &p.id))
@@ -260,6 +295,7 @@ fn project_isolation_between_agents() {
     let p2 = create_project_impl(&db, proj_input("P2")).unwrap();
     let (agent_a, _) = make_agent(&db, "agent-a", "project_rw");
     let ctx_a = ctx_for(&db, &agent_a);
+    grant_project_capabilities(&db, &agent_a.row_id);
     // agent-a 授权 P1
     auth::grant_project(&db, &agent_a.row_id, &p1.id).unwrap();
 
@@ -380,15 +416,8 @@ fn project_rw_reads_are_limited_to_grants_and_revocation_is_immediate() {
     );
     assert_eq!(visible_links.as_array().unwrap().len(), 1);
 
-    db.with_conn(|conn| {
-        conn.execute(
-            "DELETE FROM mcp_agent_grants WHERE agent_row_id = ?1 AND project_id = ?2",
-            rusqlite::params![agent_a.row_id, p1.id],
-        )
-        .map_err(crate::error::AppError::from)?;
-        Ok(())
-    })
-    .unwrap();
+    // 撤销走统一入口：入参计划 ID 会被解析到项目根，授权即时失效。
+    auth::revoke_project(&db, &agent_a.row_id, &p1.id).unwrap();
     assert_eq!(
         call_ok(&ctx_a, "taskdock_list_projects", json!({}))
             .as_array()
@@ -398,6 +427,239 @@ fn project_rw_reads_are_limited_to_grants_and_revocation_is_immediate() {
         "撤销项目授权后列表立即不再返回该项目"
     );
     assert_eq!(f1.project_id, p1.id);
+}
+
+// ── v91 统一授权键：项目根（计划 ID 只是入参兼容）──────────────────
+
+#[test]
+fn grant_project_with_plan_id_stores_project_root() {
+    let db = memdb();
+    let (root, plan, _) = make_rooted_project(&db, "根授权项目");
+    let (agent, _) = make_agent(&db, "grant-root", "project_rw");
+
+    let info = auth::grant_project(&db, &agent.row_id, &plan).unwrap();
+    assert_eq!(
+        info.granted_project_ids,
+        vec![root.clone()],
+        "计划 ID 入参必须落库为项目根授权键"
+    );
+    // 幂等：同根重复授予（换根 ID 入参）不产生第二行
+    let info = auth::grant_project(&db, &agent.row_id, &root).unwrap();
+    assert_eq!(info.granted_project_ids, vec![root], "按根重复授予必须保持幂等");
+}
+
+#[test]
+fn grant_project_with_unknown_id_is_validation_error() {
+    let db = memdb();
+    let (agent, _) = make_agent(&db, "grant-missing", "project_rw");
+    let err = auth::grant_project(&db, &agent.row_id, "no-such-project").unwrap_err();
+    assert!(
+        matches!(err, crate::error::AppError::Validation(ref message) if message.contains("项目不存在")),
+        "未存在 ID 应返回 Validation: {err:?}"
+    );
+    // 未落任何授权
+    let info = crate::mcp::auth::list_agents(&db).unwrap();
+    assert!(info
+        .iter()
+        .find(|item| item.id == agent.row_id)
+        .unwrap()
+        .granted_project_ids
+        .is_empty());
+}
+
+#[test]
+fn revoke_project_with_plan_id_clears_root_grant() {
+    let db = memdb();
+    let (root, plan, _) = make_rooted_project(&db, "撤权解析项目");
+    let (agent, _) = make_agent(&db, "revoke-plan", "project_rw");
+    auth::grant_project(&db, &agent.row_id, &root).unwrap();
+    // 计划 ID 入参撤销：解析回同一根，授权被移除
+    let info = auth::revoke_project(&db, &agent.row_id, &plan).unwrap();
+    assert!(
+        info.granted_project_ids.is_empty(),
+        "按计划 ID 撤销必须删掉根上的授权: {:?}",
+        info.granted_project_ids
+    );
+    // 重复撤销幂等；未知 ID 也按幂等处理（无可撤销的授权）
+    let info = auth::revoke_project(&db, &agent.row_id, &plan).unwrap();
+    assert!(info.granted_project_ids.is_empty(), "重复撤销应幂等");
+    let info = auth::revoke_project(&db, &agent.row_id, "no-such-project").unwrap();
+    assert!(info.granted_project_ids.is_empty(), "未知 ID 撤销应为幂等空操作");
+}
+
+#[test]
+fn granted_agent_can_read_write_and_revocation_blocks_immediately() {
+    let db = memdb();
+    let (root, plan, revision) = make_rooted_project(&db, "读写授权项目");
+    let (_, other_plan, other_revision) = make_rooted_project(&db, "未授权项目");
+    let (agent, _) = make_agent(&db, "rw-grant", "project_rw");
+    grant_project_capabilities(&db, &agent.row_id);
+    let ctx = ctx_for(&db, &agent);
+
+    // 未授权（按计划 ID 入参）：读 + 写都被拒
+    let denied = rpc_err(&ctx, "taskdock_get_project", json!({ "project_id": other_plan }));
+    assert_eq!(denied.code, crate::mcp::protocol::ERR_FORBIDDEN);
+    let denied = rpc_err(
+        &ctx,
+        "taskdock_update_project",
+        json!({
+            "project_id": other_plan,
+            "expected_revision": other_revision,
+            "name": "越权改名",
+        }),
+    );
+    assert_eq!(denied.code, crate::mcp::protocol::ERR_FORBIDDEN);
+
+    // 按项目根授权后：读 + 写通过（入参用计划 ID，内部解析到同一根）
+    auth::grant_project(&db, &agent.row_id, &root).unwrap();
+    let loaded = call_ok(&ctx, "taskdock_get_project", json!({ "project_id": plan }));
+    assert_eq!(loaded["id"], plan);
+    let _ = call_ok(
+        &ctx,
+        "taskdock_update_project",
+        json!({
+            "project_id": plan,
+            "expected_revision": revision,
+            "name": "已授权改名",
+        }),
+    );
+
+    // 撤销（计划 ID 入参）后立即拒绝：无缓存窗口
+    auth::revoke_project(&db, &agent.row_id, &plan).unwrap();
+    let denied = rpc_err(&ctx, "taskdock_get_project", json!({ "project_id": plan }));
+    assert_eq!(denied.code, crate::mcp::protocol::ERR_FORBIDDEN);
+    let denied = rpc_err(
+        &ctx,
+        "taskdock_update_project",
+        json!({
+            "project_id": plan,
+            "expected_revision": 2,
+            "name": "撤权后再写入",
+        }),
+    );
+    assert_eq!(denied.code, crate::mcp::protocol::ERR_FORBIDDEN);
+}
+
+#[test]
+fn deleting_project_root_cascades_grants() {
+    let db = memdb();
+    let (root, _, _) = make_rooted_project(&db, "级联清理项目");
+    let (agent, _) = make_agent(&db, "cascade", "project_rw");
+    auth::grant_project(&db, &agent.row_id, &root).unwrap();
+
+    db.with_conn(|conn| {
+        conn.execute(
+            "DELETE FROM workspace_projects WHERE id = ?1",
+            rusqlite::params![root],
+        )
+        .map_err(crate::error::AppError::from)
+    })
+    .unwrap();
+    let remaining: i64 = db
+        .with_read(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM mcp_agent_grants WHERE agent_row_id = ?1",
+                rusqlite::params![agent.row_id],
+                |row| row.get(0),
+            )
+            .map_err(crate::error::AppError::from)
+        })
+        .unwrap();
+    assert_eq!(remaining, 0, "删除项目根后授权必须随外键级联清理");
+}
+
+#[test]
+fn multi_plan_project_grants_are_root_scoped() {
+    let db = memdb();
+    let (root, plan_a, _) = make_rooted_project(&db, "多计划项目");
+    // 同一根下补一个第二计划（弱引用 workspace_project_id，无外键）
+    let plan_b = "plan-b-multi";
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO planning_projects
+               (id, name, description, status, archived, sort_order, created_at, updated_at,
+                revision, workspace_project_id, is_active)
+             VALUES (?1, '第二计划', '', 'planning', 0, 99, ?2, ?2, 1, ?3, 0)",
+            rusqlite::params![plan_b, crate::agents::now_iso(), root],
+        )
+        .map_err(crate::error::AppError::from)
+    })
+    .unwrap();
+    let (agent, _) = make_agent(&db, "multi-plan", "project_rw");
+    grant_project_capabilities(&db, &agent.row_id);
+    // 只按计划 A 入参授权
+    auth::grant_project(&db, &agent.row_id, &plan_a).unwrap();
+    let ctx = ctx_for(&db, &agent);
+
+    // 计划 B 与计划 A 同根：读 + 写被同一根授权覆盖，不是「按计划各自授权」
+    let loaded = call_ok(&ctx, "taskdock_get_project", json!({ "project_id": plan_b }));
+    assert_eq!(loaded["id"], plan_b);
+    let _ = call_ok(
+        &ctx,
+        "taskdock_update_project",
+        json!({
+            "project_id": plan_b,
+            "expected_revision": 1,
+            "name": "同根计划可写",
+        }),
+    );
+
+    // 其他项目（另一个根）不被波及：授权不串项目
+    let (_, other_plan, other_revision) = make_rooted_project(&db, "别的项目");
+    let denied = rpc_err(&ctx, "taskdock_get_project", json!({ "project_id": other_plan }));
+    assert_eq!(denied.code, crate::mcp::protocol::ERR_FORBIDDEN);
+    let denied = rpc_err(
+        &ctx,
+        "taskdock_update_project",
+        json!({
+            "project_id": other_plan,
+            "expected_revision": other_revision,
+            "name": "越权改名",
+        }),
+    );
+    assert_eq!(denied.code, crate::mcp::protocol::ERR_FORBIDDEN);
+}
+
+#[test]
+fn update_project_requires_projects_write_capability() {
+    let db = memdb();
+    let (root, plan, revision) = make_rooted_project(&db, "能力校验项目");
+    let (agent, _) = make_agent(&db, "no-cap", "project_rw");
+    // 有项目根授权但没有 projects.write 能力 → 拒绝
+    auth::grant_project(&db, &agent.row_id, &root).unwrap();
+    let ctx = ctx_for(&db, &agent);
+    let denied = rpc_err(
+        &ctx,
+        "taskdock_update_project",
+        json!({
+            "project_id": plan,
+            "expected_revision": revision,
+            "name": "无能力写入",
+        }),
+    );
+    assert_eq!(denied.code, crate::mcp::protocol::ERR_FORBIDDEN);
+    assert!(
+        denied.message.contains("projects.write"),
+        "拒绝应指明缺失的能力: {denied:?}"
+    );
+    // 内容未被改动
+    let after = db
+        .with_read(|c| crate::commands::planning::load_project_tx(c, &plan))
+        .unwrap();
+    assert_eq!(after.name, "能力校验项目");
+
+    // 授予能力后同一调用通过
+    grant_project_capabilities(&db, &agent.row_id);
+    let updated = call_ok(
+        &ctx,
+        "taskdock_update_project",
+        json!({
+            "project_id": plan,
+            "expected_revision": revision,
+            "name": "有能力写入",
+        }),
+    );
+    assert_eq!(updated["revision"], revision + 1);
 }
 
 // ── 撤销立即生效 ─────────────────────────────────────────────────────
@@ -430,6 +692,7 @@ fn revocation_takes_effect_immediately() {
 fn write_tools_enforce_expected_revision_and_bump() {
     let db = memdb();
     let (agent, _) = make_agent(&db, "writer", "project_rw");
+    grant_project_capabilities(&db, &agent.row_id);
     let ctx = ctx_for(&db, &agent);
 
     // 缺 expected_revision → 明确错误
@@ -438,8 +701,10 @@ fn write_tools_enforce_expected_revision_and_bump() {
         "taskdock_create_project",
         json!({ "name": "MCP 项目", "requestId": "c1" }),
     );
-    assert_eq!(created["revision"], 1);
-    let project_id = created["id"].as_str().unwrap().to_string();
+    // 创建结果返回项目根 + 计划摘要（camelCase），并发令牌在 activePlan.revision 上
+    assert_eq!(created["activePlan"]["revision"], 1);
+    // 业务更新走「项目当前计划」ID（created.id 是项目根，授权键也是根）
+    let project_id = created["activePlanId"].as_str().unwrap().to_string();
 
     // 缺 expected_revision → 明确错误（不执行写）
     let err = tool_err(
@@ -760,13 +1025,17 @@ fn step_tools_go_through_feature_revision() {
 fn same_request_id_replays_original_result_without_double_execute() {
     let db = memdb();
     let (agent, _) = make_agent(&db, "idem", "project_rw");
+    grant_project_capabilities(&db, &agent.row_id);
     let ctx = ctx_for(&db, &agent);
     let args = json!({ "name": "幂等项目", "requestId": "req-42" });
 
     let first = call_ok(&ctx, "taskdock_create_project", args.clone());
     let second = call_ok(&ctx, "taskdock_create_project", args);
     assert_eq!(first["id"], second["id"], "同 request_id 应返回原结果");
-    assert_eq!(second["revision"], 1, "重放不得消耗 revision");
+    assert_eq!(
+        second["activePlan"]["revision"], 1,
+        "重放不得消耗 revision"
+    );
 
     // 库内只有一个项目
     let count: i64 = db
@@ -793,6 +1062,7 @@ fn same_request_id_replays_original_result_without_double_execute() {
 fn same_request_id_with_different_arguments_is_rejected() {
     let db = memdb();
     let (agent, _) = make_agent(&db, "idem-conflict", "project_rw");
+    grant_project_capabilities(&db, &agent.row_id);
     let ctx = ctx_for(&db, &agent);
 
     let first = call_ok(
@@ -815,7 +1085,7 @@ fn same_request_id_with_different_arguments_is_rejected() {
         })
         .unwrap();
     assert_eq!(projects, vec!["参数 A"]);
-    assert_eq!(first["name"], "参数 A");
+    assert_eq!(first["activePlan"]["name"], "参数 A");
 }
 
 #[test]
@@ -823,6 +1093,8 @@ fn request_id_is_scoped_to_agent_and_action() {
     let db = memdb();
     let (agent_a, _) = make_agent(&db, "idem-scope-a", "project_rw");
     let (agent_b, _) = make_agent(&db, "idem-scope-b", "project_rw");
+    grant_project_capabilities(&db, &agent_a.row_id);
+    grant_project_capabilities(&db, &agent_b.row_id);
     let ctx_a = ctx_for(&db, &agent_a);
     let ctx_b = ctx_for(&db, &agent_b);
 
@@ -831,11 +1103,12 @@ fn request_id_is_scoped_to_agent_and_action() {
         "taskdock_create_project",
         json!({ "name": "Agent A 项目", "requestId": "shared" }),
     );
+    // 功能挂在「项目当前计划」下（created.id 是项目根）
     let feature = call_ok(
         &ctx_a,
         "taskdock_create_feature",
         json!({
-            "project_id": project_a["id"],
+            "project_id": project_a["activePlanId"],
             "title": "Agent A 功能",
             "requestId": "shared",
         }),
@@ -869,6 +1142,7 @@ fn request_id_is_scoped_to_agent_and_action() {
 fn concurrent_same_request_id_creates_one_project_and_one_success_audit() {
     let db = memdb();
     let (agent, _) = make_agent(&db, "idem-race", "project_rw");
+    grant_project_capabilities(&db, &agent.row_id);
     let args = json!({ "name": "并发幂等", "requestId": "shared-request" });
     let threads = 12;
 
@@ -911,6 +1185,7 @@ fn concurrent_same_request_id_creates_one_project_and_one_success_audit() {
 fn replay_requires_current_scope_and_project_grant() {
     let db = memdb();
     let (agent, _) = make_agent(&db, "idem-revoke", "project_rw");
+    grant_project_capabilities(&db, &agent.row_id);
     let ctx = ctx_for(&db, &agent);
     let created = call_ok(
         &ctx,
@@ -947,6 +1222,7 @@ fn replay_requires_current_scope_and_project_grant() {
 fn failed_audit_insert_rolls_back_mcp_business_write() {
     let db = memdb();
     let (agent, _) = make_agent(&db, "audit-fail", "project_rw");
+    grant_project_capabilities(&db, &agent.row_id);
     let ctx = ctx_for(&db, &agent);
     db.with_conn(|conn| {
         conn.execute_batch(
@@ -984,6 +1260,7 @@ fn audits_record_reads_writes_and_failures_without_secrets() {
     let db = memdb();
     let p = create_project_impl(&db, proj_input("P")).unwrap();
     let (agent, token) = make_agent(&db, "aud", "project_rw");
+    grant_project_capabilities(&db, &agent.row_id);
     auth::grant_project(&db, &agent.row_id, &p.id).unwrap();
     let ctx = ctx_for(&db, &agent);
 
@@ -1054,6 +1331,7 @@ fn successful_writes_emit_planning_changed() {
     let db = memdb();
     let (emit, log) = collector();
     let (agent, _) = make_agent(&db, "emit", "project_rw");
+    grant_project_capabilities(&db, &agent.row_id);
     let ctx = ToolCtx {
         db: db.clone(),
         agent,
@@ -1796,6 +2074,7 @@ fn task_context_uses_project_binding_and_skills() {
 fn write_tool_records_single_operation_and_replay_creates_none() {
     let db = memdb();
     let (agent, _) = make_agent(&db, "op-agent", "project_rw");
+    grant_project_capabilities(&db, &agent.row_id);
     let ctx = ctx_for(&db, &agent);
 
     let created = call_ok(

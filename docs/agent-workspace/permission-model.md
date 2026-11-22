@@ -31,17 +31,41 @@
 
 默认策略：新建 Agent = `disabled` + 无能力 → 全部拒绝。UI 必须显式授予。
 
-## 3. 判定顺序
+## 3. 判定顺序（v92 统一授权四层）
 
 ```
 1. 身份存在且未撤销         → 否则 UNAUTHORIZED
 2. scope 允许该操作类别      → disabled 一律拒绝；只读不允许写
 3. 能力存在（全局或资源级）  → 否则 FORBIDDEN（记 permission_denial 审计）
-4. 项目范围（如适用）        → project_rw 还需项目授权 grant
+4. 项目授权 grant（v92）     → 项目型能力且资源非空且 scope≠readonly：
+                              必须持有 mcp_agent_grants 上该项目根的授权；
+                              计划 ID 入参先 resolve_project_root 解析，解析不出 → FORBIDDEN
 5. 资源归属（备注/任务）     → 仅能写自己创建的资源（若配置了 ownership）
 ```
 
 任何一层失败都**明确拒绝**，不降级、不回退到只读执行。
+
+**唯一入口**：`agent_access::permissions::require`（及 `require_any_read` / `authorized_reads`）。
+CLI、MCP、REST 三个协议共用同一判定——**任何 Agent 都不能通过更换接入协议绕过权限**。
+MCP 工具层的 `ensure_grant` / `ensure_can_read_project` 是该入口的薄包装（含 readonly 豁免），
+不得绕开它自建判定。
+
+### 3.1 scope / capability / grant 的职责边界
+
+| 层 | 存储 | 回答的问题 | 关键规则 |
+|---|---|---|---|
+| scope | `mcp_agents.scope` | 总开关：能不能读、能不能写 | `project_rw` 只代表「可写」，不隐含创建权，也不隐含项目授权 |
+| capability | `mcp_agent_capabilities` | 会什么（全局 `resource_id=''` 或精确项目根） | `projects.create` / `context.read` / `skills.read` 只支持全局；`context.read` 不能赋予任何项目读取权 |
+| grant | `mcp_agent_grants` | 能动**哪个项目**（项目根，v91 外键） | 项目型能力（projects.read/write、plans.read、decisions.*、handoffs.*）读写都要求；readonly 是用户显式选择的全局只读，读不逐项目要 grant |
+| 策略 | 创建服务 `CreatorProjectAndPlan` | 创建成功后给创建者什么 | 只写刚创建的项目根（projects.read + plans.read 能力 + grant 该根），绝不全局、不跨项目继承 |
+
+### 3.2 读取范围的 grant 交集（v92）
+
+`authorized_reads` 返回的能力范围在 `scope=project_rw` 下与 `mcp_agent_grants` 求交集
+（projects / plans / decisions / handoffs 四个槽位）：全局能力收敛为「已授权的项目根集合」，
+项目级能力只保留同时持有 grant 的根。列表查询（交接/决策/项目）据此服务端过滤，
+`total` 为过滤后的数量；交集为空返回 `FORBIDDEN`（项目列表为空集合时同样拒绝，
+不返回假空列表）。
 
 ## 4. 本地主体（Local Principal）
 
@@ -169,10 +193,23 @@ OS 用户或沙箱中；本模块只保证「不因目录可写而越权修改 T
 - 文件来源不是身份；导入仍按目录策略 + 能力集合 + 真实资源归属判定。
 - 读取交接/报告同样校验能力与项目范围（v82 收紧：不再对文件导入放行读）。
 
-## 项目创建权限（2026-11-21）
+## 项目创建权限（2026-11-21，v92 补齐入口一致性）
 
 - 新增 `projects.create`（**全局**能力，`global_only`）：项目尚不存在，逐资源授权无法表达；
-- 新增 `projects.write`（项目级）：预留给改名/归档/删除等写操作；
-- `scope=project_rw` 只代表「可写」，**不再隐含创建权**；MCP/CLI/REST 都先校验 `projects.create`；
-- 创建成功后的自动授权只写刚创建的项目根（v91 外键），绝不写全局或计划 ID；
-- 计划 ID 入参先解析到项目根再判定（`ensure_grant` / `perms::require`），计划授权不会跨项目生效。
+- 新增 `projects.write`（项目级）：项目改名/归档等写操作（MCP `taskdock_update_project`、
+  REST `PATCH /api/v1/projects/{projectId}`；CLI `project update` 为后续项）；
+- `scope=project_rw` 只代表「可写」，**不再隐含创建权**，也**不隐含项目授权**：
+  写项目 = `projects.write` 能力 + 该项目根 grant；MCP/CLI/REST 都先校验 `projects.create`；
+- **目录创建门禁（v92）**：`create_new` 只允许本机人类（LocalHuman）——UI 弹窗与未带 token 的
+  CLI；RegisteredAgent 在 CLI / MCP / REST 一律拒绝，错误提示人类在 UI 完成目录创建。
+  身份判定只用已解析的 Principal，禁止读 `TASKDOCK_AGENT_TOKEN` 环境变量猜测。
+  `metadata_only` / `attach_existing` 按既有权限规则通过或拒绝；
+- 创建成功后的自动授权只写刚创建的项目根（v91 外键），绝不写全局或计划 ID；创建与归属
+  （`project_create_requests`）同事务落库，创建者重试（含授权失败后的重试）返回原项目；
+- **幂等按主体隔离（v92）**：创建重试的作用域是「主体 × 请求 ID」——同一 Agent 同请求 ID 同摘要
+  返回原项目，换摘要 `Conflict`；不同 Agent（或 Agent 与人类）相同请求 ID 各自独立创建，
+  任何主体都不能通过重放获得其他主体创建的项目及其授权。
+  详见 [统一项目身份与创建服务](../project-hub/10-统一项目身份与创建服务.md) §14；
+- 计划 ID 入参先解析到项目根再判定（`ensure_grant` / `perms::require`），计划授权不会跨项目生效；
+- Agent 项目列表按授权过滤：全局能力 + readonly 返回全部；只有项目级授权的 Agent 只看到
+  被授权项目；无任何授权返回 `FORBIDDEN`（total 为过滤后数量）。

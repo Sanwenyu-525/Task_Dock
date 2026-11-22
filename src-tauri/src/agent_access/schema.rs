@@ -597,6 +597,112 @@ CREATE INDEX idx_mcp_agent_grants_project ON mcp_agent_grants(project_id);
 "#,
 );
 
+/// v92：统一项目身份第二轮（幂等归属 + project_kind 收敛）。
+///
+/// 1) `project_create_requests`：幂等请求归属表。作用域 = 主体类别 + 主体 ID + 请求 ID，
+///    UNIQUE 保证同一主体的同一请求 ID 只对应一个项目；摘要冲突在判定层返回 Conflict。
+///    历史事件不回填（payload 无归属信息）：旧事件兜底只对本机人类生效（见 creation::check_replay）。
+/// 2) `agent_decisions` / `agent_handoffs` 的 `project_kind` 收敛：新数据统一写 `'project'`
+///    （项目根，与 v91 之后的授权模型一致）；旧值 `planning` / `workspace` 保留可读，不删历史。
+///    只扩 CHECK 枚举并逐列复制，不改列语义。
+pub const MIGRATION_92: (i64, &str) = (
+    92,
+    r#"
+CREATE TABLE project_create_requests (
+  id TEXT PRIMARY KEY NOT NULL,
+  principal_kind TEXT NOT NULL CHECK (principal_kind IN ('local_human','registered_agent')),
+  principal_id TEXT NOT NULL,
+  client_request_id TEXT NOT NULL,
+  request_digest TEXT NOT NULL,
+  project_id TEXT NOT NULL REFERENCES workspace_projects(id) ON DELETE CASCADE,
+  plan_id TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  UNIQUE (principal_kind, principal_id, client_request_id)
+);
+CREATE INDEX idx_project_create_requests_project ON project_create_requests(project_id);
+CREATE INDEX idx_project_create_requests_request ON project_create_requests(client_request_id);
+
+CREATE TABLE agent_decisions_v92 (
+  id TEXT PRIMARY KEY NOT NULL,
+  project_id TEXT NOT NULL DEFAULT '',
+  project_kind TEXT NOT NULL DEFAULT 'none'
+    CHECK (project_kind IN ('none','project','planning','workspace')),
+  title TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'proposed'
+    CHECK (status IN ('proposed','accepted','superseded','rejected')),
+  context TEXT NOT NULL DEFAULT '',
+  decision TEXT NOT NULL DEFAULT '',
+  consequences TEXT NOT NULL DEFAULT '',
+  alternatives TEXT NOT NULL DEFAULT '',
+  tags TEXT NOT NULL DEFAULT '[]',
+  revision INTEGER NOT NULL DEFAULT 1,
+  superseded_by TEXT,
+  created_by TEXT NOT NULL DEFAULT '',
+  actor_kind TEXT NOT NULL DEFAULT 'human'
+    CHECK (actor_kind IN ('human','agent','system')),
+  source TEXT NOT NULL DEFAULT 'ui'
+    CHECK (source IN ('ui','cli','mcp','rest','file','system')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+INSERT INTO agent_decisions_v92
+  (id, project_id, project_kind, title, status, context, decision, consequences,
+   alternatives, tags, revision, superseded_by, created_by, actor_kind, source,
+   created_at, updated_at)
+SELECT id, project_id, project_kind, title, status, context, decision, consequences,
+   alternatives, tags, revision, superseded_by, created_by, actor_kind, source,
+   created_at, updated_at
+FROM agent_decisions;
+DROP TABLE agent_decisions;
+ALTER TABLE agent_decisions_v92 RENAME TO agent_decisions;
+CREATE INDEX idx_agent_decisions_project ON agent_decisions(project_id, created_at DESC);
+CREATE INDEX idx_agent_decisions_status ON agent_decisions(status, updated_at DESC);
+
+CREATE TABLE agent_handoffs_v92 (
+  id TEXT PRIMARY KEY NOT NULL,
+  project_id TEXT NOT NULL DEFAULT '',
+  project_kind TEXT NOT NULL DEFAULT 'none'
+    CHECK (project_kind IN ('none','project','planning','workspace')),
+  task_id TEXT,
+  from_agent_row_id TEXT REFERENCES mcp_agents(id) ON DELETE SET NULL,
+  from_agent_id TEXT NOT NULL DEFAULT '',
+  to_agent_row_id TEXT REFERENCES mcp_agents(id) ON DELETE SET NULL,
+  to_agent_id TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending','accepted','rejected','completed','cancelled')),
+  summary TEXT NOT NULL DEFAULT '',
+  completed_items TEXT NOT NULL DEFAULT '[]',
+  pending_items TEXT NOT NULL DEFAULT '[]',
+  decisions TEXT NOT NULL DEFAULT '[]',
+  files_changed TEXT NOT NULL DEFAULT '[]',
+  risks TEXT NOT NULL DEFAULT '[]',
+  next_steps TEXT NOT NULL DEFAULT '[]',
+  revision INTEGER NOT NULL DEFAULT 1,
+  accepted_at TEXT,
+  rejected_at TEXT,
+  rejection_reason TEXT NOT NULL DEFAULT '',
+  completed_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+INSERT INTO agent_handoffs_v92
+  (id, project_id, project_kind, task_id, from_agent_row_id, from_agent_id,
+   to_agent_row_id, to_agent_id, status, summary, completed_items, pending_items,
+   decisions, files_changed, risks, next_steps, revision, accepted_at, rejected_at,
+   rejection_reason, completed_at, created_at, updated_at)
+SELECT id, project_id, project_kind, task_id, from_agent_row_id, from_agent_id,
+   to_agent_row_id, to_agent_id, status, summary, completed_items, pending_items,
+   decisions, files_changed, risks, next_steps, revision, accepted_at, rejected_at,
+   rejection_reason, completed_at, created_at, updated_at
+FROM agent_handoffs;
+DROP TABLE agent_handoffs;
+ALTER TABLE agent_handoffs_v92 RENAME TO agent_handoffs;
+CREATE INDEX idx_agent_handoffs_status ON agent_handoffs(status, created_at DESC);
+CREATE INDEX idx_agent_handoffs_project ON agent_handoffs(project_id, created_at DESC);
+CREATE INDEX idx_agent_handoffs_target ON agent_handoffs(to_agent_row_id, status);
+"#,
+);
+
 #[cfg(test)]
 mod tests {
     use crate::db::Db;

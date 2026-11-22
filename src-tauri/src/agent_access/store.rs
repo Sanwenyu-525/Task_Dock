@@ -580,29 +580,21 @@ pub fn create_decision_guarded(
             "非法决策状态: {status}（允许 proposed|accepted|superseded|rejected）"
         )));
     }
-    let project_id = input.project_id.unwrap_or_default().trim().to_string();
-    let project_kind = input.project_kind.unwrap_or_else(|| {
-        if project_id.is_empty() {
-            "none".to_string()
-        } else {
-            "planning".to_string()
+    // 归属只认项目根：入参是计划 ID 时先解析（统一身份），project_kind 由真实归属推导，
+    // 收敛为 none / project（旧枚举 planning / workspace 只保留在历史行，入参声明不参与判定）。
+    let raw_project = input.project_id.unwrap_or_default().trim().to_string();
+    let (project_id, project_kind) = if raw_project.is_empty() {
+        (String::new(), "none")
+    } else {
+        let root = db.with_read(|conn| {
+            crate::project_hub::service::resolve_project_root(conn, &raw_project)
+        })?;
+        match root {
+            Some(root) => (root, "project"),
+            None => return Err(AppError::NotFound(format!("项目不存在: {raw_project}"))),
         }
-    });
-    if !matches!(project_kind.as_str(), "none" | "planning" | "workspace") {
-        return Err(AppError::Validation(format!(
-            "非法 project_kind: {project_kind}（允许 none|planning|workspace）"
-        )));
-    }
-    if project_kind == "none" && !project_id.is_empty() {
-        return Err(AppError::Validation(
-            "project_kind=none 时不允许 project_id".into(),
-        ));
-    }
-    if project_kind != "none" && project_id.is_empty() {
-        return Err(AppError::Validation(
-            "指定 project_kind 时必须提供 project_id".into(),
-        ));
-    }
+    };
+    let _ = input.project_kind;
     let now = crate::agents::now_iso();
     let decision = db.with_transaction(|conn| {
         guard.check(conn)?;
@@ -652,10 +644,16 @@ pub fn list_decisions(
     offset: u32,
 ) -> AppResult<(Vec<Decision>, Page)> {
     db.with_read(|conn| {
+        // 项目过滤按项目根匹配；历史行可能仍以计划 ID 归属（v92 之前写入），
+        // 用 plans 反查一并纳入，保证按根过滤能看到旧决策。
+        let project_filter = "(?1 IS NULL OR project_id = ?1 OR project_id IN \
+             (SELECT id FROM planning_projects WHERE workspace_project_id = ?1))";
         let total: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM agent_decisions
-                 WHERE (?1 IS NULL OR project_id = ?1) AND (?2 IS NULL OR status = ?2)",
+                &format!(
+                    "SELECT COUNT(*) FROM agent_decisions
+                     WHERE {project_filter} AND (?2 IS NULL OR status = ?2)"
+                ),
                 rusqlite::params![project_id, status],
                 |r| r.get(0),
             )
@@ -663,7 +661,7 @@ pub fn list_decisions(
         let mut stmt = conn
             .prepare(&format!(
                 "SELECT {DECISION_COLS} FROM agent_decisions
-                 WHERE (?1 IS NULL OR project_id = ?1) AND (?2 IS NULL OR status = ?2)
+                 WHERE {project_filter} AND (?2 IS NULL OR status = ?2)
                  ORDER BY created_at DESC, id DESC LIMIT ?3 OFFSET ?4"
             ))
             .map_err(AppError::from)?;
@@ -723,12 +721,15 @@ pub fn list_decisions_in_projects(
                     .iter()
                     .map(|p| rusqlite::types::Value::Text(p.clone())),
             );
+            // 授权范围按项目根表达；历史行可能仍以计划 ID 归属，用 plans 反查一并纳入。
+            let project_match = format!(
+                "(project_id IN ({placeholders}) OR project_id IN \
+                 (SELECT id FROM planning_projects WHERE workspace_project_id IN ({placeholders})))"
+            );
             if include_unscoped {
-                where_sql.push_str(&format!(
-                    " AND (project_id IN ({placeholders}) OR project_id = '')"
-                ));
+                where_sql.push_str(&format!(" AND ({project_match} OR project_id = '')"));
             } else {
-                where_sql.push_str(&format!(" AND project_id IN ({placeholders})"));
+                where_sql.push_str(&format!(" AND {project_match}"));
             }
         } else if include_unscoped {
             // 只有无项目决策可见。
@@ -888,8 +889,12 @@ fn list_handoffs_filtered(
     offset: u32,
 ) -> AppResult<(Vec<Handoff>, Page)> {
     db.with_read(|conn| {
-        let mut filter =
-            String::from("(?1 IS NULL OR status = ?1) AND (?2 IS NULL OR project_id = ?2)");
+        // 项目过滤按项目根匹配；历史行可能仍以计划 ID 归属（v92 之前写入），
+        // 用 plans 反查一并纳入，保证按根过滤能看到旧交接。
+        let mut filter = String::from(
+            "(?1 IS NULL OR status = ?1) AND (?2 IS NULL OR project_id = ?2 OR \
+             project_id IN (SELECT id FROM planning_projects WHERE workspace_project_id = ?2))",
+        );
         let mut params: Vec<rusqlite::types::Value> = vec![
             status.map(str::to_string).into(),
             project_id.map(str::to_string).into(),
@@ -1137,7 +1142,12 @@ pub fn list_reports_in_projects(
                     .iter()
                     .map(|p| rusqlite::types::Value::Text(p.clone())),
             );
-            where_sql.push_str(&format!(" AND project_id IN ({placeholders})"));
+            // 授权范围按项目根表达；报告归属由历史交接行推导，可能仍是计划 ID
+            // （v92 之前写入），用 plans 反查一并纳入。
+            where_sql.push_str(&format!(
+                " AND (project_id IN ({placeholders}) OR project_id IN \
+                 (SELECT id FROM planning_projects WHERE workspace_project_id IN ({placeholders})))"
+            ));
         }
         let total: i64 = conn
             .query_row(
@@ -2153,4 +2163,273 @@ pub fn source_label(source: Source) -> &'static str {
 /// 角色标签（供 UI 展示）。
 pub fn actor_label(kind: ActorKind) -> &'static str {
     kind.as_str()
+}
+
+#[cfg(test)]
+mod tests {
+    //! 项目身份统一（v92）的归属落库测试：决策 / 交接 / 报告一律锚定项目根，
+    //! 计划 ID 只作为入参兼容，`project_kind` 收敛为 none / project。
+
+    use super::{create_decision, DecisionInput, HandoffInput, ReportInput};
+    use crate::agent_access::handoff::{self};
+    use crate::agent_access::{Principal, Source};
+    use crate::db::Db;
+    use crate::mcp::auth as mcp_auth;
+    use crate::mcp::permissions as mcp_perm;
+
+    /// 建一个真实存在的项目根（`workspace_projects`）。
+    fn project(db: &Db, id: &str) {
+        let now = crate::agents::now_iso();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO workspace_projects
+                   (id, name, kind, status, root_path, dev_project_id, note, created_at, updated_at)
+                 VALUES (?1, ?1, 'general', 'active', '', NULL, '', ?2, ?2)",
+                rusqlite::params![id, now],
+            )?;
+            Ok(())
+        })
+        .expect("创建项目根");
+    }
+
+    /// 建一个挂在项目根下的计划（计划 ID 入参兼容的数据前提）。
+    fn plan(db: &Db, id: &str, workspace_project_id: &str) {
+        let now = crate::agents::now_iso();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO planning_projects
+                   (id, name, workspace_project_id, is_active, created_at, updated_at)
+                 VALUES (?1, ?1, ?2, 1, ?3, ?3)",
+                rusqlite::params![id, workspace_project_id, now],
+            )?;
+            Ok(())
+        })
+        .expect("创建计划");
+    }
+
+    /// 注册一个 project_rw Agent，返回 (行 ID, agent_id)。
+    fn agent(db: &Db, agent_id: &str) -> (String, String) {
+        let created = mcp_auth::create_agent(db, agent_id, agent_id).expect("创建 Agent");
+        mcp_auth::set_agent_scope(db, &created.info.id, "project_rw").expect("设置 scope");
+        (created.info.id, created.info.agent_id)
+    }
+
+    /// 授予能力（项目型能力的资源范围统一解析为项目根）。
+    fn grant_capability(db: &Db, row_id: &str, capability: &str, resource: &str) {
+        mcp_perm::grant(db, row_id, capability, resource).expect("授予能力");
+    }
+
+    /// 授予项目根授权（v92 统一授权第三层：`mcp_agent_grants`）。
+    fn grant_project(db: &Db, row_id: &str, project: &str) {
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT OR IGNORE INTO mcp_agent_grants (id, agent_row_id, project_id, created_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![
+                    uuid::Uuid::new_v4().to_string(),
+                    row_id,
+                    project,
+                    crate::agents::now_iso()
+                ],
+            )?;
+            Ok(())
+        })
+        .expect("授予项目授权");
+    }
+
+    fn local() -> Principal {
+        Principal::local(Source::Ui)
+    }
+
+    /// 读取决策的落库归属 (project_id, project_kind)。
+    fn decision_owner(db: &Db, id: &str) -> (String, String) {
+        db.with_read(|conn| {
+            Ok(conn.query_row(
+                "SELECT project_id, project_kind FROM agent_decisions WHERE id = ?1",
+                rusqlite::params![id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?)
+        })
+        .expect("读取决策归属")
+    }
+
+    /// 读取交接的落库归属 (project_id, project_kind)。
+    fn handoff_owner(db: &Db, id: &str) -> (String, String) {
+        db.with_read(|conn| {
+            Ok(conn.query_row(
+                "SELECT project_id, project_kind FROM agent_handoffs WHERE id = ?1",
+                rusqlite::params![id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?)
+        })
+        .expect("读取交接归属")
+    }
+
+    fn decision_input(title: &str, project_id: Option<&str>) -> DecisionInput {
+        DecisionInput {
+            title: title.into(),
+            project_id: project_id.map(str::to_string),
+            project_kind: None,
+            context: String::new(),
+            decision: "采用方案 A".into(),
+            consequences: String::new(),
+            alternatives: String::new(),
+            tags: Vec::new(),
+            status: None,
+        }
+    }
+
+    /// 新项目根下创建 Decision：落库 project_id = 根、project_kind = 'project'。
+    #[test]
+    fn decision_persists_project_root_and_kind() {
+        let db = Db::open_in_memory().expect("内存库");
+        project(&db, "root-decision");
+        let decision = create_decision(
+            &db,
+            &local(),
+            decision_input("根项目决策", Some("root-decision")),
+        )
+        .expect("创建决策");
+        assert_eq!(decision.project_id, "root-decision");
+        assert_eq!(decision.project_kind, "project");
+        assert_eq!(
+            decision_owner(&db, &decision.id),
+            ("root-decision".into(), "project".into())
+        );
+    }
+
+    /// 用计划 ID 创建 Decision：入参兼容解析，落库归属是项目根。
+    #[test]
+    fn decision_via_plan_id_persists_root() {
+        let db = Db::open_in_memory().expect("内存库");
+        project(&db, "root-plan-decision");
+        plan(&db, "plan-decision", "root-plan-decision");
+        let decision = create_decision(
+            &db,
+            &local(),
+            decision_input("计划入参决策", Some("plan-decision")),
+        )
+        .expect("创建决策");
+        assert_eq!(decision.project_id, "root-plan-decision");
+        assert_eq!(decision.project_kind, "project");
+        assert_eq!(
+            decision_owner(&db, &decision.id),
+            ("root-plan-decision".into(), "project".into())
+        );
+    }
+
+    /// 新项目下创建交接：成功且 project_kind = 'project'
+    /// （v92 之前的 CHECK 只允许 none|planning|workspace，会拒绝该写入——回归守护）。
+    #[test]
+    fn handoff_persists_project_root_and_kind() {
+        let db = Db::open_in_memory().expect("内存库");
+        project(&db, "root-handoff");
+        let (_, target) = agent(&db, "ho-root-target");
+        let created = handoff::create_handoff(
+            &db,
+            &local(),
+            handoff_input("根项目交接", Some("root-handoff"), &target),
+        )
+        .expect("创建交接");
+        assert_eq!(created.handoff.project_id, "root-handoff");
+        assert_eq!(created.handoff.project_kind, "project");
+        assert_eq!(
+            handoff_owner(&db, &created.handoff.id),
+            ("root-handoff".into(), "project".into())
+        );
+    }
+
+    /// 用计划 ID 创建交接：入参兼容解析，落库归属是项目根。
+    #[test]
+    fn handoff_via_plan_id_persists_root() {
+        let db = Db::open_in_memory().expect("内存库");
+        project(&db, "root-plan-handoff");
+        plan(&db, "plan-handoff", "root-plan-handoff");
+        let (_, target) = agent(&db, "ho-plan-target");
+        let created = handoff::create_handoff(
+            &db,
+            &local(),
+            handoff_input("计划入参交接", Some("plan-handoff"), &target),
+        )
+        .expect("创建交接");
+        assert_eq!(created.handoff.project_id, "root-plan-handoff");
+        assert_eq!(created.handoff.project_kind, "project");
+        assert_eq!(
+            handoff_owner(&db, &created.handoff.id),
+            ("root-plan-handoff".into(), "project".into())
+        );
+    }
+
+    fn handoff_input(summary: &str, project_id: Option<&str>, target: &str) -> HandoffInput {
+        HandoffInput {
+            to_agent_id: target.to_string(),
+            summary: summary.into(),
+            task_id: None,
+            project_id: project_id.map(str::to_string),
+            project_kind: None,
+            completed_items: Vec::new(),
+            pending_items: Vec::new(),
+            decisions: Vec::new(),
+            files_changed: Vec::new(),
+            risks: Vec::new(),
+            next_steps: Vec::new(),
+        }
+    }
+
+    /// 完整链路：Agent A 创建交接给 Agent B → B 接受 → A 提交工作报告，
+    /// 报告归属由交接推导并锚定同一项目根。
+    #[test]
+    fn handoff_accept_and_report_stay_on_project_root() {
+        let db = Db::open_in_memory().expect("内存库");
+        project(&db, "root-flow");
+        let (a_row, a_id) = agent(&db, "ho-flow-a");
+        let (b_row, b_id) = agent(&db, "ho-flow-b");
+        for row in [&a_row, &b_row] {
+            grant_capability(&db, row, "handoffs.write", "root-flow");
+            grant_project(&db, row, "root-flow");
+        }
+        let creator = Principal::agent(a_row, a_id.clone(), Source::Mcp);
+        let target = Principal::agent(b_row, b_id.clone(), Source::Mcp);
+
+        let created = handoff::create_handoff(
+            &db,
+            &creator,
+            handoff_input("A → B 的交接", Some("root-flow"), &b_id),
+        )
+        .expect("创建交接");
+        assert_eq!(created.handoff.project_id, "root-flow");
+
+        let accepted = handoff::accept_handoff(&db, &target, &created.handoff.id, created.revision)
+            .expect("目标 Agent 接收");
+        assert_eq!(accepted.status, "accepted");
+
+        let report = handoff::create_report(
+            &db,
+            &creator,
+            ReportInput {
+                summary: "A 的完工报告".into(),
+                result: Some("completed".into()),
+                handoff_id: Some(created.handoff.id.clone()),
+                project_id: None,
+                task_id: None,
+                completed_items: Vec::new(),
+                pending_items: Vec::new(),
+                files_changed: Vec::new(),
+                evidence: Vec::new(),
+                risks: Vec::new(),
+            },
+        )
+        .expect("提交工作报告");
+        assert_eq!(report.report.project_id, "root-flow", "报告归属 = 交接项目根");
+        let report_project: String = db
+            .with_read(|conn| {
+                Ok(conn.query_row(
+                    "SELECT project_id FROM agent_work_reports WHERE id = ?1",
+                    rusqlite::params![report.report.id],
+                    |r| r.get(0),
+                )?)
+            })
+            .expect("读取报告归属");
+        assert_eq!(report_project, "root-flow");
+    }
 }

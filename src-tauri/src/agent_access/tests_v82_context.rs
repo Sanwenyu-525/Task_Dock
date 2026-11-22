@@ -40,6 +40,27 @@ impl Fixture {
         mcp_perm::grant(&self.db, row_id, capability, resource).expect("授权");
     }
 
+    /// 授予项目根授权（v92 统一授权第三层：`mcp_agent_grants`，外键指向项目根）。
+    /// project_rw 的项目型读取范围 = 能力范围 ∩ 已授权项目根。
+    fn grant_project(&self, row_id: &str, project: &str) {
+        self.db
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT OR IGNORE INTO mcp_agent_grants
+                       (id, agent_row_id, project_id, created_at)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    rusqlite::params![
+                        uuid::Uuid::new_v4().to_string(),
+                        row_id,
+                        project,
+                        crate::agents::now_iso()
+                    ],
+                )?;
+                Ok(())
+            })
+            .expect("授予项目授权");
+    }
+
     /// 直接写入能力行：用于「项目级任务授权」这种既有接口不接受的组合。
     fn grant_raw(&self, row_id: &str, capability: &str, resource: &str) {
         self.db
@@ -339,6 +360,7 @@ fn project_capability_does_not_grant_tasks() {
     fx.project("proj-a");
     // 只有项目级「规划读取」授权：不得代表 TasksRead。
     fx.grant(&row_id, "plans.read", "proj-a");
+    fx.grant_project(&row_id, "proj-a");
     let task_id = fx.task("不该被看到的任务", "", Some("proj-a"));
 
     let ctx = build(
@@ -473,6 +495,8 @@ fn exact_unlinked_task_keeps_its_details_beyond_the_candidate_limit() {
     let fx = Fixture::new();
     let (row_id, agent_id) = fx.agent("ctx-exact-unlinked");
     fx.grant(&row_id, "context.read", "");
+    // v92 统一授权：grant 的资源键是项目根，先建根再挂计划。
+    fx.project("default-project");
     fx.planning_project("default-project", "默认活动项目", "in_progress");
     fx.grant(&row_id, "projects.read", "default-project");
     let task = fx.task("独立任务", "独立任务详细内容", None);
@@ -692,6 +716,8 @@ fn recent_changes_resolve_report_ownership_through_handoff() {
     fx.grant(&row_id, "context.read", "");
     fx.grant(&row_id, "handoffs.read", "");
     fx.project("proj-a");
+    // v92 统一授权第三层：project_rw 的项目型读取范围收敛到已授权项目根。
+    fx.grant_project(&row_id, "proj-a");
     let handoff_id = fx.handoff("proj-a");
     let report_id = fx.report(&handoff_id);
     // 报告自身不声明项目，项目由所属交接推导后落库；归属判定不能拿 handoff ID 当报告 ID。
@@ -1066,6 +1092,7 @@ fn plans_and_projects_read_reveal_plan_metadata() {
     fx.feature("proj-a", "保密功能", "in_progress");
     fx.grant(&row_id, "projects.read", "proj-a");
     fx.grant(&row_id, "plans.read", "proj-a");
+    fx.grant_project(&row_id, "proj-a");
 
     let ctx = build(
         &fx,
@@ -1158,6 +1185,7 @@ fn report_is_not_rendered_as_decision() {
     let decision_id = fx.decision("proj-a", "真实决策", "accepted");
     fx.grant(&row_id, "handoffs.read", "proj-a");
     fx.grant(&row_id, "decisions.read", "proj-a");
+    fx.grant_project(&row_id, "proj-a");
 
     let ctx = build(
         &fx,

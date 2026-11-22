@@ -1328,6 +1328,7 @@ pub fn create_project_root(db: &Db, input: CreateProjectRootInput) -> AppResult<
         plan_status: input.plan_status,
         draft: super::creation::InitialPlanDraft::default(),
         agent_access_policy: super::creation::AgentAccessPolicy::None,
+        principal: super::creation::RequestPrincipal::local_human(),
     };
     let result = super::creation::create(db, request)?;
     Ok(result.project)
@@ -1583,13 +1584,45 @@ pub fn list_plan_summaries(
     Ok(out)
 }
 
+/// 项目根 ID（`workspace_projects.id`）。与计划 ID 是两种类型，禁止混用：
+/// 授权、持久化归属、操作记录一律用它。
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ProjectId(pub String);
+
+/// 计划 ID（`planning_projects.id`）。只作为**入参兼容**存在：
+/// 解析后立刻换成项目根，绝不能写进授权或 `project_id` 字段。
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct PlanId(pub String);
+
+impl ProjectId {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl PlanId {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// 项目根解析结果。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProjectRef {
     /// 传入的就是项目根。
-    Project(String),
+    Project(ProjectId),
     /// 传入的是计划 ID，已解析到所属项目根。
-    Plan { plan_id: String, project_id: String },
+    Plan { plan_id: PlanId, project_id: ProjectId },
+}
+
+impl ProjectRef {
+    /// 授权与持久化只认项目根。
+    pub fn project_id(&self) -> &ProjectId {
+        match self {
+            ProjectRef::Project(id) => id,
+            ProjectRef::Plan { project_id, .. } => project_id,
+        }
+    }
 }
 
 /// 把「项目 ID 或计划 ID」统一解析为项目根。
@@ -1609,7 +1642,7 @@ pub fn resolve_project_ref(conn: &Connection, id: &str) -> AppResult<Option<Proj
         )
         .optional()?;
     if is_root.is_some() {
-        return Ok(Some(ProjectRef::Project(id.to_string())));
+        return Ok(Some(ProjectRef::Project(ProjectId(id.to_string()))));
     }
     let plan: Option<(Option<String>, Option<i64>)> = conn
         .query_row(
@@ -1620,8 +1653,8 @@ pub fn resolve_project_ref(conn: &Connection, id: &str) -> AppResult<Option<Proj
         .optional()?;
     Ok(match plan {
         Some((Some(project_id), _)) => Some(ProjectRef::Plan {
-            plan_id: id.to_string(),
-            project_id,
+            plan_id: PlanId(id.to_string()),
+            project_id: ProjectId(project_id),
         }),
         Some((None, _)) => None,
         None => None,
@@ -1630,10 +1663,7 @@ pub fn resolve_project_ref(conn: &Connection, id: &str) -> AppResult<Option<Proj
 
 /// 只解析项目根 ID（不区分来源）。
 pub fn resolve_project_root(conn: &Connection, id: &str) -> AppResult<Option<String>> {
-    Ok(resolve_project_ref(conn, id)?.map(|resolved| match resolved {
-        ProjectRef::Project(project_id) => project_id,
-        ProjectRef::Plan { project_id, .. } => project_id,
-    }))
+    Ok(resolve_project_ref(conn, id)?.map(|resolved| resolved.project_id().0.clone()))
 }
 
 struct PlanRow {

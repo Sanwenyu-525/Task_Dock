@@ -59,14 +59,17 @@
 
 ### 2.4 `agent_decisions`（架构/产品决策记录）
 
-`id` PK；`project_id` + `project_kind ∈ {none, planning, workspace}`（弱引用，无外键，避免跨模块级联）；
+`id` PK；`project_id`（弱引用，无外键，避免跨模块级联）+ `project_kind`（v76 为
+`{none, planning, workspace}`，**v92 起扩为 `{none, project, planning, workspace}`，
+新数据统一写 `none`/`project`——归属只认项目根；旧值保留可读，不再产生**）；
 `title`；`status ∈ {proposed, accepted, superseded, rejected}`；`context` / `decision` / `consequences` /
 `alternatives`；`tags` JSON；`revision`；`superseded_by`；`created_by`；`actor_kind`；`source`；
 `created_at` / `updated_at`。索引 `(project_id, created_at DESC)`、`(status, updated_at DESC)`。
 
 ### 2.5 `agent_handoffs`（跨 Agent 交接）
 
-`id` PK；`project_id` + `project_kind`；`task_id`；`from_agent_row_id` / `to_agent_row_id`
+`id` PK；`project_id`（**v92 起一律存项目根**；历史行可能仍是计划 ID，查询用计划反查兼容）+
+`project_kind`（同 §2.4 的 v92 收敛）；`task_id`；`from_agent_row_id` / `to_agent_row_id`
 （FK→`mcp_agents`，`ON DELETE SET NULL`）+ `from_agent_id` / `to_agent_id`（文本快照，身份撤销后仍可追溯）；
 `status ∈ {pending, accepted, rejected, completed, cancelled}`；`summary`；
 `completed_items` / `pending_items` / `decisions` / `files_changed` / `risks` / `next_steps`（JSON 数组）；
@@ -135,3 +138,33 @@
   3. 重建授权表并按 `COALESCE(plan.workspace_project_id, grant.project_id)` 映射，`INSERT OR IGNORE` 去重；
   4. 删除旧表、改名、重建索引。
 - 影响：授权只能挂项目根；删除项目级联清理授权；旧计划 ID 入参在判定前解析，不需要重新授权。
+
+## v92：幂等请求归属与 project_kind 收敛（2026-11-22）
+
+- **新表 `project_create_requests`**（幂等请求归属，统一创建服务专用）：
+  | 字段 | 说明 |
+  |---|---|
+  | `id` | PK（行 UUID） |
+  | `principal_kind` | `local_human` / `registered_agent`（CHECK 约束） |
+  | `principal_id` | LocalHuman 固定 `local`；RegisteredAgent = `mcp_agents.id` |
+  | `client_request_id` | 客户端请求 ID |
+  | `request_digest` | 清洗后业务参数摘要（`requestDigestV2` 同值） |
+  | `project_id` | FK→`workspace_projects(id)` ON DELETE CASCADE（删除项目级联清理归属行） |
+  | `plan_id` | 初始计划 ID |
+  | `created_at` | ISO-8601 |
+  约束：`UNIQUE (principal_kind, principal_id, client_request_id)`——同一主体的同一请求 ID
+  在数据库层面只可能对应一个项目；索引 `(project_id)`、`(client_request_id)`。
+  **历史 `project_events` 不回填归属**（payload 无此信息）；旧事件兜底判定只对本机人类
+  （`actor='user'`）生效，Agent 请求一律走新表。
+- **重建 `agent_decisions` / `agent_handoffs`**：`project_kind` CHECK 从
+  `{none, planning, workspace}` 扩为 `{none, project, planning, workspace}`；逐列复制全部行，
+  不丢历史。新数据统一写 `project_id=项目根` + `project_kind='none'|'project'`；
+  入参声明的旧枚举值不参与判定（归属由 `resolve_project_root` 推导）。
+- **迁移与回退**：v92 登记在 `db/mod.rs::MIGRATIONS` 末尾，单事务原子执行；
+  `project_create_requests` / `agent_import_claims` / `agent_import_policies` /
+  `agent_import_requests` 已登记备份注册表（`BACKUP_TABLES` + `EXTENDED_TABLES`），
+  恢复顺序：workspace_projects(435) → project_create_requests(436) →
+  agent_workspaces(740) → 导入三表(762/764/766)。
+- **修复存量测试假设**：`db::tests` 的「迁移步数 == `MIGRATIONS.len()`」断言在 v87 被跳过
+  （v86.1 占用 v88）后即失效，改为「最后一条迁移的真实版本号」；历史前缀夹具按条目版本号
+  而非下标推进。

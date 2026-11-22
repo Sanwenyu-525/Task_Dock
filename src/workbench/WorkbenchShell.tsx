@@ -479,8 +479,10 @@ export default function WorkbenchShell() {
   const [createGoal, setCreateGoal] = useState("");
   const [createDirMode, setCreateDirMode] = useState<ProjectDirectoryMode>("metadata_only");
   const [createApplyTemplate, setCreateApplyTemplate] = useState(false);
-  const [createRequestId, setCreateRequestId] = useState<string | null>(null);
   const [createBusy, setCreateBusy] = useState(false);
+  // §九 创建幂等：requestId 由「参数摘要」派生（见 submitCreateProject 内注释）。
+  // 用 ref 而非 state：摘要变化不触发重渲染，只在提交时读取。
+  const createRequestIdRef = useRef<{ digest: string; requestId: string } | null>(null);
   // R13: 工作目录离线确认（目录当前不存在时，允许用户明确选择「仍然保存」）。
   const [offlineRootConfirm, setOfflineRootConfirm] = useState<string | null>(null);
   const offlineRootResolveRef = useRef<((ok: boolean) => void) | null>(null);
@@ -996,8 +998,24 @@ export default function WorkbenchShell() {
             ),
           )
         : null;
-      const requestId = createRequestId ?? projectHubRequestId();
-      setCreateRequestId(requestId);
+      // §九 创建幂等状态机：requestId 由关键字段摘要派生。
+      // - 摘要相同（失败/超时后原参数重试）→ 复用同一 requestId，后端幂等返回原项目，不产生重复；
+      // - 摘要变化 → 生成新 requestId，避免带旧摘要撞 Conflict（旧实现的问题）；
+      // - 成功后清空缓存：连续创建两个不同项目各得新 requestId；
+      // - 用户取消关闭弹窗**不**清缓存：重开后参数没变再提交仍幂等（只有提交成功才重置）。
+      const digest = JSON.stringify({
+        name,
+        kind: createKind,
+        goal: createGoal.trim(),
+        root: root || null,
+        directoryMode: createDirMode,
+        note: createNote.trim() || null,
+        applyTemplate: createApplyTemplate,
+        draft,
+      });
+      const cached = createRequestIdRef.current;
+      const requestId = cached?.digest === digest ? cached.requestId : projectHubRequestId();
+      createRequestIdRef.current = { digest, requestId };
       const result = await projectCreate({
         clientRequestId: requestId,
         name,
@@ -1027,7 +1045,8 @@ export default function WorkbenchShell() {
       setCreateKind("general");
       setCreateDirMode("metadata_only");
       setCreateApplyTemplate(false);
-      setCreateRequestId(null);
+      // 创建成功：清空幂等缓存，下一次创建（不同项目）必得新 requestId。
+      createRequestIdRef.current = null;
       goRoute("workspace");
       // 只显示真实创建结果：项目根 ID、active 计划与目录状态。
       const dirLabel =
@@ -1055,7 +1074,6 @@ export default function WorkbenchShell() {
     createGoal,
     createDirMode,
     createApplyTemplate,
-    createRequestId,
     refreshProjects,
     selectProject,
     goRoute,
@@ -2992,6 +3010,7 @@ export default function WorkbenchShell() {
                 className="ws-input"
                 value={createName}
                 autoFocus
+                disabled={createBusy}
                 onChange={(event) => setCreateName(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") void submitCreateProject();
@@ -3028,6 +3047,7 @@ export default function WorkbenchShell() {
               options={DIRECTORY_MODE_OPTIONS}
               onChange={(value) => setCreateDirMode(value as ProjectDirectoryMode)}
               block
+              disabled={createBusy}
               ariaLabel="目录模式"
             />
           </div>
@@ -3047,7 +3067,7 @@ export default function WorkbenchShell() {
                     : "选择或输入已有目录"
                 }
                 spellCheck={false}
-                disabled={createDirMode === "metadata_only"}
+                disabled={createDirMode === "metadata_only" || createBusy}
                 data-tip={createRoot || undefined}
                 onChange={(event) => {
                   const next = event.target.value;

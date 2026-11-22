@@ -2333,7 +2333,17 @@ export type McpCapability =
   | "workflows.read"
   | "workspace.read"
   | "knowledge.read"
-  | "skills.read";
+  | "skills.read"
+  // v76 项目协作 + v90/v92 项目创建与项目写（与 Rust mcp::permissions::CAPABILITIES 对齐）。
+  | "projects.read"
+  | "plans.read"
+  | "decisions.read"
+  | "decisions.write"
+  | "context.read"
+  | "handoffs.read"
+  | "handoffs.write"
+  | "projects.create"
+  | "projects.write";
 
 export interface McpCapabilityGrant {
   capability: McpCapability;

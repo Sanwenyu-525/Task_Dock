@@ -149,6 +149,9 @@ pub const EXTENDED_TABLES: &[&str] = &[
     "dev_acceptance_records",
     // 项目工作空间（v49）：项目 → 实例/事项 → 任务关联（外键依赖序）。
     "workspace_projects",
+    // 幂等请求归属（v92）：project_id 是 ON DELETE CASCADE 外键，指向
+    // workspace_projects，必须排在父表之后。
+    "project_create_requests",
     // 暂存架↔项目关联：`shelf_project_links.project_id` 是 NOT NULL + ON DELETE
     // CASCADE 外键，指向 workspace_projects，恢复时父行必须先存在。2026-11-17
     // 集成修复：原先排在 shelf 段（远早于本表），带 project 关联的备份会在恢复
@@ -226,6 +229,10 @@ pub const EXTENDED_TABLES: &[&str] = &[
     "agent_sync_conflicts",
     "agent_context_access_logs",
     "agent_request_cache",
+    // 导入幂等认领（v82 补齐）：workspace_row_id 是 CASCADE 外键，排在 agent_workspaces 之后。
+    "agent_import_claims",
+    "agent_import_policies",
+    "agent_import_requests",
     // v77–v78：按外键顺序导出，恢复时沿用此顺序。
     "collab_issues",
     "collab_issue_links",
@@ -671,6 +678,8 @@ pub const BACKUP_TABLES: &[BackupTableRule] = &[
     // dev_project_id 都是弱引用/路径引用，表内不含外部文件内容；删除工作空间
     // 只删除本地元数据。恢复顺序：项目 → 实例/事项 → 任务关联。
     rule!("workspace_projects", "core", "all", 435, &[], true),
+    // 幂等请求归属（v92）：随项目根一起备份/恢复，保证备份往返后创建重试仍幂等。
+    rule!("project_create_requests", "core", "all", 436, &["workspace_projects"], true),
     rule!(
         "workspace_instances",
         "core",
@@ -999,6 +1008,33 @@ pub const BACKUP_TABLES: &[BackupTableRule] = &[
     ),
     rule!("agent_context_access_logs", "core", "recent", 758, &[], true),
     rule!("agent_request_cache", "core", "recent", 760, &[], true),
+    // 导入幂等认领（v82）：随工作空间走 recent 策略（过程状态，无需全量历史）。
+    rule!(
+        "agent_import_claims",
+        "core",
+        "recent",
+        762,
+        &["agent_workspaces"],
+        true
+    ),
+    // 导入目录策略（v81）：用户显式配置的授权，随工作空间全量备份。
+    rule!(
+        "agent_import_policies",
+        "core",
+        "all",
+        764,
+        &["agent_workspaces"],
+        true
+    ),
+    // 待审核导入队列（v82）：只存元数据与摘要，随工作空间全量备份。
+    rule!(
+        "agent_import_requests",
+        "core",
+        "all",
+        766,
+        &["agent_workspaces"],
+        true
+    ),
     // 协作中心（v77）：需求/Bug/方案/可视化/证据/审计。
     rule!("collab_issues", "core", "all", 770, &["planning_projects"], true),
     rule!("collab_issue_links", "core", "all", 772, &["collab_issues"], true),

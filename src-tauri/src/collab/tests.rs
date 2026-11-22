@@ -18,9 +18,16 @@ const PROJECT: &str = "proj-collab-test";
 fn setup() -> Db {
     let db = Db::open_in_memory().expect("内存库");
     db.with_transaction(|conn: &Connection| {
+        // v91 起项目授权外键指向 workspace_projects：与历史迁移同一规则，
+        // 为计划补建同 ID 项目根，授权键（PROJECT）既是根也是计划容器。
         conn.execute(
-            "INSERT INTO planning_projects (id, name, description, status, created_at, updated_at)
-             VALUES (?1, '协作测试项目', '测试', 'planning', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            "INSERT INTO workspace_projects (id, name, kind, status, created_at, updated_at)
+             VALUES (?1, '协作测试项目', 'general', 'active', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            rusqlite::params![PROJECT],
+        )?;
+        conn.execute(
+            "INSERT INTO planning_projects (id, name, description, status, created_at, updated_at, workspace_project_id)
+             VALUES (?1, '协作测试项目', '测试', 'planning', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', ?1)",
             rusqlite::params![PROJECT],
         )?;
         Ok(())

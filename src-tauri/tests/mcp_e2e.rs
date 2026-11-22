@@ -154,11 +154,26 @@ async fn stdio_end_to_end_handshake_read_write_conflict_audit_reconnect() {
     let created = task_dock_lib::mcp::auth::create_agent(&db, "e2e-agent", "端到端").unwrap();
     let token = created.token;
     task_dock_lib::mcp::auth::set_agent_scope(&db, &created.info.id, "project_rw").unwrap();
-    // 测试夹具：模拟「用户自己建的项目」（命令层路径已由单测覆盖）
+    // v92 统一授权：project_rw 只是 scope，项目根元数据写还需要显式 projects.write 能力；
+    // 项目级 grant 在「用户授权该项目」步骤中授予（先拒绝、后放行的断言依赖这个顺序）。
+    task_dock_lib::mcp::permissions::grant(&db, &created.info.id, "projects.write", "").unwrap();
+    // 测试夹具：模拟「用户自己建的项目」（命令层路径已由单测覆盖）。
+    // v91 起 grant/授权锚定项目根：必须先建 workspace_projects 根，再建同 ID 计划，
+    // 否则 grant_project 会因「项目不存在」失败。
     db.with_conn(|c| {
         c.execute(
-            "INSERT INTO planning_projects (id, name, revision, created_at, updated_at)
-             VALUES ('proj-user', '既有项目', 3, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            "INSERT INTO workspace_projects
+               (id, name, kind, status, root_path, dev_project_id, note, created_at, updated_at)
+             VALUES ('proj-user', '既有项目', 'general', 'active', '', NULL, '',
+                     '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .map_err(task_dock_lib::error::AppError::from)?;
+        c.execute(
+            "INSERT INTO planning_projects
+               (id, name, workspace_project_id, revision, created_at, updated_at)
+             VALUES ('proj-user', '既有项目', 'proj-user', 3,
+                     '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
             [],
         )
         .map_err(task_dock_lib::error::AppError::from)
@@ -186,7 +201,13 @@ async fn stdio_end_to_end_handshake_read_write_conflict_audit_reconnect() {
         .iter()
         .map(|t| t["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 18, "应暴露 18 个工具: {names:?}");
+    // collab 工具加入后工具数持续增长：按注册表动态断言，避免每次加工具都改测试。
+    let registered = task_dock_lib::mcp::tools::tool_defs().len();
+    assert_eq!(
+        names.len(),
+        registered,
+        "tools/list 应与注册表一致（{registered} 个）: {names:?}"
+    );
 
     // project_rw 只读取已授权项目，初始列表不泄漏用户项目名称。
     let listed = tool_result_value(&s1.request(

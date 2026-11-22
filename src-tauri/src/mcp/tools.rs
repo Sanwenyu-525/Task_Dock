@@ -431,24 +431,60 @@ fn ensure_can_read(agent: &McpAgentRow) -> Result<(), ToolError> {
 }
 
 /// project_rw 的读取也限制在显式项目授权内；readonly 是用户显式选择的全项目只读模式。
+///
+/// 授权判定走 `agent_access::permissions::ensure_project_grant`：入参兼容计划 ID，
+/// 内部先解析项目根再查 grant（v91 起授权键是项目根）。
 fn ensure_can_read_project(ctx: &ToolCtx, project_id: &str) -> Result<(), ToolError> {
     ensure_can_read(&ctx.agent)?;
     if ctx.agent.scope == auth::McpScope::ReadOnly {
         return Ok(());
     }
-    let granted = ctx
-        .db
-        .with_conn(|conn| auth::has_project_grant(conn, &ctx.agent.row_id, project_id))
-        .map_err(ToolError::Failed)?;
-    if granted {
-        Ok(())
-    } else {
-        Err(ToolError::Authz(format!(
-            "未授权项目: {project_id}（读取需要该项目的 grant）"
-        )))
+    ctx.db
+        .with_conn(|conn| {
+            crate::agent_access::permissions::ensure_project_grant(
+                conn,
+                &ctx.agent.row_id,
+                project_id,
+                ctx.agent.scope,
+            )
+        })
+        .map_err(map_grant_denial)?;
+    Ok(())
+}
+
+/// 统一授权判定（ensure_project_grant）的错误映射：拒绝语义（Agent 错误）
+/// 保持 MCP 的 FORBIDDEN（ToolError::Authz），其余按业务失败处理。
+fn map_grant_denial(error: AppError) -> ToolError {
+    match error {
+        AppError::Agent(message) => ToolError::Authz(message),
+        other => ToolError::Failed(other),
     }
 }
 
+/// 项目根元数据写需要 `projects.write` 能力（全局或按项目根授权均可）。
+fn ensure_projects_write(
+    ctx: &ToolCtx,
+    conn: &rusqlite::Connection,
+    root: &str,
+) -> Result<(), ToolError> {
+    let ok = crate::mcp::permissions::has(
+        conn,
+        &ctx.agent.row_id,
+        crate::mcp::permissions::Capability::ProjectsWrite,
+        root,
+    )?;
+    if ok {
+        Ok(())
+    } else {
+        Err(ToolError::Authz(
+            "权限不足：需要 projects.write。请在 Task Dock「能力中心 → Agent 接入」中显式授予"
+                .into(),
+        ))
+    }
+}
+
+/// 本 Agent 持有的项目授权集合。v91 起 `mcp_agent_grants.project_id`
+/// 恒为项目根 ID，直接供 `taskdock_list_projects` 按根过滤。
 fn granted_project_ids(ctx: &ToolCtx) -> AppResult<std::collections::HashSet<String>> {
     ctx.db.with_read(|conn| {
         let mut stmt =
@@ -463,35 +499,28 @@ fn granted_project_ids(ctx: &ToolCtx) -> AppResult<std::collections::HashSet<Str
 }
 
 /// 写授权：scope=project_rw 且持有该项目 grant；不满足返回 Authz。
+///
+/// 返回解析出的项目根 ID（入参兼容计划 ID，授权键是项目根），
+/// 供调用方继续做能力级校验（如 `projects.write`）。
 fn ensure_grant(
     ctx: &ToolCtx,
     conn: &rusqlite::Connection,
     project_id: &str,
-) -> Result<(), ToolError> {
+) -> Result<String, ToolError> {
     if !ctx.agent.scope.can_write() {
         return Err(ToolError::Authz(format!(
             "scope={} 不允许写操作（需要 project_rw）",
             ctx.agent.scope.as_str()
         )));
     }
-    // 计划 ID 先反解析到项目根：授权挂在项目根上，计划级授权不能跨项目生效。
-    let root = crate::project_hub::service::resolve_project_root(conn, project_id)
-        .map_err(ToolError::Failed)?;
-    let mut granted =
-        auth::has_project_grant(conn, &ctx.agent.row_id, project_id).map_err(ToolError::Failed)?;
-    if !granted {
-        if let Some(root) = root.as_deref() {
-            granted = auth::has_project_grant(conn, &ctx.agent.row_id, root)
-                .map_err(ToolError::Failed)?;
-        }
-    }
-    if granted {
-        Ok(())
-    } else {
-        Err(ToolError::Authz(format!(
-            "未授权项目: {project_id}（写操作需要该项目的 grant）"
-        )))
-    }
+    // 统一判定：先解析项目根再查 grant（与 agent_access 三层授权共用一套语义）。
+    crate::agent_access::permissions::ensure_project_grant(
+        conn,
+        &ctx.agent.row_id,
+        project_id,
+        ctx.agent.scope,
+    )
+    .map_err(map_grant_denial)
 }
 
 /// 同一 write 事务中用于重放的权限校验，不执行任何业务副作用。
@@ -521,6 +550,18 @@ fn authorize_replay(
                 return Err(ToolError::Failed(AppError::Validation(
                     "幂等审计对象无效，拒绝重放".into(),
                 )));
+            }
+            // 与正常路径一致：创建是全局能力，重放按当前能力重新校验。
+            let can_create = crate::mcp::permissions::has_global(
+                conn,
+                &ctx.agent.row_id,
+                crate::mcp::permissions::Capability::ProjectsCreate,
+            )?;
+            if !can_create {
+                return Err(ToolError::Authz(
+                    "权限不足：需要 projects.create。请在 Task Dock「能力中心 → Agent 接入」中显式授予"
+                        .into(),
+                ));
             }
             replay.entity_id.clone()
         }
@@ -552,7 +593,12 @@ fn authorize_replay(
             ))));
         }
     };
-    ensure_grant(ctx, conn, &project_id)
+    let root = ensure_grant(ctx, conn, &project_id)?;
+    // update_project 会改写项目根元数据：重放同样按当前能力复核 projects.write。
+    if name == "taskdock_update_project" {
+        ensure_projects_write(ctx, conn, &root)?;
+    }
+    Ok(())
 }
 
 fn request_fingerprint(args: &Value) -> String {
@@ -691,7 +737,23 @@ fn call(
                 list_projects_impl(db, args.get("include_archived").and_then(|v| v.as_bool()))?;
             if agent.scope == auth::McpScope::ProjectRw {
                 let granted = granted_project_ids(ctx)?;
-                projects.retain(|project| granted.contains(&project.id));
+                // 授权键是项目根（v91）：列表行是「项目当前计划」，先解析根再比对；
+                // 解析不出根的孤立旧计划视为未授权。
+                let roots: Vec<Option<String>> = db.with_read(|conn| {
+                    projects
+                        .iter()
+                        .map(|project| {
+                            crate::project_hub::service::resolve_project_root(conn, &project.id)
+                        })
+                        .collect()
+                })?;
+                projects = projects
+                    .into_iter()
+                    .zip(roots)
+                    .filter_map(|(project, root)| {
+                        root.filter(|root| granted.contains(root)).map(|_| project)
+                    })
+                    .collect();
             }
             let value = serde_json::to_value(projects).map_err(AppError::from)?;
             Ok(outcome(value, "project", String::new(), None))
@@ -816,9 +878,13 @@ fn call(
                     params.push(s);
                 }
                 if agent.scope == auth::McpScope::ProjectRw {
+                    // 授权键是项目根（v91）：行的 f.project_id 是计划 ID，
+                    // 经 planning_projects 解析到根再比对；旧「同 ID」计划天然命中第一支。
                     sql.push_str(
                         " AND EXISTS (SELECT 1 FROM mcp_agent_grants g
-                                     WHERE g.agent_row_id = ? AND g.project_id = f.project_id)",
+                                     JOIN planning_projects pp ON pp.id = f.project_id
+                                     WHERE g.agent_row_id = ? AND g.project_id IN
+                                       (f.project_id, NULLIF(trim(pp.workspace_project_id), '')))",
                     );
                     params.push(&agent.row_id);
                 }
@@ -891,6 +957,8 @@ fn call(
                 draft: Default::default(),
                 agent_access_policy:
                     crate::project_hub::creation::AgentAccessPolicy::CreatorProjectAndPlan,
+                // MCP 入口的创建归属：已认证 Agent（稳定主体 = mcp_agents.id）。
+                principal: crate::project_hub::creation::RequestPrincipal::agent(&agent.row_id),
             };
             let created = crate::project_hub::creation::create_with_conn(conn, request)?;
             // 自动授权只作用于刚创建的项目根（+ 该计划 ID 兼容），绝不扩大为全局权限。
@@ -929,7 +997,9 @@ fn call(
                 .ok_or_else(|| ToolError::Failed(AppError::Validation("缺少写事务".into())))?;
             let id = require_str(args, "project_id")?;
             let expected = require_revision(args)?;
-            ensure_grant(ctx, conn, &id)?;
+            let root = ensure_grant(ctx, conn, &id)?;
+            // 项目根元数据写是独立能力（v92 三层授权：身份 → scope → 能力 → grant）。
+            ensure_projects_write(ctx, conn, &root)?;
             let patch = ProjectPatch {
                 name: arg_str(args, "name").map(str::to_string),
                 description: arg_str(args, "description").map(str::to_string),

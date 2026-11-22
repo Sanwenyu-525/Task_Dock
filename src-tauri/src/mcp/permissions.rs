@@ -165,19 +165,10 @@ fn check_resource(capability: Capability, resource_id: &str) -> AppResult<()> {
     Ok(())
 }
 
-/// 项目 ID 可能来自规划中心（planning_projects）或项目工作空间（workspace_projects），
-/// 两者都是既有实体；这里同时校验，避免跨模块再建一张「项目」表。
+/// 项目资源是否存在：以「能否解析到项目根」为准（v91 统一身份后授权键是
+/// 项目根，计划 ID 只是入参兼容；无法解析到根 = 不存在，不落脏授权键）。
 fn project_exists(conn: &Connection, resource_id: &str) -> AppResult<bool> {
-    let found: Option<i64> = conn
-        .query_row(
-            "SELECT 1 FROM planning_projects WHERE id = ?1
-             UNION ALL SELECT 1 FROM workspace_projects WHERE id = ?1 LIMIT 1",
-            rusqlite::params![resource_id],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(AppError::from)?;
-    Ok(found.is_some())
+    Ok(crate::project_hub::service::resolve_project_root(conn, resource_id)?.is_some())
 }
 
 /// 以项目为资源范围的能力（与 `resource_exists` 的项目分支保持一致）。
@@ -218,7 +209,7 @@ fn resource_exists(conn: &Connection, capability: Capability, resource_id: &str)
         | Capability::HandoffsWrite => {
             if !project_exists(conn, resource_id)? {
                 return Err(AppError::Validation(format!(
-                    "项目不存在: {resource_id}（规划项目或项目工作空间）"
+                    "项目不存在: {resource_id}"
                 )));
             }
             return Ok(true);
@@ -281,15 +272,14 @@ pub fn grant(
     })?;
     let resource_id = resource_id.trim();
     check_resource(capability, resource_id)?;
-    // 项目型能力的资源范围统一存项目根：计划 ID 只是入参写法，不能成为授权键。
+    // 项目型能力的资源范围统一存项目根：计划 ID 只是入参写法，不能成为授权键；
+    // 解析不出根（不存在/未补链）必须报错，静默保留原 ID 会写出永远查不到的脏授权键。
     let resource_id = if resource_id.is_empty() || !project_scoped(capability) {
         resource_id.to_string()
     } else {
         db.with_read(|conn| {
-            Ok(
-                crate::project_hub::service::resolve_project_root(conn, resource_id)?
-                    .unwrap_or_else(|| resource_id.to_string()),
-            )
+            crate::project_hub::service::resolve_project_root(conn, resource_id)?
+                .ok_or_else(|| AppError::Validation(format!("项目不存在: {resource_id}")))
         })?
     };
     let resource_id = resource_id.as_str();
@@ -333,11 +323,36 @@ pub fn revoke(
     let resource_id = resource_id.trim();
     check_resource(capability, resource_id)?;
     db.with_conn(|conn| {
-        conn.execute(
-            "DELETE FROM mcp_agent_capabilities
-             WHERE agent_row_id = ?1 AND capability = ?2 AND resource_id = ?3",
-            rusqlite::params![agent_row_id, capability.as_str(), resource_id],
-        )?;
+        if resource_id.is_empty() || !project_scoped(capability) {
+            conn.execute(
+                "DELETE FROM mcp_agent_capabilities
+                 WHERE agent_row_id = ?1 AND capability = ?2 AND resource_id = ?3",
+                rusqlite::params![agent_row_id, capability.as_str(), resource_id],
+            )?;
+            return Ok(());
+        }
+        // 项目型能力：grant 存的是项目根，撤销也必须按根删（传计划 ID 直接删会删不到，
+        // 撤销失效）；一并清理 v91 之前按计划 ID 落库的残留行。解析不出根时按原样删：
+        // 项目已删除等场景下残留授权行仍应可以被清理掉。
+        let root = crate::project_hub::service::resolve_project_root(conn, resource_id)?;
+        match root {
+            Some(root) => {
+                conn.execute(
+                    "DELETE FROM mcp_agent_capabilities
+                     WHERE agent_row_id = ?1 AND capability = ?2
+                       AND (resource_id = ?3 OR resource_id IN (
+                           SELECT id FROM planning_projects WHERE workspace_project_id = ?3))",
+                    rusqlite::params![agent_row_id, capability.as_str(), root],
+                )?;
+            }
+            None => {
+                conn.execute(
+                    "DELETE FROM mcp_agent_capabilities
+                     WHERE agent_row_id = ?1 AND capability = ?2 AND resource_id = ?3",
+                    rusqlite::params![agent_row_id, capability.as_str(), resource_id],
+                )?;
+            }
+        }
         Ok(())
     })?;
     list(db, agent_row_id)

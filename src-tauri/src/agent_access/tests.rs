@@ -99,6 +99,24 @@ fn grant(db: &Db, row_id: &str, capability: &str, resource: &str) {
     mcp_perm::grant(db, row_id, capability, resource).expect("授权");
 }
 
+/// 授予项目根授权（v92 统一授权第三层：`mcp_agent_grants`，外键指向项目根）。
+fn grant_project(db: &Db, row_id: &str, project: &str) {
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT OR IGNORE INTO mcp_agent_grants (id, agent_row_id, project_id, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![
+                uuid::Uuid::new_v4().to_string(),
+                row_id,
+                project,
+                crate::agents::now_iso()
+            ],
+        )?;
+        Ok(())
+    })
+    .expect("授予项目授权");
+}
+
 fn agent_principal(row_id: &str, agent_id: &str) -> Principal {
     Principal::agent(row_id.to_string(), agent_id.to_string(), Source::Mcp)
 }
@@ -687,9 +705,18 @@ fn project_scope_hides_other_project_activity() {
     .expect("创建项目 B");
 
     let local = Principal::local(Source::Ui);
+    // 活动归属与授权都在项目根域上（v92 统一项目身份）：先解析项目根再落库与授权。
+    let root_a = db
+        .with_read(|conn| perms::resolve_project_root(conn, &project_a.id))
+        .expect("解析项目 A 根")
+        .expect("项目 A 必须有项目根");
+    let root_b = db
+        .with_read(|conn| perms::resolve_project_root(conn, &project_b.id))
+        .expect("解析项目 B 根")
+        .expect("项目 B 必须有项目根");
     for (project_id, detail) in [
-        (project_a.id.as_str(), "项目 A 的活动"),
-        (project_b.id.as_str(), "项目 B 的活动"),
+        (root_a.as_str(), "项目 A 的活动"),
+        (root_b.as_str(), "项目 B 的活动"),
     ] {
         super::store::log_activity(
             &db,
@@ -710,7 +737,9 @@ fn project_scope_hides_other_project_activity() {
     }
 
     let (row_id, agent_id) = make_agent(&db, "agent-project-a");
-    grant(&db, &row_id, "projects.read", &project_a.id);
+    grant(&db, &row_id, "projects.read", &root_a);
+    // v92 统一授权第三层：project_rw 的项目型读取还要求项目根授权。
+    grant_project(&db, &row_id, &root_a);
     let principal = agent_principal(&row_id, &agent_id);
 
     let (items, _) = service::list_activity_authorized(
@@ -727,12 +756,12 @@ fn project_scope_hides_other_project_activity() {
     .expect("项目 A 授权可读活动");
     assert!(!items.is_empty(), "应能看到项目 A 自己的活动");
     assert!(
-        items.iter().all(|item| item.project_id == project_a.id),
+        items.iter().all(|item| item.project_id == root_a),
         "只应包含项目 A 的活动：{:?}",
         items.iter().map(|i| &i.project_id).collect::<Vec<_>>()
     );
     assert!(
-        items.iter().all(|item| item.project_id != project_b.id),
+        items.iter().all(|item| item.project_id != root_b),
         "不得出现项目 B 的活动"
     );
 }
@@ -741,12 +770,25 @@ fn project_scope_hides_other_project_activity() {
 #[test]
 fn revoked_agent_token_is_denied_immediately() {
     let db = Db::open_in_memory().expect("内存库");
+    // v92 统一授权：project_rw 主体按「能力 + 项目根授权」读取，
+    // 决策挂在项目根下，Agent 持有该项目的能力与授权。
+    let now = crate::agents::now_iso();
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO workspace_projects
+               (id, name, kind, status, root_path, dev_project_id, note, created_at, updated_at)
+             VALUES ('proj-revoke', '撤销测试项目', 'general', 'active', '', NULL, '', ?1, ?1)",
+            rusqlite::params![now],
+        )?;
+        Ok(())
+    })
+    .expect("创建项目根");
     super::store::create_decision(
         &db,
         &Principal::local(Source::Ui),
         super::store::DecisionInput {
             title: "撤销前可读".into(),
-            project_id: None,
+            project_id: Some("proj-revoke".into()),
             project_kind: None,
             context: String::new(),
             decision: "x".into(),
@@ -758,7 +800,8 @@ fn revoked_agent_token_is_denied_immediately() {
     )
     .expect("创建决策");
     let (row_id, agent_id) = make_agent(&db, "agent-revoke-read");
-    grant(&db, &row_id, "decisions.read", "");
+    grant(&db, &row_id, "decisions.read", "proj-revoke");
+    grant_project(&db, &row_id, "proj-revoke");
     let principal = agent_principal(&row_id, &agent_id);
     assert!(
         service::list_decisions_authorized(&db, &principal, None, None, 50, 0).is_ok(),

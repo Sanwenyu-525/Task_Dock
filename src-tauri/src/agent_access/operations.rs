@@ -277,7 +277,23 @@ impl OperationResult {
                 .map(str::to_string)
                 .filter(|v| !v.is_empty())
         };
-        let project_id = pick("projectId").or_else(|| pick("project_id"));
+        // 统一创建服务的返回形状：`project.id` 是项目根，`activePlan.id` 是计划。
+        // 绝不能把 planId 当成 projectId。
+        let nested_project_id = value
+            .get("project")
+            .and_then(|project| project.get("id"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .filter(|v| !v.is_empty());
+        let project_id = pick("projectId")
+            .or_else(|| pick("project_id"))
+            .or_else(|| {
+                if kind == "project" {
+                    nested_project_id.clone()
+                } else {
+                    None
+                }
+            });
         // 项目创建结果没有顶层 `id`：资源 ID 直接取项目根，不能用标题或计划 ID 顶替。
         let id = pick("id")
             .or_else(|| project_id.clone())
@@ -1516,6 +1532,8 @@ pub fn describe_rest_write(method: &str, path: &str) -> Option<(&'static str, &'
         ("POST", "decisions") => ("decision.create", "decision"),
         // 项目创建是独立操作：结果必须能落到项目根 ID（不是计划 ID）。
         ("POST", "projects") => ("project.create", "project"),
+        // 项目更新（v92 projects.write 链路）：同样以项目根为资源。
+        ("PATCH", "projects") => ("project.update", "project"),
         ("POST", "handoffs") => ("handoff.create", "handoff"),
         ("POST", "reports") => ("report.create", "report"),
         ("POST", "imports") => ("import.decide", "import"),

@@ -45,7 +45,7 @@ vi.mock("../../lib/bridge", () => ({
   agentMcpGrantWorkspaceRoot: mocks.grantRoot,
   agentMcpRevokeWorkspaceRoot: mocks.revokeRoot,
   agentMcpDiagnostics: mocks.diagnostics,
-  planningListProjects: mocks.projects,
+  workspaceProjectList: mocks.projects,
 }));
 
 vi.mock("../../hooks/useLocale", () => ({
@@ -66,9 +66,12 @@ const STATUS = {
   started_at: "now",
   last_call: null,
 };
+// v91 起授权键是项目根：可授权列表来自 workspaceProjectList（项目工作空间）。
 const PROJECT = {
-  id: "project-1", name: "Project One", description: "", status: "planning", archived: false,
-  target_date: null, sort_order: 0, created_at: "now", updated_at: "now", stats: {},
+  id: "project-1", name: "Project One", kind: "general", status: "active",
+  rootPath: "", rootExists: false, devProjectId: null, devProjectExists: false,
+  devProjectName: null, note: "", itemCount: 0, taskLinkCount: 0,
+  createdAt: "now", updatedAt: "now",
 };
 const AGENT = {
   id: "identity-1", agent_id: "codex", display_name: "Codex", scope: "readonly", created_at: "now",
@@ -107,7 +110,7 @@ beforeEach(() => {
       { id: "bridge_http", label: "本机通信", status: "failed", detail: "连接被拒绝", hint: "检查端口" },
     ],
   });
-  mocks.projects.mockReset().mockResolvedValue([PROJECT]);
+  mocks.projects.mockReset().mockResolvedValue({ projects: [PROJECT] });
   Object.defineProperty(navigator, "clipboard", {
     configurable: true,
     value: { writeText: vi.fn().mockResolvedValue(undefined) },
@@ -283,6 +286,18 @@ describe("McpAccessSection", () => {
     render(<McpAccessSection />);
     expect(await screen.findByText("settings.mcpAccess.noIdentities")).toBeTruthy();
     expect(screen.getByRole("status").textContent).toContain("settings.mcpAccess.status.running");
+  });
+
+  it("已授权项目按根 ID 匹配名称显示，未知的根回退显示 ID，且不再出现在可授权列表", async () => {
+    // v91：grantedProjectIds 恒为项目根 ID；名称必须用项目根列表匹配。
+    mocks.list.mockResolvedValueOnce([
+      { ...AGENT, granted_project_ids: [PROJECT.id, "root-unknown"] },
+    ]);
+    render(<McpAccessSection />);
+    expect(await screen.findByText("Project One")).toBeTruthy();
+    expect(screen.getByText("root-unknown")).toBeTruthy();
+    // 已授权的根不再出现在可授权按钮里（grantable = 根列表 - 已授权根）
+    expect(screen.queryByRole("button", { name: /grantProjectTo/ })).toBeNull();
   });
 
   it("filters identities by name or agent id and reports empty results", async () => {

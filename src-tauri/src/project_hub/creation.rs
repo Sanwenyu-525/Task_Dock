@@ -84,6 +84,87 @@ impl DirectoryMode {
     }
 }
 
+// ── 请求归属（幂等作用域）───────────────────────────────────────────
+//
+// 幂等作用域 = (principal_kind, principal_id, client_request_id)。
+// Agent ID、请求 ID 与授权策略是三件事：归属只认发起者身份，不掺策略；
+// 不同主体使用相同请求 ID 各自独立处理，绝不允许通过重放命中或接管他人的项目。
+
+/// 创建请求的主体类别。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrincipalKind {
+    /// 可信本机人类（UI、未带 token 的本机 CLI）。
+    LocalHuman,
+    /// 经 Token 认证的 Agent（稳定主体 ID = `mcp_agents.id`，即 agent_row_id）。
+    RegisteredAgent,
+}
+
+impl PrincipalKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::LocalHuman => "local_human",
+            Self::RegisteredAgent => "registered_agent",
+        }
+    }
+}
+
+/// 创建请求的发起者身份（幂等归属 + 事件真实 actor）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RequestPrincipal {
+    pub kind: PrincipalKind,
+    /// LocalHuman 为空串（本机单用户）；RegisteredAgent 为 `mcp_agents.id`。
+    pub id: String,
+}
+
+impl RequestPrincipal {
+    /// 本机人类（UI / 未带 token 的 CLI）。
+    pub fn local_human() -> Self {
+        Self {
+            kind: PrincipalKind::LocalHuman,
+            id: String::new(),
+        }
+    }
+
+    /// 已认证 Agent：必须携带 `mcp_agents.id`（行 ID），不能用 agent_id 展示名。
+    pub fn agent(row_id: &str) -> Self {
+        Self {
+            kind: PrincipalKind::RegisteredAgent,
+            id: row_id.trim().to_string(),
+        }
+    }
+}
+
+/// 幂等作用域（持久化在 `project_create_requests`，迁移 v92）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IdempotencyScope {
+    pub principal_kind: PrincipalKind,
+    pub principal_id: String,
+    pub client_request_id: String,
+}
+
+impl IdempotencyScope {
+    /// 本机人类在库内的稳定主体 ID（本机单用户，无账号体系）。
+    pub const LOCAL_PRINCIPAL_ID: &'static str = "local";
+
+    pub fn from_principal(principal: &RequestPrincipal, client_request_id: &str) -> Option<Self> {
+        if client_request_id.trim().is_empty() {
+            return None;
+        }
+        let principal_id = match principal.kind {
+            PrincipalKind::LocalHuman => Self::LOCAL_PRINCIPAL_ID,
+            // Agent 身份必须能定位到具体行：缺行 ID 的归属不参与幂等（fail-closed）。
+            PrincipalKind::RegisteredAgent if principal.id.trim().is_empty() => return None,
+            PrincipalKind::RegisteredAgent => principal.id.trim(),
+        };
+        Some(Self {
+            principal_kind: principal.kind,
+            principal_id: principal_id.to_string(),
+            client_request_id: client_request_id.trim().to_string(),
+        })
+    }
+}
+
 /// 创建成功后给创建者授予的范围。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -155,6 +236,9 @@ pub struct CreateProjectRequest {
     pub plan_status: Option<String>,
     pub draft: InitialPlanDraft,
     pub agent_access_policy: AgentAccessPolicy,
+    /// 发起者身份：幂等归属与事件真实 actor 的唯一事实源。
+    /// 入口层（UI / CLI / MCP / REST）必须从已解析的 Principal 构造，禁止用环境变量猜。
+    pub principal: RequestPrincipal,
 }
 
 impl CreateProjectRequest {
@@ -183,6 +267,7 @@ impl CreateProjectRequest {
                 capabilities: input.capabilities,
             },
             agent_access_policy: AgentAccessPolicy::None,
+            principal: RequestPrincipal::local_human(),
         }
     }
 }
@@ -222,6 +307,8 @@ struct Prepared {
     mode: DirectoryMode,
     dev_project_id: Option<String>,
     policy: AgentAccessPolicy,
+    /// 幂等作用域（None = 未提供 clientRequestId 或身份缺失，不做幂等）。
+    scope: Option<IdempotencyScope>,
     digest_v1: String,
     digest_v2: String,
 }
@@ -365,9 +452,14 @@ fn prepare(conn: &Connection, request: CreateProjectRequest) -> AppResult<Prepar
         mode,
         dev_project_id,
         policy: request.agent_access_policy,
+        scope: None,
         digest_v2: String::new(),
     };
     prepared.digest_v2 = digest_v2(&prepared, &prepared.clean.clone());
+    // 幂等作用域在 clean 之后计算（client_request_id 已清洗；摘要不含身份，
+    // 身份只决定「同一请求 ID 归谁」，不改变业务参数指纹）。
+    prepared.scope =
+        IdempotencyScope::from_principal(&request.principal, &prepared.clean.client_request_id);
     Ok(prepared)
 }
 
@@ -1129,20 +1221,51 @@ fn check_replay(conn: &Connection, prepared: &Prepared) -> AppResult<Replay> {
     if prepared.clean.client_request_id.is_empty() {
         return Ok(Replay::Fresh);
     }
-    let existing: Option<(String, Option<String>, Option<String>)> = conn
+    // 1) 归属优先（v92 `project_create_requests`）：同一主体 + 同一请求 ID 才可能命中。
+    //    不同 Agent 使用相同请求 ID 各自独立，绝不能读到别人的创建结果。
+    if let Some(scope) = prepared.scope.as_ref() {
+        let scoped: Option<(String, String)> = conn
+            .query_row(
+                "SELECT project_id, request_digest FROM project_create_requests
+                 WHERE principal_kind = ?1 AND principal_id = ?2 AND client_request_id = ?3",
+                params![scope.principal_kind.as_str(), scope.principal_id, scope.client_request_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        if let Some((project_id, digest)) = scoped {
+            if digest != prepared.digest_v2 {
+                return Err(AppError::Conflict(
+                    "同一请求 ID 已用于参数不同的项目创建；请使用新的请求 ID 重试".into(),
+                ));
+            }
+            return Ok(Replay::Hit(load_result(conn, &project_id, false)?));
+        }
+    }
+    // 2) 历史兼容（v92 之前只有 project_events，无归属记录）：只对**本机人类**生效
+    //    （旧事件基本来自 UI）。Agent 请求一律走新表，不进入该兜底：
+    //    宁可重放视为新请求，也不给「跨主体命中旧事件」留通道。
+    if prepared
+        .scope
+        .as_ref()
+        .is_some_and(|scope| scope.principal_kind != PrincipalKind::LocalHuman)
+    {
+        return Ok(Replay::Fresh);
+    }
+    let legacy: Option<(String, Option<String>, Option<String>)> = conn
         .query_row(
             "SELECT project_id,
                     json_extract(payload_json, '$.requestDigestV2'),
                     json_extract(payload_json, '$.requestDigest')
              FROM project_events
              WHERE kind = 'project_created'
+               AND actor = 'user'
                AND json_extract(payload_json, '$.clientRequestId') = ?1
              ORDER BY created_at DESC, id DESC LIMIT 1",
             params![prepared.clean.client_request_id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()?;
-    let Some((project_id, stored_v2, stored_v1)) = existing else {
+    let Some((project_id, stored_v2, stored_v1)) = legacy else {
         return Ok(Replay::Fresh);
     };
     let same = match (stored_v2.as_deref(), stored_v1.as_deref()) {
@@ -1256,6 +1379,42 @@ pub fn create_in_conn(
         &prepared.clean,
         &now,
     )?;
+    // 幂等归属与业务写入同事务：UNIQUE(principal_kind, principal_id, client_request_id)
+    // 保证同一主体的同一请求 ID 只可能对应一个项目（并发由单写连接串行化兜底）。
+    if let Some(scope) = prepared.scope.as_ref() {
+        conn.execute(
+            "INSERT INTO project_create_requests
+               (id, principal_kind, principal_id, client_request_id, request_digest,
+                project_id, plan_id, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                uuid::Uuid::new_v4().to_string(),
+                scope.principal_kind.as_str(),
+                scope.principal_id,
+                scope.client_request_id,
+                prepared.digest_v2,
+                project_id,
+                plan_id,
+                now
+            ],
+        )?;
+    }
+    // actor 列保留既有枚举（UI 兼容），真实主体 ID 记入 payload：
+    // 不能只记 actor=agent，授权审计必须能定位到具体 Agent。
+    let actor = match prepared.scope.as_ref().map(|scope| scope.principal_kind) {
+        Some(PrincipalKind::RegisteredAgent) => "agent",
+        _ => "user",
+    };
+    let principal_json = match prepared.scope.as_ref() {
+        Some(scope) => serde_json::json!({
+            "principalKind": scope.principal_kind.as_str(),
+            "principalId": scope.principal_id,
+        }),
+        None => serde_json::json!({
+            "principalKind": PrincipalKind::LocalHuman.as_str(),
+            "principalId": IdempotencyScope::LOCAL_PRINCIPAL_ID,
+        }),
+    };
     conn.execute(
         "INSERT INTO project_events
          (id, project_id, kind, actor, summary, payload_json, created_at)
@@ -1263,11 +1422,7 @@ pub fn create_in_conn(
         params![
             uuid::Uuid::new_v4().to_string(),
             project_id,
-            if prepared.policy == AgentAccessPolicy::None {
-                "user"
-            } else {
-                "agent"
-            },
+            actor,
             format!("创建项目「{}」", prepared.clean.name),
             serde_json::json!({
                 "clientRequestId": prepared.clean.client_request_id,
@@ -1279,6 +1434,7 @@ pub fn create_in_conn(
                 "directoryMode": prepared.mode.as_str(),
                 "provisioningStatus": directory.status,
                 "agentAccessPolicy": prepared.policy.as_str(),
+                "principal": principal_json,
             })
             .to_string(),
             now
@@ -1424,6 +1580,7 @@ mod tests {
             plan_status: None,
             draft: InitialPlanDraft::default(),
             agent_access_policy: AgentAccessPolicy::None,
+            principal: RequestPrincipal::local_human(),
         }
     }
 
@@ -1637,8 +1794,8 @@ mod tests {
         assert_eq!(
             resolved,
             super::super::service::ProjectRef::Plan {
-                plan_id: created.active_plan.id.clone(),
-                project_id: created.project.id.clone(),
+                plan_id: super::super::service::PlanId(created.active_plan.id.clone()),
+                project_id: super::super::service::ProjectId(created.project.id.clone()),
             }
         );
     }
@@ -1724,6 +1881,197 @@ mod tests {
             })
             .unwrap();
         assert_eq!(plans, 1, "重放不得重复写初始计划");
+    }
+
+    // ── 幂等归属：作用域必须隔离主体 ────────────────────────────────
+
+    /// 建一个测试 Agent（mcp_agents 行），返回稳定主体 ID（agent_row_id）。
+    fn agent_row(db: &Db, agent_id: &str) -> String {
+        db.with_conn(|conn| {
+            let id = uuid::Uuid::new_v4().to_string();
+            conn.execute(
+                "INSERT INTO mcp_agents (id, agent_id, display_name, token_hash, scope, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, 'test-token-hash', 'project_rw', ?4, ?4)",
+                rusqlite::params![id, agent_id, agent_id, crate::agents::now_iso()],
+            )
+            .map_err(AppError::from)?;
+            Ok(id)
+        })
+        .unwrap()
+    }
+
+    fn request_as(
+        name: &str,
+        client_request_id: &str,
+        principal: RequestPrincipal,
+    ) -> CreateProjectRequest {
+        let mut input = request(name, client_request_id);
+        input.principal = principal;
+        input
+    }
+
+    /// 计数「请求归属行」，验证每个主体的请求独立落库。
+    fn request_rows(db: &Db, client_request_id: &str) -> i64 {
+        db.with_read(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM project_create_requests WHERE client_request_id = ?1",
+                params![client_request_id],
+                |r| r.get(0),
+            )
+            .map_err(AppError::from)
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn agent_replay_returns_own_project() {
+        let db = Db::open_in_memory().unwrap();
+        let a = agent_row(&db, "agent-a");
+        let req = request_as("A 的项目", "shared-retry", RequestPrincipal::agent(&a));
+        let first = create(&db, req.clone()).unwrap();
+        assert!(first.created);
+        // 同一 Agent 相同 requestId + 相同摘要：返回原项目。
+        let retry = create(&db, req).unwrap();
+        assert!(!retry.created, "同一 Agent 重试必须命中幂等");
+        assert_eq!(retry.project.id, first.project.id);
+        assert_eq!(retry.active_plan.id, first.active_plan.id);
+        assert_eq!(request_rows(&db, "shared-retry"), 1);
+    }
+
+    #[test]
+    fn different_agents_same_request_id_are_isolated() {
+        let db = Db::open_in_memory().unwrap();
+        let a = agent_row(&db, "agent-a");
+        let b = agent_row(&db, "agent-b");
+        // Agent A 先创建。
+        let mut req_a = request_as("同名项目", "cross-agent", RequestPrincipal::agent(&a));
+        req_a.description = "A 的描述".into();
+        let created_by_a = create(&db, req_a).unwrap();
+        assert!(created_by_a.created);
+        // Agent B 相同 requestId + 相同摘要：独立创建，绝不命中/接管 A 的项目。
+        let mut req_b = request_as("同名项目", "cross-agent", RequestPrincipal::agent(&b));
+        req_b.description = "A 的描述".into();
+        let created_by_b = create(&db, req_b).unwrap();
+        assert!(created_by_b.created, "不同 Agent 相同请求 ID 必须独立处理");
+        assert_ne!(created_by_b.project.id, created_by_a.project.id);
+        // Agent B 相同 requestId + 不同摘要：同样是 B 自己的新项目（B 第一次使用该请求 ID）。
+        let mut req_b2 = request_as("B 改名", "other-req", RequestPrincipal::agent(&b));
+        req_b2.description = "B 的描述".into();
+        let second_of_b = create(&db, req_b2).unwrap();
+        assert!(second_of_b.created);
+        assert_ne!(second_of_b.project.id, created_by_a.project.id);
+        assert_ne!(second_of_b.project.id, created_by_b.project.id);
+        // 第三个主体 C 用相同 requestId + 不同摘要：同样独立处理。
+        let c = agent_row(&db, "agent-c");
+        let mut req_c = request_as("C 项目", "cross-agent", RequestPrincipal::agent(&c));
+        req_c.description = "C 的描述".into();
+        let created_by_c = create(&db, req_c).unwrap();
+        assert!(created_by_c.created);
+        assert_ne!(created_by_c.project.id, created_by_a.project.id);
+        // 同一 Agent（B）重复使用自己的请求 ID 但换参数：Conflict（摘要不一致）。
+        let mut req_b_conflict = request_as("B 再改", "other-req", RequestPrincipal::agent(&b));
+        req_b_conflict.description = "B 又改".into();
+        let conflict = create(&db, req_b_conflict).unwrap_err();
+        assert!(matches!(conflict, AppError::Conflict(_)), "{conflict:?}");
+        assert_eq!(request_rows(&db, "cross-agent"), 3, "A/B/C 各落一条归属");
+    }
+
+    #[test]
+    fn agent_never_replays_human_or_other_agent_request() {
+        let db = Db::open_in_memory().unwrap();
+        let b = agent_row(&db, "agent-b");
+        // 本机人类先创建。
+        let human = create(&db, request("人类项目", "shared-owner")).unwrap();
+        // Agent B 用相同 requestId + 相同摘要重放：独立创建，不得获得人类的项目。
+        let stolen = create(
+            &db,
+            request_as("人类项目", "shared-owner", RequestPrincipal::agent(&b)),
+        )
+        .unwrap();
+        assert!(stolen.created, "Agent 不得通过重放接管人类创建的项目");
+        assert_ne!(stolen.project.id, human.project.id);
+    }
+
+    #[test]
+    fn replay_hit_after_failed_authorization_keeps_original_project() {
+        let db = Db::open_in_memory().unwrap();
+        let a = agent_row(&db, "agent-a");
+        let req = request_as("授权重试", "grant-retry", RequestPrincipal::agent(&a));
+        // 第一次创建成功（模拟后续自动授权失败：这里先不授予）。
+        let first = create(&db, req.clone()).unwrap();
+        assert!(first.created);
+        // 重试命中幂等 → 同一项目；此时补授权仍指向原项目，不会重复创建。
+        let retry = create(&db, req).unwrap();
+        assert!(!retry.created);
+        assert_eq!(retry.project.id, first.project.id);
+        crate::agent_access::permissions::grant_created_project(
+            &db,
+            &a,
+            &first.project.id,
+        )
+        .unwrap();
+        let granted: i64 = db
+            .with_read(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM mcp_agent_grants WHERE agent_row_id = ?1 AND project_id = ?2",
+                    params![a, first.project.id],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(granted, 1, "授权只作用于创建者自己的项目");
+    }
+
+    #[test]
+    fn concurrent_same_request_id_agents_create_independently() {
+        let db = std::sync::Arc::new(Db::open_in_memory().unwrap());
+        let a = agent_row(&db, "agent-a");
+        let b = agent_row(&db, "agent-b");
+        let db_for_a = db.clone();
+        let db_for_b = db.clone();
+        let handle_a = std::thread::spawn(move || {
+            create(
+                &db_for_a,
+                request_as("并发项目", "concurrent-req", RequestPrincipal::agent(&a)),
+            )
+        });
+        let handle_b = std::thread::spawn(move || {
+            create(
+                &db_for_b,
+                request_as("并发项目", "concurrent-req", RequestPrincipal::agent(&b)),
+            )
+        });
+        let left = handle_a.join().unwrap().unwrap();
+        let right = handle_b.join().unwrap().unwrap();
+        assert_ne!(left.project.id, right.project.id, "并发同请求 ID 必须各自独立");
+        let total: i64 = db
+            .with_read(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM workspace_projects", [], |r| r.get(0))
+                    .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(total, 2);
+    }
+
+    #[test]
+    fn agent_without_row_id_scope_does_not_replay() {
+        let db = Db::open_in_memory().unwrap();
+        let a = agent_row(&db, "agent-a");
+        let created = create(
+            &db,
+            request_as("正常归属", "scope-ok", RequestPrincipal::agent(&a)),
+        )
+        .unwrap();
+        assert!(created.created);
+        // 身份缺行 ID（无法定位主体）：fail-closed，不参与幂等，也不会命中他人请求。
+        let orphaned = create(
+            &db,
+            request_as("正常归属", "scope-ok", RequestPrincipal::agent("")),
+        )
+        .unwrap();
+        assert!(orphaned.created, "缺主体 ID 的请求必须独立处理");
+        assert_ne!(orphaned.project.id, created.project.id);
     }
 
     #[test]

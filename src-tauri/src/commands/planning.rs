@@ -710,6 +710,7 @@ pub fn create_project_outcome_tx(
         plan_status: Some(status.to_string()),
         draft: Default::default(),
         agent_access_policy: crate::project_hub::creation::AgentAccessPolicy::None,
+        principal: crate::project_hub::creation::RequestPrincipal::local_human(),
     };
     let created = crate::project_hub::creation::create_with_conn(conn, planned_goal)?;
     let plan = load_project_tx(conn, &created.active_plan.id)?;
@@ -1998,12 +1999,73 @@ mod tests {
         let s = add_step_impl(&db, f.id.clone(), "步骤1".into(), None).unwrap();
         add_note_impl(&db, p.id.clone(), Some(f.id.clone()), "开始开发".into()).unwrap();
 
-        // 归档 → 列表默认仍返回（前端分组展示），排除归档时不返回
+        // 归档 → 列表默认仍返回（前端分组展示），排除归档时不返回。
+        // 计划生命周期不变量（509a527）：归档唯一 active 计划必须先有未归档继任者。
+        let successor_conflict = archive_project_impl(&db, p.id.clone(), true).unwrap_err();
+        assert!(
+            matches!(successor_conflict, AppError::Conflict(_)),
+            "唯一 active 计划归档必须被拒绝，实际: {successor_conflict:?}"
+        );
+        let successor = crate::project_hub::service::create_project_plan(
+            &db,
+            crate::project_hub::service::CreatePlanInput {
+                project_id: {
+                    let pid: String = db
+                        .with_conn(|c| {
+                            c.query_row(
+                                "SELECT workspace_project_id FROM planning_projects WHERE id = ?1",
+                                rusqlite::params![p.id],
+                                |r| r.get(0),
+                            )
+                            .map_err(AppError::from)
+                        })
+                        .unwrap();
+                    pid
+                },
+                name: None,
+                description: None,
+                target_date: None,
+                status: None,
+                template_id: None,
+                make_active: false,
+            },
+        )
+        .unwrap();
         let archived = archive_project_impl(&db, p.id.clone(), true).unwrap();
         assert!(archived.archived);
-        assert!(list_projects_impl(&db, Some(false)).unwrap().is_empty());
+        // 该列表是「每项目一行 active 计划」视图：归档当前计划后切换到继任计划，
+        // 归档计划不再出现在任何视图（active 视图），项目始终有未归档计划。
+        let visible = list_projects_impl(&db, Some(false)).unwrap();
+        assert_eq!(visible.len(), 1, "未归档列表只剩继任计划");
+        assert_ne!(visible[0].id, p.id, "归档计划不得出现在 active 视图");
         assert_eq!(list_projects_impl(&db, Some(true)).unwrap().len(), 1);
+        let plan1_archived: i64 = db
+            .with_conn(|c| {
+                c.query_row(
+                    "SELECT archived FROM planning_projects WHERE id = ?1",
+                    rusqlite::params![p.id],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(plan1_archived, 1);
+        // 恢复只清 archived、不自动激活（激活仍需显式调用）。
         archive_project_impl(&db, p.id.clone(), false).unwrap();
+        let plan1_archived: i64 = db
+            .with_conn(|c| {
+                c.query_row(
+                    "SELECT archived FROM planning_projects WHERE id = ?1",
+                    rusqlite::params![p.id],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(plan1_archived, 0);
+        // 归档期创建的继任计划用完即删（active 指针回落），让后续
+        // 「最后一个计划受保护」的删除回归单计划现场。
+        delete_project_impl(&db, successor).unwrap();
 
         // 更新项目字段
         let updated = update_project_impl(
