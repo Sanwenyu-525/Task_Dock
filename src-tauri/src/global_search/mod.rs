@@ -65,7 +65,11 @@ pub struct GlobalSearchResult {
     /// 跳转目标 id（通常与定位接口的 id 参数对应；无跳转语义时为 null）。
     pub target_id: Option<String>,
     /// 父级 id（如 run 的会话 id、快照的关联任务 id、feature 的项目 id）。
+    /// planning 分类的父级/目标是**计划 ID**（planning_projects.id，ADR-0010）。
     pub parent_id: Option<String>,
+    /// planning 专用的项目根（`workspace_projects.id`）：前端导航/授权只认它，
+    /// 不从 parent_id 猜测身份；其余分类恒为 None（ADR-0010）。
+    pub workspace_project_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -255,6 +259,7 @@ fn search_tasks(conn: &Connection, q: &str, pat: &str, limit: i64) -> AppResult<
                 priority: Some(priority),
                 target_id: Some(id),
                 parent_id: None,
+                workspace_project_id: None,
             },
         ));
     }
@@ -348,6 +353,7 @@ fn search_clipboard(
                 priority: None,
                 target_id: Some(id),
                 parent_id: None,
+                workspace_project_id: None,
             },
         ));
     }
@@ -406,6 +412,7 @@ fn search_capture(conn: &Connection, q: &str, pat: &str, limit: i64) -> AppResul
                 priority: None,
                 target_id: Some(id),
                 parent_id: None,
+                workspace_project_id: None,
             },
         ));
     }
@@ -476,6 +483,7 @@ fn search_shelf(conn: &Connection, q: &str, pat: &str, limit: i64) -> AppResult<
                 priority: None,
                 target_id: Some(id),
                 parent_id: None,
+                workspace_project_id: None,
             },
         ));
     }
@@ -538,6 +546,7 @@ fn search_apps(conn: &Connection, q: &str, pat: &str, limit: i64) -> AppResult<V
                 priority: None,
                 target_id: Some(id),
                 parent_id: None,
+                workspace_project_id: None,
             },
         ));
     }
@@ -600,6 +609,7 @@ fn search_agents(conn: &Connection, q: &str, pat: &str, limit: i64) -> AppResult
                     priority: None,
                     target_id: Some(id),
                     parent_id: Some(source_id),
+                    workspace_project_id: None,
                 },
             ));
         }
@@ -650,6 +660,7 @@ fn search_agents(conn: &Connection, q: &str, pat: &str, limit: i64) -> AppResult
                     priority: None,
                     target_id: Some(session_id),
                     parent_id: Some(source_id),
+                    workspace_project_id: None,
                 },
             ));
         }
@@ -719,6 +730,7 @@ fn search_workspace(
                 priority: None,
                 target_id: Some(id),
                 parent_id: task_id,
+                workspace_project_id: None,
             },
         ));
     }
@@ -730,7 +742,7 @@ fn search_planning(conn: &Connection, q: &str, pat: &str, limit: i64) -> AppResu
     // 项目（含归档，前端/文档标注语义；不修改任何规划数据）。
     {
         let mut stmt = conn.prepare(
-            "SELECT p.id, p.name, p.description, p.status, p.archived, p.updated_at \
+            "SELECT p.id, p.name, p.description, p.status, p.archived, p.updated_at, p.workspace_project_id \
              FROM planning_projects p \
              WHERE p.name LIKE ?1 ESCAPE '\\' OR p.description LIKE ?1 ESCAPE '\\' \
              ORDER BY p.archived ASC, p.updated_at DESC, p.id DESC LIMIT ?2",
@@ -742,10 +754,11 @@ fn search_planning(conn: &Connection, q: &str, pat: &str, limit: i64) -> AppResu
             let status: String = r.get(3)?;
             let archived: i64 = r.get(4)?;
             let updated_at: String = r.get(5)?;
-            Ok((id, name, description, status, archived, updated_at))
+            let root_id: Option<String> = r.get(6)?;
+            Ok((id, name, description, status, archived, updated_at, root_id))
         })?;
         for row in rows {
-            let (id, name, description, status, archived, updated_at) = row?;
+            let (id, name, description, status, archived, updated_at, root_id) = row?;
             let body = description.clone().unwrap_or_default();
             let rank = rank_match(q, &name, &body);
             let mut subtitle = "项目".to_string();
@@ -766,6 +779,7 @@ fn search_planning(conn: &Connection, q: &str, pat: &str, limit: i64) -> AppResu
                     priority: None,
                     target_id: Some(id),
                     parent_id: None,
+                    workspace_project_id: root_id,
                 },
             ));
         }
@@ -773,7 +787,7 @@ fn search_planning(conn: &Connection, q: &str, pat: &str, limit: i64) -> AppResu
     // 功能。
     {
         let mut stmt = conn.prepare(
-            "SELECT f.id, f.project_id, f.title, f.description, f.status, f.priority, p.name, f.updated_at \
+            "SELECT f.id, f.project_id, f.title, f.description, f.status, f.priority, p.name, f.updated_at, p.workspace_project_id \
              FROM planning_features f JOIN planning_projects p ON p.id = f.project_id \
              WHERE f.title LIKE ?1 ESCAPE '\\' OR f.description LIKE ?1 ESCAPE '\\' \
              ORDER BY f.updated_at DESC, f.id DESC LIMIT ?2",
@@ -787,6 +801,7 @@ fn search_planning(conn: &Connection, q: &str, pat: &str, limit: i64) -> AppResu
             let priority: Option<String> = r.get(5)?;
             let project_name: String = r.get(6)?;
             let updated_at: String = r.get(7)?;
+            let root_id: Option<String> = r.get(8)?;
             Ok((
                 id,
                 project_id,
@@ -796,11 +811,21 @@ fn search_planning(conn: &Connection, q: &str, pat: &str, limit: i64) -> AppResu
                 priority,
                 project_name,
                 updated_at,
+                root_id,
             ))
         })?;
         for row in rows {
-            let (id, project_id, title, description, status, priority, project_name, updated_at) =
-                row?;
+            let (
+                id,
+                project_id,
+                title,
+                description,
+                status,
+                priority,
+                project_name,
+                updated_at,
+                root_id,
+            ) = row?;
             let body = description.clone().unwrap_or_default();
             let rank = rank_match(q, &title, &body);
             out.push((
@@ -822,6 +847,7 @@ fn search_planning(conn: &Connection, q: &str, pat: &str, limit: i64) -> AppResu
                     }),
                     target_id: Some(id),
                     parent_id: Some(project_id),
+                    workspace_project_id: root_id,
                 },
             ));
         }
@@ -829,7 +855,7 @@ fn search_planning(conn: &Connection, q: &str, pat: &str, limit: i64) -> AppResu
     // 里程碑。
     {
         let mut stmt = conn.prepare(
-            "SELECT m.id, m.project_id, m.name, m.description, p.name, m.updated_at \
+            "SELECT m.id, m.project_id, m.name, m.description, p.name, m.updated_at, p.workspace_project_id \
              FROM planning_milestones m JOIN planning_projects p ON p.id = m.project_id \
              WHERE m.name LIKE ?1 ESCAPE '\\' OR m.description LIKE ?1 ESCAPE '\\' \
              ORDER BY m.updated_at DESC, m.id DESC LIMIT ?2",
@@ -841,10 +867,13 @@ fn search_planning(conn: &Connection, q: &str, pat: &str, limit: i64) -> AppResu
             let description: Option<String> = r.get(3)?;
             let project_name: String = r.get(4)?;
             let updated_at: String = r.get(5)?;
-            Ok((id, project_id, name, description, project_name, updated_at))
+            let root_id: Option<String> = r.get(6)?;
+            Ok((
+                id, project_id, name, description, project_name, updated_at, root_id,
+            ))
         })?;
         for row in rows {
-            let (id, project_id, name, description, project_name, updated_at) = row?;
+            let (id, project_id, name, description, project_name, updated_at, root_id) = row?;
             let body = description.clone().unwrap_or_default();
             let rank = rank_match(q, &name, &body);
             out.push((
@@ -861,6 +890,7 @@ fn search_planning(conn: &Connection, q: &str, pat: &str, limit: i64) -> AppResu
                     priority: None,
                     target_id: Some(id),
                     parent_id: Some(project_id),
+                    workspace_project_id: root_id,
                 },
             ));
         }
@@ -900,6 +930,7 @@ fn search_notes(conn: &Connection, q: &str, limit: i64) -> AppResult<Vec<Candida
                 priority: None,
                 target_id: Some(note.id),
                 parent_id: None,
+                workspace_project_id: None,
             },
         ));
     }
@@ -958,6 +989,7 @@ fn search_knowledge(
                 priority: None,
                 target_id: Some(id),
                 parent_id: Some(kb_id),
+                workspace_project_id: None,
             },
         ));
     }
@@ -1034,6 +1066,7 @@ fn search_life(
                     priority: None,
                     target_id: Some(id),
                     parent_id: None,
+                    workspace_project_id: None,
                 },
             ));
         }
@@ -1106,6 +1139,7 @@ fn search_life(
                     priority: None,
                     target_id: Some(id),
                     parent_id: None,
+                    workspace_project_id: None,
                 },
             ));
         }
@@ -1163,6 +1197,7 @@ fn search_life(
                     priority: None,
                     target_id: Some(owner_id),
                     parent_id: Some(id),
+                    workspace_project_id: None,
                 },
             ));
         }

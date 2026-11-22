@@ -19,6 +19,8 @@ export interface GlobalSearchResult {
   priority: number | null;
   target_id: string | null;
   parent_id: string | null;
+  /** planning 专用的项目根（workspace_projects.id）；其余分类为 null（ADR-0010）。 */
+  workspace_project_id: string | null;
 }
 
 export interface GlobalSearchGroup {

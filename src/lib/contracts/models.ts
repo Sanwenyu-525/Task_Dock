@@ -2136,6 +2136,8 @@ export interface PlanningProject {
   updated_at: string;
   /** 乐观并发版本（v37）：MCP 写工具强制校验；UI 路径可选传入 */
   revision?: number;
+  /** 所属项目根（workspace_projects.id，ADR-0010）；id 本身是计划 ID。孤儿旧计划为 null。 */
+  workspace_project_id?: string | null;
   stats: PlanningProjectStats;
 }
 
@@ -2197,7 +2199,10 @@ export interface PlanningAgentFeatureLink {
   id: string;
   feature_id: string;
   feature_title: string;
+  /** 计划 ID（planning_projects.id）：feature 的规划归属（ADR-0010）。 */
   project_id: string;
+  /** 所属项目根（workspace_projects.id）；导航/授权用它。孤儿旧计划为 null。 */
+  workspace_project_id?: string | null;
   project_name: string;
   agent_source: string;
   agent_name: string | null;

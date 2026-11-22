@@ -68,6 +68,9 @@ pub struct PlanningProject {
     /// 乐观并发版本（v37）：每次项目内容写成功后 +1；更新路径可传
     /// expected_revision，不匹配返回 Conflict。缺省保持旧行为（向后兼容）。
     pub revision: i64,
+    /// 所属项目根（`workspace_projects.id`，v78 补链后的新计划必有）。
+    /// ADR-0010：`id` 是计划 ID，前端用它区分 planId 与 projectId，孤儿旧计划为 null。
+    pub workspace_project_id: Option<String>,
     pub stats: ProjectStats,
 }
 
@@ -148,7 +151,10 @@ pub struct PlanningAgentFeatureLink {
     pub id: String,
     pub feature_id: String,
     pub feature_title: String,
+    /// 计划 ID（`planning_projects.id`）：feature 的规划归属。
     pub project_id: String,
+    /// 所属项目根（`workspace_projects.id`，ADR-0010）：导航/授权用它，不混用 project_id。
+    pub workspace_project_id: Option<String>,
     pub project_name: String,
     pub agent_source: String,
     pub agent_name: Option<String>,
@@ -454,6 +460,7 @@ fn row_to_project(row: &rusqlite::Row<'_>) -> rusqlite::Result<PlanningProject> 
         created_at: row.get(7)?,
         updated_at: row.get(8)?,
         revision: row.get(16)?,
+        workspace_project_id: row.get(17)?,
         stats,
     })
 }
@@ -461,7 +468,8 @@ fn row_to_project(row: &rusqlite::Row<'_>) -> rusqlite::Result<PlanningProject> 
 const PROJECT_SELECT: &str = "SELECT p.id, p.name, p.description, p.status, p.archived, p.target_date,
      p.sort_order, p.created_at, p.updated_at,
      COALESCE(f.total, 0), COALESCE(f.completed, 0), COALESCE(f.in_progress, 0), COALESCE(f.blocked, 0),
-     COALESCE(f.planned, 0), COALESCE(f.review, 0), COALESCE(f.paused, 0), p.revision
+     COALESCE(f.planned, 0), COALESCE(f.review, 0), COALESCE(f.paused, 0), p.revision,
+     p.workspace_project_id
    FROM planning_projects p
    LEFT JOIN (
      SELECT project_id,
@@ -963,7 +971,8 @@ pub fn planning_list_features(
 const PLANNING_AGENT_LINK_SELECT: &str = "SELECT l.id, l.feature_id, f.title, f.project_id,
        p.name, l.agent_source, a.display_name, l.session_id, l.status, s.status, s.id,
        s.last_seen_at,
-       (SELECT MAX(r.started_at) FROM agent_runs r WHERE r.session_id = s.id)
+       (SELECT MAX(r.started_at) FROM agent_runs r WHERE r.session_id = s.id),
+       p.workspace_project_id
    FROM feature_agent_links l
    JOIN planning_features f ON f.id = l.feature_id
    JOIN planning_projects p ON p.id = f.project_id
@@ -979,6 +988,7 @@ fn row_to_planning_agent_link(
         feature_id: row.get(1)?,
         feature_title: row.get(2)?,
         project_id: row.get(3)?,
+        workspace_project_id: row.get(13)?,
         project_name: row.get(4)?,
         agent_source: row.get(5)?,
         agent_name: row.get(6)?,

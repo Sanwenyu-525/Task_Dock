@@ -86,12 +86,12 @@ const openWithResults = () => {
             {
               id: "t1", category: "tasks", kind: "task", title: "修复登录页面异常",
               subtitle: "bug", snippet: "登录页 500", occurred_at: "2026-11-01T10:00:00Z",
-              status: "pending", priority: 1, target_id: "t1", parent_id: null,
+              status: "pending", priority: 1, target_id: "t1", parent_id: null, workspace_project_id: null,
             },
             {
               id: "t2", category: "tasks", kind: "task", title: "登录模块优化",
               subtitle: "ui", snippet: "", occurred_at: null,
-              status: "completed", priority: 2, target_id: "t2", parent_id: null,
+              status: "completed", priority: 2, target_id: "t2", parent_id: null, workspace_project_id: null,
             },
           ],
         },
@@ -298,7 +298,7 @@ describe("命令面板（与数据结果同弹窗、独立分组）", () => {
           items: [{
             id: "c1", category: "clipboard", kind: "text", title: "剪贴片段",
             subtitle: "", snippet: "", occurred_at: null, status: null,
-            priority: null, target_id: "c1", parent_id: null,
+            priority: null, target_id: "c1", parent_id: null, workspace_project_id: null,
           }],
         }],
       },
@@ -342,12 +342,12 @@ describe("命令面板（与数据结果同弹窗、独立分组）", () => {
             {
               id: "c1", category: "clipboard", kind: "text", title: "片段一",
               subtitle: "", snippet: "", occurred_at: null, status: null,
-              priority: null, target_id: "c1", parent_id: null,
+              priority: null, target_id: "c1", parent_id: null, workspace_project_id: null,
             },
             {
               id: "c2", category: "clipboard", kind: "text", title: "片段二",
               subtitle: "", snippet: "", occurred_at: null, status: null,
-              priority: null, target_id: "c2", parent_id: null,
+              priority: null, target_id: "c2", parent_id: null, workspace_project_id: null,
             },
           ],
         }],
@@ -382,7 +382,7 @@ describe("命令面板（与数据结果同弹窗、独立分组）", () => {
           items: [{
             id: "c1", category: "clipboard", kind: "text", title: "片段一",
             subtitle: "", snippet: "", occurred_at: null, status: null,
-            priority: null, target_id: "c1", parent_id: null,
+            priority: null, target_id: "c1", parent_id: null, workspace_project_id: null,
           }],
         }],
       },

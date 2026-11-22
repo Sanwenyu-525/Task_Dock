@@ -158,7 +158,7 @@ describe("openResult 跳转分发", () => {
     useGlobalSearchStore.setState({ query: "登录" });
     useGlobalSearchStore.getState().openResult({
       id: "t1", category: "tasks", kind: "task", title: "", subtitle: "", snippet: "",
-      occurred_at: null, status: null, priority: null, target_id: "t1", parent_id: null,
+      occurred_at: null, status: null, priority: null, target_id: "t1", parent_id: null, workspace_project_id: null,
     });
     const s = useGlobalSearchStore.getState();
     expect(useUiStore.getState().tab).toBe("tasks");
@@ -171,7 +171,7 @@ describe("openResult 跳转分发", () => {
     useGlobalSearchStore.setState({ query: "登录" });
     useGlobalSearchStore.getState().openResult({
       id: "run1", category: "agents", kind: "run", title: "", subtitle: "", snippet: "",
-      occurred_at: null, status: null, priority: null, target_id: "sess1", parent_id: "src1",
+      occurred_at: null, status: null, priority: null, target_id: "sess1", parent_id: "src1", workspace_project_id: null,
     });
     const focus = useUiStore.getState().agentFocus;
     expect(useUiStore.getState().tab).toBe("agents");
@@ -185,7 +185,7 @@ describe("openResult 跳转分发", () => {
     useGlobalSearchStore.setState({ query: "登录" });
     useGlobalSearchStore.getState().openResult({
       id: "n1", category: "apps", kind: "application", title: "", subtitle: "", snippet: "",
-      occurred_at: null, status: null, priority: null, target_id: "n1", parent_id: null,
+      occurred_at: null, status: null, priority: null, target_id: "n1", parent_id: null, workspace_project_id: null,
     });
     await flush(20);
     expect(navNavigateMock).toHaveBeenCalledWith("n1", { action: "focus_or_launch" });
@@ -196,7 +196,7 @@ describe("openResult 跳转分发", () => {
     useGlobalSearchStore.setState({ query: "登录", recent: ["剪贴板"] });
     useGlobalSearchStore.getState().openResult({
       id: "t1", category: "tasks", kind: "task", title: "", subtitle: "", snippet: "",
-      occurred_at: null, status: null, priority: null, target_id: "t1", parent_id: null,
+      occurred_at: null, status: null, priority: null, target_id: "t1", parent_id: null, workspace_project_id: null,
     });
     expect(useGlobalSearchStore.getState().recent).toEqual(["登录", "剪贴板"]);
   });
@@ -308,12 +308,12 @@ describe("命令面板（全局搜索内的命令能力层）", () => {
               {
                 id: "t1", category: "tasks", kind: "task", title: "a", subtitle: "",
                 snippet: "", occurred_at: null, status: null, priority: null,
-                target_id: "t1", parent_id: null,
+                target_id: "t1", parent_id: null, workspace_project_id: null,
               },
               {
                 id: "t2", category: "tasks", kind: "task", title: "b", subtitle: "",
                 snippet: "", occurred_at: null, status: null, priority: null,
-                target_id: "t2", parent_id: null,
+                target_id: "t2", parent_id: null, workspace_project_id: null,
               },
             ],
           },
@@ -346,7 +346,7 @@ describe("命令面板（全局搜索内的命令能力层）", () => {
               {
                 id: "t1", category: "tasks", kind: "task", title: "a", subtitle: "",
                 snippet: "", occurred_at: null, status: null, priority: null,
-                target_id: "t1", parent_id: null,
+                target_id: "t1", parent_id: null, workspace_project_id: null,
               },
             ],
           },
