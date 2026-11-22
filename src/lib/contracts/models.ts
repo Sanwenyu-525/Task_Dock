@@ -330,6 +330,12 @@ export interface Settings {
    */
   snap_display_mode: "capsule" | "full";
   /**
+   * 主界面关闭行为（2026-11-22 关闭策略）：close_window 关窗驻留托盘（默认，
+   * 旧库缺键由后端补默认值）| quit_app 所有主界面关闭入口统一退出整个应用
+   * （走 request_exit 的 app-before-exit 保存握手与管线排空）。
+   */
+  window_close_behavior: "close_window" | "quit_app";
+  /**
    * 工具面板宽度（CSS px，280–480）：停靠期拖拽面板内侧边调整并持久化。
    * 旧库缺键时后端返回默认 340；前端读侧仍按胶囊契约收敛。
    */

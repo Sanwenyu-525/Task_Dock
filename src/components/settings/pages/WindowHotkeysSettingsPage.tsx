@@ -58,6 +58,32 @@ export default function WindowHotkeysSettingsPage() {
       </div>
       <div className="setting-note">{t("settings.window.snapNote")}</div>
       <div className="setting-row">
+        <span>{t("settings.window.closeBehavior")}</span>
+        <Select
+          ariaLabel={t("settings.window.closeBehavior")}
+          size="sm"
+          triggerClassName="settings-select-trigger"
+          align="end"
+          value={settings.window_close_behavior === "quit_app" ? "quit_app" : "close_window"}
+          options={[
+            {
+              value: "close_window",
+              label: t("settings.window.closeBehavior.closeWindow"),
+            },
+            {
+              value: "quit_app",
+              label: t("settings.window.closeBehavior.quitApp"),
+            },
+          ]}
+          onChange={(v) =>
+            useSettingsStore.getState().update({
+              window_close_behavior: v as "close_window" | "quit_app",
+            })
+          }
+        />
+      </div>
+      <div className="setting-note">{t("settings.window.closeBehaviorNote")}</div>
+      <div className="setting-row">
         <span>{t("settings.window.autostart")}</span>
         <Switch
           checked={settings.autostart}

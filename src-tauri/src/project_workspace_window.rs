@@ -1186,7 +1186,32 @@ fn attach_events(app: &AppHandle, win: &WebviewWindow) {
                 });
             });
         }
-        tauri::WindowEvent::CloseRequested { .. } => {
+        tauri::WindowEvent::CloseRequested { api, .. } => {
+            // 关闭策略（2026-11-22）：`window_close_behavior = quit_app` 时，
+            // 工作台的关闭入口（自绘 X 经前端 quitApp 命令、Alt+F4 经本事件）
+            // 统一转入 request_exit：prevent_close 后由退出握手（app-before-exit
+            // 正文保存 + 管线排空）完成收尾，保存失败会取消退出并广播
+            // app-exit-blocked。前端关闭协调器在该模式下不拦截（见
+            // workbenchCloseGuard 的 `isQuitExit`），两条入口不会互相竞争。
+            if app
+                .try_state::<Arc<Db>>()
+                .map(|db| crate::commands::settings::window_close_behavior_is_quit(db.inner()))
+                .unwrap_or(false)
+            {
+                api.prevent_close();
+                tracing::info!(label = WINDOW_LABEL, "CLOSE_REQUESTED_QUIT_APP");
+                crate::diagnostics::event(
+                    crate::diagnostics::DiagLevel::Info,
+                    "workbench",
+                    "window-close",
+                    "requested-quit-app",
+                )
+                .window(WINDOW_LABEL)
+                .message("CLOSE_REQUESTED_QUIT_APP".to_string())
+                .emit();
+                crate::request_exit(&app);
+                return;
+            }
             // 关闭按钮 / Alt+F4：保存几何后正常销毁；不在这里 prevent_close。
             // 正文保存门禁由 WorkbenchShell 的 onCloseRequested 前端握手负责：
             // 有脏稿时同步 preventDefault → await flush → 成功后才二次 close；
@@ -1460,12 +1485,14 @@ pub fn open_workbench_on_startup(app: &AppHandle, db: &Db) -> AppResult<bool> {
     Ok(created)
 }
 
-/// 重复启动（第二实例）的唤醒：工作台存在则聚焦，已关闭则重建。
+/// 用户唤回工作台的统一入口（托盘左键 / 第二实例）：存在则聚焦，已关闭则重建。
 ///
 /// 单实例回调运行在 `WM_COPYDATA` 的同步派发里（第二个实例最多等 10s），
 /// 因此创建窗口投递到主线程消息循环的下一拍，不在 SendMessage 回调里嵌套
-/// 创建 WebView。
-pub fn focus_or_open_workbench_from_second_instance(app: &AppHandle) {
+/// 创建 WebView。托盘左键（同步事件回调）同样走本函数：重建路径已投递到
+/// 主线程，不在托盘回调里嵌套创建。需要**事务结果**的入口（托盘右键菜单）
+/// 用 `open_or_focus_workbench_with_result`。
+pub fn focus_or_open_workbench(app: &AppHandle) {
     if let Some(win) = app.get_webview_window(WINDOW_LABEL) {
         STARTUP_REVEAL.store(false, Ordering::SeqCst);
         let _ = reveal_workbench(&win);
@@ -1489,6 +1516,43 @@ pub fn focus_or_open_workbench_from_second_instance(app: &AppHandle) {
     });
     if let Err(error) = posted {
         fallback_to_main(app, &format!("大型工作台打开失败：{error}"));
+    }
+}
+
+/// 打开/聚焦工作台并等待**真实结果**（托盘右键「打开完整工作台」等需要事务
+/// 反馈的入口）。
+///
+/// 与 `focus_or_open_workbench`（fire-and-forget）共用同一条创建/聚焦路径，
+/// 不复制第二套窗口创建逻辑：
+/// - 窗口已存在：同步聚焦，立即成功；
+/// - 窗口不存在：创建投递到主线程，oneshot 等待真实结果（有界 12s），
+///   创建失败如实报错——调用方（菜单）据此保留行内反馈而不是假装成功。
+pub async fn open_or_focus_workbench_with_result(app: &AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window(WINDOW_LABEL) {
+        STARTUP_REVEAL.store(false, Ordering::SeqCst);
+        return reveal_workbench(&win).map_err(|error| error.to_string());
+    }
+    let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+    let app_for_main = app.clone();
+    let posted = app.run_on_main_thread(move || {
+        let app = app_for_main;
+        let result = match app.try_state::<Arc<Db>>() {
+            Some(db) => open_or_focus_workbench(&app, &db, None, None, None, OpenReveal::Immediate)
+                .map(|_| ())
+                .map_err(|error| error.to_string()),
+            None => Err("数据库尚未就绪，无法打开大型工作台".to_string()),
+        };
+        // 调用方超时放弃后 rx 可能已关闭：发送失败只说明本次等待过期，
+        // 窗口仍会按主线程闭包的结果继续创建/报错，不影响下一次请求。
+        let _ = tx.send(result);
+    });
+    if let Err(error) = posted {
+        return Err(format!("无法调度窗口创建：{error}"));
+    }
+    match tokio::time::timeout(std::time::Duration::from_secs(12), rx).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(_)) => Err("窗口创建任务被取消".to_string()),
+        Err(_) => Err("打开完整工作台超时，请重试".to_string()),
     }
 }
 
@@ -1554,6 +1618,7 @@ const CLOSE_TRACE_STAGES: &[&str] = &[
     "CLOSE_GUARD_DUPLICATE",
     "CLOSE_GUARD_DESTROY_TIMEOUT",
     "CLOSE_GUARD_DISPOSED",
+    "CLOSE_GUARD_YIELD_TO_QUIT_EXIT",
     "MANUSCRIPT_FLUSH_STARTED",
     "MANUSCRIPT_FLUSH_SKIPPED_CLEAN",
     "MANUSCRIPT_FLUSH_WAIT_EXISTING_SAVE",

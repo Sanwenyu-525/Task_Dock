@@ -715,3 +715,43 @@ describe("设置写入并发契约（串行 + 合并 + 字段级裁决）", () =
     expect(settings().tts_rate).toBe(120);
   });
 });
+
+describe("关闭行为设置（2026-11-22 关闭策略）", () => {
+  it("后端快照始终携带 window_close_behavior：加载后可直接驱动关闭策略", async () => {
+    api.getSettings.mockResolvedValue({
+      ...baseSettings,
+      window_close_behavior: "quit_app",
+    });
+    api.applyWindowMaterial.mockResolvedValue({
+      material: "glass",
+      applied: true,
+      effect: "mica",
+      os_version: "10.0.26100",
+    });
+
+    await useSettingsStore.getState().load();
+    expect(useSettingsStore.getState().settings?.window_close_behavior).toBe("quit_app");
+  });
+
+  it("更新 window_close_behavior 走统一写入管道并持久化", async () => {
+    api.getSettings.mockResolvedValue({ ...baseSettings });
+    api.updateSettings.mockImplementation(async (patch: Record<string, unknown>) => ({
+      ...baseSettings,
+      ...patch,
+    }));
+    api.applyWindowMaterial.mockResolvedValue({
+      material: "glass",
+      applied: true,
+      effect: "mica",
+      os_version: "10.0.26100",
+    });
+
+    await useSettingsStore.getState().load();
+    await useSettingsStore.getState().update({ window_close_behavior: "quit_app" });
+
+    // 写入必须带全量设置（后端逐键校验），且包含新的关闭行为键。
+    const written = api.updateSettings.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(written.window_close_behavior).toBe("quit_app");
+    expect(useSettingsStore.getState().settings?.window_close_behavior).toBe("quit_app");
+  });
+});

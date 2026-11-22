@@ -146,6 +146,8 @@ const ALLOWED_KEYS: &[&str] = &[
     // 全局工作篮（v79）：面板状态（可见/固定/宽度/形态/推荐开关），按窗口为键保存。
     // 只是界面偏好，不含任何工作篮正文或文件路径。
     "transfer_tray_state",
+    // 主界面关闭行为（2026-11-22 关闭策略）：close_window（默认）| quit_app
+    "window_close_behavior",
 ];
 
 /// 跨窗口设置广播的修订号：单调递增，接收方可据此忽略倒序/重复的旧事件。
@@ -199,6 +201,20 @@ fn int_in_range(v: &serde_json::Value, key: &str, min: i64, max: i64) -> AppResu
     Ok(())
 }
 
+/// 主界面关闭行为是否为「退出整个应用」（quit_app）。
+///
+/// 关闭生命周期（主窗/工作台 CloseRequested、自绘 X）在 Rust 侧每次事件时
+/// 单键读取：设置更新走同一条持久化管道，下次关闭立即生效。
+/// 缺键（旧库）/读取失败/非法值一律按 `close_window` 处理，绝不猜默认以外的策略。
+pub fn window_close_behavior_is_quit(db: &Db) -> bool {
+    db.get_setting("window_close_behavior")
+        .ok()
+        .flatten()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .map(|value| crate::db::normalized_window_close_behavior(&value) == "quit_app")
+        .unwrap_or(false)
+}
+
 /// 单键校验：类型、范围、合法枚举值。
 pub fn validate_setting(key: &str, v: &serde_json::Value) -> AppResult<()> {
     match key {
@@ -212,6 +228,8 @@ pub fn validate_setting(key: &str, v: &serde_json::Value) -> AppResult<()> {
         "clear_foreground" => enum_of(v, key, &["auto", "dark", "light"]),
         // 边缘吸附展示形态：胶囊隐藏（默认）| 完整面板
         "snap_display_mode" => enum_of(v, key, &["capsule", "full"]),
+        // 主界面关闭行为：关窗驻留托盘（默认）| 关闭入口统一退出整个应用
+        "window_close_behavior" => enum_of(v, key, &["close_window", "quit_app"]),
         // 工具面板宽度（CSS px）：与前端 PANEL_MIN/MAX_WIDTH_CSS、window_shape 同步
         "capsule_panel_width" => int_in_range(v, key, 280, 480),
         "snap_enabled"
@@ -977,6 +995,32 @@ mod tests {
         assert!(validate_setting("clear_foreground", &serde_json::json!("light")).is_ok());
         assert!(validate_setting("clear_foreground", &serde_json::json!("system")).is_err());
         assert!(validate_setting("visual_preset", &serde_json::json!(null)).is_err());
+        // 主界面关闭行为（2026-11-22）：只接受 close_window | quit_app
+        assert!(validate_setting("window_close_behavior", &serde_json::json!("close_window")).is_ok());
+        assert!(validate_setting("window_close_behavior", &serde_json::json!("quit_app")).is_ok());
+        assert!(validate_setting("window_close_behavior", &serde_json::json!("exit")).is_err());
+        assert!(validate_setting("window_close_behavior", &serde_json::json!(true)).is_err());
+    }
+
+    /// 关闭行为读取 helper：缺键（旧库）/非法值一律按 close_window。
+    #[test]
+    fn window_close_behavior_is_quit_defaults_to_false() {
+        let db = Db::open_in_memory().unwrap();
+        assert!(
+            !window_close_behavior_is_quit(&db),
+            "旧库缺键必须按 close_window 处理"
+        );
+        db.set_setting("window_close_behavior", serde_json::json!("quit_app"))
+            .unwrap();
+        assert!(window_close_behavior_is_quit(&db));
+        db.set_setting("window_close_behavior", serde_json::json!("close_window"))
+            .unwrap();
+        assert!(!window_close_behavior_is_quit(&db));
+        // 非法值（手工改库/旧备份）fail-safe 回退 close_window。
+        // set_setting 不做写侧校验，恰好可注入绕过 validate 的历史脏数据。
+        db.set_setting("window_close_behavior", serde_json::json!("exit"))
+            .unwrap();
+        assert!(!window_close_behavior_is_quit(&db));
     }
 
     #[test]

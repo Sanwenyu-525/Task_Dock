@@ -321,7 +321,12 @@ fn setup_tray(app: &App) -> std::result::Result<(), Box<dyn std::error::Error>> 
             {
                 let app = tray.app_handle();
                 match button {
-                    MouseButton::Left => toggle_main(app),
+                    // 左键 = 打开/聚焦完整工作台（2026-11-22）：存在则聚焦（含
+                    // 还原最小化/隐藏），已销毁则经统一创建入口重建并恢复几何；
+                    // 不再切换旧版快捷工具面板（右键菜单「显示/隐藏快捷工具面板」仍保留）。
+                    MouseButton::Left => {
+                        project_workspace_window::focus_or_open_workbench(app);
+                    }
                     // 锚点：托盘图标上缘中点，菜单在其上方展开并按工作区收边
                     // （tauri 的 Position/Size 是枚举；托盘事件里恒为物理坐标）
                     MouseButton::Right => {
@@ -416,11 +421,24 @@ fn restore_window(app: &AppHandle, db: &Db) {
         }
     }
 
-    // 关闭 = 隐藏到托盘（Tauri v2 事件回调为单参数）
+    // 关闭行为按设置（window_close_behavior）分支：
+    // - close_window（默认）：隐藏到托盘（Tauri v2 事件回调为单参数）；
+    // - quit_app：所有主界面关闭入口统一走 request_exit（正文保存握手 +
+    //   事件管线排空后退出进程），不再隐藏。
     let win_for_close = win.clone();
     win.on_window_event(move |event| {
         if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-            api.prevent_close();
+            let quit_on_close = win_for_close
+                .app_handle()
+                .try_state::<std::sync::Arc<Db>>()
+                .map(|db| commands::settings::window_close_behavior_is_quit(db.inner()))
+                .unwrap_or(false);
+            if quit_on_close {
+                api.prevent_close();
+                tracing::info!("主窗关闭请求（quit_app）：转入统一退出流程");
+                crate::request_exit(win_for_close.app_handle());
+                return;
+            }
             let _ = win_for_close.hide();
             if let Some(st) = win_for_close
                 .app_handle()
@@ -600,7 +618,7 @@ pub fn run() {
             // 按同一创建路径重建。只有创建失败才回退主面板（并给出错误提示），
             // 不再「再次展示旧完整面板」。
             tracing::info!("检测到重复启动：唤醒大型工作台");
-            project_workspace_window::focus_or_open_workbench_from_second_instance(app);
+            project_workspace_window::focus_or_open_workbench(app);
         }))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(

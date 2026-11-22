@@ -3101,6 +3101,25 @@ pub struct Settings {
     /// 结构边界校验在 `commands/settings.rs`，后端只透传，不参与语义合并。
     #[serde(default)]
     pub file_workspace_layouts: serde_json::Value,
+    /// 主界面关闭行为（2026-11-22 关闭策略）：`close_window`（默认，工作台关窗驻留
+    /// 托盘）| `quit_app`（关闭入口统一走 request_exit 退出整个应用）。
+    /// 旧库缺键按默认 `close_window`，不做破坏性迁移；读侧归一化见
+    /// `normalized_window_close_behavior`。
+    #[serde(default = "default_window_close_behavior")]
+    pub window_close_behavior: String,
+}
+
+fn default_window_close_behavior() -> String {
+    "close_window".into()
+}
+
+/// 关闭行为读侧归一化（与 `validate_setting` 的写侧枚举同一规则）：
+/// 缺失由 serde 默认补齐；历史备份/手工改库带来的非法值一律回退 `close_window`。
+pub fn normalized_window_close_behavior(value: &str) -> &'static str {
+    match value {
+        "quit_app" => "quit_app",
+        _ => "close_window",
+    }
 }
 
 fn default_theme() -> String {
@@ -3533,6 +3552,15 @@ impl Settings {
         if s.mode != normalized_mode(&s.mode) {
             tracing::warn!(mode = %s.mode, "非法显示模式已回退为 full");
             s.mode = normalized_mode(&s.mode).to_string();
+        }
+        // 关闭行为读侧归一化：旧库缺键由 serde 默认补 close_window；非法值
+        // （备份恢复/手工改库）回退默认，绝不把未知策略带进关闭生命周期。
+        if s.window_close_behavior != normalized_window_close_behavior(&s.window_close_behavior) {
+            tracing::warn!(
+                value = %s.window_close_behavior,
+                "非法关闭行为设置已回退为 close_window"
+            );
+            s.window_close_behavior = normalized_window_close_behavior(&s.window_close_behavior).to_string();
         }
         if legacy_alert_sound_off {
             // 只映射旧开关实际控制的两类事件，不清空其他默认可播事件。
@@ -5520,6 +5548,34 @@ CREATE INDEX idx_shelf_file_ops_created ON shelf_file_ops(created_at);
             assert_eq!(settings.visual_preset, expected, "输入 {}", raw);
             assert_eq!(settings.theme, "dark", "预设归一化不得重置主题");
             assert_eq!(settings.material, "solid", "预设归一化不得重置材质");
+            assert_eq!(before, sorted_raw(&db), "读取归一化不得写库");
+        }
+    }
+
+    /// 关闭行为（2026-11-22）：旧库缺键按 close_window 兼容，非法值读侧回退，
+    /// 不写库、不重置其他设置（破坏性迁移被明确禁止）。
+    #[test]
+    fn window_close_behavior_defaults_and_normalizes_on_read() {
+        let db = Db::open_in_memory().unwrap();
+        assert_eq!(
+            Settings::load(&db).unwrap().window_close_behavior,
+            "close_window",
+            "旧库/全新库缺省必须为 close_window"
+        );
+
+        raw_setting(&db, "theme", "\"dark\"");
+        for (raw, expected) in [
+            ("\"close_window\"", "close_window"),
+            ("\"quit_app\"", "quit_app"),
+            ("\"exit\"", "close_window"),
+            ("\"\"", "close_window"),
+            ("null", "close_window"),
+        ] {
+            raw_setting(&db, "window_close_behavior", raw);
+            let before = sorted_raw(&db);
+            let settings = Settings::load(&db).unwrap();
+            assert_eq!(settings.window_close_behavior, expected, "输入 {}", raw);
+            assert_eq!(settings.theme, "dark", "关闭行为归一化不得重置主题");
             assert_eq!(before, sorted_raw(&db), "读取归一化不得写库");
         }
     }

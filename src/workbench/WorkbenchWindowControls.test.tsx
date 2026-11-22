@@ -253,3 +253,118 @@ describe("WorkbenchWindowControls · 关闭状态由协调器驱动", () => {
     expect(closeBtn.getAttribute("title")).toBe("正在保存并关闭工作台");
   });
 });
+
+describe("WorkbenchWindowControls · 关闭链路就绪状态（P0 2026-11-22）", () => {
+  it("保护器未就绪：按钮 disabled 并显示「初始化中」，点击不发起关闭请求", () => {
+    const onRequestClose = vi.fn();
+    render(
+      <WorkbenchWindowControls
+        window={fakeWindow()}
+        onRequestClose={onRequestClose}
+        closeReady={false}
+      />,
+    );
+
+    const closeBtn = screen.getByRole("button", { name: "关闭工作台" }) as HTMLButtonElement;
+    expect(closeBtn.disabled).toBe(true);
+    expect(closeBtn.getAttribute("title")).toBe("关闭保护初始化中，请稍候…");
+
+    fireEvent.click(closeBtn);
+    expect(onRequestClose).not.toHaveBeenCalled();
+  });
+
+  it("保护器就绪：恢复可用并可发起关闭请求", () => {
+    const onRequestClose = vi.fn();
+    const view = render(
+      <WorkbenchWindowControls
+        window={fakeWindow()}
+        onRequestClose={onRequestClose}
+        closeReady={false}
+      />,
+    );
+    view.rerender(
+      <WorkbenchWindowControls
+        window={fakeWindow()}
+        onRequestClose={onRequestClose}
+        closeReady={true}
+      />,
+    );
+
+    const closeBtn = screen.getByRole("button", { name: "关闭工作台" }) as HTMLButtonElement;
+    expect(closeBtn.disabled).toBe(false);
+    fireEvent.click(closeBtn);
+    expect(onRequestClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("保护器安装失败：保持未就绪并把原因放到 tooltip，不静默失去关闭能力", () => {
+    const onRequestClose = vi.fn();
+    render(
+      <WorkbenchWindowControls
+        window={fakeWindow()}
+        onRequestClose={onRequestClose}
+        closeReady={false}
+        closeMessage="工作台关闭保护未启用：监听注册失败"
+      />,
+    );
+
+    const closeBtn = screen.getByRole("button", { name: "关闭工作台" }) as HTMLButtonElement;
+    expect(closeBtn.disabled).toBe(true);
+    expect(closeBtn.getAttribute("title")).toContain("工作台关闭保护未启用");
+    fireEvent.click(closeBtn);
+    expect(onRequestClose).not.toHaveBeenCalled();
+  });
+
+  it("quitBusy：退出请求在途时保持 disabled + aria-busy；取消后恢复可重试", () => {
+    const onRequestClose = vi.fn();
+    const view = render(
+      <WorkbenchWindowControls
+        window={fakeWindow()}
+        onRequestClose={onRequestClose}
+        quitBusy={true}
+      />,
+    );
+
+    let closeBtn = screen.getByRole("button", { name: "关闭工作台" }) as HTMLButtonElement;
+    expect(closeBtn.disabled).toBe(true);
+    expect(closeBtn.getAttribute("aria-busy")).toBe("true");
+    expect(closeBtn.getAttribute("title")).toBe("正在保存并退出应用…");
+
+    // 退出被取消（app-exit-blocked）：外壳把 quitBusy 复位，按钮恢复可重试。
+    view.rerender(
+      <WorkbenchWindowControls
+        window={fakeWindow()}
+        onRequestClose={onRequestClose}
+        quitBusy={false}
+      />,
+    );
+    closeBtn = screen.getByRole("button", { name: "关闭工作台" }) as HTMLButtonElement;
+    expect(closeBtn.disabled).toBe(false);
+    fireEvent.click(closeBtn);
+    expect(onRequestClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("quitBusy 期间点击被 clickLock 拦截，busy 解除后不再被锁住", () => {
+    const onRequestClose = vi.fn();
+    const view = render(
+      <WorkbenchWindowControls
+        window={fakeWindow()}
+        onRequestClose={onRequestClose}
+        quitBusy={true}
+      />,
+    );
+    // quitBusy=true 时按钮 disabled，click 无法触发（浏览器原生行为）。
+    fireEvent.click(screen.getByRole("button", { name: "关闭工作台" }));
+    expect(onRequestClose).not.toHaveBeenCalled();
+
+    // busy 解除：clickLock 必须复位，否则按钮恢复后永远点不动（不允许永久锁定）。
+    view.rerender(
+      <WorkbenchWindowControls
+        window={fakeWindow()}
+        onRequestClose={onRequestClose}
+        quitBusy={false}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "关闭工作台" }));
+    expect(onRequestClose).toHaveBeenCalledTimes(1);
+  });
+});

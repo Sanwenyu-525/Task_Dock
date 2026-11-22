@@ -151,6 +151,7 @@ const BASE_SETTINGS: Settings = {
   clear_foreground: "auto",
   snap_enabled: true,
   snap_display_mode: "capsule",
+  window_close_behavior: "close_window",
   capsule_panel_width: 340,
   autostart: false,
   hotkey_enabled: true,

@@ -67,11 +67,13 @@ async function install(options: {
   destroyTimeoutMs?: number;
   trace?: (stage: string, fields?: Record<string, unknown>) => void;
   onStateChange?: (snapshot: WorkbenchCloseSnapshot) => void;
+  isQuitExit?: () => boolean;
 }) {
   const fake = fakeWindow();
   const guard = await installWorkbenchCloseGuard({
     window: fake.window,
     getFlush: () => options.flush ?? null,
+    isQuitExit: options.isQuitExit,
     onError: options.onError ?? vi.fn(),
     onStateChange: options.onStateChange,
     trace: options.trace,
@@ -359,5 +361,127 @@ describe("installWorkbenchCloseGuard · 诊断", () => {
     expect(flush).toHaveBeenCalledTimes(1);
     d.resolve(true);
     await vi.waitFor(() => expect(fake.close).toHaveBeenCalledTimes(1));
+  });
+});
+
+describe("installWorkbenchCloseGuard · quit_app 让路（2026-11-22 关闭策略）", () => {
+  it("quit_app 模式：CloseRequested 不拦截，Rust 统一退出流程接管", async () => {
+    const flush = vi.fn().mockResolvedValue(true);
+    const { fake } = await install({ flush, isQuitExit: () => true });
+
+    const e = event();
+    fake.fire(e);
+    // 绝不能 preventDefault：Rust 侧 prevent_close + request_exit 依赖事件不被拦截。
+    expect(e.preventDefault).not.toHaveBeenCalled();
+    expect(fake.close).not.toHaveBeenCalled();
+    expect(flush).not.toHaveBeenCalled();
+  });
+
+  it("quit_app 模式：按钮入口同样不起事务", async () => {
+    const flush = vi.fn().mockResolvedValue(true);
+    const { fake, guard } = await install({ flush, isQuitExit: () => true });
+
+    guard.requestClose();
+    expect(flush).not.toHaveBeenCalled();
+    expect(fake.close).not.toHaveBeenCalled();
+    expect(guard.getState().state).toBe("idle");
+  });
+
+  it("运行中切换到 quit_app：下一次事件立即让路", async () => {
+    let quit = false;
+    const flush = vi.fn().mockResolvedValue(true);
+    const { fake } = await install({ flush, isQuitExit: () => quit });
+
+    const first = event();
+    fake.fire(first);
+    expect(first.preventDefault).toHaveBeenCalledTimes(1);
+
+    quit = true;
+    const second = event();
+    fake.fire(second);
+    expect(second.preventDefault).not.toHaveBeenCalled();
+    expect(fake.close).not.toHaveBeenCalled();
+  });
+});
+
+describe("installWorkbenchCloseGuard · 关闭场景矩阵（2026-11-22 验收补充）", () => {
+  it("连续点击按钮：只跑一笔事务，其余并入", async () => {
+    const d = deferred<boolean>();
+    const flush = vi.fn(() => d.promise);
+    const { fake, guard } = await install({ flush });
+
+    guard.requestClose();
+    guard.requestClose();
+    guard.requestClose();
+    expect(flush).toHaveBeenCalledTimes(1);
+    expect(fake.close).not.toHaveBeenCalled();
+
+    d.resolve(true);
+    await vi.waitFor(() => expect(fake.close).toHaveBeenCalledTimes(1));
+  });
+
+  it("保存中点击按钮：并入进行中的事务，不产生第二笔 flush", async () => {
+    const d = deferred<boolean>();
+    const flush = vi.fn(() => d.promise);
+    const { fake, guard } = await install({ flush });
+
+    guard.requestClose();
+    expect(guard.getState().state).toBe("saving");
+    guard.requestClose();
+    guard.requestClose();
+    expect(flush).toHaveBeenCalledTimes(1);
+    expect(guard.getState()).toMatchObject({ state: "saving", duplicate: true });
+
+    d.resolve(true);
+    await vi.waitFor(() => expect(fake.close).toHaveBeenCalledTimes(1));
+  });
+
+  it("保存失败后重试（按钮路径）：失败回因，重试重新走完整事务", async () => {
+    const flush = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    const onError = vi.fn();
+    const { fake, guard } = await install({ flush, onError });
+
+    guard.requestClose();
+    await vi.waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
+    expect(guard.getState()).toMatchObject({ state: "failed", reason: "flush-false" });
+
+    guard.requestClose();
+    await vi.waitFor(() => expect(fake.close).toHaveBeenCalledTimes(1));
+    expect(flush).toHaveBeenCalledTimes(2);
+  });
+
+  it("Alt+F4 先到、自绘 X 后到：共用同一笔事务，只保存一次", async () => {
+    const d = deferred<boolean>();
+    const flush = vi.fn(() => d.promise);
+    const { fake, guard } = await install({ flush });
+
+    fake.fire(event());
+    guard.requestClose();
+    expect(flush).toHaveBeenCalledTimes(1);
+    expect(guard.getState().duplicate).toBe(true);
+
+    d.resolve(true);
+    await vi.waitFor(() => expect(fake.close).toHaveBeenCalledTimes(1));
+  });
+
+  it("最终只有一次窗口销毁：close 只调用一次，后续 CloseRequested 全部放行", async () => {
+    const flush = vi.fn().mockResolvedValue(true);
+    const { fake, guard } = await install({ flush });
+
+    // X 与 Alt+F4 几乎同时：一个事务。
+    guard.requestClose();
+    fake.fire(event());
+    await vi.waitFor(() => expect(fake.close).toHaveBeenCalledTimes(1));
+    expect(flush).toHaveBeenCalledTimes(1);
+
+    // 协调器自己发起的 close() 会再触发一次 CloseRequested（allowClose 放行），
+    // 之后无论再来多少次都不再调用 close —— 销毁只能发生一次。
+    for (let i = 0; i < 4; i += 1) {
+      const e = event();
+      fake.fire(e);
+      expect(e.preventDefault).not.toHaveBeenCalled();
+    }
+    expect(fake.close).toHaveBeenCalledTimes(1);
+    expect(flush).toHaveBeenCalledTimes(1);
   });
 });

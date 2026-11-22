@@ -87,7 +87,7 @@ export const MENU_GROUPS: readonly MenuGroupDef[] = [
     key: "common",
     label: "常用操作",
     items: [
-      { key: "show", label: "显示 / 隐藏", icon: Eye, action: "show" },
+      { key: "show", label: "显示/隐藏快捷工具面板", icon: Eye, action: "show" },
       { key: "quick-add", label: "快速添加任务", icon: Plus, action: "quick-add" },
       { key: "quick-capture", label: "快速捕获", icon: Zap, action: "quick-capture" },
     ],

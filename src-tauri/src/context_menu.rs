@@ -34,6 +34,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, WebviewWindowBuilder};
 
 use crate::db::Db;
+use crate::project_workspace_window;
 
 pub const WINDOW_LABEL: &str = "context-menu";
 /// 后端 → 菜单窗口：即将在锚点处显示（刷新设置快照 + 重放入场动画 + 回传尺寸）。
@@ -844,12 +845,12 @@ pub async fn context_menu_action(app: AppHandle, action: String) -> MenuActionRe
             crate::request_exit(&app);
             ok_result(&db)
         }
-        // 打开完整工作台（三层形态收敛）：workspace 窗口只能由主窗打开（
-        // `workbench_open_window` 有主窗专属守卫，菜单 WebView 不能直接调），
-        // 因此复用极简标签菜单的同一条转发通道：emit 到主窗 → 主窗前端调
-        // `openWorkbenchHome` → 回执真实结果。等待真实事务结果，成功才收菜单。
+        // 打开完整工作台（2026-11-22）：直接走与启动/第二实例同一条统一创建
+        // 入口（`open_or_focus_workbench_with_result`），不再绕道主窗转发——
+        // 旧实现要求主窗口存在，主窗未就绪时托盘菜单会误报失败。等待真实
+        // 事务结果，成功才收菜单；失败保留菜单展示行内原因。
         "open-workbench" => {
-            match run_tab_action(&app, "workbench".to_string()).await {
+            match project_workspace_window::open_or_focus_workbench_with_result(&app).await {
                 Ok(()) => ok_result(&db),
                 Err(message) => {
                     tracing::warn!(%message, "打开完整工作台未完成");

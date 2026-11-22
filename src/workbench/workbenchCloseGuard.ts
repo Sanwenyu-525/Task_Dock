@@ -73,6 +73,14 @@ export interface WorkbenchCloseGuardOptions {
   window: WorkbenchCloseWindow;
   /** 当前工作台注册的正文离开守卫；没有正文模块时返回 null。 */
   getFlush: () => (() => Promise<boolean>) | null;
+  /**
+   * 当前是否为「退出整个应用」关闭策略（window_close_behavior = quit_app）。
+   * 该策略下 CloseRequested 由 Rust 侧统一转 request_exit（app-before-exit
+   * 握手负责正文保存），本协调器**完全让路**：不 preventDefault、不跑事务，
+   * 避免与退出握手各自等待窗口销毁而产生双重反馈。每次事件动态读取，
+   * 设置切换立即生效。
+   */
+  isQuitExit?: () => boolean;
   /** 保存失败/关闭失败/超时提示；不会吞掉错误。 */
   onError: (error: unknown) => void;
   /** 关闭状态变化（标题栏据此禁用按钮 / 展示提示）。 */
@@ -407,6 +415,12 @@ export async function installWorkbenchCloseGuard(
 
   const requestClose = (): void => {
     if (disposed) return;
+    // quit_app 策略：关闭入口统一走 Rust request_exit（外壳直接调 quitApp
+    // 命令），协调器不再起事务。
+    if (options.isQuitExit?.() === true) {
+      trace("CLOSE_GUARD_YIELD_TO_QUIT_EXIT", { detail: "button" });
+      return;
+    }
     if (snapshot.state === "saving" || snapshot.state === "retrying-close" || snapshot.state === "closed") {
       trace("CLOSE_GUARD_DUPLICATE", { duplicate: true, detail: snapshot.state });
       emit({ duplicate: true });
@@ -423,6 +437,13 @@ export async function installWorkbenchCloseGuard(
     if (allowClose) {
       // 第二次 CloseRequested：直接放行，绝不再 preventDefault。
       trace("CLOSE_GUARD_ALLOWED");
+      return;
+    }
+    // quit_app 策略：CloseRequested 由 Rust 侧 prevent_close + request_exit
+    // 统一接管（app-before-exit 握手负责正文保存）。这里绝不能 preventDefault，
+    // 否则退出流程认为窗口无法关闭而与前端守卫互相等待。
+    if (options.isQuitExit?.() === true) {
+      trace("CLOSE_GUARD_YIELD_TO_QUIT_EXIT", { detail: "native" });
       return;
     }
     const flush = (() => {

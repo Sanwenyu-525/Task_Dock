@@ -155,6 +155,7 @@ import {
   appExitAck,
   onAppBeforeExit,
   onAppExitBlocked,
+  quitApp,
   type DevProject,
   type ResourceSnapshot,
   type WorkbenchNavRequest,
@@ -430,12 +431,30 @@ export default function WorkbenchShell() {
   /**
    * 关闭协调器句柄 + 统一关闭状态。
    * 标题栏、Alt+F4、保存超时提示都读这一份；组件内不再维护第二套 closing。
+   * `closeGuardReady` 是 P0 修复（2026-11-22）的显式就绪状态：安装是异步的，
+   * 完成前 X 不得发起关闭请求；安装失败保持 false 并在 closeMessage 给出原因，
+   * 绝不静默失去关闭能力。卸载时随清理一起复位。
    */
   const closeGuardRef = useRef<WorkbenchCloseGuardHandle | null>(null);
   const [closeState, setCloseState] = useState<WorkbenchCloseState>("idle");
   const [closeMessage, setCloseMessage] = useState<string | null>(null);
+  const [closeGuardReady, setCloseGuardReady] = useState(false);
+  /**
+   * quit_app 关闭策略（window_close_behavior）：X 与 Alt+F4 都统一走
+   * `quitApp` 命令（request_exit 握手），协调器让路。就绪依据是
+   * app-before-exit 监听注册完成；`quitBusy` 表示退出请求已发出，
+   * 退出被取消（app-exit-blocked）后复位恢复可重试。
+   */
+  const [exitListenerReady, setExitListenerReady] = useState(false);
+  const [quitBusy, setQuitBusy] = useState(false);
   const showToastRef = useRef(showToast);
   showToastRef.current = showToast;
+  const windowCloseBehavior =
+    useSettingsStore((s) => s.settings?.window_close_behavior) ?? "close_window";
+  const quitOnClose = windowCloseBehavior === "quit_app";
+  /** 关闭协调器/退出握手回调里读最新策略，避免因 deps 重新安装监听。 */
+  const quitOnCloseRef = useRef(quitOnClose);
+  quitOnCloseRef.current = quitOnClose;
   const appExitHandler = useMemo(
     () =>
       createAppExitHandler({
@@ -1336,15 +1355,27 @@ export default function WorkbenchShell() {
     };
 
     track(
-      onAppBeforeExit((request) => {
-        void appExitHandler(request.requestId);
-      }),
-    );
-    track(
       onAppExitBlocked((reason) => {
+        if (disposed) return;
+        // quit_app 的退出握手失败/超时：退出已取消，恢复按钮可重试并解释原因。
+        setQuitBusy(false);
+        setCloseMessage(String(reason));
         showToastRef.current(`应用退出已取消：${reason}`, { kind: "error" });
       }),
     );
+    void onAppBeforeExit((request) => {
+      void appExitHandler(request.requestId);
+    })
+      .then((stop) => {
+        if (disposed) {
+          stop();
+          return;
+        }
+        stops.push(stop);
+        // 退出握手监听就绪：quit_app 策略下 X 按钮的就绪依据。
+        setExitListenerReady(true);
+      })
+      .catch(() => {});
 
     let guard: WorkbenchCloseGuardHandle | null = null;
     try {
@@ -1352,6 +1383,8 @@ export default function WorkbenchShell() {
       void installWorkbenchCloseGuard({
         window: current as unknown as WorkbenchCloseWindow,
         getFlush: () => workspaceLeaveGuardRef.current,
+        // quit_app 策略：CloseRequested 由 Rust 统一转 request_exit，协调器让路。
+        isQuitExit: () => quitOnCloseRef.current,
         // 关闭诊断：路由/模块只用于终端日志，不含正文或项目隐私。
         getContext: () => ({
           route: routeRef.current,
@@ -1384,13 +1417,16 @@ export default function WorkbenchShell() {
           }
           guard = handle;
           closeGuardRef.current = handle;
+          // P0：只有监听真正注册完成才放行关闭请求。
+          setCloseGuardReady(true);
         })
         .catch((error) => {
-          if (!disposed) {
-            showToastRef.current(`工作台关闭保护未启用：${errorMessage(error)}`, {
-              kind: "error",
-            });
-          }
+          if (disposed) return;
+          // 安装失败：保持未就绪（X 不可用）并把原因挂到 tooltip，绝不静默。
+          setCloseMessage(`工作台关闭保护未启用：${errorMessage(error)}`);
+          showToastRef.current(`工作台关闭保护未启用：${errorMessage(error)}`, {
+            kind: "error",
+          });
         });
     } catch {
       // 浏览器预览/单测不是 Tauri 环境：没有原生窗口关闭事件。
@@ -1401,6 +1437,9 @@ export default function WorkbenchShell() {
       stops.forEach((stop) => stop());
       closeGuardRef.current = null;
       guard?.stop();
+      setCloseGuardReady(false);
+      setExitListenerReady(false);
+      setQuitBusy(false);
     };
   }, [appExitHandler]);
 
@@ -2595,10 +2634,35 @@ export default function WorkbenchShell() {
           <WorkbenchWindowControls
             closeState={closeState}
             closeMessage={closeMessage}
+            closeReady={quitOnClose ? exitListenerReady : closeGuardReady}
+            quitBusy={quitBusy}
             onRequestClose={() => {
+              // quit_app 策略：关闭入口统一走 request_exit（正文保存握手 +
+              // 管线排空后退出进程）。退出被取消时 app-exit-blocked 会复位
+              // quitBusy 并解释原因；成功时窗口随进程销毁，无需本地状态收尾。
+              if (quitOnClose) {
+                setCloseMessage(null);
+                setQuitBusy(true);
+                logEvent({
+                  level: "INFO",
+                  module: "workbench",
+                  action: "window-control",
+                  event: "quit-app-requested",
+                  window_id: "workspace",
+                });
+                void quitApp().catch((error) => {
+                  setQuitBusy(false);
+                  setCloseMessage(errorMessage(error));
+                  showToastRef.current(`退出应用失败：${errorMessage(error)}`, {
+                    kind: "error",
+                  });
+                });
+                return;
+              }
               const handle = closeGuardRef.current;
               if (!handle) {
                 // 协调器尚未装好或安装失败：宁可不动，也不绕过正文保存守卫。
+                // 按钮此时已按 closeReady 呈现「初始化中」/失败原因，不会静默。
                 logEvent({
                   level: "WARN",
                   module: "workbench",
