@@ -8,7 +8,7 @@ use std::io::ErrorKind;
 use std::sync::Arc;
 
 use serde::Serialize;
-use tauri::State;
+use tauri::{Emitter, State};
 
 use crate::db::Db;
 use crate::error::{AppError, AppResult};
@@ -18,6 +18,17 @@ use super::service::{self, CreateProjectInput, ProjectHubSnapshot, ProjectSummar
 
 fn background_error(context: &str, error: tauri::Error) -> AppError {
     AppError::Unavailable(format!("{context}: {error}"))
+}
+
+/// 项目列表可能已变化：广播给所有窗口，已开工作台收到后重读项目列表
+/// （顶栏选择器随之更新），外部入口新建的项目不再需要手动「刷新」。
+/// 载荷只带来源窗口标签，不带项目数据——接收方重读权威列表
+/// （与 settings-changed 同一模式，origin="workspace" 的本窗口创建已自行刷新）。
+fn notify_projects_changed(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
+    let _ = app.emit(
+        "workspace-projects-changed",
+        serde_json::json!({ "origin": window.label() }),
+    );
 }
 
 #[tauri::command]
@@ -89,6 +100,8 @@ pub struct ProjectCreateCommand {
 /// 目录初始化可能涉及磁盘 IO（`create_new`），必须离开 UI 主线程。
 #[tauri::command]
 pub async fn project_create(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     db: State<'_, Arc<Db>>,
     input: ProjectCreateCommand,
 ) -> AppResult<super::creation::ProjectCreateResult> {
@@ -136,20 +149,32 @@ pub async fn project_create(
         principal: super::creation::RequestPrincipal::local_human(),
     };
     let db = db.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || super::creation::create(db.as_ref(), request))
-        .await
-        .map_err(|error| background_error("项目创建失败", error))?
+    let created =
+        tauri::async_runtime::spawn_blocking(move || super::creation::create(db.as_ref(), request))
+            .await
+            .map_err(|error| background_error("项目创建失败", error))?;
+    // 外层 ? 已解 JoinError；这里解 spawn_blocking 返回的内层 AppError。
+    let created = created?;
+    notify_projects_changed(&app, &window);
+    Ok(created)
 }
+
 
 #[tauri::command]
 pub async fn project_hub_create_project(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     db: State<'_, Arc<Db>>,
     input: CreateProjectInput,
 ) -> AppResult<ProjectHubSnapshot> {
     let db = db.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || service::create_project(db.as_ref(), input))
-        .await
-        .map_err(|error| background_error("项目创建失败", error))?
+    let created =
+        tauri::async_runtime::spawn_blocking(move || service::create_project(db.as_ref(), input))
+            .await
+            .map_err(|error| background_error("项目创建失败", error))?;
+    let created = created?;
+    notify_projects_changed(&app, &window);
+    Ok(created)
 }
 
 // ── 项目资源（能力 ↔ 资源） ──────────────────────────────────────────

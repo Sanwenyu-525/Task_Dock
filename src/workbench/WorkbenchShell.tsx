@@ -144,6 +144,7 @@ import {
   devProjectList,
   fetchTask,
   onSettingsChanged,
+  onWorkspaceProjectsChanged,
   onWorkbenchNavigate,
   resourceSnapshot,
   workbenchNavAck,
@@ -1519,11 +1520,22 @@ export default function WorkbenchShell() {
         void useSettingsStore.getState().load();
       }),
     );
+    track(
+      onWorkspaceProjectsChanged((payload) => {
+        // 外部入口（其他窗口/创建服务）新建项目后顶栏项目列表自动刷新；
+        // 本窗口自己的创建已由中枢 onCreate 刷新（origin="workspace" 跳过，
+        // 与上方 settings-changed 同一来源过滤模式）。origin 缺失按外部处理，
+        // 宁可多刷一次列表也不让新项目不可见。
+        if (payload.origin === "workspace") return;
+        void refreshProjects();
+      }),
+    );
     return () => {
       disposed = true;
       unlisteners.forEach((stop) => stop());
     };
-  }, []);
+    // refreshProjects 依赖稳定的 store action，挂载后不会反复重订阅。
+  }, [refreshProjects]);
 
   // 顶栏是 `data-tauri-drag-region="deep"` 的整条拖动区：挂主窗同一套拖拽光标
   // 会话（悬停 grab、按住拖动期间 grabbing）。原生 `window-drag` 相位由 Rust

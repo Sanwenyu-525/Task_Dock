@@ -479,6 +479,19 @@ export const onSettingsChanged = (
     cb({ keys, origin, revision });
   });
 
+/**
+ * 项目列表变更广播（跨窗口同步）：统一创建服务新增项目后发出，只携带
+ * 来源窗口标签。已开工作台收到后重读项目列表（顶栏选择器随之更新）；
+ * 本窗口自己的创建（origin="workspace"）已由页面流程刷新，应跳过。
+ */
+export const onWorkspaceProjectsChanged = (
+  cb: (payload: { origin?: string }) => void,
+) =>
+  listen<{ origin?: string }>("workspace-projects-changed", (e) => {
+    const origin = typeof e.payload?.origin === "string" ? e.payload.origin : undefined;
+    cb({ origin });
+  });
+
 
 export const voicePacksList = () => invoke<VoicePack[]>("voice_packs_list");
 export const voicePackCreate = (name: string) =>

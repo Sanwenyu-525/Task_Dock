@@ -25,6 +25,7 @@ const bridge = vi.hoisted(() => ({
   workbenchTakeNav: vi.fn(),
   workbenchNavAck: vi.fn(),
   onSettingsChanged: vi.fn(),
+  onWorkspaceProjectsChanged: vi.fn(),
   // 外壳挂载时的一次性业务读取（不启动后台调度）。
   listTasks: vi.fn(),
   taskStats: vi.fn(),
@@ -111,6 +112,7 @@ beforeEach(() => {
   bridge.workbenchNavAck.mockResolvedValue(undefined);
   bridge.fetchTask.mockRejectedValue(new Error("任务不存在"));
   bridge.onSettingsChanged.mockImplementation(unlisten);
+  bridge.onWorkspaceProjectsChanged.mockImplementation(unlisten);
   bridge.listTasks.mockResolvedValue([]);
   bridge.taskStats.mockResolvedValue({
     pending: 0,
@@ -165,6 +167,40 @@ describe("WorkbenchShell", () => {
     expect(screen.getByRole("combobox").textContent).toContain("未选择项目");
     // 首页通用入口可用（不需要先建项目）：快速操作宫格含「新建任务」。
     expect(screen.getByText("新建任务", { selector: ".wb-quick-tile span" })).toBeTruthy();
+  });
+
+  it("外部入口新建项目后自动重读项目列表（workspace-projects-changed）", async () => {
+    bridge.workspaceProjectList.mockResolvedValue({
+      projects: [
+        { id: "p1", name: "项目一" },
+        { id: "p2", name: "外部新建项目" },
+      ],
+    });
+    render(<WorkbenchShell />);
+    expect(await screen.findByRole("heading", { name: "工作台首页", level: 2 })).toBeTruthy();
+    // 调用记录跨用例累积：以挂载后的基线计数做相对断言。
+    const reads = bridge.workspaceProjectList.mock.calls.length;
+
+    // 外部来源（origin 非 workspace，如另一窗口）创建：触发重读。
+    const handler = bridge.onWorkspaceProjectsChanged.mock.calls.at(-1)?.[0];
+    expect(handler).toBeTypeOf("function");
+    handler({ origin: "capsule" });
+    await waitFor(() =>
+      expect(bridge.workspaceProjectList.mock.calls.length).toBeGreaterThan(reads),
+    );
+  });
+
+  it("本窗口创建（origin=workspace）不重复刷新项目列表", async () => {
+    render(<WorkbenchShell />);
+    expect(await screen.findByRole("heading", { name: "工作台首页", level: 2 })).toBeTruthy();
+    const reads = bridge.workspaceProjectList.mock.calls.length;
+
+    // 本窗口自己的创建已由中枢 onCreate 刷新，事件不重复触发。
+    const handler = bridge.onWorkspaceProjectsChanged.mock.calls.at(-1)?.[0];
+    expect(handler).toBeTypeOf("function");
+    handler({ origin: "workspace" });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(bridge.workspaceProjectList.mock.calls.length).toBe(reads);
   });
 
   it("新建项目工作目录为可编辑输入框，目录选择后回填同一输入框", async () => {
