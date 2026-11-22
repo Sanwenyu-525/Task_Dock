@@ -145,8 +145,8 @@ describe("12 项核心功能精确契约", () => {
 });
 
 describe("全目录统计契约", () => {
-  it("目录总数 61，状态计数 implemented=33 / partial=23 / planned=5 / blocked=0", () => {
-    expect(FEATURE_CATALOG).toHaveLength(61);
+  it("目录总数 62，状态计数 implemented=33 / partial=24 / planned=5 / blocked=0", () => {
+    expect(FEATURE_CATALOG).toHaveLength(62);
     const counts: Record<FeatureStatus, number> = {
       implemented: 0,
       partial: 0,
@@ -160,7 +160,8 @@ describe("全目录统计契约", () => {
     // 2026-11-11 新增 ux.command-phrases（implemented）
     // 2026-11-16 按真实代码补登 15 项：新增分区 workbench 6 / system 5，core +2，agent +2
     // 2026-11-18 全量补登 12 项：implemented +11、partial +1，总数 61
-    expect(counts).toEqual({ implemented: 33, partial: 23, planned: 5, blocked: 0 });
+    // 2026-11-22 修正：system 分区补登「安全保险箱」（partial）后总数 62（存量期望漂移顺带核对）
+    expect(counts).toEqual({ implemented: 33, partial: 24, planned: 5, blocked: 0 });
   });
 
   it("摘要函数与目录实际计数一致（total / coreTotal / 状态 / 验证）", () => {
