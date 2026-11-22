@@ -1071,8 +1071,9 @@ body.fw-resizing-row * {
   box-sizing: border-box;
 }
 
-/* 列表列宽只在此处定义一次：表头与文件行共用同一套 grid 轨道，
-   避免两套硬编码宽度在缩窄/DPI 变化时错位。 */
+/* 列表列宽默认值只在此处定义一次：表头与文件行共用同一套 grid 轨道，
+   避免两套硬编码宽度在缩窄/DPI 变化时错位。
+   用户拖拽后的列宽由 FileList 以同名 CSS 变量内联覆盖（只覆盖定制列）。 */
 .fw-body.fw-list {
   --fw-col-icon: 15px;
   --fw-col-name: minmax(0, 1fr);
@@ -1190,21 +1191,19 @@ body.fw-resizing-row * {
   white-space: nowrap;
 }
 
+/* 日期/大小列与表头同起点左对齐（用户确认，Windows 11 风格）；
+   span 撑满轨道（justify-self 默认 stretch），拖拽手柄才能贴住列右缘。 */
 .fw-row-time {
-  justify-self: end;
   color: var(--text-tertiary);
   font-variant-numeric: tabular-nums;
-  text-align: right;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .fw-row-size {
-  justify-self: end;
   color: var(--text-tertiary);
   font-variant-numeric: tabular-nums;
-  text-align: right;
 }
 
 .fw-row-type {
@@ -1242,16 +1241,53 @@ body.fw-resizing-row * {
   font-weight: 600;
 }
 
-/* 表头只描述列：文字一律左对齐，不再继承数据行数值列的右对齐。
-   数据行的 .fw-row-time/.fw-row-size 仍 justify-self:end + text-align:right；
-   表头与行继续共享 --fw-col-* 同一套 grid 轨道，列宽与窄栏断点不变。 */
-.fw-list-head .fw-row-name,
-.fw-list-head .fw-row-time,
-.fw-list-head .fw-row-size,
-.fw-list-head .fw-row-type {
+/* 表头列显式锚定第 1 行轨道：拖拽手柄与列重叠在同一网格单元。列与行必须
+   双双显式定位——只定列不定行时，auto 布局会跳过被手柄占据的单元格，
+   把时间/大小/类型表头挤到隐式第 2 行（表头拆成两行的截断假象）。 */
+.fw-list-head .fw-row-icon { grid-column: 1; grid-row: 1; }
+.fw-list-head .fw-row-name { grid-column: 2; grid-row: 1; }
+.fw-list-head .fw-row-time { grid-column: 3; grid-row: 1; }
+.fw-list-head .fw-row-size { grid-column: 4; grid-row: 1; }
+.fw-list-head .fw-row-type { grid-column: 5; grid-row: 1; }
+
+/* 列宽拖拽手柄：贴住所在列的左缘、骑进 8px 列距；悬停/拖拽/聚焦显示分隔线。
+   手柄是网格项（不是列 span 的子元素），不会被 span 的 overflow:hidden 裁剪。
+   名称列在固定列之前且是 1fr——列右缘被后续固定轨道钉死，只有左缘能跟随
+   光标移动：拖动手柄改变「手柄右侧那一列」的宽度，向右拖=该列变窄、名称变宽。 */
+.fw-col-handle {
+  position: relative;
+  z-index: 3;
+  grid-row: 1;
+  align-self: stretch;
   justify-self: start;
-  text-align: left;
+  width: 12px;
+  margin-left: -6px;
+  cursor: col-resize;
+  touch-action: none;
+  outline: none;
 }
+
+.fw-col-handle::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  /* 手柄盒中心 = 列轨道左缘；分隔线画在列距中线（左移 4px）。
+     静止时也可见（Windows 资源管理器习惯），悬停/拖拽/聚焦变强调色。 */
+  left: 2px;
+  width: 1px;
+  background: var(--border-subtle);
+}
+
+.fw-col-handle:hover::after,
+.fw-col-handle:focus-visible::after,
+.fw-col-handle.is-dragging::after {
+  background: var(--accent);
+}
+
+.fw-col-handle--time { grid-column: 3; }
+.fw-col-handle--size { grid-column: 4; }
+.fw-col-handle--type { grid-column: 5; }
 
 /* 网格 */
 .fw-grid-row {
@@ -3566,7 +3602,8 @@ body.fw-resizing-row * {
    固定列合计约 345px（time 118 + size 76 + type 88 + 图标/间距）。 */
 @container (max-width: 560px) {
   .fw-row-type,
-  .fw-list-head .fw-row-type {
+  .fw-list-head .fw-row-type,
+  .fw-col-handle--type {
     display: none;
   }
   .fw-row,
@@ -3578,7 +3615,8 @@ body.fw-resizing-row * {
 
 @container (max-width: 440px) {
   .fw-row-size,
-  .fw-list-head .fw-row-size {
+  .fw-list-head .fw-row-size,
+  .fw-col-handle--size {
     display: none;
   }
   .fw-row,

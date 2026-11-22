@@ -10,6 +10,7 @@
 
 import type { SplitNode } from "./model";
 import { normalizeTree, MAX_PANES, MAX_TABS_PER_PANE } from "./model";
+import { normalizeColWidths, type ColWidths } from "./columnWidths";
 
 export const FILE_WORKSPACE_SETTING_KEY = "file_workspace_layouts";
 export const FILE_WORKSPACE_VERSION = 1;
@@ -72,6 +73,8 @@ export interface PersistedState {
    * 与布局一起持久化，重启后仍可恢复。
    */
   stashed?: PersistedTab[];
+  /** 列表视图列宽（仅用户改过的列；旧数据缺失时该列回默认，向后兼容版本仍为 1）。 */
+  colWidths?: ColWidths;
 }
 
 
@@ -259,6 +262,7 @@ function normalizeState(raw: unknown): PersistedState | null {
     pinnedDirs: normalizeDirs(raw.pinnedDirs, MAX_PINNED_DIRS),
     recentDirs: normalizeDirs(raw.recentDirs, MAX_RECENT_DIRS),
     stashed: normalizeStashed(raw.stashed, seenTabIds),
+    colWidths: normalizeColWidths(raw.colWidths),
   };
 }
 

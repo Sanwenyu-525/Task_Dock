@@ -11,10 +11,15 @@
  */
 
 import { readFileSync } from "node:fs";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-afterEach(() => cleanup());
+import { useFilesWorkspaceStore } from "../../store/useFilesWorkspaceStore";
+
+afterEach(() => {
+  cleanup();
+  useFilesWorkspaceStore.setState({ colWidths: {} });
+});
 
 vi.mock("../../hooks/useLocale", () => ({
   useLocale: () => ({
@@ -182,6 +187,85 @@ describe("表头与文件行共用列定义", () => {
     const rows = container.querySelectorAll(".fw-row");
     expect(rows.length).toBeGreaterThan(0);
     expect(rows.length).toBeLessThan(many.length);
+  });
+
+  it("日期/大小列左对齐：数据行不再右对齐（与表头同起点）", () => {
+    const time = ruleBlock(/\.fw-row-time\s*\{/);
+    const size = ruleBlock(/\.fw-row-size\s*\{/);
+    expect(time).not.toContain("justify-self: end");
+    expect(time).not.toContain("text-align: right");
+    expect(size).not.toContain("justify-self: end");
+    expect(size).not.toContain("text-align: right");
+  });
+
+  it("表头列显式锚定轨道；拖拽手柄与列同轨；窄栏断点隐藏对应手柄", () => {
+    for (const [cls, track] of [
+      [".fw-row-icon", 1],
+      [".fw-row-name", 2],
+      [".fw-row-time", 3],
+      [".fw-row-size", 4],
+      [".fw-row-type", 5],
+    ] as const) {
+      expect(ruleBlock(new RegExp(`\\.fw-list-head \\${cls}\\s*\\{ grid-column: ${track};`))).toBeTruthy();
+    }
+    expect(ruleBlock(/\.fw-col-handle\s*\{/)).toContain("cursor: col-resize");
+    // 分隔线静止可见（Windows 习惯），悬停/拖拽/聚焦变强调色。
+    expect(ruleBlock(/\.fw-col-handle::after\s*\{/)).toContain("var(--border-subtle)");
+    expect(ruleBlock(/\.fw-col-handle--time\s*\{/)).toContain("grid-column: 3");
+    expect(ruleBlock(/\.fw-col-handle--size\s*\{/)).toContain("grid-column: 4");
+    expect(ruleBlock(/\.fw-col-handle--type\s*\{/)).toContain("grid-column: 5");
+
+    const b560 = containerBlock("@container (max-width: 560px)");
+    expect(b560).toContain(".fw-col-handle--type");
+    const b440 = containerBlock("@container (max-width: 440px)");
+    expect(b440).toContain(".fw-col-handle--size");
+  });
+});
+
+describe("表头列宽拖拽手柄", () => {
+  const renderList = () =>
+    render(<FileList {...baseProps} entries={many} dirPath="D:\\a-handle" viewMode="list" />);
+
+  it("列表视图渲染 3 个分隔线手柄（time/size/type），网格视图不渲染；手柄暴露 aria", () => {
+    const { container, rerender } = renderList();
+    const handles = container.querySelectorAll(".fw-col-handle");
+    expect(handles.length).toBe(3);
+    expect(handles[0].classList.contains("fw-col-handle--time")).toBe(true);
+    expect(handles[0].getAttribute("role")).toBe("separator");
+    expect(handles[0].getAttribute("aria-orientation")).toBe("vertical");
+    // useLocale mock 返回 key 原文：验证手柄文案由 fw.sort.* key 组合而成。
+    expect(handles[0].getAttribute("aria-label")).toBe("调整fw.sort.modified列宽");
+    expect(handles[0].getAttribute("aria-valuenow")).toBe("118");
+    expect(handles[0].getAttribute("tabindex")).toBe("0");
+    expect(handles[0].getAttribute("data-tip")).toContain("双击");
+
+    rerender(<FileList {...baseProps} entries={many} dirPath="D:\\a-handle" viewMode="grid" />);
+    expect(container.querySelectorAll(".fw-col-handle").length).toBe(0);
+  });
+
+  it("store 列宽以内联 CSS 变量注入（仅定制列）；双击手柄恢复默认", () => {
+    useFilesWorkspaceStore.setState({ colWidths: { time: 200 } });
+    const { container } = renderList();
+    const body = container.querySelector<HTMLElement>(".fw-body")!;
+    expect(body.style.getPropertyValue("--fw-col-time")).toBe("200px");
+    expect(body.style.getPropertyValue("--fw-col-size")).toBe("");
+
+    const handle = container.querySelector<HTMLElement>(".fw-col-handle--time")!;
+    expect(handle.getAttribute("aria-valuenow")).toBe("200");
+    fireEvent.doubleClick(handle);
+    expect(useFilesWorkspaceStore.getState().colWidths).toEqual({});
+    expect(body.style.getPropertyValue("--fw-col-time")).toBe("");
+  });
+
+  it("键盘 ←/→ 调宽；容器无布局信息时按名称列保底钳到列下限", () => {
+    const { container } = renderList();
+    // jsdom clientWidth = 0 → maxByName 为负 → 钳回 48（size 下限）。
+    const handle = container.querySelector<HTMLElement>(".fw-col-handle--size")!;
+    fireEvent.keyDown(handle, { key: "ArrowRight" });
+    expect(useFilesWorkspaceStore.getState().colWidths.size).toBe(48);
+    expect(handle.getAttribute("aria-valuenow")).toBe("48");
+    fireEvent.keyDown(handle, { key: "ArrowUp" });
+    expect(useFilesWorkspaceStore.getState().colWidths).toEqual({ size: 48 });
   });
 });
 

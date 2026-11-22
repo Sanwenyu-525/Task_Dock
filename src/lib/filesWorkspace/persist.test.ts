@@ -58,6 +58,19 @@ describe("normalizePersisted", () => {
     expect(out.states.global?.panes[0].tabs[0]).toEqual({ tabId: "t1", path: "D:\\a", openedPath: "D:\\a" });
   });
 
+  it("colWidths 透传合法值、丢弃非法列；旧数据缺失时字段为 undefined（向后兼容）", () => {
+    const base = { tree: validTree(), panes: [], activePaneId: "x" };
+    const out = normalizePersisted({
+      version: FILE_WORKSPACE_VERSION,
+      states: {
+        global: { ...base, colWidths: { time: 150.6, size: 10, junk: 999 } },
+        "project:p1": base,
+      },
+    });
+    expect(out.states.global?.colWidths).toEqual({ time: 151 });
+    expect(out.states["project:p1"]?.colWidths).toBeUndefined();
+  });
+
   it("窗格不在树中时丢弃该窗格数据（保留窗格空态由恢复侧补）", () => {
     const raw = {
       version: FILE_WORKSPACE_VERSION,

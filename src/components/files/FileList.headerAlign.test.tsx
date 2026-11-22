@@ -2,8 +2,9 @@
  * @vitest-environment jsdom
  *
  * R13 Agent B：列表表头与数据行的对齐契约。
- * 结论：表头与行共用 --fw-col-* 同一套 grid 轨道；**表头文字全部左对齐**，
- * 数据行的名称/类型左对齐、时间/大小右对齐；容器断点同步作用于两者。
+ * 2026-11-22 更正：用户确认全部左对齐——数据行时间/大小列不再右对齐，
+ * 与表头同起点（Windows 11 风格）；表头列显式锚定轨道以承载拖拽手柄。
+ * 结论：表头与行共用 --fw-col-* 同一套 grid 轨道；容器断点同步作用于两者。
  * jsdom 不计算像素，这里验证 DOM 结构与 CSS 声明契约，真实视觉待 B/C 通道。
  */
 
@@ -105,26 +106,30 @@ describe("表头与行共用列定义（无需分别写百分比/固定 margin�
   });
 });
 
-describe("对齐方向：表头全部左对齐，数据行数值列仍右对齐", () => {
-  it("表头四列（名称/时间/大小/类型）覆盖为左对齐", () => {
-    expect(css).toMatch(/^\.fw-list-head \.fw-row-name,/m);
-    const head = ruleText(/^\.fw-list-head \.fw-row-name,/m);
-    expect(head).toBeTruthy();
-    for (const cls of ["fw-row-name", "fw-row-time", "fw-row-size", "fw-row-type"]) {
-      expect(head).toContain(`.fw-list-head .${cls}`);
-    }
-    expect(head).toContain("justify-self: start");
-    expect(head).toContain("text-align: left");
-    // 表头对齐只能是表头作用域，不得写回数据行。
-    expect(head).not.toContain(".fw-row-time {");
-  });
-
-  it("数据行的时间列与大小列仍右对齐并右贴轨道末端", () => {
+describe("对齐方向：表头与数据行全部左对齐（2026-11-22 用户确认）", () => {
+  it("数据行时间/大小列不再右对齐（与表头同起点）", () => {
     for (const cls of ["fw-row-time", "fw-row-size"]) {
       const block = ruleBlock(new RegExp(`^\\.${cls}\\s*\\{`, "m"));
       expect(block, `missing .${cls} rule`).toBeTruthy();
-      expect(block).toContain("justify-self: end");
-      expect(block).toContain("text-align: right");
+      expect(block).not.toContain("justify-self: end");
+      expect(block).not.toContain("text-align: right");
+    }
+  });
+
+  it("表头列显式锚定轨道（列与行双双定位，手柄与列重叠同单元）", () => {
+    const anchors: Array<[string, number]> = [
+      [".fw-row-icon", 1],
+      [".fw-row-name", 2],
+      [".fw-row-time", 3],
+      [".fw-row-size", 4],
+      [".fw-row-type", 5],
+    ];
+    for (const [cls, track] of anchors) {
+      // 一行式锚定规则：选择器后直接跟 grid-column 声明，避免匹配到更早的同选择器规则。
+      // grid-row: 1 缺失时手柄占 (1,3..5)，auto 布局会把时间/大小/类型挤到隐式第 2 行
+      // （2026-11-22 真机回归：表头拆成两行、首行被叠加内容遮挡）。
+      const block = ruleText(new RegExp(`^\\.fw-list-head \\${cls}\\s*\\{ grid-column: ${track}; grid-row: 1; \\}`, "m"));
+      expect(block, `missing header anchor (column+row) for ${cls}`).toBeTruthy();
     }
   });
 

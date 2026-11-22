@@ -4,7 +4,8 @@
 - 阶段：R10 开发前方案（三层会话模型重构；三层数据模型/边界/接口冻结；未改代码）
 - 功能台账：[docs/features/files-workspace.md](../features/files-workspace.md)
 - 既有实现细节：[docs/ARCHITECTURE.md 文件工作区章节](../ARCHITECTURE.md)、
-  [docs/files-workspace-marquee-selection.md](../files-workspace-marquee-selection.md)
+  [docs/files-workspace-marquee-selection.md](../files-workspace-marquee-selection.md)、
+  [docs/files-workspace-list-columns.md](../files-workspace-list-columns.md)（表头对齐与列宽拖拽）
 
 > 本文只描述架构、边界、接口与数据模型；功能状态与验收结论分别见功能台账与验收矩阵。
 > 任何实现与本文冲突时，以代码为准并更新本文。

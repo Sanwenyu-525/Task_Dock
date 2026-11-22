@@ -57,6 +57,7 @@ import {
   type PersistedState,
   type PersistedTab,
 } from "../lib/filesWorkspace/persist";
+import type { ColWidths } from "../lib/filesWorkspace/columnWidths";
 import { invalidateDirs } from "../lib/filesWorkspace/dirCache";
 import { useSettingsStore } from "./useSettingsStore";
 
@@ -270,6 +271,11 @@ interface FilesWorkspaceState extends FilesWorkspaceData {
   recentTemplates: string[];
   /** 用户固定目录（不被 LRU 淘汰）。 */
   pinnedDirs: string[];
+  /**
+   * 列表视图列宽（仅用户拖拽改过的列；全分栏共享，未改列回 CSS 默认值）。
+   * 随持久化 `colWidths` 字段跨会话保留。
+   */
+  colWidths: ColWidths;
   /** 布局撤销栈（会话内）。 */
   layoutHistory: LayoutSnapshot[];
   /** 布局重做栈（会话内）。 */
@@ -295,6 +301,8 @@ export interface FilesWorkspaceActions {
   hydrate: (state: PersistedState, stateKey: string) => void;
   /** 面板层声明当前绑定键（项目切换）。 */
   setStateKey: (stateKey: string) => void;
+  /** 更新列表视图列宽（拖拽/键盘/双击重置后提交；全分栏共享）。 */
+  setColWidths: (widths: ColWidths) => void;
   snapshot: () => SnapshotPayload;
   persistNow: () => Promise<void>;
   /** 落盘待写防抖状态（项目切换/卸载前）。 */
@@ -736,6 +744,7 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
     recentDirs: [],
     recentTemplates: [],
     pinnedDirs: [],
+    colWidths: {},
     layoutHistory: [],
     layoutFuture: [],
     layoutEditMode: false,
@@ -798,6 +807,7 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
         stashed,
         pinnedDirs: (state.pinnedDirs ?? []).slice(0, MAX_PINNED_DIRS),
         recentDirs: (state.recentDirs ?? []).slice(0, MAX_RECENT_DIRS),
+        colWidths: state.colWidths ?? {},
         recentTemplates: restoredRecentTemplates,
         layoutHistory: [],
         layoutFuture: [],
@@ -808,6 +818,11 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
     },
 
     setStateKey: (stateKey) => set({ stateKey }),
+
+    setColWidths: (widths) => {
+      set({ colWidths: widths });
+      schedulePersist(get);
+    },
 
     snapshot: (): SnapshotPayload => {
       const s = get();
@@ -829,6 +844,8 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
           activePaneId: s.activePaneId,
           pinnedDirs: [...s.pinnedDirs],
           recentDirs: [...s.recentDirs],
+          // 空列宽不写键：与 normalizeState 的「全默认回 undefined」保持同一形态，往返稳定。
+          ...(Object.keys(s.colWidths).length > 0 ? { colWidths: { ...s.colWidths } } : {}),
           stashed: s.stashed.map(toPersistedTab),
         },
       };
