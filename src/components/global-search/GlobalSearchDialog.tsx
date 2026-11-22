@@ -209,7 +209,10 @@ export function GlobalSearchDialog({
       <input
         ref={inputRef}
         data-autofocus
-        className="gs-input"
+        /* input-embedded：components 层的通用输入默认值（1px 边框 + 白底 +
+           聚焦 3px 柔光环）按约定排除本输入——焦点视觉只由容器负责
+           （顶栏字段外圈 / 弹层输入行下边线），否则出现「大圈套小圈」。 */
+        className="gs-input input-embedded"
         type="text"
         value={query}
         placeholder="搜索任务、剪贴板、收集箱、文件、应用、Agent、现场与规划…"

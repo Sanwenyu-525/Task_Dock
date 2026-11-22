@@ -3123,6 +3123,25 @@ body.wb-resizing {
     white-space: nowrap;
   }
 }
+
+/* 档位 1（full，≥1100）：搜索字段脱离右侧动作簇，水平中心锚定在窗口 40%。
+   绝对定位以顶栏为基准，transform 负责回中；字段仍是下拉层锚点——
+   Popover/floating-ui 按实时 getBoundingClientRect 定位，含 transform。
+   脱流后 flex-basis 不再生效，宽度按「不压左侧品牌/项目选择器」自适应：
+   左簇末端 ≈ 16 + 108(品牌) + 12 + 180(项目选择器) + 12 = 328px，留 8px 余隙
+   → 左缘 = 40vw − w/2 ≥ 336 → w = min(392, 80vw − 672)。右簇（创建 +
+   窗口控制 ≈ 370px）在该档恒有富余，不构成约束。 */
+@media (min-width: 1100px) {
+  .wb-topbar {
+    position: relative;
+  }
+  .wb-search-field {
+    position: absolute;
+    left: 40%;
+    transform: translateX(-50%);
+    width: min(var(--layout-search-max, 392px), calc(80vw - 672px));
+  }
+}
 /* 长路径/URL 不撑破网格（页面若已自行处理，这里是统一兜底） */
 .wb-route :is(pre, code) {
   overflow-wrap: anywhere;

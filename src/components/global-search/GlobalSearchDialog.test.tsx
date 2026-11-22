@@ -547,6 +547,17 @@ describe("焦点视觉只有一层（R13）", () => {
     expect(wbCss).toContain(".wb-search-field:has(:focus-visible)");
   });
 
+  it("输入挂 .input-embedded：components 层的通用输入默认值（边框/白底/聚焦光环）不生效", () => {
+    // components 层高于 ui 层，靠 CSS 清零压不住它；唯一解法是按
+    // 「内嵌输入由容器负责表面」的约定让通用规则不再匹配。
+    useGlobalSearchStore.setState({ open: true, query: "" });
+    render(<GlobalSearchDialog />);
+    expect(screen.getByRole("textbox", { name: "搜索关键词" }).classList).toContain(
+      "input-embedded",
+    );
+    cleanup();
+  });
+
   it("模态形态的输入行是面板首行；下拉形态不在面板里重复输入行", () => {
     useGlobalSearchStore.setState({ open: true, query: "" });
     render(<GlobalSearchDialog />);
