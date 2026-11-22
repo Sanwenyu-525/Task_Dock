@@ -5,6 +5,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { usePlanningStore, ACTIVITY_PAGE_SIZE } from "./usePlanningStore";
 import type {
+  PlanningActivity,
   PlanningChangedEvent,
   PlanningFeature,
   PlanningMilestone,
@@ -298,6 +299,295 @@ describe("变更后就地更新", () => {
     const cur = usePlanningStore.getState().features[0];
     expect(cur.step_done).toBe(1);
     expect(cur.steps[0].done).toBe(true);
+  });
+});
+
+// ── 跨计划异步写污染防护（ADR-0010）：后端成功 ≠ 结果可写入当前前端 Store ──
+
+describe("跨计划异步写污染防护", () => {
+  it("创建功能在途切 B：A 的迟到结果不进入 B 的 features（后端创建保留、不回滚）", async () => {
+    const d = deferred<PlanningFeature>();
+    bridge.planningCreateFeature.mockImplementation((pid: string) =>
+      pid === "A" ? d.promise : Promise.reject(new Error("不得发起其他计划的创建")),
+    );
+    usePlanningStore.setState({ activePlanId: "A", loadedForPlan: "A", features: [] });
+    const p = usePlanningStore.getState().createFeature({ title: "A 功能" });
+    // 在途切换到 B（B 已有自己的功能列表）
+    usePlanningStore.setState({
+      activePlanId: "B",
+      loadedForPlan: "B",
+      features: [feat("f-b", "B", "B 功能")],
+    });
+    d.resolve(feat("f-a", "A", "A 功能"));
+    const created = await p;
+    // 后端创建成功的结果原样返回（不回滚、不伪装失败）
+    expect(created.id).toBe("f-a");
+    expect(usePlanningStore.getState().features.map((f) => f.id)).toEqual(["f-b"]);
+    expect(usePlanningStore.getState().activePlanId).toBe("B");
+  });
+
+  it("更新功能在途切 B：A 的迟到结果不覆盖 B 的同名功能", async () => {
+    const d = deferred<PlanningFeature>();
+    bridge.planningUpdateFeature.mockImplementation(() => d.promise);
+    usePlanningStore.setState({
+      activePlanId: "A",
+      loadedForPlan: "A",
+      features: [feat("f1", "A", "同名功能")],
+    });
+    const p = usePlanningStore.getState().updateFeature("f1", { title: "A 改" });
+    usePlanningStore.setState({
+      activePlanId: "B",
+      loadedForPlan: "B",
+      features: [feat("f1", "B", "B 的同名功能")],
+    });
+    d.resolve({ ...feat("f1", "A", "A 改"), status: "in_progress" as const });
+    const updated = await p;
+    expect(updated.project_id).toBe("A"); // 后端更新保留，结果原样返回
+    const fs = usePlanningStore.getState().features;
+    expect(fs).toHaveLength(1);
+    expect(fs[0].title).toBe("B 的同名功能");
+    expect(fs[0].project_id).toBe("B");
+  });
+
+  it("添加步骤在途切 B：A 的步骤结果不更新 B 的 features", async () => {
+    const d = deferred<PlanningFeature>();
+    bridge.planningAddStep.mockImplementation(() => d.promise);
+    usePlanningStore.setState({
+      activePlanId: "A",
+      loadedForPlan: "A",
+      features: [feat("f-a", "A", "A 功能")],
+    });
+    const p = usePlanningStore.getState().addStep("f-a", "新步骤");
+    usePlanningStore.setState({
+      activePlanId: "B",
+      loadedForPlan: "B",
+      features: [feat("f-b", "B", "B 功能")],
+    });
+    d.resolve({ ...feat("f-a", "A", "A 功能"), step_total: 1 });
+    await p;
+    // 旧实现会把 A 的功能实体 upsert（追加）进 B 的列表
+    expect(usePlanningStore.getState().features.map((f) => f.id)).toEqual(["f-b"]);
+  });
+
+  it("创建里程碑在途切 B：A 的里程碑不进入 B 的 milestones", async () => {
+    const d = deferred<PlanningMilestone>();
+    bridge.planningCreateMilestone.mockImplementation(() => d.promise);
+    usePlanningStore.setState({
+      activePlanId: "A",
+      loadedForPlan: "A",
+      features: [],
+      milestones: [],
+    });
+    const p = usePlanningStore.getState().createMilestone({ name: "A 里程碑" });
+    usePlanningStore.setState({
+      activePlanId: "B",
+      loadedForPlan: "B",
+      features: [],
+      milestones: [ms("m-b", "B 里程碑")],
+    });
+    d.resolve({ ...ms("m-a", "A 里程碑"), project_id: "A" });
+    await p;
+    expect(usePlanningStore.getState().milestones.map((m) => m.id)).toEqual(["m-b"]);
+  });
+
+  it("添加笔记在途切 B：A 的笔记不进入 B 的 activity（null 作用域不放行旧请求）", async () => {
+    const d = deferred<PlanningActivity>();
+    bridge.planningAddNote.mockImplementation(() => d.promise);
+    usePlanningStore.setState({
+      activePlanId: "A",
+      loadedForPlan: "A",
+      activity: [],
+      activityHasMore: false,
+      activityScope: { planId: "A", featureId: null },
+    });
+    const p = usePlanningStore.getState().addNote("A 的笔记");
+    // 切到 B：等价 selectPlan 的清空语义（activity 与 activityScope 归零）
+    usePlanningStore.setState({
+      activePlanId: "B",
+      loadedForPlan: "B",
+      activity: [],
+      activityHasMore: false,
+      activityScope: null,
+    });
+    d.resolve({
+      id: "n-a",
+      project_id: "A",
+      feature_id: null,
+      feature_title: null,
+      kind: "note",
+      old_status: null,
+      new_status: null,
+      message: "A 的笔记",
+      created_at: "2026-11-03T00:00:00Z",
+    });
+    await p;
+    expect(usePlanningStore.getState().activity).toEqual([]);
+  });
+
+  it("切到 B 后用 A 的 id 发起写操作：前端归属校验拒绝且不发起后端调用", async () => {
+    usePlanningStore.setState({
+      activePlanId: "B",
+      loadedForPlan: "B",
+      features: [feat("f-b", "B", "B 功能")],
+      milestones: [ms("m-b", "B 里程碑")],
+    });
+    const s = usePlanningStore.getState();
+    await expect(s.updateFeature("f-a", { title: "x" })).rejects.toThrow("功能不属于当前计划");
+    await expect(s.deleteFeature("f-a")).rejects.toThrow("功能不属于当前计划");
+    await expect(s.reorderFeatures(["f-a"])).rejects.toThrow("功能不属于当前计划");
+    await expect(s.addStep("f-a", "s")).rejects.toThrow("功能不属于当前计划");
+    await expect(s.reorderSteps("f-a", [])).rejects.toThrow("功能不属于当前计划");
+    await expect(s.updateStep("s-a", { done: true })).rejects.toThrow("步骤不属于当前计划");
+    await expect(s.deleteStep("s-a")).rejects.toThrow("步骤不属于当前计划");
+    await expect(s.updateMilestone("m-a", { name: "x" })).rejects.toThrow("里程碑不属于当前计划");
+    await expect(s.deleteMilestone("m-a")).rejects.toThrow("里程碑不属于当前计划");
+    // 归属校验阶段直接拒绝：后端调用一次都不能发生
+    expect(bridge.planningUpdateFeature).not.toHaveBeenCalled();
+    expect(bridge.planningDeleteFeature).not.toHaveBeenCalled();
+    expect(bridge.planningReorderFeatures).not.toHaveBeenCalled();
+    expect(bridge.planningAddStep).not.toHaveBeenCalled();
+    expect(bridge.planningUpdateStep).not.toHaveBeenCalled();
+    expect(bridge.planningDeleteStep).not.toHaveBeenCalled();
+    expect(bridge.planningReorderSteps).not.toHaveBeenCalled();
+    expect(bridge.planningUpdateMilestone).not.toHaveBeenCalled();
+    expect(bridge.planningDeleteMilestone).not.toHaveBeenCalled();
+    // 本地状态不被误改
+    expect(usePlanningStore.getState().features.map((f) => f.id)).toEqual(["f-b"]);
+    expect(usePlanningStore.getState().milestones.map((m) => m.id)).toEqual(["m-b"]);
+  });
+
+  it("删除功能在途切 B：A 的删除完成不误删 B 的本地实体", async () => {
+    const d = deferred<void>();
+    bridge.planningDeleteFeature.mockImplementation(() => d.promise);
+    usePlanningStore.setState({
+      activePlanId: "A",
+      loadedForPlan: "A",
+      features: [feat("f-a", "A", "A 功能")],
+    });
+    const p = usePlanningStore.getState().deleteFeature("f-a");
+    usePlanningStore.setState({
+      activePlanId: "B",
+      loadedForPlan: "B",
+      features: [feat("f-b", "B", "B 功能")],
+    });
+    d.resolve(undefined);
+    await p;
+    // B 的列表不被误删、不清空
+    expect(usePlanningStore.getState().features.map((f) => f.id)).toEqual(["f-b"]);
+    expect(usePlanningStore.getState().activePlanId).toBe("B");
+  });
+
+  it("删除里程碑在途切 B：不误删 B 的里程碑、不误清其功能的关联", async () => {
+    const d = deferred<void>();
+    bridge.planningDeleteMilestone.mockImplementation(() => d.promise);
+    usePlanningStore.setState({
+      activePlanId: "A",
+      loadedForPlan: "A",
+      features: [feat("f-a", "A", "A 功能")],
+      milestones: [ms("m-a", "A 里程碑")],
+    });
+    const p = usePlanningStore.getState().deleteMilestone("m-a");
+    const bFeat = feat("f-b", "B", "B 功能");
+    usePlanningStore.setState({
+      activePlanId: "B",
+      loadedForPlan: "B",
+      features: [{ ...bFeat, milestone_id: "m-b", milestone_name: "B 里程碑" }],
+      milestones: [ms("m-b", "B 里程碑")],
+    });
+    d.resolve(undefined);
+    await p;
+    expect(usePlanningStore.getState().milestones.map((m) => m.id)).toEqual(["m-b"]);
+    expect(usePlanningStore.getState().features[0].milestone_id).toBe("m-b");
+    expect(usePlanningStore.getState().features[0].milestone_name).toBe("B 里程碑");
+  });
+
+  it("A→B→C 快速切换：A 的在途写不污染 C", async () => {
+    const d = deferred<PlanningFeature>();
+    bridge.planningCreateFeature.mockImplementation((pid: string) =>
+      pid === "A" ? d.promise : Promise.reject(new Error("不得发起其他计划的创建")),
+    );
+    usePlanningStore.setState({ activePlanId: "A", loadedForPlan: "A", features: [] });
+    const p = usePlanningStore.getState().createFeature({ title: "A 功能" });
+    usePlanningStore.setState({
+      activePlanId: "B",
+      loadedForPlan: "B",
+      features: [feat("f-b", "B", "B 功能")],
+    });
+    usePlanningStore.setState({
+      activePlanId: "C",
+      loadedForPlan: "C",
+      features: [feat("f-c", "C", "C 功能")],
+    });
+    d.resolve(feat("f-a", "A", "A 功能"));
+    await p;
+    expect(usePlanningStore.getState().activePlanId).toBe("C");
+    expect(usePlanningStore.getState().features.map((f) => f.id)).toEqual(["f-c"]);
+  });
+
+  it("重排功能在途切 B：不按 A 的 ids 重排 B 的列表", async () => {
+    const d = deferred<void>();
+    bridge.planningReorderFeatures.mockImplementation(() => d.promise);
+    usePlanningStore.setState({
+      activePlanId: "A",
+      loadedForPlan: "A",
+      features: [feat("a1", "A", "A1"), feat("a2", "A", "A2")],
+    });
+    const p = usePlanningStore.getState().reorderFeatures(["a2", "a1"]);
+    usePlanningStore.setState({
+      activePlanId: "B",
+      loadedForPlan: "B",
+      features: [feat("f-b1", "B", "B1"), feat("f-b2", "B", "B2")],
+    });
+    d.resolve(undefined);
+    await p;
+    expect(usePlanningStore.getState().features.map((f) => f.id)).toEqual(["f-b1", "f-b2"]);
+  });
+
+  it("更新里程碑在途切 B：A 的结果不改写 B 的里程碑与功能关联名", async () => {
+    const d = deferred<PlanningMilestone>();
+    bridge.planningUpdateMilestone.mockImplementation(() => d.promise);
+    usePlanningStore.setState({
+      activePlanId: "A",
+      loadedForPlan: "A",
+      features: [],
+      milestones: [ms("m1", "旧名")],
+    });
+    const p = usePlanningStore.getState().updateMilestone("m1", { name: "A 新名" });
+    const bFeat = feat("f-b", "B", "B 功能");
+    usePlanningStore.setState({
+      activePlanId: "B",
+      loadedForPlan: "B",
+      features: [{ ...bFeat, milestone_id: "m-b", milestone_name: "B 里程碑" }],
+      milestones: [ms("m-b", "B 里程碑")],
+    });
+    d.resolve({ ...ms("m1", "A 新名"), project_id: "A" });
+    await p;
+    expect(usePlanningStore.getState().milestones.map((m) => m.id)).toEqual(["m-b"]);
+    expect(usePlanningStore.getState().features[0].milestone_name).toBe("B 里程碑");
+  });
+
+  it("loadMilestones 显式传入其他计划的 planId：不请求也不写入当前视图", async () => {
+    usePlanningStore.setState({
+      activePlanId: "B",
+      loadedForPlan: "B",
+      milestones: [ms("m-b", "B 里程碑")],
+    });
+    await usePlanningStore.getState().loadMilestones("A");
+    expect(bridge.planningListMilestones).not.toHaveBeenCalled();
+    expect(usePlanningStore.getState().milestones.map((m) => m.id)).toEqual(["m-b"]);
+    expect(usePlanningStore.getState().milestonesLoading).toBe(false);
+  });
+
+  it("返回实体 project_id 与当前计划不符：同计划在途也丢弃，不写本地列表", async () => {
+    usePlanningStore.setState({
+      activePlanId: "P",
+      loadedForPlan: "P",
+      features: [feat("f1", "P", "功能1")],
+    });
+    bridge.planningUpdateFeature.mockResolvedValue(feat("f1", "OTHER", "串线实体"));
+    await usePlanningStore.getState().updateFeature("f1", { title: "x" });
+    // 防御后端返回归属不符的实体：本地列表保持原样
+    expect(usePlanningStore.getState().features[0].title).toBe("功能1");
   });
 });
 

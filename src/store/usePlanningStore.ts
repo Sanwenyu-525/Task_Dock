@@ -13,6 +13,9 @@
 //! - 每类列表带请求代际（seq），切换计划 / 快速连续操作后旧响应一律丢弃，
 //!   不会把计划 A 的功能覆盖到计划 B 上；
 //! - 变更命令返回后端权威实体（含步骤与统计），就地替换，不整页重拉；
+//! - 异步写（功能/步骤/里程碑/笔记）同样受当前计划作用域保护：发起时捕获
+//!   activePlanId，返回后校验「计划未切换 + 返回实体 project_id 归属一致」才写
+//!   本地 Store；在途切计划时后端操作保留（不回滚），只丢弃本地写入；
 //! - 无轮询：数据只在面板挂载、切换计划、用户操作后刷新；
 //! - 失败保留旧数据并置 error（面板显示重试入口），不拿空列表冒充现状。
 
@@ -127,6 +130,28 @@ function sameActivityScope(
   b: { planId: string; featureId: string | null },
 ): boolean {
   return !!a && a.planId === b.planId && a.featureId === b.featureId;
+}
+
+/**
+ * 异步写返回后的计划作用域校验（跨计划污染防护）：
+ * - 发起时捕获的 activePlanId 必须与当前一致（在途切计划 → 旧结果不得写新视图）；
+ * - 捕获了计划作用域（capturedPlanId 非 null）时，返回实体的 project_id（= planId）
+ *   也必须一致，防御后端返回归属不符的实体。
+ * 返回 true 表示作用域已失效：后端操作保留（不回滚），仅拒绝写本地 Store。
+ * capturedPlanId 为 null 只出现在无选中计划的直构状态（正常 UI 流程不会发生），
+ * 此时退化为仅校验「计划未切换」。
+ */
+function writeScopeStale(
+  capturedPlanId: string | null,
+  activePlanId: string | null,
+  returnedProjectId?: string,
+): boolean {
+  if (activePlanId !== capturedPlanId) return true;
+  return (
+    capturedPlanId !== null &&
+    returnedProjectId !== undefined &&
+    returnedProjectId !== capturedPlanId
+  );
 }
 
 function errText(e: unknown): string {
@@ -332,6 +357,8 @@ export const usePlanningStore = create<PlanningState>((set, get) => ({
     const planId = get().activePlanId;
     if (!planId) throw new Error("未选择计划");
     const f = await planningCreateFeature(planId, input);
+    // 在途切计划 / 返回实体归属不符：后端创建保留，但不把 A 计划的功能插入 B 的列表
+    if (writeScopeStale(planId, get().activePlanId, f.project_id)) return f;
     set((s) => {
       const features = [...s.features, f];
       return { features, ...syncDerivedLists(s, features) };
@@ -340,7 +367,12 @@ export const usePlanningStore = create<PlanningState>((set, get) => ({
   },
 
   updateFeature: async (id, patch) => {
+    const planId = get().activePlanId;
+    // 归属校验：目标功能必须存在于当前计划的本地列表，拒绝拿 A 的 id 在 B 下改（不发后端调用）
+    if (!get().features.some((f) => f.id === id)) throw new Error("功能不属于当前计划");
     const f = await planningUpdateFeature(id, patch);
+    // 在途切计划 / 返回实体归属不符：后端更新保留，但不覆盖当前计划的列表
+    if (writeScopeStale(planId, get().activePlanId, f.project_id)) return f;
     set((s) => {
       const features = upsertFeature(s.features, f);
       return { features, ...syncDerivedLists(s, features) };
@@ -349,7 +381,12 @@ export const usePlanningStore = create<PlanningState>((set, get) => ({
   },
 
   deleteFeature: async (id) => {
+    const planId = get().activePlanId;
+    // 归属校验：目标必须存在于当前计划的本地列表，拒绝跨计划删除（不发后端调用）
+    if (!get().features.some((f) => f.id === id)) throw new Error("功能不属于当前计划");
     await planningDeleteFeature(id);
+    // 在途切计划：后端删除保留，但不误删新计划视图里的本地实体
+    if (writeScopeStale(planId, get().activePlanId)) return;
     set((s) => {
       const features = removeFeature(s.features, id);
       return { features, ...syncDerivedLists(s, features) };
@@ -359,7 +396,12 @@ export const usePlanningStore = create<PlanningState>((set, get) => ({
   reorderFeatures: async (ids) => {
     const planId = get().activePlanId;
     if (!planId) return;
+    // 归属校验：重排目标必须都在当前计划的本地列表里
+    const known = new Set(get().features.map((f) => f.id));
+    if (!ids.every((id) => known.has(id))) throw new Error("功能不属于当前计划");
     await planningReorderFeatures(planId, ids);
+    // 在途切计划：不按旧计划的 ids 重排新计划的列表
+    if (writeScopeStale(planId, get().activePlanId)) return;
     // 按 ids 顺序重排本地列表
     set((s) => {
       const byId = new Map(s.features.map((f) => [f.id, f]));
@@ -370,36 +412,60 @@ export const usePlanningStore = create<PlanningState>((set, get) => ({
   },
 
   addStep: async (featureId, title) => {
+    const planId = get().activePlanId;
+    // 归属校验：步骤必须挂到当前计划的功能上（不发后端调用）
+    if (!get().features.some((f) => f.id === featureId)) throw new Error("功能不属于当前计划");
     const f = await planningAddStep(featureId, title);
+    // 在途切计划：A 的步骤结果不得 upsert 进 B 的 features
+    if (writeScopeStale(planId, get().activePlanId, f.project_id)) return;
     set((s) => ({ features: upsertFeature(s.features, f) }));
   },
 
   updateStep: async (stepId, patch) => {
+    const planId = get().activePlanId;
+    // 归属校验：步骤必须能追溯到当前计划的功能（不发后端调用）
+    if (!get().features.some((f) => f.steps.some((st) => st.id === stepId))) {
+      throw new Error("步骤不属于当前计划");
+    }
     const f = await planningUpdateStep(stepId, patch);
+    if (writeScopeStale(planId, get().activePlanId, f.project_id)) return;
     set((s) => ({ features: upsertFeature(s.features, f) }));
   },
 
   deleteStep: async (stepId) => {
+    const planId = get().activePlanId;
+    // 归属校验：步骤必须能追溯到当前计划的功能（不发后端调用）
+    if (!get().features.some((f) => f.steps.some((st) => st.id === stepId))) {
+      throw new Error("步骤不属于当前计划");
+    }
     const f = await planningDeleteStep(stepId);
+    if (writeScopeStale(planId, get().activePlanId, f.project_id)) return;
     set((s) => ({ features: upsertFeature(s.features, f) }));
   },
 
   reorderSteps: async (featureId, ids) => {
+    const planId = get().activePlanId;
+    // 归属校验：被重排的功能必须属于当前计划（不发后端调用）
+    if (!get().features.some((f) => f.id === featureId)) throw new Error("功能不属于当前计划");
     const f = await planningReorderSteps(featureId, ids);
+    if (writeScopeStale(planId, get().activePlanId, f.project_id)) return;
     set((s) => ({ features: upsertFeature(s.features, f) }));
   },
 
   loadMilestones: async (planId) => {
     const id = planId ?? get().activePlanId;
     if (!id) return;
+    // 显式传入的计划必须就是当前计划：外部调用不得绕过当前计划作用域
+    if (planId !== undefined && planId !== get().activePlanId) return;
     const seq = ++milestonesSeq;
     set({ milestonesLoading: true, milestonesError: null });
     try {
       const milestones = await planningListMilestones(id);
-      if (seq !== milestonesSeq) return;
+      // 计划已切换/删除时结果丢弃，不写入当前视图
+      if (seq !== milestonesSeq || get().activePlanId !== id) return;
       set({ milestones, milestonesLoading: false });
     } catch (e) {
-      if (seq !== milestonesSeq) return;
+      if (seq !== milestonesSeq || get().activePlanId !== id) return;
       set({ milestonesLoading: false, milestonesError: errText(e) });
     }
   },
@@ -408,12 +474,19 @@ export const usePlanningStore = create<PlanningState>((set, get) => ({
     const planId = get().activePlanId;
     if (!planId) throw new Error("未选择计划");
     const m = await planningCreateMilestone(planId, input);
+    // 在途切计划 / 返回实体归属不符：后端创建保留，但不进入新计划的里程碑列表
+    if (writeScopeStale(planId, get().activePlanId, m.project_id)) return m;
     set((s) => ({ milestones: [...s.milestones, m] }));
     return m;
   },
 
   updateMilestone: async (id, patch) => {
+    const planId = get().activePlanId;
+    // 归属校验：目标里程碑必须存在于当前计划的本地列表（不发后端调用）
+    if (!get().milestones.some((m) => m.id === id)) throw new Error("里程碑不属于当前计划");
     const m = await planningUpdateMilestone(id, patch);
+    // 在途切计划：不覆盖新计划的里程碑，也不同步进新计划的功能卡片
+    if (writeScopeStale(planId, get().activePlanId, m.project_id)) return m;
     set((s) => ({ milestones: s.milestones.map((x) => (x.id === id ? m : x)) }));
     // 关联名称变化同步进功能卡片
     set((s) => ({
@@ -425,7 +498,12 @@ export const usePlanningStore = create<PlanningState>((set, get) => ({
   },
 
   deleteMilestone: async (id) => {
+    const planId = get().activePlanId;
+    // 归属校验：目标里程碑必须存在于当前计划的本地列表（不发后端调用）
+    if (!get().milestones.some((m) => m.id === id)) throw new Error("里程碑不属于当前计划");
     await planningDeleteMilestone(id);
+    // 在途切计划：不误删新计划的本地里程碑、不误清其功能的关联
+    if (writeScopeStale(planId, get().activePlanId)) return;
     set((s) => ({
       milestones: s.milestones.filter((m) => m.id !== id),
       // 关联被置空（后端 ON DELETE SET NULL）
@@ -453,10 +531,22 @@ export const usePlanningStore = create<PlanningState>((set, get) => ({
         limit: ACTIVITY_PAGE_SIZE,
         offset: 0,
       });
-      if (seq !== activitySeq || !sameActivityScope(get().activityScope, scope)) return;
+      if (
+        seq !== activitySeq ||
+        get().activePlanId !== planId ||
+        !sameActivityScope(get().activityScope, scope)
+      ) {
+        return;
+      }
       set({ activity: page.items, activityHasMore: page.has_more, activityLoading: false });
     } catch (e) {
-      if (seq !== activitySeq || !sameActivityScope(get().activityScope, scope)) return;
+      if (
+        seq !== activitySeq ||
+        get().activePlanId !== planId ||
+        !sameActivityScope(get().activityScope, scope)
+      ) {
+        return;
+      }
       set({ activityLoading: false, activityError: errText(e) });
     }
   },
@@ -477,14 +567,26 @@ export const usePlanningStore = create<PlanningState>((set, get) => ({
         limit: ACTIVITY_PAGE_SIZE,
         offset,
       });
-      if (seq !== activitySeq || !sameActivityScope(get().activityScope, scope)) return;
+      if (
+        seq !== activitySeq ||
+        get().activePlanId !== planId ||
+        !sameActivityScope(get().activityScope, scope)
+      ) {
+        return;
+      }
       set((s) => ({
         activity: [...s.activity, ...page.items],
         activityHasMore: page.has_more,
         activityLoading: false,
       }));
     } catch (e) {
-      if (seq !== activitySeq || !sameActivityScope(get().activityScope, scope)) return;
+      if (
+        seq !== activitySeq ||
+        get().activePlanId !== planId ||
+        !sameActivityScope(get().activityScope, scope)
+      ) {
+        return;
+      }
       set({ activityLoading: false, activityError: errText(e) });
     }
   },
@@ -494,6 +596,9 @@ export const usePlanningStore = create<PlanningState>((set, get) => ({
     if (!planId) throw new Error("未选择计划");
     const targetFeature = featureId ?? null;
     const a = await planningAddNote(planId, targetFeature, message);
+    // 在途切计划 / 返回记录归属不符：后端写入保留，但 A 的笔记不得进入 B 的活动列表。
+    // 切换计划后 activityScope 必为 null，计划未切换的校验正是防止 null 作用域放行旧请求。
+    if (writeScopeStale(planId, get().activePlanId, a.project_id)) return;
     // 有更早历史未加载时追加会破坏时间倒序；只在第一页场景就地前插。
     // 当前历史列表属于其他作用域时不写入，避免把计划级记录插进功能历史。
     set((s) => {
