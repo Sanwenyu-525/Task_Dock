@@ -135,6 +135,8 @@ const shim = `
   const EMPTY = q.get("agents") === "empty";
   // 文件互传空态：?files=empty；默认返回四种状态夹具。
   const FILES_EMPTY = q.get("files") === "empty";
+  // 收集箱空态：?capture=empty（只影响 harness，用于走查空态与快捷键提示）。
+  const CAPTURE_EMPTY = q.get("capture") === "empty";
   // 扫描场景：ok（默认，立即返回完整结果）| cancelled | fail。
   // 只影响 harness 的 nav_scan_apps 返回，用于走查取消/错误状态，不参与发布包。
   const SCAN_MODE = q.get("scan") || "ok";
@@ -1582,11 +1584,12 @@ const shim = `
       // ── 收集箱 / 文件暂存（视觉走查夹具）──
       // 缺这些命令时 store 会拿到 null 并在 .filter 处抛错，整页变成「加载失败」。
       case "quick_capture_list": {
+        if (CAPTURE_EMPTY) return [];
         const all = [
-          { id: "cap1", client_id: "cc1", kind: "idea", content: "把历史页未读改成小圆点，保留 Agent 事件与通知类型", url: null, note: null, status: "inbox", task_id: null, source: "capture", created_at: iso(18), updated_at: iso(18) },
-          { id: "cap2", client_id: "cc2", kind: "todo", content: "核对暂存架选中态与 hover 是否混淆", url: null, note: null, status: "inbox", task_id: null, source: "capture", created_at: iso(42), updated_at: iso(42) },
-          { id: "cap3", client_id: "cc3", kind: "link", content: "CSS @layer 优先级说明", url: "https://developer.mozilla.org/docs/Web/CSS/@layer", note: null, status: "inbox", task_id: null, source: "capture", created_at: iso(96), updated_at: iso(96) },
-          { id: "cap4", client_id: "cc4", kind: "text", content: "长文本条目：这里放一段足够长的内容，用来检查收集箱卡片在窄窗口下是否换行而不是撑破布局，同时确认已处理条目的弱化样式仍然可读。", url: null, note: null, status: "handled", task_id: null, source: "capture", created_at: iso(150), updated_at: iso(140) },
+          { id: "cap1", client_id: "cc1", kind: "idea", attachments: [], content: "把历史页未读改成小圆点，保留 Agent 事件与通知类型", url: null, note: null, status: "inbox", task_id: null, source: "capture", created_at: iso(18), updated_at: iso(18) },
+          { id: "cap2", client_id: "cc2", kind: "todo", attachments: [], content: "核对暂存架选中态与 hover 是否混淆", url: null, note: null, status: "inbox", task_id: null, source: "capture", created_at: iso(42), updated_at: iso(42) },
+          { id: "cap3", client_id: "cc3", kind: "link", attachments: [], content: "CSS @layer 优先级说明", url: "https://developer.mozilla.org/docs/Web/CSS/@layer", note: null, status: "inbox", task_id: null, source: "capture", created_at: iso(96), updated_at: iso(96) },
+          { id: "cap4", client_id: "cc4", kind: "text", attachments: [], content: "长文本条目：这里放一段足够长的内容，用来检查收集箱卡片在窄窗口下是否换行而不是撑破布局，同时确认已处理条目的弱化样式仍然可读。", url: null, note: null, status: "handled", task_id: null, source: "capture", created_at: iso(150), updated_at: iso(140) },
         ];
         const status = args?.status;
         const list = status === "inbox" ? all.filter((i) => i.status === "inbox") : all;
@@ -1850,8 +1853,31 @@ const shim = `
       case "quick_capture_show":
       case "quick_capture_hide": return null;
       case "shelf_list": {
-        const all = shelfFixtureItems();
-        return { items: all, total: all.length };
+        let items = shelfFixtureItems();
+        const kind = args?.kind;
+        if (kind && kind !== "all") items = items.filter((i) => i.kind === kind);
+        const groupId = args?.groupId;
+        if (groupId && groupId !== "all") {
+          items =
+            groupId === "none"
+              ? items.filter((i) => !i.group_id)
+              : items.filter((i) => i.group_id === groupId);
+        }
+        if (args?.favoriteOnly) items = items.filter((i) => i.favorite);
+        const search = String(args?.search ?? "").trim().toLowerCase();
+        if (search) {
+          items = items.filter(
+            (i) =>
+              (String(i.display_name || "") +
+                " " +
+                String(i.note || "") +
+                " " +
+                String(i.content || "")).toLowerCase().indexOf(search) >= 0,
+          );
+        }
+        const offset = args?.offset ?? 0;
+        const limit = args?.limit ?? 100;
+        return { items: items.slice(offset, offset + limit), total: items.length };
       }
       case "shelf_stats": {
         const all = shelfFixtureItems();

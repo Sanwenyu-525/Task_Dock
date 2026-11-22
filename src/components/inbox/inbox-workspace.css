@@ -309,3 +309,86 @@
     }
   }
 }
+
+  /* ── 空态（2026-11-22）：收集箱为空也要说明「这里能收什么」──────
+     空态只占内容区，不撑破页面；快捷入口与类型提示都在空态内部，
+     不额外长出一张与空态竞争的卡片。 */
+  .inbox-empty-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    padding: 22px 12px 28px;
+  }
+
+  .inbox-empty-wrap .empty-state {
+    padding-bottom: 6px;
+  }
+
+  .inbox-empty-copy {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .inbox-empty-shortcut {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 10.5px;
+    color: var(--text-tertiary);
+  }
+
+  .inbox-empty-shortcut kbd {
+    min-width: 22px;
+    padding: 2px 5px;
+    border: 1px solid var(--border-subtle);
+    border-bottom-width: 2px;
+    border-radius: 5px;
+    background: var(--surface-base);
+    color: var(--text-secondary);
+    font-family: inherit;
+    font-size: 10px;
+    line-height: 1.3;
+    text-align: center;
+  }
+
+  .inbox-empty-kinds {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 6px;
+    margin: 10px 0 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .inbox-empty-kinds li {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 9px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 999px;
+    background: var(--surface-raised);
+    font-size: 10.5px;
+    color: var(--text-secondary);
+  }
+
+  .inbox-empty-kinds svg {
+    color: var(--text-tertiary);
+  }
+
+  /* 右栏主操作：与行内动作同一批回调，只是提供更大的命中和更清晰的主次。 */
+  .inbox-detail-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .inbox-detail-actions .btn {
+    flex: 1 1 auto;
+    justify-content: center;
+  }

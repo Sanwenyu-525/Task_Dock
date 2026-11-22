@@ -39,90 +39,111 @@
   overflow: auto;
 }
 
-.col-rail-card {
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-card);
-  background: var(--surface-raised);
-  padding: 10px 12px;
-  min-width: 0;
+/* 左栏导航（2026-11-22）：类型 / 分组是同级导航列表，计数右对齐；
+   不再使用四张大数字卡占满半栏。 */
+.col-rail-section {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-}
-
-.col-rail-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  gap: 4px;
   min-width: 0;
 }
 
-.col-rail-head h3 {
+.col-rail-label {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   margin: 0;
+  padding: 0 7px;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.07em;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
+.col-rail-label > .link-btn {
+  margin-left: auto;
+  font-size: 10px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.col-rail-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.col-rail-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 30px;
+  min-width: 0;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
   font-size: 12px;
-  font-weight: 600;
-  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.col-rail-item > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.col-rail-head h3 svg {
-  color: var(--text-tertiary);
+.col-rail-item > span svg {
   flex: 0 0 auto;
+  color: var(--text-tertiary);
 }
 
-.col-rail-tiles {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
-}
-
-.col-tile {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 1px;
-  padding: 7px 9px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 9px;
-  background: var(--surface-base);
-  color: var(--text-secondary);
-  cursor: pointer;
-  text-align: left;
-  transition: background 120ms ease, border-color 120ms ease;
-}
-
-.col-tile:hover {
-  background: var(--surface-hover);
-}
-
-.col-tile.is-active {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-  color: var(--text-primary);
-}
-
-.col-tile-value {
-  font-size: 15px;
-  font-weight: 650;
-  font-variant-numeric: tabular-nums;
-  line-height: 1.15;
-  color: var(--text-primary);
-}
-
-.col-tile-label {
+.col-rail-item > em {
+  flex: 0 0 auto;
+  font-style: normal;
   font-size: 10.5px;
   color: var(--text-tertiary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 100%;
+  font-variant-numeric: tabular-nums;
+}
+
+.col-rail-item:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.col-rail-item.is-active {
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border-subtle));
+  background: var(--accent-soft);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.col-rail-item.is-active > em {
+  color: var(--accent);
+}
+
+.col-rail-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.col-space {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  padding: 0 7px;
 }
 
 .col-rail-note {
@@ -134,7 +155,7 @@
 
 .col-space-value {
   margin: 0;
-  font-size: 20px;
+  font-size: 17px;
   font-weight: 650;
   font-variant-numeric: tabular-nums;
   color: var(--text-primary);
@@ -201,16 +222,74 @@
 .workspace-split__sidebar .col-rail-sidebar {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 16px;
   max-height: none;
   overflow: visible;
   padding: 0;
 }
 
-.workspace-split__sidebar .col-rail-sidebar .col-rail-tiles {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+/* ── 窄容器：左栏折叠为顶部筛选条（2026-11-22）─────────────────────
+   WorkspaceSplit 在 <560px 时把侧栏降到上方 42%。类型 + 分组 + 空间 + 目标
+   的纵向列表会在这里被裁成半行，因此：
+   - 类型/分组改成可换行的胶囊筛选；
+   - 空间与投递目标属于低频信息，折叠时隐藏（暂存架工具栏仍有目标管理入口）；
+   - 保留 rail 的滚动兜底，不产生横向滚动。 */
+@container workspace-split (max-width: 559px) {
+  .workspace-split__sidebar .col-rail-sidebar {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-content: flex-start;
+    gap: 6px;
+    max-height: 176px;
+    overflow-y: auto;
+  }
+
+  .workspace-split__sidebar .col-rail-sidebar .workspace-rail-head {
+    display: none;
+  }
+
+  .workspace-split__sidebar .col-rail-sidebar .col-rail-section {
+    flex: 0 0 auto;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .workspace-split__sidebar .col-rail-sidebar .col-rail-label {
+    display: none;
+  }
+
+  .workspace-split__sidebar .col-rail-sidebar .col-rail-nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .workspace-split__sidebar .col-rail-sidebar .col-rail-item {
+    width: auto;
+    min-height: 28px;
+    padding: 0 10px;
+    border-color: var(--border-subtle);
+    border-radius: 999px;
+    background: var(--surface-raised);
+  }
+
+  .workspace-split__sidebar .col-rail-sidebar .col-rail-item > span {
+    flex: 0 1 auto;
+  }
+
+  .workspace-split__sidebar .col-rail-sidebar .col-rail-section--space,
+  .workspace-split__sidebar .col-rail-sidebar .col-rail-section--targets {
+    display: none;
+  }
 }
 
-.workspace-split__sidebar .col-rail-sidebar .col-rail-card {
-  padding: 9px 10px;
+/* 折叠后的暂存架筛选只有两行胶囊，不需要固定 42% 高度：
+   让侧栏行按内容收缩，列表拿回剩余空间。仅命中带分类栏的那一个 split，
+   收集箱的折叠筛选仍保留 42%（它的状态/类型/说明更长）。 */
+@container workspace-split (max-width: 559px) {
+  .collection-body .workspace-split:has(.col-rail-sidebar) {
+    grid-template-rows: auto minmax(0, 1fr);
+  }
 }

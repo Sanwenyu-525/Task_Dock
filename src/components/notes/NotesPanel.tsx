@@ -146,7 +146,12 @@ export default function NotesPanel() {
     <div className={`notes-panel${singlePane ? " notes-panel--single" : ""}`}>
       <aside className="notes-sidebar">
         <div className="notes-sidebar-head">
-          <span className="notes-sidebar-title">{t("notes.title")}</span>
+          <span className="notes-sidebar-title">
+            {t("notes.title")}
+            <em className="notes-sidebar-count" aria-label={`${items.length}`}>
+              {items.length}
+            </em>
+          </span>
           <button
             type="button"
             className="btn sm notes-new-btn"

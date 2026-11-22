@@ -81,7 +81,11 @@ import DropTargetManager from "./DropTargetManager";
 import { deliverToTarget, deliverOperationToTarget } from "./shelfDeliver";
 import { shelfDeleteFeedback } from "./shelfDeleteFeedback";
 import { shelfCleanupFeedback } from "./shelfCleanupFeedback";
-import { WorkbenchDetailFacts, WorkbenchPageDetail } from "../../workbench/pageDetail";
+import {
+  useWorkbenchDetailHost,
+  WorkbenchDetailFacts,
+  WorkbenchPageDetail,
+} from "../../workbench/pageDetail";
 
 /** 来源展示：右栏事实表复用条目卡的同一套中文语义。 */
 function shelfSourceLabel(kind: string): string {
@@ -1435,6 +1439,12 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
   const detailItem =
     items.find((i) => i.id === detailId) ??
     (detailFallback && detailFallback.id === detailId ? detailFallback : null);
+  /**
+   * 右栏宿主：外壳右栏可用时，完整详情投送到第三列（左分类 / 中列表 / 右预览）。
+   * 宿主不可用（窄窗降级、右栏关闭、测试里没有外壳）时退回内容区内嵌卡片，
+   * 操作能力与原先完全一致，不因布局变化丢功能。
+   */
+  const detailHost = useWorkbenchDetailHost();
   const selectedItems = items.filter((i) => selectedIds.includes(i.id));
   const movableSelected = selectedItems.filter(canMoveItem);
   const copyableSelected = selectedItems.filter(canCopyItem);
@@ -2106,7 +2116,18 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
 
   return (
     <div className={`shelf-workspace ${dragOver ? "drag-over" : ""}`}>
-      {!targetsOpen && focusedItem && (
+      {/* 完整详情：外壳右栏可用时投送到第三列；不可用时在内容区内嵌（见文件底部）。 */}
+      {!targetsOpen && detailItem && detailHost && (
+        <WorkbenchPageDetail>
+          <ShelfDetail
+            item={detailItem}
+            onClose={() => setDetail(null)}
+            onFileOp={(op) => openFileOp(op, [detailItem])}
+            onRelocate={() => void relocateItemFlow(detailItem)}
+          />
+        </WorkbenchPageDetail>
+      )}
+      {!targetsOpen && !detailItem && focusedItem && (
         <WorkbenchPageDetail
           title="文件详情"
           actions={
@@ -2389,7 +2410,13 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
             focused={focusId === item.id}
             thumbUrl={null}
             menuItems={itemMenuFor(item)}
-            onOpen={() => setDetail(item.id)}
+            onOpen={() => {
+              // 打开详情同时保证该条在列表里有可见焦点；已在多选集合里时保留
+              // 整个选择集合，不因为查看一条详情把批量操作清成单选。
+              if (selectedIds.includes(item.id)) setFocusId(item.id);
+              else selectOnly(item.id);
+              setDetail(item.id);
+            }}
             onToggleSelect={() => selectToggle(item.id)}
             onSelectOnly={() => selectOnly(item.id)}
             onSelectToggle={() => selectToggle(item.id)}
@@ -2627,14 +2654,17 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
         </div>
       )}
 
-      {/* 详情 */}
-      {detailItem && (
-        <ShelfDetail
-          item={detailItem}
-          onClose={() => setDetail(null)}
-          onFileOp={(op) => openFileOp(op, [detailItem])}
-          onRelocate={() => void relocateItemFlow(detailItem)}
-        />
+      {/* 详情（无外壳右栏时的回退）：窄窗 / 右栏关闭时以右侧抽屉呈现，
+          不把列表页推长、也不裁掉操作按钮。 */}
+      {detailItem && !detailHost && (
+        <div className="shelf-detail-drawer" role="region" aria-label="文件详情">
+          <ShelfDetail
+            item={detailItem}
+            onClose={() => setDetail(null)}
+            onFileOp={(op) => openFileOp(op, [detailItem])}
+            onRelocate={() => void relocateItemFlow(detailItem)}
+          />
+        </div>
       )}
 
       {/* 拖入高亮遮罩 */}

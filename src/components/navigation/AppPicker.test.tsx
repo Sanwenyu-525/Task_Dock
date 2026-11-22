@@ -729,6 +729,19 @@ describe("AppPicker 子页面（variant=page）", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it("未扫描入口卡的「选择窗口」会真实枚举窗口，不留永久加载态", async () => {
+    const user = userEvent.setup();
+    seedStores();
+    useNavigationStore.setState({ scan: null, scanning: false, scanError: null });
+    vi.mocked(navListWindows).mockResolvedValue([WIN_NOTEPAD]);
+    renderPage();
+
+    await user.click(screen.getByRole("button", { name: "选择窗口" }));
+    await waitFor(() => expect(navListWindows).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText("正在读取窗口…")).toBeNull();
+    expect(screen.getByText("doc.txt - 记事本")).toBeTruthy();
+  });
+
   it("首次进入添加子页不自动扫描；只有用户点扫描才触发", async () => {
     const user = userEvent.setup();
     seedStores();

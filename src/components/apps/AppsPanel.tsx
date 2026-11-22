@@ -24,7 +24,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import {
-  AlertTriangle, ArrowRight, FolderOpen, Info, LayoutGrid, Link2, Loader2, MoreHorizontal, OctagonX, Pencil, Plus,
+  AlertTriangle, FolderOpen, Info, LayoutGrid, Link2, Loader2, MoreHorizontal, OctagonX, Pencil, Plus,
   Power, RefreshCw, SquareX, Star, Trash2, EyeOff, Eye, X,
 } from "lucide-react";
 import { useUiStore } from "../../store/useUiStore";
@@ -182,36 +182,32 @@ export default function AppsPanel() {
     [targets, removedIds],
   );
   /**
-   * 「最近使用」来自后端维护的 `last_used_at`，不按本地点击次数编造。
-   * 只在「全部」视图且无搜索/场景时作为轻量快捷区出现，不重复整张应用网格。
+   * 分类来自已保存目标的真实 `category`，不是新造的运行场景，也不新增批量
+   * 启动能力：点击只把网格筛选到该分类。2026-11-22 起分类进入左侧导航，
+   * 「分类」与「视图（全部/收藏/最近/运行中）」是两个正交维度，不再在内容区
+   * 顶部叠一张与网格争夺层级的场景卡。
    */
-  const recentApps = useMemo(
-    () =>
-      apps
-        .filter((t) => !!t.last_used_at)
-        .sort((a, b) => (b.last_used_at ?? "").localeCompare(a.last_used_at ?? ""))
-        .slice(0, 4),
-    [apps],
-  );
-  /**
-   * 「组合场景」是已保存应用按真实 `category` 的分组，不是新造的运行场景，
-   * 也不新增批量启动能力；点击只把网格筛选到该分类，属于可解释的真实操作。
-   */
-  const appScenes = useMemo(() => {
-    const byCategory = new Map<string, NavTarget[]>();
+  const appCategories = useMemo(() => {
+    const byCategory = new Map<string, number>();
     for (const app of apps) {
       const category = app.category?.trim();
       if (!category) continue;
-      const list = byCategory.get(category) ?? [];
-      list.push(app);
-      byCategory.set(category, list);
+      byCategory.set(category, (byCategory.get(category) ?? 0) + 1);
     }
     return [...byCategory.entries()]
-      .filter(([, list]) => list.length >= 2)
-      .sort((a, b) => b[1].length - a[1].length)
-      .slice(0, 4)
-      .map(([category, list]) => ({ category, count: list.length, first: list[0] }));
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], "zh-CN"))
+      .map(([category, count]) => ({ category, count }));
   }, [apps]);
+  /** 视图计数：全部/收藏/最近使用/运行中，均来自真实字段与运行态快照。 */
+  const filterCounts = useMemo<Record<AppFilter, number>>(
+    () => ({
+      all: apps.length,
+      favorite: apps.filter((app) => app.favorite).length,
+      recent: apps.filter((app) => !!app.last_used_at).length,
+      running: apps.filter((app) => isTargetRunning(runningStates, app.id)).length,
+    }),
+    [apps, runningStates],
+  );
   const selectedApp = useMemo(
     () => apps.find((app) => app.id === selectedId) ?? null,
     [apps, selectedId],
@@ -314,9 +310,10 @@ export default function AppsPanel() {
     } else if (filter === "running") {
       list = list.filter((t) => isTargetRunning(runningStates, t.id));
     } else {
-      // 「全部」视图：手动序为基 + 收藏/运行置顶叠加（displayGrid），
-      // 搜索只过滤不重排（与胶囊 filterAppGrid 同一函数），加号占位不渲染。
-      const matched = query.trim() ? new Set(list.map((t) => t.id)) : null;
+      // 「全部」视图：手动序为基 + 收藏/运行置顶叠加（displayGrid）。
+      // 搜索与分类都必须体现在 matched 里再交给 filterAppGrid——只过滤局部
+      // `list` 然后返回整张 displayGrid 会让分类筛选静默失效（本轮修复）。
+      const matched = new Set(list.map((t) => t.id));
       return filterAppGrid(displayGrid, matched)
         .filter(
           (entry): entry is Extract<AppGridEntry<NavTarget>, { type: "app" }> =>
@@ -343,8 +340,23 @@ export default function AppsPanel() {
           .map((s) => byId.get(s.key))
           .filter((t): t is NavTarget => !!t)
       : extras;
-    return sortTargetsForDisplay(matched, { recent: false });
-  }, [extras, query]);
+    // 分类是应用的分类；筛选分类时不把未分类的网址/目录一并展示，
+    // 否则「分类 dev」下面仍会出现全部网址，结果口径自相矛盾。
+    const scoped = sceneCategory
+      ? matched.filter((t) => t.category?.trim() === sceneCategory)
+      : matched;
+    // 收藏/最近/运行中是「视图」，网址与目录也要遵守；否则「运行中」下面
+    // 仍会列出未运行的网址，结果口径自相矛盾。
+    const viewScoped =
+      filter === "favorite"
+        ? scoped.filter((t) => t.favorite)
+        : filter === "recent"
+          ? scoped.filter((t) => !!t.last_used_at)
+          : filter === "running"
+            ? scoped.filter((t) => isTargetRunning(runningStates, t.id))
+            : scoped;
+    return sortTargetsForDisplay(viewScoped, { recent: false });
+  }, [extras, query, sceneCategory, filter, runningStates]);
 
   const markLaunching = (id: string, on: boolean) =>
     setLaunchingIds((prev) => {
@@ -817,6 +829,15 @@ export default function AppsPanel() {
   function renderTile(t: NavTarget) {
     const running = runningStates[t.id];
     const badge = isTargetRunning(runningStates, t.id) ? stateBadge(running) : null;
+    // 运行态未知（首帧 / 查询失败 / 后端未返回该 id）不冒充「未运行」。
+    const stateLabel =
+      badge?.label ??
+      (running === "unavailable"
+        ? tr("apps.unavailable")
+        : running !== undefined
+          ? tr("apps.notRunning")
+          : null);
+    const stateTone = badge?.tone ?? (running === "unavailable" ? "bad" : "muted");
     const busy = launchingIds.has(t.id);
     // 单行卡片：主区域（图标 + 名称/状态）是一个按钮，收藏/更多是并列的独立
     // 按钮（不是嵌套按钮），因此点收藏与菜单不会冒泡触发启动。
@@ -873,15 +894,13 @@ export default function AppsPanel() {
           />
           <span className="apps-tile-text">
             <span className="apps-tile-name">{t.display_name}</span>
-            {t.shortcut_kind === "window" && (
-              <span className="apps-tile-state is-idle">指定窗口</span>
-            )}
-            {badge && (
-              <span className={`apps-tile-state is-${badge.tone}`}>{badge.label}</span>
-            )}
-            {running === "unavailable" && (
-              <span className="apps-tile-state is-bad">{tr("apps.unavailable")}</span>
-            )}
+            {t.shortcut_kind === "window" || stateLabel ? (
+              <span className={`apps-tile-state is-${stateTone}`}>
+                {t.shortcut_kind === "window"
+                  ? `指定窗口${stateLabel ? ` · ${stateLabel}` : ""}`
+                  : stateLabel}
+              </span>
+            ) : null}
           </span>
           {busy && <Loader2 size={13} className="spin" aria-hidden="true" />}
         </button>
@@ -1013,150 +1032,134 @@ export default function AppsPanel() {
         sidebar={
           <div className="apps-filter-pane">
             <div className="workspace-rail-head">
-              <span className="workspace-rail-eyebrow">应用管理</span>
-              <h2>分类与筛选</h2>
+              <span className="workspace-rail-eyebrow">APP LIBRARY</span>
+              <h2>应用库</h2>
             </div>
-            <div className="filter-bar primary apps-filter-bar">
-        <div className="seg-group subtle" role="group" aria-label={tr("apps.filterAria")}>
-          {FILTERS.map((f) => (
-            <button
-              key={f.id}
-              type="button"
-              className={`seg-btn ${filter === f.id ? "active" : ""}`}
-              aria-pressed={filter === f.id}
-              onClick={() => setFilter(f.id)}
-            >
-              {tr(f.labelKey)}
-            </button>
-          ))}
-        </div>
-        {/* 搜索与刷新作为一组换行：避免只剩刷新图标单独占一行 */}
-        <div className="apps-search-row">
-          {sceneCategory && (
-            <span className="apps-scene-active">
-              场景：{sceneCategory}
+            {/* 搜索与刷新同组：搜索框占满剩余宽度，刷新不单独掉行。 */}
+            <div className="apps-search-row">
+              <SearchField
+                className="apps-search"
+                size="compact"
+                value={query}
+                onChange={setQuery}
+                placeholder={tr("apps.searchPlaceholder")}
+                ariaLabel={tr("apps.searchAria")}
+                clearLabel={tr("apps.clearSearch")}
+              />
               <button
                 type="button"
-                onClick={() => setSceneCategory(null)}
-                aria-label="清除组合场景筛选"
+                className="icon-btn"
+                onClick={() => void refreshAll(true)}
+                data-tip={tr("apps.refreshTip")}
+                aria-label={tr("apps.refreshAria")}
               >
-                <X size={11} aria-hidden="true" />
+                <RefreshCw size={13} aria-hidden="true" />
               </button>
-            </span>
-          )}
-          <SearchField
-            className="apps-search"
-            size="compact"
-            value={query}
-            onChange={setQuery}
-            placeholder={tr("apps.searchPlaceholder")}
-            ariaLabel={tr("apps.searchAria")}
-            clearLabel={tr("apps.clearSearch")}
-          />
-          <button
-            type="button"
-            className="icon-btn"
-            onClick={() => void refreshAll(true)}
-            data-tip={tr("apps.refreshTip")}
-            aria-label={tr("apps.refreshAria")}
-          >
-            <RefreshCw size={13} aria-hidden="true" />
-          </button>
-        </div>
             </div>
-          </div>
-        }
-      >
-        <div className="page-scroll apps-body">
-        {/* 组合场景与最近使用都用真实数据：分类来自已保存目标，最近来自 last_used_at。
-            这里只做筛选与再次启动，不新增无后端契约的「批量场景运行」。 */}
-        {targetsLoaded && !noAppsAtAll && filter === "all" && !query.trim() && (
-          <div className={`apps-quick-sections ${appScenes.length === 0 ? "is-single" : ""}`}>
-            {appScenes.length > 0 ? (
-              <section className="apps-scene-section" aria-label="组合场景">
-                <div className="apps-quick-head">
-                  <h3>组合场景</h3>
-                  <span>按应用分类整理，点击筛选当前网格</span>
-                </div>
-                <div className="apps-scene-grid">
-                  {appScenes.map((scene) => (
+            <section className="apps-rail-section" aria-label="视图">
+              <p className="apps-rail-label">视图</p>
+              <div className="apps-rail-nav">
+                {FILTERS.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={`apps-rail-item${filter === item.id ? " is-active" : ""}`}
+                    aria-pressed={filter === item.id}
+                    aria-label={tr(item.labelKey)}
+                    onClick={() => setFilter(item.id)}
+                  >
+                    <span>{tr(item.labelKey)}</span>
+                    <em aria-hidden="true">{filterCounts[item.id]}</em>
+                  </button>
+                ))}
+              </div>
+            </section>
+            {appCategories.length > 0 && (
+              <section className="apps-rail-section" aria-label="应用分类">
+                <p className="apps-rail-label">
+                  分类 <em>{appCategories.length}</em>
+                </p>
+                <div className="apps-rail-nav">
+                  <button
+                    type="button"
+                    className={`apps-rail-item${sceneCategory === null ? " is-active" : ""}`}
+                    aria-pressed={sceneCategory === null}
+                    onClick={() => setSceneCategory(null)}
+                  >
+                    <span>全部分类</span>
+                    <em aria-hidden="true">{apps.length}</em>
+                  </button>
+                  {appCategories.map((entry) => (
                     <button
-                      key={scene.category}
+                      key={entry.category}
                       type="button"
-                      className={`apps-scene-card ${sceneCategory === scene.category ? "is-active" : ""}`}
-                      aria-pressed={sceneCategory === scene.category}
+                      className={`apps-rail-item${sceneCategory === entry.category ? " is-active" : ""}`}
+                      aria-pressed={sceneCategory === entry.category}
+                      aria-label={`分类：${entry.category}`}
                       onClick={() =>
                         setSceneCategory((current) =>
-                          current === scene.category ? null : scene.category,
+                          current === entry.category ? null : entry.category,
                         )
                       }
                     >
-                      <AppIcon
-                        targetId={scene.first.id}
-                        name={scene.first.display_name}
-                        size={22}
-                        enabled
-                      />
-                      <span className="apps-scene-text">
-                        <strong>{scene.category}</strong>
-                        <em>{scene.count} 个应用</em>
-                      </span>
-                      <ArrowRight size={13} aria-hidden="true" />
+                      <span>{entry.category}</span>
+                      <em aria-hidden="true">{entry.count}</em>
                     </button>
                   ))}
                 </div>
               </section>
-            ) : (
-              <section className="apps-scene-section is-empty" aria-label="组合场景">
-                <div className="apps-quick-head">
-                  <h3>组合场景</h3>
-                  <span>真实分类，不生成演示分组</span>
-                </div>
-                <p className="apps-scene-empty">
-                  同一分类下至少有 2 个应用时才会自动成组；当前 {apps.length} 个应用分属不同分类。
-                </p>
-              </section>
             )}
+            {savedOrder && (
+              <p className="apps-rail-note">
+                手动排序已开启：拖动磁贴或按 Alt+←/→ 调整；点击磁贴仍是启动应用。
+              </p>
+            )}
+          </div>
+        }
+      >
+        <div className="page-scroll apps-body">
+        {/* 分类与视图都已收进左侧导航；内容区只保留「当前结果」一行上下文 + 网格，
+            不再用一张场景卡与网格争夺首屏层级。 */}
+        {targetsLoaded && !noAppsAtAll && (
+          <div className="apps-result-head">
+            <div className="apps-result-title">
+              <h3>
+                {query.trim()
+                  ? `搜索「${query.trim()}」`
+                  : (sceneCategory ?? tr(FILTERS.find((item) => item.id === filter)?.labelKey ?? "apps.filter.all"))}
+              </h3>
+              <span>
+                {visibleApps.length} 个应用
+                {sceneCategory ? ` · 分类 ${sceneCategory}` : ""}
+                {filter !== "all"
+                  ? ` · ${tr(FILTERS.find((item) => item.id === filter)?.labelKey ?? "apps.filter.all")}`
+                  : ""}
+              </span>
+            </div>
+            {(sceneCategory || query.trim() || filter !== "all") &&
+              (visibleApps.length > 0 || visibleExtras.length > 0) && (
+                <button
+                  type="button"
+                  className="btn sm"
+                  onClick={() => {
+                    setQuery("");
+                    setFilter("all");
+                    setSceneCategory(null);
+                  }}
+                >
+                  清空筛选
+                </button>
+              )}
+          </div>
+        )}
 
-            {recentApps.length > 0 && (
-              <section className="apps-recent-section" aria-label="最近使用">
-                <div className="apps-quick-head">
-                  <h3>最近使用</h3>
-                  <span>来自真实启动记录</span>
-                </div>
-                <ul className="apps-recent-list">
-                  {recentApps.map((app) => (
-                    <li key={app.id}>
-                      <button
-                        type="button"
-                        className="apps-recent-item"
-                        onClick={() => void launch(app)}
-                        disabled={launchingIds.has(app.id)}
-                        aria-label={`再次打开 ${app.display_name}`}
-                      >
-                        <AppIcon
-                          targetId={app.id}
-                          name={app.display_name}
-                          size={20}
-                          enabled
-                        />
-                        <span className="apps-recent-name">{app.display_name}</span>
-                        <span className="apps-recent-time">
-                          {app.last_used_at
-                            ? new Date(app.last_used_at).toLocaleDateString("zh-CN")
-                            : ""}
-                        </span>
-                        {launchingIds.has(app.id) ? (
-                          <Loader2 size={12} className="spin" aria-hidden="true" />
-                        ) : (
-                          <ArrowRight size={12} aria-hidden="true" />
-                        )}
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            )}
+        {statesError && filter !== "running" && targetsLoaded && (
+          <div className="apps-states-warning" role="status">
+            <AlertTriangle size={12} aria-hidden="true" />
+            <span>{tr("apps.statesFailed", { error: statesError })}</span>
+            <button type="button" className="link-btn" onClick={() => void fetchRunningStates()}>
+              {tr("common.retry")}
+            </button>
           </div>
         )}
 
@@ -1211,21 +1214,36 @@ export default function AppsPanel() {
         )}
 
         {targetsLoaded && !noAppsAtAll && visibleApps.length === 0 && visibleExtras.length === 0 && (
-          <div className="wf-empty-steps">
-            {filter === "recent"
-              ? tr("apps.emptyRecent")
-              : filter === "running"
-                ? tr("apps.emptyRunning")
-                : filter === "favorite"
-                  ? tr("apps.emptyFavorite")
-                  : tr("apps.emptyQuery", { query: query.trim() })}
-          </div>
-        )}
-
-        {targetsLoaded && !noAppsAtAll && filter === "all" && savedOrder && (
-          <p className="apps-sort-hint" role="note">
-            手动排序已开启：拖动磁贴或按 Alt+←/→ 调整顺序；点击磁贴仍是启动应用。
-          </p>
+          <EmptyState
+            icon={<LayoutGrid size={20} aria-hidden="true" />}
+            title="当前筛选下没有应用"
+            hint={
+              filter === "recent"
+                ? tr("apps.emptyRecent")
+                : filter === "running"
+                  ? tr("apps.emptyRunning")
+                  : filter === "favorite"
+                    ? tr("apps.emptyFavorite")
+                    : query.trim()
+                      ? tr("apps.emptyQuery", { query: query.trim() })
+                      : sceneCategory
+                        ? `分类「${sceneCategory}」下没有符合当前视图的应用。`
+                        : "调整左侧视图或分类后再试。"
+            }
+            action={
+              <button
+                type="button"
+                className="btn sm"
+                onClick={() => {
+                  setQuery("");
+                  setFilter("all");
+                  setSceneCategory(null);
+                }}
+              >
+                清空筛选
+              </button>
+            }
+          />
         )}
 
         {targetsLoaded && !noAppsAtAll && (

@@ -903,3 +903,117 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ── 右栏详情（2026-11-22：第三列预览）────────────────────────────
+   完整详情从内容区移入外壳右栏后，去掉自带卡片外框（外层
+   .wb-detail-card 已经是卡片），并按 320px 宽度收敛预览高度与操作行。
+   所有操作仍在：打开 / 定位 / 移动 / 复制路径 / 关联任务与项目 / 标签。 */
+.wb-detail-card .shelf-detail {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  gap: 9px;
+  min-width: 0;
+}
+
+.wb-detail-card .shelf-detail-head {
+  gap: 6px;
+}
+
+.wb-detail-card .shelf-detail-title {
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+/* 图片预览保留原始比例，只限制最大高度，不裁切。 */
+.wb-detail-card .shelf-detail-image,
+.wb-detail-card .shelf-detail-image img {
+  max-height: 168px;
+}
+
+.wb-detail-card .shelf-detail-image {
+  width: 100%;
+}
+
+.wb-detail-card .shelf-detail-text {
+  max-height: 168px;
+}
+
+.wb-detail-card .shelf-text-pre {
+  font-size: 11px;
+}
+
+.wb-detail-card .shelf-meta-row {
+  gap: 8px;
+  font-size: 11px;
+}
+
+.wb-detail-card .shelf-meta-row dt {
+  width: 52px;
+  flex: 0 0 52px;
+}
+
+/* 右栏里按钮铺满一行：320px 下并排两枚中文按钮会被压成两行省略。 */
+.wb-detail-card .shelf-detail-actions .btn,
+.wb-detail-card .shelf-detail-danger .btn {
+  flex: 1 1 auto;
+  justify-content: center;
+}
+
+.wb-detail-card .shelf-detail-actions,
+.wb-detail-card .shelf-detail-danger {
+  gap: 5px;
+}
+
+.wb-detail-card .shelf-links-add {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.wb-detail-card .shelf-links-add .btn {
+  flex: 1 1 auto;
+  justify-content: center;
+}
+
+/* ── 窄窗详情抽屉（2026-11-22）────────────────────────────────────
+   外壳右栏在窄内容区会降级消失；此时详情改为覆盖在列表右侧的抽屉，
+   不再作为普通文档流卡片插在列表下方（那会把操作按钮推出可视区）。
+   抽屉自身滚动，列表仍可继续浏览/选择。 */
+.shelf-detail-drawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: var(--z-drawer);
+  width: min(360px, 94%);
+  min-width: 0;
+  padding: 10px 12px 14px;
+  border-left: 1px solid var(--border-strong);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-raised);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.shelf-detail-drawer .shelf-detail {
+  margin: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+}
+
+/* 窄主区（<400px）列表行：隐藏存储模式小标签，优先保住「大小 · 来源 · 时间」，
+   避免元信息被截成「引用 · 18.0 KB · 选…」。完整模式仍在名称 tooltip 与详情里。 */
+@container shelf-panel (max-width: 400px) {
+  .shelf-item-meta .shelf-tag.mode {
+    display: none;
+  }
+
+  .shelf-item-meta {
+    gap: 4px;
+    font-size: 10px;
+  }
+}

@@ -175,6 +175,41 @@ describe("AppsPanel 应用中心", () => {
     expect(screen.getByText("Obsidian")).toBeTruthy();
   });
 
+  it("分类筛选作用于全部视图，且可与收藏筛选叠加", () => {
+    seed([
+      targetFix({ id: "a", app_key: "obsidian", display_name: "Obsidian", category: "dev" }),
+      targetFix({ id: "b", app_key: "chrome", display_name: "Chrome", category: "browser" }),
+      targetFix({
+        id: "c",
+        app_key: "code",
+        display_name: "VS Code",
+        category: "dev",
+        favorite: true,
+        exe_path: "C:////Apps////Code.exe",
+      }),
+    ]);
+    render(<AppsPanel />);
+
+    fireEvent.click(screen.getByRole("button", { name: "分类：dev" }));
+    expect(screen.getByText("Obsidian")).toBeTruthy();
+    expect(screen.getByText("VS Code")).toBeTruthy();
+    expect(screen.queryByText("Chrome")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "收藏" }));
+    expect(screen.queryByText("Obsidian")).toBeNull();
+    expect(screen.getByText("VS Code")).toBeTruthy();
+
+    // 分类与搜索叠加：分类内的搜索只保留命中项
+    fireEvent.click(screen.getByRole("button", { name: "全部" }));
+    fireEvent.change(screen.getByLabelText("搜索应用名称"), { target: { value: "Obs" } });
+    expect(screen.getByText("Obsidian")).toBeTruthy();
+    expect(screen.queryByText("VS Code")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "清空筛选" }));
+    expect(screen.getByText("Obsidian")).toBeTruthy();
+    expect(screen.getByText("Chrome")).toBeTruthy();
+  });
+
   it("收藏筛选只显示收藏项；收藏操作调用后端并刷新共享清单", async () => {
     seed([
       targetFix({ id: "a", app_key: "obsidian", display_name: "Obsidian" }),

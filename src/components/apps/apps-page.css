@@ -1,263 +1,248 @@
 /*
  * 应用中心「页面态」栅格（2026-11-15 视觉对齐；2026-11-17 响应式修订）。
  *
- * 列数由 auto-fill 按主区宽度自然算出：卡片最小宽走本页局部 Token
- * `--apps-card-min`（260px，与首页卡片密度对齐）；宽屏单卡再由共享
- * `--layout-card-max` 封顶，不写死固定列数、不按窗口宽度断档。
- * <560px 的单行卡片 1/2/3 列降级规则保留在全局 base（styles.css .apps-grid）。
+ * 列数由 auto-fill 按网格自身宽度自然算出：卡片最小宽 190px，宽屏单卡由
+ * 本页 250px 上限封顶；不写死固定列数、不按窗口宽度断档。
  * 查询容器为最近祖先 `.workspace-split-frame`（WorkspaceSplit 提供），
  * 被查询元素是后代网格/卡片——容器与被查询者不是同一元素，不构成自引用。
  */
 
+/* 列数按内容区自身宽度计算：容器查询的容器是 workspace-split-frame（含左栏），
+   用它判断会把 500px 的主区当成 640px，挤出三列 150px 的窄卡。这里直接给页面
+   网格一个无条件的最小列宽，主区窄时自动回到两列，名字不被压成省略号。 */
+.apps-panel .apps-grid {
+  grid-template-columns: repeat(auto-fill, minmax(min(190px, 100%), 1fr));
+  gap: 8px;
+}
+
 @container (min-width: 560px) {
   .apps-panel .apps-grid {
-    --apps-card-min: 260px;
-    grid-template-columns: repeat(
-      auto-fill,
-      minmax(var(--apps-card-min), 1fr)
-    );
+    /* 列数由上面的无条件规则按网格自身宽度计算；这里只保留卡片上限。
+       （容器查询的容器是含左栏的 split 帧，不能用来决定主区列数。） */
+    --apps-card-max: 250px;
   }
 
-  /* 宽屏单列不被拉成巨卡：封顶走共享卡片 Token。 */
   .apps-panel .apps-tile {
-    max-width: var(--layout-card-max);
+    max-width: var(--apps-card-max);
   }
 
-  /* 效果图 10 的应用卡是图标在上、名称/状态在下的大卡，不是 52px 行内条目。
-     这里只改页面态卡片的视觉结构，拖拽/启动/收藏/更多/删除的 DOM 与事件不变。 */
   .apps-panel .apps-tile {
-    min-height: 118px;
+    min-height: 92px;
   }
 
   .apps-panel .apps-tile-main {
     flex-direction: column;
     align-items: flex-start;
-    justify-content: center;
-    gap: 9px;
-    padding: 18px 76px 14px 15px;
+    justify-content: flex-start;
+    gap: 8px;
+    padding: 13px 58px 12px 13px;
   }
 
+  /* 关键：列方向里 `flex:1` 会变成「高度增长」，名称会被推到卡片底部。
+     文字块只取内容高度，状态紧跟名称。 */
   .apps-panel .apps-tile-text {
-    gap: 5px;
+    flex: 0 0 auto;
+    gap: 4px;
     align-items: flex-start;
     min-width: 0;
+    max-width: 100%;
   }
 
   .apps-panel .apps-tile-name {
-    font-size: 15px;
+    max-width: 100%;
+    font-size: 13px;
     font-weight: 600;
     letter-spacing: -0.01em;
   }
 
-  /* 图标随卡片一起放大到 36px；20px 的旧容器会把 36px 图标裁掉。 */
+  /* 图标 32px：磁贴主体信息更集中，也比 36px 更贴近 92px 卡高。 */
   .apps-panel .apps-tile-avatar {
-    width: 36px;
-    height: 36px;
-    border-radius: 9px;
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
   }
 
   .apps-panel .apps-tile-state {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    max-width: 100%;
     font-size: 10.5px;
+    line-height: 1.4;
+  }
+
+  /* 状态点：窗口已打开 / 后台运行 / 未运行三态在色相之外还有形状区分
+     （实心点 / 空心点 / 无点），不依赖颜色单独传达。 */
+  .apps-panel .apps-tile-state.is-ok::before,
+  .apps-panel .apps-tile-state.is-idle::before,
+  .apps-panel .apps-tile-state.is-bad::before {
+    content: "";
+    flex: 0 0 auto;
+    width: 5px;
+    height: 5px;
+    border-radius: 999px;
+    background: currentColor;
+  }
+
+  .apps-panel .apps-tile-state.is-idle::before {
+    background: transparent;
+    box-shadow: inset 0 0 0 1px currentColor;
   }
 
   /* 收藏/关闭/更多收进右上角；删除保持 hover-only，放到右下角避免与三点菜单
      的 22px 热区重叠。 */
   .apps-panel .apps-tile-actions {
     position: absolute;
-    top: 8px;
-    right: 8px;
+    top: 6px;
+    right: 6px;
     padding: 0;
   }
 
   .apps-panel .apps-tile > .apps-tile-del {
     top: auto;
-    bottom: 7px;
-    right: 7px;
+    bottom: 6px;
+    right: 6px;
   }
 }
 
-/* ── 第三轮：组合场景 / 最近使用 / 右栏详情 ── */
-.apps-quick-sections {
-  display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
-  gap: 10px;
-  margin-bottom: 12px;
-  min-width: 0;
-}
-
-/* 没有可成组的分类时只渲染「组合场景」真实空态 + 最近使用，两者各占一行；
-   不留一张被邻近卡片拉高的空白色块。 */
-.apps-quick-sections.is-single {
-  grid-template-columns: minmax(0, 1fr);
-}
-
-.apps-scene-section,
-.apps-recent-section {
-  min-width: 0;
-  padding: 10px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-card);
-  background: var(--card-face);
-  box-shadow: var(--card-shadow);
-}
-
-.apps-quick-head {
+/* ── 左栏：视图 / 分类两级导航（2026-11-22 精修）──────────────
+   原「组合场景 + 最近使用」两张卡占据内容区首屏，分类卡与网格争夺层级。
+   分类本就是已保存应用的 category，因此归入左栏导航；内容区只保留
+   「当前结果 + 网格」。两个维度（视图 / 分类）正交，可叠加。 */
+.apps-rail-section {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 7px;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
 }
 
-.apps-quick-head h3 {
-  margin: 0;
-  font-size: 11.5px;
-  font-weight: 650;
-  color: var(--text-primary);
-}
-
-.apps-quick-head span {
-  font-size: 9.5px;
-  color: var(--text-tertiary);
-}
-
-/* 无同分类 ≥2 应用时只给真实空态，不拼演示分组，也不放不可点击的假场景卡。 */
-.apps-scene-empty {
-  margin: 0;
-  padding: 10px 2px 4px;
-  color: var(--text-tertiary);
-  font-size: 10.5px;
-  line-height: 1.55;
-}
-
-.apps-scene-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
-}
-
-.apps-scene-card {
+.apps-rail-label {
   display: flex;
   align-items: center;
-  gap: 7px;
-  min-width: 0;
-  padding: 6px 7px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-control);
-  background: color-mix(in srgb, var(--surface-raised) 58%, transparent);
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0;
+  padding: 0 7px;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.07em;
+  color: var(--text-muted);
+  text-transform: uppercase;
 }
 
-.apps-scene-card:hover {
-  border-color: color-mix(in srgb, var(--accent) 35%, var(--border-subtle));
+.apps-rail-label em {
+  font-style: normal;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
 }
 
-.apps-scene-card.is-active {
-  border-color: color-mix(in srgb, var(--accent) 55%, var(--border-subtle));
-  background: color-mix(in srgb, var(--accent) 9%, var(--surface-raised));
-}
-
-.apps-scene-text {
+.apps-rail-nav {
   display: flex;
-  flex: 1 1 auto;
   flex-direction: column;
   gap: 1px;
   min-width: 0;
 }
 
-.apps-scene-text strong {
-  overflow: hidden;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-primary);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.apps-scene-text em {
-  font-style: normal;
-  font-size: 9.5px;
-  color: var(--text-tertiary);
-}
-
-.apps-scene-card > svg:last-child {
-  flex: 0 0 auto;
-  color: var(--text-tertiary);
-}
-
-.apps-recent-list {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.apps-recent-item {
+.apps-rail-item {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   width: 100%;
+  min-height: 30px;
   min-width: 0;
-  padding: 4px 5px;
-  border: 0;
+  padding: 0 8px;
+  border: 1px solid transparent;
   border-radius: var(--radius-control);
   background: transparent;
-  color: inherit;
+  color: var(--text-secondary);
   font: inherit;
+  font-size: 12px;
   text-align: left;
   cursor: pointer;
 }
 
-.apps-recent-item:hover {
-  background: color-mix(in srgb, var(--accent) 7%, transparent);
+.apps-rail-item > span {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.apps-recent-name {
-  flex: 1 1 auto;
+.apps-rail-item > em {
+  flex: 0 0 auto;
+  font-style: normal;
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.apps-rail-item:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.apps-rail-item.is-active {
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border-subtle));
+  background: var(--accent-soft);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.apps-rail-item.is-active > em {
+  color: var(--accent);
+}
+
+.apps-rail-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.apps-rail-note {
+  margin: 0;
+  padding: 7px 8px;
+  border: 1px dashed var(--border-subtle);
+  border-radius: var(--radius-control);
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--text-tertiary);
+}
+
+/* 内容区「当前结果」上下文：一行标题 + 计数，右侧清空筛选。
+   不画成卡片，不与应用磁贴抢视觉重量。 */
+.apps-result-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  margin: 0 0 9px;
+  padding: 0 2px;
+}
+
+.apps-result-title {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.apps-result-title h3 {
+  margin: 0;
   overflow: hidden;
-  font-size: 11px;
+  font-size: 13.5px;
+  font-weight: 650;
   color: var(--text-primary);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.apps-recent-time {
-  flex: 0 0 auto;
-  font-size: 9.5px;
+.apps-result-title span {
+  font-size: 11px;
   color: var(--text-tertiary);
-  font-variant-numeric: tabular-nums;
-}
-
-.apps-recent-item > svg:last-child {
-  flex: 0 0 auto;
-  color: var(--text-tertiary);
-}
-
-.apps-scene-active {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 3px 6px;
-  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border-subtle));
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--accent) 8%, transparent);
-  font-size: 10px;
-  color: var(--accent);
-  white-space: nowrap;
-}
-
-.apps-scene-active button {
-  display: inline-flex;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--accent);
-  cursor: pointer;
 }
 
 .apps-rail-hero {
@@ -296,44 +281,13 @@
   margin-top: 10px;
 }
 
-/* 窄内容区：场景/最近使用两栏挤不下时上下堆叠；按 split 帧容器宽度响应，
-   不使用窗口宽度媒体查询。 */
-@container (max-width: 1179px) {
-  .apps-quick-sections {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
-
 /* ── 大型工作台：左侧分类/筛选栏（2026-11-16）────────────────────────
    把原来横跨整页的筛选条收进独立导航区，主区获得稳定的应用网格宽度。
-   只调整组织方式，不改变筛选、搜索、刷新与场景选择的任何行为。 */
+   只调整组织方式，不改变筛选、搜索、刷新与分类选择的任何行为。 */
 .apps-filter-pane {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  min-width: 0;
-}
-
-.apps-filter-pane .filter-bar.primary.apps-filter-bar {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 10px;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  background: transparent;
-}
-
-.apps-filter-pane .apps-filter-bar .seg-group {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 4px;
-  width: 100%;
-}
-
-.apps-filter-pane .apps-filter-bar .seg-btn {
-  width: 100%;
+  gap: 14px;
   min-width: 0;
 }
 
@@ -342,6 +296,9 @@
   flex-wrap: wrap;
   gap: 6px;
   width: 100%;
+  /* 全局搜索行带 `flex: 1 1 200px`；在列方向里会变成 200px 高度，
+     把视图/分类导航整体推下去。这里只占内容高度。 */
+  flex: 0 0 auto;
 }
 
 .apps-filter-pane .apps-search {
@@ -352,11 +309,6 @@
 
 .apps-filter-pane .apps-search-row > .icon-btn {
   flex: 0 0 auto;
-}
-
-.apps-filter-pane .apps-scene-active {
-  flex: 1 1 100%;
-  max-width: 100%;
 }
 
 .workspace-split__main .apps-body {
@@ -395,6 +347,49 @@
 }
 
 .apps-panel .setting-row > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* 未运行是显式状态（不是「没有状态」）：灰色实心点与后台运行的琥珀色空心点、
+   窗口已打开的绿色实心点一起构成三态，颜色之外还有填充差异。 */
+.apps-panel .apps-tile-state.is-muted {
+  color: var(--text-tertiary);
+}
+
+.apps-panel .apps-tile-state.is-muted::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.55;
+}
+
+/* 运行态查询失败：所有视图都给一行可重试提示，不让磁贴静默显示「未运行」。 */
+.apps-states-warning {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 2px 8px;
+  padding: 6px 9px;
+  border: 1px solid color-mix(in srgb, var(--status-warning) 35%, var(--border-subtle));
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--status-warning) 8%, transparent);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.apps-states-warning > svg {
+  flex: 0 0 auto;
+  color: var(--status-warning);
+}
+
+.apps-states-warning > span {
+  flex: 1 1 auto;
   min-width: 0;
   overflow-wrap: anywhere;
 }

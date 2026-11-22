@@ -432,7 +432,7 @@
 @container wb-content (max-width: 719px) {
   .notes-panel {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(120px, 40%) minmax(0, 1fr);
+    /* 行高在文件末尾统一为 minmax(150px, 46%)，这里不再重复声明。 */
   }
 
   .notes-sidebar {
@@ -462,5 +462,148 @@
 
   .notes-item {
     transition: none;
+  }
+}
+
+/* ── 编辑器精修（2026-11-22）────────────────────────────────────────
+   标题是文档标题，不是表单输入框：去掉输入框外框，用页头底线分隔正文；
+   聚焦时用底部强调线 + 浅色底表达，而不是整圈描边（避免像未填完的表单）。
+   关联任务/工作现场收进一条属性带，控制器与正文之间有明确分组。 */
+.notes-sidebar-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 17px;
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--surface-hover);
+  color: var(--text-tertiary);
+  font-style: normal;
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  vertical-align: 1px;
+}
+
+.notes-editor-head {
+  align-items: flex-start;
+  padding: 0 0 9px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.notes-title-input {
+  flex: 1 1 160px;
+  min-width: 0;
+  padding: 2px 4px 3px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 18px;
+  font-weight: 650;
+  line-height: 1.35;
+  letter-spacing: -0.01em;
+  outline: none;
+}
+
+.notes-title-input:hover {
+  background: color-mix(in srgb, var(--surface-hover) 60%, transparent);
+}
+
+.notes-title-input:focus-visible {
+  border: 0;
+  outline: none;
+  background: var(--surface-hover);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.notes-title-input::placeholder {
+  color: var(--text-tertiary);
+  font-weight: 500;
+}
+
+.notes-editor-actions {
+  gap: 3px;
+  padding-top: 1px;
+}
+
+.notes-meta-row {
+  margin-top: -2px;
+}
+
+/* 关联属性带：标签在上、选择器在下，但整体有浅底与内边距，
+   和正文编辑区形成明确分组；窄窗仍由既有容器查询改为上下排列。 */
+.notes-link-row {
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-raised) 76%, transparent);
+}
+
+.notes-link-field {
+  flex: 1 1 150px;
+  gap: 2px;
+}
+
+.notes-link-field > span {
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+.notes-content-input {
+  border-radius: 10px;
+  padding: 12px 14px;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+/* 两栏分界：列表与文档面之间有一条稳定分隔线，空态/编辑态都不会变成
+   「两块白底浮在页面上」。窄窗改为上下布局时去掉分隔线。 */
+.notes-main {
+  border-left: 1px solid var(--border-subtle);
+  padding-left: 14px;
+}
+
+.notes-main-empty {
+  /* 空态是一张有边界的「文档占位卡」，不是铺满整栏的虚线框：
+     限宽、居中，编辑区仍然占据剩余高度，不产生整页空旷感。 */
+  flex: 0 1 auto;
+  width: min(420px, 100%);
+  margin: auto;
+  padding: 28px 30px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+}
+
+@container wb-content (max-width: 719px) {
+  .notes-main {
+    border-left: 0;
+    padding-left: 0;
+    border-top: 1px solid var(--border-subtle);
+    padding-top: 10px;
+  }
+}
+
+/* 窄窗上下布局：侧栏高度固定，头部/搜索/筛选不得被 flex 压缩。
+   之前筛选条被压到 10px、列表项与筛选行视觉重叠；列表仍是唯一可滚动区域。 */
+.notes-sidebar {
+  overflow: hidden;
+}
+
+.notes-sidebar > .notes-sidebar-head,
+.notes-sidebar > .notes-search,
+.notes-sidebar > .notes-filter,
+.notes-sidebar > .notes-error,
+.notes-sidebar > .notes-list-hint {
+  flex: 0 0 auto;
+}
+
+@container wb-content (max-width: 719px) {
+  .notes-panel {
+    grid-template-rows: minmax(150px, 46%) minmax(0, 1fr);
   }
 }

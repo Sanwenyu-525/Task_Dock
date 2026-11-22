@@ -66,3 +66,120 @@
   white-space: nowrap;
   opacity: 0.72;
 }
+
+/* ── 首次进入的三种添加入口（2026-11-22）────────────────────────────
+   未扫描时不再是贴着左上角的一张小卡：三个真实入口（扫描 / 当前窗口 /
+   手动）平铺，扫描保留主按钮。状态区外框仍复用 .picker-scan-state，
+   因此扫描中、失败、取消三种状态的布局不会跳动。 */
+.picker-scan-state--top:has(.picker-unscanned--intro) {
+  flex: 0 0 auto;
+  min-height: 0;
+  padding: 0;
+  align-self: stretch;
+}
+
+.picker-scan-state > .picker-unscanned--intro {
+  max-width: 100%;
+}
+
+.picker-unscanned--intro {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+  width: 100%;
+  max-width: 100%;
+  padding: 4px 0 6px;
+  /* 入口卡自己是表面，外层不再套一张虚线框（否则五层描边叠在一起）。 */
+  border: 0;
+  background: transparent;
+}
+
+.picker-unscanned-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.picker-unscanned--intro .picker-unscanned-title {
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+.picker-unscanned--intro .picker-unscanned-desc {
+  max-width: 62ch;
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--text-secondary);
+}
+
+.picker-entry-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr));
+  gap: 10px;
+  min-width: 0;
+}
+
+.picker-entry {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 9px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+}
+
+.picker-entry.is-primary {
+  border-color: color-mix(in srgb, var(--accent) 32%, var(--border-subtle));
+  background: color-mix(in srgb, var(--accent) 5%, var(--surface-raised));
+}
+
+.picker-entry-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-base);
+  color: var(--text-secondary);
+}
+
+.picker-entry.is-primary .picker-entry-icon {
+  border-color: transparent;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.picker-entry-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.picker-entry-text strong {
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+.picker-entry-text em {
+  font-style: normal;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-tertiary);
+}
+
+/* 添加页网格：176px 基准让 600px 主区三列、宽屏四列以上；
+   卡片仍是图标 + 名称 + 状态，不再用 220px 的大格。 */
+.app-picker-page-grid {
+  grid-template-columns: repeat(auto-fill, minmax(min(176px, 100%), 1fr));
+  gap: 8px;
+}

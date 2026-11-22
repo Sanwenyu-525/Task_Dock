@@ -1283,3 +1283,50 @@
   flex-wrap: wrap;
   justify-content: flex-end;
 }
+
+/* ── 元数据行精修（2026-11-22）────────────────────────────────────
+   来源、窗口、大小/次数原来是一整行无分隔的长串；窗口标签又是带描边的
+   小方块，视觉重量高过内容本身。改为：窗口标签降为纯文字，属性之间用
+   低对比度间隔点分列，仍保持单行、贴底、窄卡省略。 */
+.clipboard-page .clip-meta-window-tag {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  font-size: 9.5px;
+  letter-spacing: 0.02em;
+  color: var(--text-tertiary);
+  opacity: 0.9;
+}
+
+.clipboard-page .clip-meta-facts {
+  gap: 0;
+}
+
+.clipboard-page .clip-meta-facts > span + span::before {
+  content: "·";
+  margin: 0 5px;
+  color: var(--text-tertiary);
+  opacity: 0.7;
+}
+
+/* ── 分组卡片精修（2026-11-22）────────────────────────────────────
+   1) 分组主体是 <button>，浏览器默认 text-align:center，导致组名与摘要居中、
+      元信息靠左，看起来像错位；统一左对齐。
+   2) 封面从 110px 收到 92px、卡片最小高度 224→200：一屏多看到一组，
+      仍保留三图拼贴的识别度。 */
+.clipboard-page .clip-group-main {
+  text-align: left;
+}
+
+.clipboard-page .clip-group-card.density-comfort,
+.clipboard-page .clip-group-card.density-compact {
+  min-height: 200px;
+}
+
+.clipboard-page .clip-group-card.density-comfort > .clip-group-preview.has-cover {
+  height: 92px;
+}
+
+.clipboard-page .clip-group-card .clip-group-summary {
+  text-align: left;
+}

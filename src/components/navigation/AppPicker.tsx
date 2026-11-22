@@ -390,13 +390,74 @@ export default function AppPicker({
         </div>
       );
     } else if (scanUnscanned) {
-      content = (
+      // 首次进入：三种添加方式平铺成入口卡，而不是一张贴着左上角的小提示。
+      // 扫描仍是最常用路径，保持主按钮；另外两条路径与顶部工具栏同源，文案一致。
+      content = isPage ? (
+        <div className="picker-unscanned picker-unscanned--intro">
+          <div className="picker-unscanned-head">
+            <div className="picker-unscanned-title">尚未扫描本机应用</div>
+            <div className="picker-unscanned-desc">
+              点击「扫描本机应用」查找可以添加的桌面程序；也可以从当前窗口选择或手动添加。
+            </div>
+          </div>
+          <div className="picker-entry-grid">
+            <div className="picker-entry is-primary">
+              <span className="picker-entry-icon" aria-hidden="true">
+                <RefreshCw size={16} />
+              </span>
+              <span className="picker-entry-text">
+                <strong>扫描并添加</strong>
+                <em>开始菜单、注册表与应用商店，不扫描全盘</em>
+              </span>
+              <button type="button" className="btn primary sm" onClick={() => void loadApps(true)}>
+                扫描本机应用
+              </button>
+            </div>
+            <div className="picker-entry">
+              <span className="picker-entry-icon" aria-hidden="true">
+                <Monitor size={16} />
+              </span>
+              <span className="picker-entry-text">
+                <strong>从当前窗口选择</strong>
+                <em>读取已打开窗口所属的程序</em>
+              </span>
+              <button
+                type="button"
+                className="btn sm"
+                onClick={() => {
+                  setSelectedWindow(null);
+                  setWindowNotice(null);
+                  setWindowMode("focus");
+                  setPageView("windows");
+                  void refreshWindows();
+                }}
+              >
+                选择窗口
+              </button>
+            </div>
+            <div className="picker-entry">
+              <span className="picker-entry-icon" aria-hidden="true">
+                <Plus size={16} />
+              </span>
+              <span className="picker-entry-text">
+                <strong>手动添加</strong>
+                <em>填写程序、网址或目录路径</em>
+              </span>
+              <button type="button" className="btn sm" onClick={() => setPageView("manual")}>
+                手动填写
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : (
+        // 弹层里列表区只有 260px 高：保持原来的紧凑单卡，避免入口卡把主按钮
+        // 推到可视区之外，需要滚动才能开始扫描。
         <div className="picker-unscanned" role="status">
           <div className="picker-unscanned-title">尚未扫描本机应用</div>
           <div className="picker-unscanned-desc">
-            点击「扫描本机应用」查找可以添加的桌面程序，也可以直接从当前窗口选择或手动添加
+            点击「扫描本机应用」查找可以添加的桌面程序；也可以从当前窗口选择或手动添加。
           </div>
-          <button className="btn primary sm" onClick={() => void loadApps(true)}>
+          <button type="button" className="btn primary sm" onClick={() => void loadApps(true)}>
             扫描本机应用
           </button>
         </div>

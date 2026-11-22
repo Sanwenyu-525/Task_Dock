@@ -1,4 +1,4 @@
-//! 「收集与暂存 · 文件暂存」右侧信息栏（对照效果图 04 的右列）。
+//! 「收集与暂存 · 文件暂存」左侧导航（原右列信息栏，2026-11-22 精修）。
 //!
 //! 只读既有 Store：
 //! - 分类计数与空间来自 `useShelfStore.stats`（后端 `shelf_stats`，由暂存架自身
@@ -6,10 +6,12 @@
 //! - 未取到统计时退回「已加载项」的口径，并在文案里写明，绝不把局部当全量；
 //! - 投递目标来自 `useDropTargetsStore.targets`（暂存架挂载时已加载）。
 //!
-//! 交互：分类卡 = 设置暂存架筛选（与暂存架工具栏同一 Store，不另建筛选状态）。
+//! 交互：分类 / 分组 = 设置暂存架筛选（与暂存架工具栏同一 Store，不另建筛选状态）。
+//! 布局：分类与分组是同级的导航列表，统计收敛为一条紧凑说明，避免四张大数字
+//! 卡把左栏撑满、把「分类」压成统计报表。
 
 import { useEffect } from "react";
-import { FolderSymlink, HardDrive, LayoutGrid, Target } from "lucide-react";
+import { FolderOpen, HardDrive, Layers, Target } from "lucide-react";
 
 import { useLocale } from "../../hooks/useLocale";
 import { useShelfStore } from "../../store/useShelfStore";
@@ -24,6 +26,7 @@ export default function CollectionRail() {
   const stats = useShelfStore((s) => s.stats);
   const items = useShelfStore((s) => s.items);
   const total = useShelfStore((s) => s.total);
+  const groups = useShelfStore((s) => s.groups);
   const filter = useShelfStore((s) => s.filter);
   const setFilter = useShelfStore((s) => s.setFilter);
   const targets = useDropTargetsStore((s) => s.targets);
@@ -48,11 +51,14 @@ export default function CollectionRail() {
     text: stats?.text_count ?? items.filter((i) => i.kind === "text").length,
   };
 
-  const tiles: Array<{ kind: FilterKind; label: string; value: number }> = [
+  // 六类都要能直达：文件夹/文本不属于「常用四类」，但确实是真实分类。
+  const kinds: Array<{ kind: FilterKind; label: string; value: number }> = [
     { kind: "all", label: t("workbench.page.filterAll"), value: count.total },
     { kind: "image", label: t("shelf.kind.image"), value: count.image },
     { kind: "file", label: t("shelf.kind.file"), value: count.file },
     { kind: "link", label: t("shelf.kind.link"), value: count.link },
+    { kind: "folder", label: t("shelf.kind.folder"), value: count.folder },
+    { kind: "text", label: t("shelf.kind.text"), value: count.text },
   ];
 
   const usedBytes = stats ? stats.disk_bytes : items.reduce((sum, i) => sum + (i.byte_size || 0), 0);
@@ -61,62 +67,102 @@ export default function CollectionRail() {
 
   return (
     <aside className="col-rail col-rail-sidebar" aria-label={t("collection.title")}>
-      <section className="col-rail-card">
-        <header className="col-rail-head">
-          <h3>
-            <LayoutGrid size={13} aria-hidden="true" /> {t("workbench.page.collectionCategories")}
-          </h3>
-        </header>
-        <div className="col-rail-tiles">
-          {tiles.map((tile) => {
-            const active = filter.kind === tile.kind;
+      <div className="workspace-rail-head">
+        <span className="workspace-rail-eyebrow">STAGING</span>
+        <h2>{t("workbench.page.collectionCategories")}</h2>
+      </div>
+
+      <section className="col-rail-section" aria-label={t("workbench.page.collectionCategories")}>
+        <p className="col-rail-label">类型</p>
+        <div className="col-rail-nav">
+          {kinds.map((entry) => {
+            const active = filter.kind === entry.kind;
             return (
               <button
-                key={tile.kind}
+                key={entry.kind}
                 type="button"
-                className={`col-tile${active ? " is-active" : ""}`}
+                className={`col-rail-item${active ? " is-active" : ""}`}
                 aria-pressed={active}
-                data-kind={tile.kind}
-                onClick={() => void setFilter({ kind: tile.kind })}
+                data-kind={entry.kind}
+                onClick={() => void setFilter({ kind: entry.kind })}
               >
-                <span className="col-tile-value">{tile.value}</span>
-                <span className="col-tile-label">{tile.label}</span>
+                <span>{entry.label}</span>
+                <em>{entry.value}</em>
               </button>
             );
           })}
         </div>
-        <p className="col-rail-note">
-          {t("shelf.kind.folder")} {count.folder} · {t("shelf.kind.text")} {count.text}
-          {stats
-            ? null
-            : ` · ${t("workbench.page.collectionLoadedNote", { loaded, total })}`}
-        </p>
+        {!stats && (
+          <p className="col-rail-note">
+            {t("workbench.page.collectionLoadedNote", { loaded, total })}
+          </p>
+        )}
       </section>
 
-      <section className="col-rail-card">
-        <header className="col-rail-head">
-          <h3>
-            <HardDrive size={13} aria-hidden="true" /> {t("workbench.page.collectionSpace")}
-          </h3>
-        </header>
-        <p className="col-space-value">{formatBytes(usedBytes)}</p>
-        {quotaBytes > 0 && (
-          <span className="col-space-bar" role="img" aria-label={`${quotaPercent}%`}>
-            <i style={{ width: `${quotaPercent}%` }} />
-          </span>
-        )}
+      {groups.length > 0 && (
+        <section className="col-rail-section" aria-label={t("shelf.group.title")}>
+          <p className="col-rail-label">{t("shelf.group.title")}</p>
+          <div className="col-rail-nav">
+            <button
+              type="button"
+              className={`col-rail-item${filter.group_id === "all" ? " is-active" : ""}`}
+              aria-pressed={filter.group_id === "all"}
+              onClick={() => void setFilter({ group_id: "all" })}
+            >
+              <span>{t("shelf.group.all")}</span>
+            </button>
+            {groups.map((group) => (
+              <button
+                key={group.id}
+                type="button"
+                className={`col-rail-item${filter.group_id === group.id ? " is-active" : ""}`}
+                aria-pressed={filter.group_id === group.id}
+                onClick={() => void setFilter({ group_id: group.id })}
+              >
+                <span>
+                  <FolderOpen size={12} aria-hidden="true" />
+                  {group.name}
+                </span>
+                <em>{group.item_count}</em>
+              </button>
+            ))}
+            <button
+              type="button"
+              className={`col-rail-item${filter.group_id === "none" ? " is-active" : ""}`}
+              aria-pressed={filter.group_id === "none"}
+              onClick={() => void setFilter({ group_id: "none" })}
+            >
+              <span>
+                <Layers size={12} aria-hidden="true" />
+                {t("shelf.group.none")}
+              </span>
+            </button>
+          </div>
+        </section>
+      )}
+
+      <section className="col-rail-section col-rail-section--space" aria-label={t("workbench.page.collectionSpace")}>
+        <p className="col-rail-label">
+          <HardDrive size={11} aria-hidden="true" /> {t("workbench.page.collectionSpace")}
+        </p>
+        <div className="col-space">
+          <span className="col-space-value">{formatBytes(usedBytes)}</span>
+          {quotaBytes > 0 && (
+            <span className="col-space-bar" role="img" aria-label={`${quotaPercent}%`}>
+              <i style={{ width: `${quotaPercent}%` }} />
+            </span>
+          )}
+        </div>
         <p className="col-rail-note">{t("workbench.page.collectionSpaceNote")}</p>
       </section>
 
-      <section className="col-rail-card">
-        <header className="col-rail-head">
-          <h3>
-            <FolderSymlink size={13} aria-hidden="true" /> {t("workbench.page.collectionTargets")}
-          </h3>
-          <button type="button" className="btn sm" onClick={() => requestManage()}>
-            <Target size={12} aria-hidden="true" /> {t("workbench.page.collectionManageTargets")}
+      <section className="col-rail-section col-rail-section--targets" aria-label={t("workbench.page.collectionTargets")}>
+        <p className="col-rail-label">
+          <Target size={11} aria-hidden="true" /> {t("workbench.page.collectionTargets")}
+          <button type="button" className="link-btn" onClick={() => requestManage()}>
+            {t("workbench.page.collectionManageTargets")}
           </button>
-        </header>
+        </p>
         {targets.length === 0 ? (
           <p className="col-rail-note">
             {targetsLoaded

@@ -266,7 +266,7 @@ export default function CaptureInboxPanel() {
     if (filter === "inbox") {
       return {
         title: "收集箱是空的",
-        hint: "按 Ctrl+Shift+Space 打开快速捕获窗口，随手记下想法、待办与链接。",
+        hint: "打开快速捕获窗口，随手记下想法、待办与链接；提交后会留在这里等待处理。",
       };
     }
     return {
@@ -424,11 +424,44 @@ export default function CaptureInboxPanel() {
           {showLoading && <div className="empty-hint">加载中…</div>}
 
           {showEmpty && (
-            <EmptyState
-              icon={<Inbox size={22} aria-hidden="true" />}
-              title={emptyCopy.title}
-              hint={emptyCopy.hint}
-            />
+            <div className="inbox-empty-wrap">
+              <EmptyState
+                icon={<Inbox size={22} aria-hidden="true" />}
+                title={emptyCopy.title}
+                hint={
+                  <span className="inbox-empty-copy">
+                    {emptyCopy.hint}
+                    <span className="inbox-empty-shortcut">
+                      <kbd>Ctrl</kbd>
+                      <span aria-hidden="true">+</span>
+                      <kbd>Shift</kbd>
+                      <span aria-hidden="true">+</span>
+                      <kbd>Space</kbd>
+                    </span>
+                  </span>
+                }
+                action={
+                  <button
+                    type="button"
+                    className="btn primary"
+                    onClick={() => void openQuickRecord()}
+                  >
+                    <Plus size={13} aria-hidden="true" /> 快速记录
+                  </button>
+                }
+              />
+              <ul className="inbox-empty-kinds" aria-label="可收集的内容类型">
+                {(["idea", "todo", "text", "link", "task"] as const).map((kind) => {
+                  const Icon = KIND_ICONS[kind];
+                  return (
+                    <li key={kind}>
+                      <Icon size={12} aria-hidden="true" />
+                      {KIND_LABELS[kind]}
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
           )}
 
           {!showLoading && !showEmpty && visibleItems.length === 0 && (
@@ -591,16 +624,6 @@ export default function CaptureInboxPanel() {
               >
                 <Copy size={12} aria-hidden="true" />
               </button>
-              <button
-                type="button"
-                className="icon-btn sm"
-                aria-label="转为任务"
-                data-tip="转为任务"
-                disabled={selectedBusy || !selectedCanProcess}
-                onClick={() => void onConvert(selectedItem)}
-              >
-                <ListPlus size={12} aria-hidden="true" />
-              </button>
             </>
           }
         >
@@ -615,8 +638,37 @@ export default function CaptureInboxPanel() {
           <p className="inbox-detail-content">{selectedItem.content}</p>
           {selectedItem.note && <p className="inbox-detail-note">{selectedItem.note}</p>}
           <CaptureAttachmentStrip attachments={selectedItem.attachments} variant="detail" />
+          <div className="inbox-detail-actions">
+            <button
+              type="button"
+              className="btn sm primary"
+              aria-label="转为任务（详情栏）"
+              disabled={selectedBusy || !selectedCanProcess}
+              onClick={() => void onConvert(selectedItem)}
+            >
+              <ListPlus size={12} aria-hidden="true" /> 转为任务
+            </button>
+            <button
+              type="button"
+              className="btn sm"
+              aria-label="转为笔记（详情栏）"
+              disabled={selectedBusy}
+              onClick={() => void onConvertToNote(selectedItem)}
+            >
+              <StickyNote size={12} aria-hidden="true" /> 转为笔记
+            </button>
+            <button
+              type="button"
+              className="btn sm"
+              aria-label="标记已处理（详情栏）"
+              disabled={selectedBusy || !selectedCanProcess}
+              onClick={() => void onMarkHandled(selectedItem)}
+            >
+              <Check size={12} aria-hidden="true" /> 标记已处理
+            </button>
+          </div>
           <p className="inbox-detail-hint">
-            行内操作保持可用；右栏用于在长列表中确认内容与状态，不替代条目上的处理动作。
+            行内操作保持可用；右栏用于在长列表中确认内容与状态。
           </p>
         </WorkbenchPageDetail>
       )}
