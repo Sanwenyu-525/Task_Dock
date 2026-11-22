@@ -29,6 +29,9 @@
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
+  /* 本页 tab 内边距为 0、各块自管 14px 水平留白（页头/工具条/页脚同值）；
+     分栏卡面此前是唯一贴边的块，与上方搜索框/清理规则按钮不对齐。 */
+  padding: 0 14px;
 }
 
 .clipboard-page .clip-page-main > .workspace-split-frame {
