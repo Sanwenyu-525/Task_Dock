@@ -15,23 +15,20 @@ Task Dock 想解决的是桌面上的「切换成本」：记一件事要开一�
 
 ## 界面预览
 
-截图来自真实运行的 Task Dock（隔离数据目录 + 演示数据），不是设计稿。
+2026-11-22 从真实运行的 Task Dock 重新截取（WebView2 实例 + 隔离数据目录 + 演示数据），不是设计稿。
 
-![任务页（浅色 · 柔光玻璃）](docs/screenshots/readme-20261108/01-tasks-light.png)
+![工作台首页](docs/screenshots/readme-20261122/01-home.png)
 
-| **任务页（暗色 · 梦幻渐变）** | **剪贴板（文字 / 链接 / 富文本 / 文件 / 图片分组）** |
+| **任务管理** | **任务管理（暗色）** |
 |---|---|
-| ![任务页暗色](docs/screenshots/readme-20261108/02-tasks-dark.png) | ![剪贴板](docs/screenshots/readme-20261108/03-clipboard.png) |
-| **Agent 监控（来源 → 实例 → 会话）** | **行动中心（失败 / 等待介入）** |
-| ![Agent 监控](docs/screenshots/readme-20261108/04-agents.png) | ![行动中心](docs/screenshots/readme-20261108/05-actions.png) |
-| **文件暂存架** | **收集箱（快速捕获）** |
-| ![文件暂存架](docs/screenshots/readme-20261108/06-shelf.png) | ![收集箱](docs/screenshots/readme-20261108/10-inbox.png) |
-| **工作流** | **规划中心** |
-| ![工作流](docs/screenshots/readme-20261108/07-workflows.png) | ![规划中心](docs/screenshots/readme-20261108/08-planning.png) |
-| **设置（外观与主题）** | **停靠胶囊（左侧轨道 + 任务面板）** |
-| ![设置](docs/screenshots/readme-20261108/09-settings.png) | ![停靠胶囊](docs/screenshots/readme-20261108/11-capsule.png) |
+| ![任务管理](docs/screenshots/readme-20261122/02-tasks.png) | ![任务管理暗色](docs/screenshots/readme-20261122/07-tasks-dark.png) |
+| **Agent 监控（来源 → 实例 → 会话）** | **智能剪贴板（条目与内容预览）** |
+| ![Agent 监控](docs/screenshots/readme-20261122/03-agents.png) | ![智能剪贴板](docs/screenshots/readme-20261122/04-clipboard.png) |
+| **工作流** | **设置 · 外观与主题** |
+| ![工作流](docs/screenshots/readme-20261122/05-workflows.png) | ![设置](docs/screenshots/readme-20261122/06-settings.png) |
 
-> 图中的任务、剪贴板、Agent 会话、项目与工作流均为演示数据。
+> 图中的任务、剪贴板、Agent 会话、项目与工作流均为演示数据。采集条件与边界见
+> [截图说明](docs/screenshots/readme-20261122/README.md)。
 
 ## 核心能力
 
