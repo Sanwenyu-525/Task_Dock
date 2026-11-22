@@ -262,6 +262,7 @@ pub fn export_all(db: &Db, row: &workspace::WorkspaceRow) -> AppResult<ExportRep
             kind: project.kind.clone(),
             status: project.status.clone(),
             description: project.note.clone(),
+            goal: String::new(),
             root_path: project.root_path.clone(),
             root_exists: project.root_exists,
             active_plan_id: active_plan.clone(),

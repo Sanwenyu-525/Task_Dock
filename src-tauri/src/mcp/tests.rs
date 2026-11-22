@@ -135,6 +135,308 @@ fn grant_project_capabilities(db: &Db, row_id: &str) {
     }
 }
 
+/// 项目根当前 revision（v93：workspace_projects.revision，项目根聚合并发令牌）。
+fn root_revision(db: &Db, root: &str) -> i64 {
+    db.with_read(|conn| crate::project_hub::service::load_summary(conn, root))
+        .unwrap()
+        .revision
+}
+
+// ── v94 项目身份契约：项目根读模型 / 计划聚合 ────────────────────────
+
+/// 列表/详情/计划读工具必须暴露统一身份：projectId=根、planId=计划。
+#[test]
+fn project_tools_expose_root_identity_and_plan_roundtrip() {
+    let db = memdb();
+    let (agent, _) = make_agent(&db, "root-id", "project_rw");
+    grant_project_capabilities(&db, &agent.row_id);
+    let ctx = ctx_for(&db, &agent);
+
+    let created = call_ok(
+        &ctx,
+        "taskdock_create_project",
+        json!({ "name": "身份契约项目", "description": "desc", "requestId": "id-1" }),
+    );
+    let root = created["projectId"].as_str().unwrap().to_string();
+    let plan_id = created["activePlanId"].as_str().unwrap().to_string();
+
+    // 1) 列表返回根行：projectId=id=根、activePlanId 非空、无重复计划行。
+    let listed = call_ok(&ctx, "taskdock_list_projects", json!({}));
+    let rows = listed.as_array().unwrap();
+    assert_eq!(
+        rows.len(),
+        1,
+        "同一项目只应有一行（不再按计划行展开）: {rows:?}"
+    );
+    assert_eq!(rows[0]["projectId"], root);
+    assert_eq!(rows[0]["id"], root, "兼容字段 id 必须等于项目根");
+    assert_eq!(rows[0]["lifecycleStatus"], "active");
+    assert_eq!(rows[0]["activePlanId"], plan_id.as_str(), "activePlanId 非空");
+    assert_eq!(rows[0]["planCount"], 1);
+    assert_eq!(rows[0]["revision"], 1, "根 revision 从 1 起步");
+
+    // 2) get_project 读根详情：projectId=根，plans 含 activePlanId 且元素带 planId/projectId。
+    let detail = call_ok(&ctx, "taskdock_get_project", json!({ "project_id": root }));
+    assert_eq!(detail["projectId"], root);
+    assert_eq!(detail["id"], root);
+    assert_eq!(detail["lifecycleStatus"], "active");
+    assert_eq!(detail["activePlanId"], plan_id.as_str());
+    let plans = detail["plans"].as_array().unwrap();
+    assert_eq!(plans.len(), 1);
+    assert_eq!(plans[0]["planId"], plan_id.as_str());
+    assert_eq!(plans[0]["projectId"], root);
+    assert_eq!(plans[0]["id"], plan_id.as_str(), "计划行 id 仍是计划 ID");
+    assert_eq!(plans[0]["revision"], 1);
+
+    // 3) get_plan 读计划摘要：planId=计划、projectId=根。
+    let plan = call_ok(&ctx, "taskdock_get_plan", json!({ "plan_id": plan_id }));
+    assert_eq!(plan["planId"], plan_id.as_str());
+    assert_eq!(plan["projectId"], root);
+    assert_eq!(plan["status"], "planning");
+    assert_eq!(plan["revision"], 1);
+
+    // 4) 身份防混用：传项目根 ID 调 get_plan → Validation 明确指路。
+    let err = tool_err(&ctx, "taskdock_get_plan", json!({ "plan_id": root }));
+    let message = err.to_string();
+    assert!(message.contains("项目根 ID"), "{message}");
+    assert!(message.contains("taskdock_get_project"), "{message}");
+
+    // 5) 解析不出的 ID → NotFound（不伪造存在性，也不区分授权）。
+    let payload = tool_err_payload(&ctx, "taskdock_get_plan", json!({ "plan_id": "no-such-plan" }));
+    assert_eq!(payload["error"], "NOT_FOUND");
+    let payload = tool_err_payload(
+        &ctx,
+        "taskdock_get_project",
+        json!({ "project_id": "no-such-root" }),
+    );
+    assert_eq!(payload["error"], "NOT_FOUND");
+}
+
+/// update_project 只写项目根聚合（根 revision / 生命周期），
+/// update_plan 只写计划聚合（计划 revision / 执行状态），互不串写。
+#[test]
+fn update_project_targets_root_and_update_plan_targets_plan() {
+    let db = memdb();
+    let (root, plan, plan_revision) = make_rooted_project(&db, "聚合拆分项目");
+    let (agent, _) = make_agent(&db, "agg", "project_rw");
+    grant_project_capabilities(&db, &agent.row_id);
+    auth::grant_project(&db, &agent.row_id, &root).unwrap();
+    let ctx = ctx_for(&db, &agent);
+
+    // 1) 用 projectId 更新根：lifecycle_status=archived → 根 lifecycle 变、
+    //    计划执行状态不变；根 revision 递增、计划 revision 不变。
+    let root_rev_before = root_revision(&db, &root);
+    let updated = call_ok(
+        &ctx,
+        "taskdock_update_project",
+        json!({
+            "project_id": root,
+            "expected_revision": root_rev_before,
+            "lifecycle_status": "archived",
+            "goal": "根目标",
+        }),
+    );
+    assert_eq!(updated["lifecycleStatus"], "archived");
+    assert_eq!(updated["revision"], root_rev_before + 1, "写成功根 revision +1");
+    assert_eq!(updated["projectId"], root);
+    let plan_after_root_update = call_ok(&ctx, "taskdock_get_plan", json!({ "plan_id": plan }));
+    assert_eq!(plan_after_root_update["status"], "planning", "归档不影响计划执行状态");
+    assert_eq!(plan_after_root_update["revision"], plan_revision, "根写不得消耗计划 revision");
+
+    // 2) 默认仍包含 archived 项目；include_archived=false 才排除。
+    let listed = call_ok(&ctx, "taskdock_list_projects", json!({}));
+    assert!(listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|r| r["projectId"] == root));
+    let active_only = call_ok(
+        &ctx,
+        "taskdock_list_projects",
+        json!({ "include_archived": false }),
+    );
+    assert!(!active_only
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|r| r["projectId"] == root));
+
+    // 3) 传旧计划 ID → 归一根后更新成功，返回身份是根。
+    let via_plan = call_ok(
+        &ctx,
+        "taskdock_update_project",
+        json!({
+            "project_id": plan,
+            "expected_revision": root_rev_before + 1,
+            "name": "经计划 ID 改根",
+        }),
+    );
+    assert_eq!(via_plan["id"], root, "旧计划 ID 入参必须归一到根");
+    assert_eq!(via_plan["projectId"], root);
+    assert_eq!(via_plan["revision"], root_rev_before + 2);
+
+    // 4) 旧执行状态字段被拒绝并指路 taskdock_update_plan；根与计划都不被改动。
+    let err = tool_err(
+        &ctx,
+        "taskdock_update_project",
+        json!({
+            "project_id": root,
+            "expected_revision": root_rev_before + 2,
+            "status": "in_progress",
+        }),
+    );
+    let message = err.to_string();
+    assert!(message.contains("taskdock_update_plan"), "{message}");
+    assert!(message.contains("in_progress"), "{message}");
+
+    // 5) update_plan 改执行状态：计划 revision 递增，根 revision 与 lifecycle 不变。
+    let root_rev_before_plan = root_revision(&db, &root);
+    let plan_updated = call_ok(
+        &ctx,
+        "taskdock_update_plan",
+        json!({
+            "plan_id": plan,
+            "expected_revision": plan_revision,
+            "status": "in_progress",
+        }),
+    );
+    assert_eq!(plan_updated["status"], "in_progress");
+    assert_eq!(plan_updated["revision"], plan_revision + 1, "计划写 revision +1");
+    assert_eq!(
+        root_revision(&db, &root),
+        root_rev_before_plan,
+        "计划执行状态不得改动项目根 revision"
+    );
+    let detail = call_ok(&ctx, "taskdock_get_project", json!({ "project_id": root }));
+    assert_eq!(detail["lifecycleStatus"], "archived", "计划写不得改动项目生命周期");
+    assert_eq!(detail["activePlanId"], plan.as_str());
+
+    // 6) update_plan 传项目根 ID → Validation 指路（身份防混用，写路径同样生效）。
+    let err = tool_err(
+        &ctx,
+        "taskdock_update_plan",
+        json!({ "plan_id": root, "expected_revision": 1, "status": "paused" }),
+    );
+    let message = err.to_string();
+    assert!(message.contains("项目根 ID"), "{message}");
+    assert!(message.contains("taskdock_update_project"), "{message}");
+
+    // 7) lifecycle_status 与旧兼容字段 status 冲突 → Validation。
+    let err = tool_err(
+        &ctx,
+        "taskdock_update_project",
+        json!({
+            "project_id": root,
+            "expected_revision": root_rev_before + 2,
+            "lifecycle_status": "active",
+            "status": "archived",
+        }),
+    );
+    assert!(err.to_string().contains("同时提供"), "{err}");
+}
+
+/// 根与计划是两个独立聚合：expected_revision 各自过期各自冲突。
+#[test]
+fn expected_revision_conflicts_are_per_aggregate() {
+    let db = memdb();
+    let (root, plan, plan_revision) = make_rooted_project(&db, "并发冲突项目");
+    let (agent, _) = make_agent(&db, "conflict", "project_rw");
+    grant_project_capabilities(&db, &agent.row_id);
+    auth::grant_project(&db, &agent.row_id, &root).unwrap();
+    let ctx = ctx_for(&db, &agent);
+
+    // 根 revision 过期 → Conflict（携带当前根 revision）
+    let root_rev = root_revision(&db, &root);
+    let _ = call_ok(
+        &ctx,
+        "taskdock_update_project",
+        json!({ "project_id": root, "expected_revision": root_rev, "name": "先写根" }),
+    );
+    let payload = tool_err_payload(
+        &ctx,
+        "taskdock_update_project",
+        json!({ "project_id": root, "expected_revision": root_rev, "name": "迟到根写入" }),
+    );
+    assert_eq!(payload["error"], "CONFLICT");
+    assert!(payload["message"].as_str().unwrap().contains("当前"), "{payload}");
+
+    // 计划 revision 过期 → Conflict（计划聚合自己的令牌）
+    let _ = call_ok(
+        &ctx,
+        "taskdock_update_plan",
+        json!({ "plan_id": plan, "expected_revision": plan_revision, "status": "in_progress" }),
+    );
+    let payload = tool_err_payload(
+        &ctx,
+        "taskdock_update_plan",
+        json!({ "plan_id": plan, "expected_revision": plan_revision, "status": "paused" }),
+    );
+    assert_eq!(payload["error"], "CONFLICT");
+    assert!(payload["message"].as_str().unwrap().contains("当前"), "{payload}");
+}
+
+/// 计划工具与项目工具共用同一根授权：无 grant 拒绝、撤销立即生效。
+#[test]
+fn plan_tools_respect_grants_and_revocation() {
+    let db = memdb();
+    let (root_a, plan_a, _) = make_rooted_project(&db, "A 项目");
+    let (root_b, plan_b, _) = make_rooted_project(&db, "B 项目");
+    let (agent_a, _) = make_agent(&db, "plan-a", "project_rw");
+    let (agent_b, _) = make_agent(&db, "plan-b", "project_rw");
+    grant_project_capabilities(&db, &agent_a.row_id);
+    grant_project_capabilities(&db, &agent_b.row_id);
+    auth::grant_project(&db, &agent_a.row_id, &root_a).unwrap();
+    auth::grant_project(&db, &agent_b.row_id, &root_b).unwrap();
+    let ctx_a = ctx_for(&db, &agent_a);
+    let ctx_b = ctx_for(&db, &agent_b);
+
+    // 1) A 不能读/改 B 的计划（无 grant → FORBIDDEN）。
+    let denied = rpc_err(&ctx_a, "taskdock_get_plan", json!({ "plan_id": plan_b }));
+    assert_eq!(denied.code, crate::mcp::protocol::ERR_FORBIDDEN);
+    let denied = rpc_err(
+        &ctx_a,
+        "taskdock_update_plan",
+        json!({ "plan_id": plan_b, "expected_revision": 1, "status": "in_progress" }),
+    );
+    assert_eq!(denied.code, crate::mcp::protocol::ERR_FORBIDDEN);
+    // B 改自己的计划成功（计划 revision +1）。
+    let updated = call_ok(
+        &ctx_b,
+        "taskdock_update_plan",
+        json!({ "plan_id": plan_b, "expected_revision": 1, "status": "in_progress" }),
+    );
+    assert_eq!(updated["revision"], 2);
+    assert_eq!(updated["id"], plan_b, "update_plan 返回计划身份");
+    assert_eq!(
+        updated["workspace_project_id"], root_b,
+        "计划行携带所属项目根"
+    );
+
+    // 2) 撤销授权后，对项目与计划的读写全部立即拒绝（无缓存窗口）。
+    auth::revoke_project(&db, &agent_a.row_id, &root_a).unwrap();
+    for (name, args) in [
+        (
+            "taskdock_get_plan",
+            json!({ "plan_id": plan_a }),
+        ),
+        (
+            "taskdock_update_plan",
+            json!({ "plan_id": plan_a, "expected_revision": 1, "status": "paused" }),
+        ),
+        (
+            "taskdock_update_project",
+            json!({ "project_id": root_a, "expected_revision": 1, "name": "撤权后写入" }),
+        ),
+        (
+            "taskdock_get_project",
+            json!({ "project_id": root_a }),
+        ),
+    ] {
+        let denied = rpc_err(&ctx_a, name, args);
+        assert_eq!(denied.code, crate::mcp::protocol::ERR_FORBIDDEN, "{name} 撤权后必须拒绝");
+    }
+}
+
 // ── 工具发现 ─────────────────────────────────────────────────────────
 
 #[test]
@@ -145,6 +447,9 @@ fn tool_defs_are_complete_and_unique() {
         "taskdock_list_projects",
         "taskdock_get_project",
         "taskdock_update_project",
+        // v94 身份契约工具：计划聚合读写（旧工具不删除）。
+        "taskdock_get_plan",
+        "taskdock_update_plan",
         "taskdock_create_feature",
         "taskdock_get_feature",
         "taskdock_add_step",
@@ -153,6 +458,21 @@ fn tool_defs_are_complete_and_unique() {
         assert!(
             defs.iter().any(|d| d.name == original),
             "缺少既有工具 {original}"
+        );
+    }
+    // 身份契约（v94）：description 必须写清 projectId=根 / planId=计划。
+    for name in ["taskdock_list_projects", "taskdock_get_project", "taskdock_update_project"] {
+        let def = defs.iter().find(|d| d.name == name).unwrap();
+        assert!(
+            def.description.contains("项目根"),
+            "{name} 描述必须写明 projectId=项目根 workspace_projects.id"
+        );
+    }
+    for name in ["taskdock_get_plan", "taskdock_update_plan"] {
+        let def = defs.iter().find(|d| d.name == name).unwrap();
+        assert!(
+            def.description.contains("planId=计划"),
+            "{name} 描述必须写明 planId=计划 planning_projects.id"
         );
     }
     let mut names: Vec<_> = defs.iter().map(|d| d.name).collect();
@@ -293,6 +613,8 @@ fn project_isolation_between_agents() {
     let db = memdb();
     let p1 = create_project_impl(&db, proj_input("P1")).unwrap();
     let p2 = create_project_impl(&db, proj_input("P2")).unwrap();
+    // v94 列表是项目根读模型：行身份与并发令牌都取项目根。
+    let root1 = p1.workspace_project_id.clone().unwrap();
     let (agent_a, _) = make_agent(&db, "agent-a", "project_rw");
     let ctx_a = ctx_for(&db, &agent_a);
     grant_project_capabilities(&db, &agent_a.row_id);
@@ -301,7 +623,8 @@ fn project_isolation_between_agents() {
 
     let listed = call_ok(&ctx_a, "taskdock_list_projects", json!({}));
     assert_eq!(listed.as_array().unwrap().len(), 1);
-    assert_eq!(listed[0]["id"], p1.id);
+    assert_eq!(listed[0]["projectId"], root1);
+    assert_eq!(listed[0]["id"], root1, "兼容字段 id 必须等于项目根");
     let denied_read = rpc_err(
         &ctx_a,
         "taskdock_get_project",
@@ -309,13 +632,13 @@ fn project_isolation_between_agents() {
     );
     assert_eq!(denied_read.code, crate::mcp::protocol::ERR_FORBIDDEN);
 
-    // P1 可写
+    // P1 可写（项目根聚合写，令牌是根 revision）
     let _ = call_ok(
         &ctx_a,
         "taskdock_update_project",
         json!({
             "project_id": p1.id,
-            "expected_revision": p1.revision,
+            "expected_revision": root_revision(&db, &root1),
             "description": "a 可写",
         }),
     );
@@ -368,6 +691,7 @@ fn project_rw_reads_are_limited_to_grants_and_revocation_is_immediate() {
     let (agent_a, _) = make_agent(&db, "read-scope-a", "project_rw");
     auth::grant_project(&db, &agent_a.row_id, &p1.id).unwrap();
     let ctx_a = ctx_for(&db, &agent_a);
+    let root1 = p1.workspace_project_id.clone().unwrap();
 
     let (agent_b, _) = make_agent(&db, "read-scope-b", "project_rw");
     auth::grant_project(&db, &agent_b.row_id, &p2.id).unwrap();
@@ -384,7 +708,7 @@ fn project_rw_reads_are_limited_to_grants_and_revocation_is_immediate() {
 
     let listed = call_ok(&ctx_a, "taskdock_list_projects", json!({}));
     assert_eq!(listed.as_array().unwrap().len(), 1);
-    assert_eq!(listed[0]["id"], p1.id);
+    assert_eq!(listed[0]["projectId"], root1, "列表行身份是项目根");
     assert_eq!(
         call_ok(
             &ctx_a,
@@ -513,7 +837,8 @@ fn granted_agent_can_read_write_and_revocation_blocks_immediately() {
     // 按项目根授权后：读 + 写通过（入参用计划 ID，内部解析到同一根）
     auth::grant_project(&db, &agent.row_id, &root).unwrap();
     let loaded = call_ok(&ctx, "taskdock_get_project", json!({ "project_id": plan }));
-    assert_eq!(loaded["id"], plan);
+    assert_eq!(loaded["projectId"], root, "详情身份是项目根");
+    assert_eq!(loaded["id"], root, "兼容字段 id 必须等于项目根");
     let _ = call_ok(
         &ctx,
         "taskdock_update_project",
@@ -593,7 +918,7 @@ fn multi_plan_project_grants_are_root_scoped() {
 
     // 计划 B 与计划 A 同根：读 + 写被同一根授权覆盖，不是「按计划各自授权」
     let loaded = call_ok(&ctx, "taskdock_get_project", json!({ "project_id": plan_b }));
-    assert_eq!(loaded["id"], plan_b);
+    assert_eq!(loaded["projectId"], root, "按计划 ID 读取返回根身份");
     let _ = call_ok(
         &ctx,
         "taskdock_update_project",
@@ -1259,6 +1584,8 @@ fn failed_audit_insert_rolls_back_mcp_business_write() {
 fn audits_record_reads_writes_and_failures_without_secrets() {
     let db = memdb();
     let p = create_project_impl(&db, proj_input("P")).unwrap();
+    // v94：update_project 的审计对象是项目根（入参计划 ID 已归根）。
+    let root = p.workspace_project_id.clone().unwrap();
     let (agent, token) = make_agent(&db, "aud", "project_rw");
     grant_project_capabilities(&db, &agent.row_id);
     auth::grant_project(&db, &agent.row_id, &p.id).unwrap();
@@ -1268,7 +1595,7 @@ fn audits_record_reads_writes_and_failures_without_secrets() {
     let _ = call_ok(
         &ctx,
         "taskdock_update_project",
-        json!({ "project_id": p.id, "expected_revision": p.revision, "name": "X2" }),
+        json!({ "project_id": p.id, "expected_revision": root_revision(&db, &root), "name": "X2" }),
     );
     // 一次业务失败（冲突）
     let _ = tool_err(
@@ -1312,7 +1639,7 @@ fn audits_record_reads_writes_and_failures_without_secrets() {
         .iter()
         .any(|(a, e, s, _, _, res)| a == "taskdock_update_project"
             && *s == 1
-            && *e == p.id
+            && *e == root
             && res.contains("\"revision\":2")));
     assert!(rows
         .iter()
@@ -1565,7 +1892,9 @@ fn revoking_a_project_grant_blocks_the_next_read() {
         "taskdock_get_project",
         json!({ "project_id": project.id }),
     );
-    assert_eq!(loaded["id"], project.id);
+    let root = project.workspace_project_id.clone().unwrap();
+    assert_eq!(loaded["projectId"], root, "详情身份是项目根");
+    assert_eq!(loaded["id"], root);
 
     let info = auth::revoke_project(&db, &agent.row_id, &project.id).unwrap();
     assert!(!info.granted_project_ids.contains(&project.id));

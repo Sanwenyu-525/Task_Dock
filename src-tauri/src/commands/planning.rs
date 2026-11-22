@@ -381,35 +381,8 @@ fn project_exists(conn: &Connection, id: &str) -> AppResult<bool> {
         .is_some())
 }
 
-/// 乐观并发（v37）：校验 expected_revision 与当前 revision 一致。
-/// 不匹配返回 Conflict（携带当前 revision），防止 MCP 客户端后写无声覆盖。
-/// 不传（None）保持旧行为——UI 命令向后兼容，MCP 工具层强制传值。
-fn check_expected_revision_tx(
-    conn: &Connection,
-    table: &str,
-    id: &str,
-    expected: Option<i64>,
-) -> AppResult<()> {
-    let Some(expected) = expected else {
-        return Ok(());
-    };
-    let current: i64 = conn
-        .query_row(
-            &format!("SELECT revision FROM {table} WHERE id = ?1"),
-            rusqlite::params![id],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::Validation(format!("对象不存在: {}", id)))?;
-    if current != expected {
-        return Err(AppError::Conflict(format!(
-            "版本冲突：期望 revision {expected}，当前 {current}（请重新读取后再提交）"
-        )));
-    }
-    Ok(())
-}
-
+/// 乐观并发校验的唯一实现在 `project_hub::service::check_expected_revision_tx`
+/// （v93 起同时服务计划行与项目根行）；此处不再持有第二份实现。
 // ── 行映射 ───────────────────────────────────────────────────────────
 
 fn project_stats_from(
@@ -784,7 +757,7 @@ pub fn update_project_tx(
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::Validation(format!("项目不存在: {}", id)))?;
     let target_date = resolve_date(&current.0, &parse_date_update(&patch.target_date)?);
-    check_expected_revision_tx(conn, "planning_projects", &id, patch.expected_revision)?;
+    crate::project_hub::service::check_expected_revision_tx(conn, "planning_projects", &id, patch.expected_revision)?;
 
     // 项目字段（名称/描述/目标日期）交给 ProjectService，项目根是唯一事实来源；
     // 它同时把同名列同步为计划容器的兼容镜像。
@@ -1239,7 +1212,7 @@ pub(crate) fn update_feature_tx(
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::Validation(format!("功能不存在: {}", id)))?;
     let (project_id, old_status, cur_milestone, cur_completed_at, cur_target_date) = current;
-    check_expected_revision_tx(conn, "planning_features", &id, patch.expected_revision)?;
+    crate::project_hub::service::check_expected_revision_tx(conn, "planning_features", &id, patch.expected_revision)?;
 
     // 里程碑三态：缺省保持 / null 清除 / 值校验归属后替换
     let milestone_id = match &patch.milestone_id {
@@ -1418,7 +1391,7 @@ pub(crate) fn add_step_tx(
         .optional()
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::Validation(format!("功能不存在: {}", feature_id)))?;
-    check_expected_revision_tx(conn, "planning_features", &feature_id, expected_revision)?;
+    crate::project_hub::service::check_expected_revision_tx(conn, "planning_features", &feature_id, expected_revision)?;
     let sort_order = next_sort_order(
         conn,
         "planning_feature_steps",
@@ -1486,7 +1459,7 @@ pub(crate) fn update_step_tx(
             |r| r.get(0),
         )
         .map_err(AppError::from)?;
-    check_expected_revision_tx(
+    crate::project_hub::service::check_expected_revision_tx(
         conn,
         "planning_features",
         &feature_id,

@@ -19,13 +19,16 @@
 //! - 有意偏离说明：`taskdock_add_progress_note` 与 link/unlink 只追加 activity
 //!   与关联表，不修改项目/功能内容，不存在丢失更新风险，因此不要求也不消耗
 //!   expected_revision（其余全部写工具强制）。
+//! - 项目身份契约（双聚合契约）：projectId = 项目根 `workspace_projects.id`，planId =
+//!   计划 `planning_projects.id`。list/get/update_project 走项目根聚合
+//!   （根 revision），get/update_plan 走计划聚合（计划 revision）。
 
 use rusqlite::OptionalExtension;
 use serde_json::{json, Value};
 
 use crate::commands::planning::{
-    list_features_impl, list_milestones_impl, list_projects_impl, load_feature_tx, load_project_tx,
-    FeatureInput, FeaturePatch, ProjectInput, ProjectPatch, StepPatch,
+    list_features_impl, list_milestones_impl, load_feature_tx, load_project_tx,
+    FeatureInput, FeaturePatch, ProjectPatch, StepPatch,
 };
 use crate::db::Db;
 use crate::error::{AppError, AppResult};
@@ -87,10 +90,10 @@ pub fn tool_defs() -> &'static [ToolDef] {
         let mut defs = vec![
         ToolDef {
             name: "taskdock_list_projects",
-            description: "列出 Task Dock 规划中心的用户项目（含统计与 revision）。不含 Task Dock 内置路线图。",
+            description: "列出 Task Dock 规划中心的用户项目（项目根读模型）。身份约定：projectId=id=项目根 workspace_projects.id；planId=计划 planning_projects.id。每行含 projectId/name/kind/lifecycleStatus(active|archived)/revision(项目根并发版本)/activePlanId/planCount(全部计划，含归档)。不含 Task Dock 内置路线图。",
             input_schema: schema(
                 json!({
-                    "include_archived": { "type": "boolean", "description": "是否包含已归档项目，默认包含" },
+                    "include_archived": { "type": "boolean", "description": "是否包含 archived 生命周期项目，默认包含" },
                 }),
                 &[],
             ),
@@ -98,10 +101,23 @@ pub fn tool_defs() -> &'static [ToolDef] {
         },
         ToolDef {
             name: "taskdock_get_project",
-            description: "读取单个项目详情（含统计与 revision）。",
+            description: "读取项目根详情。身份约定：projectId=项目根 workspace_projects.id；planId=计划 planning_projects.id。project_id 接受项目根或旧计划 ID（内部解析为根）。返回根字段（lifecycleStatus=active|archived、revision=项目根并发版本、activePlanId）与全部计划 plans（元素含 planId/projectId/status=执行状态/revision=计划并发版本）。项目根并发令牌用根 revision。",
             input_schema: schema(
-                json!({ "project_id": { "type": "string" } }),
+                json!({
+                    "project_id": { "type": "string", "description": "项目根 ID；也接受旧计划 ID，内部解析为根" },
+                }),
                 &["project_id"],
+            ),
+            write: false,
+        },
+        ToolDef {
+            name: "taskdock_get_plan",
+            description: "读取计划摘要。身份约定：planId=计划 planning_projects.id；projectId=所属项目根 workspace_projects.id。返回 planId/projectId/name/status=执行状态(planning|in_progress|paused|completed)/revision=计划并发版本/isActive/archived。传项目根 ID 会被拒绝并提示改用 taskdock_get_project。",
+            input_schema: schema(
+                json!({
+                    "plan_id": { "type": "string", "description": "计划 planning_projects.id（不接受项目根 ID）" },
+                }),
+                &["plan_id"],
             ),
             write: false,
         },
@@ -187,18 +203,44 @@ pub fn tool_defs() -> &'static [ToolDef] {
         },
         ToolDef {
             name: "taskdock_update_project",
-            description: "更新项目（名称/描述/状态/目标日期）。需要项目授权与 expected_revision。",
+            description: "更新项目根聚合（名称/类型/描述/目标/日期/生命周期 active|archived）。身份约定：projectId=项目根 workspace_projects.id；planId=计划 planning_projects.id。expected_revision 是项目根 revision（不是计划 revision）。计划执行状态（planning/in_progress/paused/completed）请改用 taskdock_update_plan。归档项目不影响计划执行状态。",
             input_schema: schema(
                 json!({
-                    "project_id": { "type": "string" },
-                    "expected_revision": expected_revision_prop(),
-                    "name": { "type": "string", "maxLength": 100 },
-                    "description": { "type": "string", "maxLength": 2000 },
-                    "status": { "type": "string", "enum": ["planning", "in_progress", "paused", "completed"] },
+                    "project_id": { "type": "string", "description": "项目根 ID；也接受旧计划 ID，内部解析为根" },
+                    "expected_revision": { "type": "integer", "description":
+                        "必须：项目根乐观并发版本。传入读取结果中的根 revision；不匹配返回冲突与当前 revision" },
+                    "name": { "type": "string", "maxLength": 120 },
+                    "kind": { "type": "string", "description": "项目类型：general/novel/game/ai_comic/development" },
+                    "description": { "type": "string", "maxLength": 4000 },
+                    "goal": { "type": "string", "maxLength": 2000 },
+                    "lifecycle_status": { "type": "string", "enum": ["active", "archived"],
+                        "description": "项目生命周期；归档/恢复只改项目根，不改计划执行状态" },
+                    "status": { "type": "string",
+                        "description": "旧字段兼容：active/archived 等价 lifecycle_status；planning/in_progress/paused/completed 会被拒绝并提示改用 taskdock_update_plan" },
                     "target_date": { "type": ["string", "null"], "description": DATE_DESC },
                     "requestId": request_id_prop(),
                 }),
                 &["project_id", "expected_revision"],
+            ),
+            write: true,
+        },
+        ToolDef {
+            name: "taskdock_update_plan",
+            description: "更新计划（名称/描述/执行状态 planning|in_progress|paused|completed/目标日期/排序）。身份约定：planId=计划 planning_projects.id；projectId=项目根 workspace_projects.id。expected_revision 是计划 revision（不是项目根 revision）。项目根生命周期与根字段请用 taskdock_update_project。",
+            input_schema: schema(
+                json!({
+                    "plan_id": { "type": "string", "description": "计划 planning_projects.id（不接受项目根 ID）" },
+                    "expected_revision": { "type": "integer", "description":
+                        "必须：计划乐观并发版本。传入读取结果中的计划 revision；不匹配返回冲突与当前 revision" },
+                    "name": { "type": "string", "maxLength": 100 },
+                    "description": { "type": "string", "maxLength": 2000 },
+                    "status": { "type": "string", "enum": ["planning", "in_progress", "paused", "completed"],
+                        "description": "计划执行状态；项目生命周期（active|archived）请用 taskdock_update_project" },
+                    "target_date": { "type": ["string", "null"], "description": DATE_DESC },
+                    "sort_order": { "type": "integer" },
+                    "requestId": request_id_prop(),
+                }),
+                &["plan_id", "expected_revision"],
             ),
             write: true,
         },
@@ -382,13 +424,19 @@ fn operation_target(tool: &str, args: &Value) -> (String, String, String) {
             .unwrap_or("")
             .to_string()
     };
-    let kind = crate::agent_access::operations::resource_kind_for_tool(tool).to_string();
+    let kind = if tool == "taskdock_update_plan" {
+        // 计划聚合写归属 planning 域；resource_kind_for_tool 对该名会误判为 task。
+        "project"
+    } else {
+        crate::agent_access::operations::resource_kind_for_tool(tool)
+    }
+    .to_string();
     let id = match kind.as_str() {
         "task" => pick(&["task_id"]),
         "feature" => pick(&["feature_id"]),
         "step" => pick(&["step_id"]),
         "milestone" => pick(&["milestone_id"]),
-        "project" => pick(&["project_id"]),
+        "project" => pick(&["project_id", "plan_id"]),
         "note" => pick(&["note_id"]),
         "knowledge" => pick(&["document_id", "doc_id"]),
         _ => String::new(),
@@ -568,6 +616,7 @@ fn authorize_replay(
         "taskdock_update_project" | "taskdock_create_feature" | "taskdock_add_progress_note" => {
             require_str(args, "project_id")?.to_string()
         }
+        "taskdock_update_plan" => require_str(args, "plan_id")?.to_string(),
         "taskdock_update_feature"
         | "taskdock_add_step"
         | "taskdock_link_agent_session"
@@ -594,8 +643,9 @@ fn authorize_replay(
         }
     };
     let root = ensure_grant(ctx, conn, &project_id)?;
-    // update_project 会改写项目根元数据：重放同样按当前能力复核 projects.write。
-    if name == "taskdock_update_project" {
+    // update_project / update_plan 会改写项目根元数据或经根镜像同步：
+    // 重放同样按当前能力复核 projects.write。
+    if name == "taskdock_update_project" || name == "taskdock_update_plan" {
         ensure_projects_write(ctx, conn, &root)?;
     }
     Ok(())
@@ -733,37 +783,118 @@ fn call(
         // ── 读工具（scope ∈ {readonly, project_rw}）────────────────
         "taskdock_list_projects" => {
             ensure_can_read(agent)?;
-            let mut projects =
-                list_projects_impl(db, args.get("include_archived").and_then(|v| v.as_bool()))?;
-            if agent.scope == auth::McpScope::ProjectRw {
-                let granted = granted_project_ids(ctx)?;
-                // 授权键是项目根（v91）：列表行是「项目当前计划」，先解析根再比对；
-                // 解析不出根的孤立旧计划视为未授权。
-                let roots: Vec<Option<String>> = db.with_read(|conn| {
-                    projects
-                        .iter()
-                        .map(|project| {
-                            crate::project_hub::service::resolve_project_root(conn, &project.id)
-                        })
-                        .collect()
+            let include_archived = args
+                .get("include_archived")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            // 项目根读模型（双聚合契约）：行身份就是 workspace_projects.id，不再经计划行转解析。
+            let mut rows: Vec<Value> = db.with_read(|conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT p.id, p.name, p.kind, p.status, p.revision, p.active_plan_id,
+                            (SELECT COUNT(*) FROM planning_projects pl
+                              WHERE pl.workspace_project_id = p.id) AS plan_count
+                     FROM workspace_projects p
+                     WHERE (?1 = 1 OR p.status = 'active')
+                     ORDER BY p.updated_at DESC, p.name",
+                )?;
+                let rows = stmt.query_map(rusqlite::params![include_archived as i64], |r| {
+                    Ok(json!({
+                        // 旧字段 `id` 保留，语义即项目根 ID（不再是计划 ID）。
+                        "id": r.get::<_, String>(0)?,
+                        "projectId": r.get::<_, String>(0)?,
+                        "name": r.get::<_, String>(1)?,
+                        "kind": r.get::<_, String>(2)?,
+                        "lifecycleStatus": r.get::<_, String>(3)?,
+                        "revision": r.get::<_, i64>(4)?,
+                        "activePlanId": r.get::<_, Option<String>>(5)?,
+                        "planCount": r.get::<_, i64>(6)?,
+                    }))
                 })?;
-                projects = projects
-                    .into_iter()
-                    .zip(roots)
-                    .filter_map(|(project, root)| {
-                        root.filter(|root| granted.contains(root)).map(|_| project)
-                    })
-                    .collect();
+                let mut out = Vec::new();
+                for row in rows {
+                    out.push(row.map_err(AppError::from)?);
+                }
+                Ok::<_, AppError>(out)
+            })?;
+            if agent.scope == auth::McpScope::ProjectRw {
+                // 行已是项目根（双聚合契约），与授权键（恒为项目根）直接比对。
+                let granted = granted_project_ids(ctx)?;
+                rows.retain(|row| {
+                    row["projectId"]
+                        .as_str()
+                        .map(|id| granted.contains(id))
+                        .unwrap_or(false)
+                });
             }
-            let value = serde_json::to_value(projects).map_err(AppError::from)?;
-            Ok(outcome(value, "project", String::new(), None))
+            Ok(outcome(
+                Value::Array(rows),
+                "project",
+                String::new(),
+                None,
+            ))
         }
         "taskdock_get_project" => {
             let id = require_str(args, "project_id")?;
-            ensure_can_read_project(ctx, &id)?;
-            let p = db.with_read(|conn| load_project_tx(conn, &id))?;
-            let value = serde_json::to_value(p).map_err(AppError::from)?;
-            Ok(outcome(value, "project", id, None))
+            // 入参兼容旧计划 ID：先归一到项目根；解析不出 → NotFound（不伪造存在性）。
+            let root = db.with_read(|conn| {
+                crate::project_hub::service::resolve_project_root(conn, &id)?
+                    .ok_or_else(|| AppError::NotFound(format!("项目不存在: {id}")))
+            })?;
+            ensure_can_read_project(ctx, &root)?;
+            let value = db.with_read(|conn| {
+                let summary = crate::project_hub::service::load_summary(conn, &root)?;
+                let plans = crate::project_hub::service::list_plan_summaries(conn, &root)?;
+                let plans: Vec<Value> = plans
+                    .iter()
+                    .map(|plan| {
+                        let mut v = serde_json::to_value(plan).map_err(AppError::from)?;
+                        // 身份别名：planId=计划 planning_projects.id；projectId=所属项目根。
+                        v["planId"] = json!(plan.id);
+                        Ok::<_, AppError>(v)
+                    })
+                    .collect::<Result<_, _>>()?;
+                Ok::<_, AppError>(json!({
+                    // 旧字段 `id` 保留，语义即项目根 ID。
+                    "id": summary.id,
+                    "projectId": summary.id,
+                    "name": summary.name,
+                    "kind": summary.kind,
+                    "description": summary.description,
+                    "goal": summary.goal,
+                    "targetDate": summary.target_date,
+                    "lifecycleStatus": summary.status,
+                    "revision": summary.revision,
+                    "activePlanId": summary.active_plan_id,
+                    "plans": plans,
+                }))
+            })?;
+            Ok(outcome(value, "project", root, None))
+        }
+        "taskdock_get_plan" => {
+            ensure_can_read(agent)?;
+            let plan_id = require_str(args, "plan_id")?;
+            let root = db.with_read(|conn| {
+                match crate::project_hub::service::resolve_project_ref(conn, &plan_id)? {
+                    // 身份防混用：项目根 ID 不是计划，明确指路。
+                    Some(crate::project_hub::service::ProjectRef::Project(_)) => {
+                        Err(AppError::Validation(format!(
+                            "{plan_id} 是项目根 ID，不是计划；请用 taskdock_get_project 读取项目，或改传计划 planning_projects.id"
+                        )))
+                    }
+                    Some(crate::project_hub::service::ProjectRef::Plan { project_id, .. }) => {
+                        Ok(project_id.0)
+                    }
+                    None => Err(AppError::NotFound(format!("计划不存在: {plan_id}"))),
+                }
+            })?;
+            ensure_can_read_project(ctx, &root)?;
+            let value = db.with_read(|conn| {
+                let plan = crate::project_hub::service::load_plan_summary(conn, &plan_id)?;
+                let mut v = serde_json::to_value(&plan).map_err(AppError::from)?;
+                v["planId"] = json!(plan.id);
+                Ok::<_, AppError>(v)
+            })?;
+            Ok(outcome(value, "project", plan_id, None))
         }
         "taskdock_list_features" => {
             let id = require_str(args, "project_id")?;
@@ -915,26 +1046,8 @@ fn call(
         "taskdock_create_project" => {
             let conn = write_conn
                 .ok_or_else(|| ToolError::Failed(AppError::Validation("缺少写事务".into())))?;
-            if !agent.scope.can_write() {
-                return Err(ToolError::Authz(format!(
-                    "scope={} 不允许创建项目（需要 project_rw）",
-                    agent.scope.as_str()
-                )));
-            }
-            // 创建是独立能力：project_rw 只代表「可写」，不代表「可新建项目」。
-            let can_create = crate::mcp::permissions::has_global(
-                conn,
-                &agent.row_id,
-                crate::mcp::permissions::Capability::ProjectsCreate,
-            )?;
-            if !can_create {
-                return Err(ToolError::Authz(
-                    "权限不足：需要 projects.create。请在 Task Dock「能力中心 → Agent 接入」中显式授予"
-                        .into(),
-                ));
-            }
-            // 统一创建服务：项目根 + 初始计划同事务；返回 canonical projectId。
-            // Agent 只能「关联已有目录」，不能创建新目录（目录创建必须由人类在 UI 确认）。
+            // 统一 Agent 创建用例：scope / projects.create / 创建 / 自动授权
+            // 在同一事务内完成（授权拒绝映射为 MCP FORBIDDEN）。
             let root_path = arg_str(args, "root_path").map(str::to_string);
             let mode = crate::project_hub::creation::DirectoryMode::default_for(
                 root_path.as_deref().unwrap_or_default(),
@@ -955,18 +1068,19 @@ fn call(
                 plan_description: None,
                 plan_status: None,
                 draft: Default::default(),
+                // 只授项目根（CreatorProject）：计划级授权已随 v91 外键迁移废弃。
                 agent_access_policy:
-                    crate::project_hub::creation::AgentAccessPolicy::CreatorProjectAndPlan,
+                    crate::project_hub::creation::AgentAccessPolicy::CreatorProject,
                 // MCP 入口的创建归属：已认证 Agent（稳定主体 = mcp_agents.id）。
                 principal: crate::project_hub::creation::RequestPrincipal::agent(&agent.row_id),
             };
-            let created = crate::project_hub::creation::create_with_conn(conn, request)?;
-            // 自动授权只作用于刚创建的项目根（+ 该计划 ID 兼容），绝不扩大为全局权限。
-            crate::agent_access::permissions::grant_created_project_in_conn(
-                conn,
-                &agent.row_id,
-                &created.project.id,
-            )?;
+            let created =
+                crate::agent_access::project_creation::create_for_agent_in_conn(
+                    conn,
+                    &agent.row_id,
+                    request,
+                )
+                .map_err(map_grant_denial)?;
             let revision = created.active_plan.revision;
             let value = serde_json::json!({
                 // 旧字段 `id` 保留，但语义已修正为项目根 ID（不再是计划 ID）。
@@ -997,9 +1111,108 @@ fn call(
                 .ok_or_else(|| ToolError::Failed(AppError::Validation("缺少写事务".into())))?;
             let id = require_str(args, "project_id")?;
             let expected = require_revision(args)?;
+            // 归一根（入参兼容旧计划 ID）：授权键与写入目标都是项目根。
             let root = ensure_grant(ctx, conn, &id)?;
             // 项目根元数据写是独立能力（v92 三层授权：身份 → scope → 能力 → grant）。
             ensure_projects_write(ctx, conn, &root)?;
+            // 兼容规则（双聚合契约）：lifecycle_status 是项目生命周期；旧字段 status 仍接受
+            // active/archived，传计划执行状态则拒绝并指向 taskdock_update_plan。
+            let lifecycle_status = match (arg_str(args, "lifecycle_status"), arg_str(args, "status"))
+            {
+                (Some(_), Some(_)) => {
+                    return Err(ToolError::Failed(AppError::Validation(
+                        "lifecycle_status 与旧兼容字段 status 不能同时提供".into(),
+                    )));
+                }
+                (Some(v), None) => {
+                    if !["active", "archived"].contains(&v) {
+                        return Err(ToolError::Failed(AppError::Validation(format!(
+                            "非法项目生命周期: {v}（只接受 active|archived）"
+                        ))));
+                    }
+                    Some(v.to_string())
+                }
+                (None, Some(v)) => match v {
+                    "active" | "archived" => Some(v.to_string()),
+                    "planning" | "in_progress" | "paused" | "completed" => {
+                        return Err(ToolError::Failed(AppError::Validation(format!(
+                            "项目根不接受计划执行状态 {v}；请使用 taskdock_update_plan 更新计划执行状态"
+                        ))));
+                    }
+                    other => {
+                        return Err(ToolError::Failed(AppError::Validation(format!(
+                            "非法项目状态: {other}（项目根只接受 active|archived；计划执行状态请用 taskdock_update_plan）"
+                        ))));
+                    }
+                },
+                (None, None) => None,
+            };
+            // 项目根聚合写：同事务「读 → 比对根 revision → +1」，并把 name/description/
+            // target_date 镜像同步到全部计划行（唯一事实源是项目根）。
+            crate::project_hub::service::update_project_fields_tx(
+                conn,
+                &root,
+                crate::project_hub::service::ProjectPatch {
+                    name: arg_str(args, "name").map(str::to_string),
+                    kind: arg_str(args, "kind").map(str::to_string),
+                    description: arg_str(args, "description").map(str::to_string),
+                    goal: arg_str(args, "goal").map(str::to_string),
+                    status: lifecycle_status,
+                    target_date: args
+                        .get("target_date")
+                        .map(|v| v.as_str().map(str::to_string)),
+                    expected_revision: Some(expected),
+                },
+            )?;
+            let summary = crate::project_hub::service::load_summary(conn, &root)?;
+            let revision = summary.revision;
+            let mut value = serde_json::to_value(&summary).map_err(AppError::from)?;
+            value["projectId"] = json!(summary.id);
+            value["lifecycleStatus"] = json!(summary.status);
+            Ok(outcome(
+                value,
+                "project",
+                root.clone(),
+                Some(PlanningChanged {
+                    kind: "project",
+                    project_id: Some(root),
+                    feature_id: None,
+                    revision: Some(revision),
+                }),
+            ))
+        }
+        "taskdock_update_plan" => {
+            let conn = write_conn
+                .ok_or_else(|| ToolError::Failed(AppError::Validation("缺少写事务".into())))?;
+            let plan_id = require_str(args, "plan_id")?;
+            let expected = require_revision(args)?;
+            reject_bad_enum(
+                args,
+                "status",
+                &["planning", "in_progress", "paused", "completed"],
+                "计划执行状态",
+            )?;
+            let root = match crate::project_hub::service::resolve_project_ref(conn, &plan_id)? {
+                // 身份防混用：项目根 ID 不是计划（传根 ID 会误伤根聚合语义）。
+                Some(crate::project_hub::service::ProjectRef::Project(_)) => {
+                    return Err(ToolError::Failed(AppError::Validation(format!(
+                        "{plan_id} 是项目根 ID，不是计划；请用 taskdock_update_project 更新项目，或改传计划 planning_projects.id"
+                    ))));
+                }
+                Some(crate::project_hub::service::ProjectRef::Plan { project_id, .. }) => {
+                    project_id.0
+                }
+                None => {
+                    return Err(ToolError::Failed(AppError::NotFound(format!(
+                        "计划不存在: {plan_id}"
+                    ))));
+                }
+            };
+            // 授权键是项目根；计划聚合写按当前能力复核 projects.write（与重放一致）。
+            let root = ensure_grant(ctx, conn, &root)?;
+            ensure_projects_write(ctx, conn, &root)?;
+            // 计划聚合写（计划 revision）：名称/描述/日期是根字段镜像，
+            // 计划服务会在同一事务里经 update_project_fields_tx 写根。
             let patch = ProjectPatch {
                 name: arg_str(args, "name").map(str::to_string),
                 description: arg_str(args, "description").map(str::to_string),
@@ -1007,19 +1220,19 @@ fn call(
                 target_date: args
                     .get("target_date")
                     .map(|v| v.as_str().map(str::to_string)),
-                sort_order: None,
+                sort_order: args.get("sort_order").and_then(|v| v.as_i64()),
                 expected_revision: Some(expected),
             };
-            let p = crate::commands::planning::update_project_tx(conn, id.clone(), patch)?;
-            let revision = p.revision;
-            let value = serde_json::to_value(&p).map_err(AppError::from)?;
+            let plan = crate::commands::planning::update_project_tx(conn, plan_id.clone(), patch)?;
+            let revision = plan.revision;
+            let value = serde_json::to_value(&plan).map_err(AppError::from)?;
             Ok(outcome(
                 value,
                 "project",
-                id.clone(),
+                plan_id.clone(),
                 Some(PlanningChanged {
                     kind: "project",
-                    project_id: Some(id),
+                    project_id: Some(root),
                     feature_id: None,
                     revision: Some(revision),
                 }),

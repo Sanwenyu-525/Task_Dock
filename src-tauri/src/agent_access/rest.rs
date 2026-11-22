@@ -88,7 +88,7 @@ pub const ROUTES: &[(&str, &str, &str)] = &[
     ("GET", "/api/v1/projects", "项目列表（每个项目根一行，含 activePlanId）"),
     ("POST", "/api/v1/projects", "创建项目（需 projects.create）"),
     ("GET", "/api/v1/projects/{id}", "项目详情"),
-    ("PATCH", "/api/v1/projects/{id}", "更新项目（需 projects.write）"),
+    ("PATCH", "/api/v1/projects/{id}", "更新项目根（生命周期/名称等，需 projects.write）"),
     ("GET", "/api/v1/projects/{id}/status", "项目状态与下一步"),
     ("GET", "/api/v1/tasks", "任务列表（支持 status/search/limit/offset）"),
     ("GET", "/api/v1/tasks/{id}", "任务详情"),
@@ -98,6 +98,7 @@ pub const ROUTES: &[(&str, &str, &str)] = &[
     ("GET", "/api/v1/plans", "规划列表"),
     ("GET", "/api/v1/plans/current", "当前规划"),
     ("GET", "/api/v1/plans/{id}", "规划详情"),
+    ("PATCH", "/api/v1/plans/{id}", "更新计划（执行状态/名称等，需 projects.write）"),
     ("GET", "/api/v1/knowledge/search", "知识检索"),
     ("GET", "/api/v1/knowledge/{id}", "知识文档"),
     ("POST", "/api/v1/knowledge", "写入知识"),
@@ -1703,19 +1704,30 @@ struct RestInitialPlan {
     capabilities: Vec<crate::project_hub::service::CreateCapabilityInput>,
 }
 
-/// `PATCH /api/v1/projects/{id}` 请求体（§7.3 projects.write 链路）。
+/// `PATCH /api/v1/projects/{id}` 请求体（项目根聚合）。
 ///
-/// 字段语义与 IPC `planning::ProjectPatch` 一致：name/description/status 可选，
-/// targetDate 三态（缺省 = 保持原值；null = 清除；值 = 设置）。
-/// expectedRevision 缺省 = 当前 revision（不做并发假设）；显式传入时由
-/// `update_project_tx` 做乐观并发判定，不匹配返回 Conflict（→ 409）。
+/// 事实源是项目根（`workspace_projects`）：name/kind/description/goal/
+/// lifecycleStatus 可选，targetDate 三态（缺省 = 保持原值；null = 清除；值 = 设置）。
+/// `status` 是旧客户端兼容字段：值 ∈ {active, archived} 时按生命周期处理；
+/// 值 ∈ 计划执行状态（planning/in_progress/paused/completed）时明确拒绝并指向
+/// `PATCH /api/v1/plans/{planId}`。
+/// expectedRevision 显式传入时由 `update_project` 做乐观并发判定，不匹配返回
+/// Conflict（→ 409）；缺省 = None，不做并发假设（与 PATCH /plans 语义一致）。
 #[derive(serde::Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 struct RestPatchProject {
     #[serde(default)]
     name: Option<String>,
     #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
     description: Option<String>,
+    #[serde(default)]
+    goal: Option<String>,
+    /// 项目根生命周期状态（active|archived）。
+    #[serde(default)]
+    lifecycle_status: Option<String>,
+    /// 旧客户端兼容字段：语义见结构体注释，与 lifecycleStatus 合并后校验一致性。
     #[serde(default)]
     status: Option<String>,
     #[serde(
@@ -1723,6 +1735,30 @@ struct RestPatchProject {
         deserialize_with = "crate::commands::tasks::deserialize_optional_field"
     )]
     target_date: Option<Option<String>>,
+    #[serde(default)]
+    expected_revision: Option<i64>,
+}
+
+/// `PATCH /api/v1/plans/{id}` 请求体（计划聚合）：执行状态/名称等计划自身字段，
+/// 不含项目根生命周期。字段语义与 IPC `planning::ProjectPatch` 一致；
+/// expectedRevision 显式传入时校验计划 revision，不匹配返回 Conflict（→ 409）。
+#[derive(serde::Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+struct RestPatchPlan {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    /// 计划执行状态（planning|in_progress|paused|completed）。
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "crate::commands::tasks::deserialize_optional_field"
+    )]
+    target_date: Option<Option<String>>,
+    #[serde(default)]
+    sort_order: Option<i64>,
     #[serde(default)]
     expected_revision: Option<i64>,
 }
@@ -1820,7 +1856,7 @@ where
                     capabilities: draft.capabilities,
                 },
                 agent_access_policy:
-                    crate::project_hub::creation::AgentAccessPolicy::CreatorProjectAndPlan,
+                    crate::project_hub::creation::AgentAccessPolicy::CreatorProject,
                 principal: match principal.identity {
                     Identity::RegisteredAgent => {
                         crate::project_hub::creation::RequestPrincipal::agent(
@@ -1830,14 +1866,18 @@ where
                     _ => crate::project_hub::creation::RequestPrincipal::local_human(),
                 },
             };
-            let created = crate::project_hub::creation::create(db, request)?;
-            if let Some(row_id) = principal.agent_row_id.as_deref() {
-                perms::grant_created_project(
-                    db,
-                    row_id,
-                    &created.project.id,
-                )?;
-            }
+            // Agent 走统一创建用例（scope/能力/创建/自动授权单事务完成，
+            // 消除「创建已提交、事务外授权失败」的不一致窗口）；其余身份保持原路径。
+            let created = match principal.identity {
+                Identity::RegisteredAgent => {
+                    crate::agent_access::project_creation::create_for_agent(
+                        db,
+                        principal.agent_row_id.as_deref().unwrap_or_default(),
+                        request,
+                    )?
+                }
+                _ => crate::project_hub::creation::create(db, request)?,
+            };
             Ok((serde_json::to_value(&created)?, None))
         }
         ("GET", ["projects", _, "status"]) => {
@@ -1857,32 +1897,44 @@ where
             // LocalHuman 直接过；RegisteredAgent 需 projects.write 能力 + 项目根 grant。
             perms::require(db, principal, Capability::ProjectsWrite, &root)?;
             let patch: RestPatchProject = parse_body(body)?;
-            let updated = db.with_transaction(|conn| {
-                // expectedRevision 缺省 = 当前 revision（同一行、同一判定点）：
-                // update_project_tx 的并发判定读 planning_projects.id = 入参。
-                let current_revision: Option<i64> = conn
-                    .query_row(
-                        "SELECT revision FROM planning_projects WHERE id = ?1",
-                        rusqlite::params![id],
-                        |r| r.get(0),
-                    )
-                    .optional()
-                    .map_err(AppError::from)?;
-                let current_revision = current_revision
-                    .ok_or_else(|| AppError::NotFound(format!("项目不存在: {id}")))?;
-                crate::commands::planning::update_project_tx(
-                    conn,
-                    id.to_string(),
-                    crate::commands::planning::ProjectPatch {
-                        name: patch.name,
-                        description: patch.description,
-                        status: patch.status,
-                        target_date: patch.target_date,
-                        sort_order: None,
-                        expected_revision: patch.expected_revision.or(Some(current_revision)),
-                    },
-                )
-            })?;
+            // 旧客户端兼容：`status` 可能带的是计划执行状态——项目根聚合明确拒绝并指路，
+            // 其余值交由服务层枚举校验（不在 REST 层吞掉非法值）。
+            let status_lifecycle = match patch.status.as_deref().map(str::trim) {
+                None => None,
+                Some(s) if crate::commands::planning::PROJECT_STATUSES.contains(&s) => {
+                    return Err(AppError::Validation(format!(
+                        "项目根不接受计划执行状态（status={s}），请使用 PATCH /api/v1/plans/{{planId}}"
+                    )));
+                }
+                Some(s) => Some(s.to_string()),
+            };
+            // lifecycleStatus 与 status 同时出现且不一致 → Validation。
+            let lifecycle_status = match (&patch.lifecycle_status, &status_lifecycle) {
+                (Some(a), Some(b)) if a.trim() != b.as_str() => {
+                    return Err(AppError::Validation(format!(
+                        "lifecycleStatus({}) 与 status({}) 不一致",
+                        a.trim(),
+                        b
+                    )));
+                }
+                (Some(a), _) => Some(a.clone()),
+                (None, b) => b.clone(),
+            };
+            // 项目根聚合：返回 ProjectSummary（revision = 根列，与计划 revision 独立）。
+            let updated = crate::project_hub::service::update_project(
+                db,
+                &root,
+                crate::project_hub::service::ProjectPatch {
+                    name: patch.name,
+                    kind: patch.kind,
+                    description: patch.description,
+                    goal: patch.goal,
+                    status: lifecycle_status,
+                    target_date: patch.target_date,
+                    // expectedRevision 显式才校验；缺省 = None 不做并发假设。
+                    expected_revision: patch.expected_revision,
+                },
+            )?;
             Ok((serde_json::to_value(updated)?, None))
         }
         ("GET", ["tasks"]) => {
@@ -1946,6 +1998,34 @@ where
         ("GET", ["plans", _]) => {
             let id = seg(1);
             Ok((serde_json::to_value(service::get_plan(db, principal, id)?)?, None))
+        }
+        ("PATCH", ["plans", _]) => {
+            let id = seg(1);
+            // 授权锚定项目根：计划 ID（或根 ID）先归一到根；解析不出 → NotFound。
+            let root = db
+                .with_read(|conn| perms::resolve_project_root(conn, id))?
+                .ok_or_else(|| AppError::NotFound(format!("计划不存在: {id}")))?;
+            perms::require(db, principal, Capability::ProjectsWrite, &root)?;
+            let patch: RestPatchPlan = parse_body(body)?;
+            // 计划聚合：返回 PlanningProject（revision 即计划 revision）。计划行存在性
+            // 由 planning 服务校验（传根 ID 得到明确错误，不会伪造计划行）；
+            // 不修改项目根生命周期状态。
+            let updated = db.with_transaction(|conn| {
+                crate::commands::planning::update_project_tx(
+                    conn,
+                    id.to_string(),
+                    crate::commands::planning::ProjectPatch {
+                        name: patch.name,
+                        description: patch.description,
+                        status: patch.status,
+                        target_date: patch.target_date,
+                        sort_order: patch.sort_order,
+                        // expectedRevision 显式才校验；缺省 = None 不做并发假设。
+                        expected_revision: patch.expected_revision,
+                    },
+                )
+            })?;
+            Ok((serde_json::to_value(updated)?, None))
         }
         ("GET", ["knowledge", "search"]) => {
             let q = query.get("q").cloned().unwrap_or_default();
@@ -2209,25 +2289,48 @@ mod project_patch_tests {
         )
     }
 
-    /// 项目根 + 关联计划（同 ID，v91/v92 规则：grant 与授权都锚定项目根）。
-    fn seed_project(db: &Db, id: &str) {
+    /// 项目根 + 关联计划（根/计划 ID 分离；grant 与授权都锚定项目根，v91/v92 规则）。
+    /// 根与计划名称一致（兼容镜像状态，§七）；根 revision=5（v93）、计划 revision=3，
+    /// 两个值刻意错开，便于断言两条聚合互不影响。
+    fn seed_project(db: &Db, root_id: &str, plan_id: &str) {
         let now = crate::agents::now_iso();
         db.with_conn(|conn| {
             conn.execute(
                 "INSERT INTO workspace_projects
-                   (id, name, kind, status, root_path, dev_project_id, note, created_at, updated_at)
-                 VALUES (?1, ?1, 'general', 'active', '', NULL, '', ?2, ?2)",
-                rusqlite::params![id, now],
+                   (id, name, kind, status, root_path, dev_project_id, note, active_plan_id, created_at, updated_at, revision)
+                 VALUES (?1, ?1, 'general', 'active', '', NULL, '', ?2, ?3, ?3, 5)",
+                rusqlite::params![root_id, plan_id, now],
             )?;
             conn.execute(
                 "INSERT INTO planning_projects
                    (id, name, workspace_project_id, is_active, revision, created_at, updated_at)
-                 VALUES (?1, ?1, ?1, 1, 3, ?2, ?2)",
-                rusqlite::params![id, now],
+                 VALUES (?2, ?1, ?1, 1, 3, ?3, ?3)",
+                rusqlite::params![root_id, plan_id, now],
             )?;
             Ok(())
         })
         .expect("写入项目根与计划");
+    }
+
+    /// 直读两条聚合的 revision（根列 / 计划列），用于断言互不影响。
+    fn sql_revisions(db: &Db, root_id: &str, plan_id: &str) -> (i64, i64) {
+        db.with_read(|conn| {
+            Ok((
+                conn.query_row(
+                    "SELECT revision FROM workspace_projects WHERE id = ?1",
+                    rusqlite::params![root_id],
+                    |r| r.get(0),
+                )
+                .expect("根行存在"),
+                conn.query_row(
+                    "SELECT revision FROM planning_projects WHERE id = ?1",
+                    rusqlite::params![plan_id],
+                    |r| r.get(0),
+                )
+                .expect("计划行存在"),
+            ))
+        })
+        .expect("读取 revision")
     }
 
     fn grant_project(db: &Db, row_id: &str, project: &str) {
@@ -2258,7 +2361,7 @@ mod project_patch_tests {
     #[tokio::test]
     async fn agent_with_capability_and_grant_updates_project() {
         let db = Arc::new(Db::open_in_memory().expect("内存库"));
-        seed_project(&db, "proj-patch");
+        seed_project(&db, "proj-patch", "plan-patch");
         let (principal, _) =
             agent_with_capabilities(&db, "ok", &[("projects.write", "")]);
         grant_project(&db, &principal.agent_row_id.as_deref().expect("row_id"), "proj-patch");
@@ -2268,18 +2371,22 @@ mod project_patch_tests {
             &principal,
             "PATCH",
             "/api/v1/projects/proj-patch",
-            &json!({ "name": "改名后", "expectedRevision": 3 }),
+            &json!({ "name": "改名后", "expectedRevision": 5 }),
         )
         .await
         .expect("有能力 + 授权必须成功");
+        // 项目根聚合返回 ProjectSummary：id/revision 是项目根，不携带 PlanningProject 的 stats。
+        assert_eq!(data["id"], json!("proj-patch"));
         assert_eq!(data["name"], json!("改名后"));
-        assert_eq!(data["revision"], json!(4), "写成功 revision +1");
+        assert_eq!(data["revision"], json!(6), "写成功根 revision +1");
+        assert_eq!(data["activePlanId"], json!("plan-patch"));
+        assert!(data["stats"].is_null(), "不再返回 PlanningProject");
     }
 
     #[tokio::test]
     async fn agent_without_grant_is_forbidden() {
         let db = Arc::new(Db::open_in_memory().expect("内存库"));
-        seed_project(&db, "proj-nogrant");
+        seed_project(&db, "proj-nogrant", "plan-nogrant");
         // 有能力但无项目根授权 → 403（统一授权第三层）。
         let (principal, _) =
             agent_with_capabilities(&db, "nogrant", &[("projects.write", "")]);
@@ -2298,19 +2405,20 @@ mod project_patch_tests {
     }
 
     #[tokio::test]
-    async fn expected_revision_conflict_maps_to_409() {
+    async fn project_expected_revision_conflict_maps_to_409() {
         let db = Arc::new(Db::open_in_memory().expect("内存库"));
-        seed_project(&db, "proj-conflict");
+        seed_project(&db, "proj-conflict", "plan-conflict");
         let (principal, row_id) =
             agent_with_capabilities(&db, "conflict", &[("projects.write", "")]);
         grant_project(&db, &row_id, "proj-conflict");
 
+        // 当前根 revision=5，过期期望值 → CONFLICT。
         let err = call(
             &rest_state(&db),
             &principal,
             "PATCH",
             "/api/v1/projects/proj-conflict",
-            &json!({ "name": "迟到提交", "expectedRevision": 2 }),
+            &json!({ "name": "迟到提交", "expectedRevision": 4 }),
         )
         .await
         .expect_err("过期 revision 必须冲突");
@@ -2319,9 +2427,31 @@ mod project_patch_tests {
     }
 
     #[tokio::test]
-    async fn local_human_updates_directly() {
+    async fn plan_expected_revision_conflict_maps_to_409() {
         let db = Arc::new(Db::open_in_memory().expect("内存库"));
-        seed_project(&db, "proj-local");
+        seed_project(&db, "proj-pconflict", "plan-pconflict");
+        let (principal, row_id) =
+            agent_with_capabilities(&db, "pconflict", &[("projects.write", "")]);
+        grant_project(&db, &row_id, "proj-pconflict");
+
+        // 当前计划 revision=3，过期期望值 → CONFLICT。
+        let err = call(
+            &rest_state(&db),
+            &principal,
+            "PATCH",
+            "/api/v1/plans/plan-pconflict",
+            &json!({ "status": "paused", "expectedRevision": 2 }),
+        )
+        .await
+        .expect_err("过期计划 revision 必须冲突");
+        assert_eq!(error_code(&err), "CONFLICT", "{err:?}");
+        assert_eq!(http_status(error_code(&err)), 409);
+    }
+
+    #[tokio::test]
+    async fn local_human_updates_lifecycle_directly() {
+        let db = Arc::new(Db::open_in_memory().expect("内存库"));
+        seed_project(&db, "proj-local", "plan-local");
         // 本机人类身份不要求能力/grant（统一授权：LocalHuman 直接过）。
         let principal = Principal::local(Source::Rest);
 
@@ -2330,12 +2460,314 @@ mod project_patch_tests {
             &principal,
             "PATCH",
             "/api/v1/projects/proj-local",
-            &json!({ "name": "本地改名", "status": "in_progress" }),
+            &json!({ "name": "本地改名", "lifecycleStatus": "archived" }),
         )
         .await
         .expect("LocalHuman 直接成功");
         assert_eq!(data["name"], json!("本地改名"));
+        assert_eq!(data["status"], json!("archived"), "status 字段返回项目根生命周期");
+    }
+
+    #[tokio::test]
+    async fn patch_project_rejects_plan_execution_status() {
+        let db = Arc::new(Db::open_in_memory().expect("内存库"));
+        seed_project(&db, "proj-compat", "plan-compat");
+        let principal = Principal::local(Source::Rest);
+
+        // 旧客户端把计划执行状态传进项目聚合：明确拒绝并指路计划聚合端点。
+        let err = call(
+            &rest_state(&db),
+            &principal,
+            "PATCH",
+            "/api/v1/projects/proj-compat",
+            &json!({ "status": "in_progress" }),
+        )
+        .await
+        .expect_err("项目根不接受计划执行状态");
+        assert_eq!(error_code(&err), "VALIDATION", "{err:?}");
+        assert!(
+            err.user_message().contains("PATCH /api/v1/plans/"),
+            "错误必须指向计划聚合端点: {}",
+            err.user_message()
+        );
+        assert_eq!(sql_revisions(&db, "proj-compat", "plan-compat"), (5, 3));
+
+        // lifecycleStatus 与 status 同时出现且不一致 → Validation。
+        let err = call(
+            &rest_state(&db),
+            &principal,
+            "PATCH",
+            "/api/v1/projects/proj-compat",
+            &json!({ "lifecycleStatus": "active", "status": "archived" }),
+        )
+        .await
+        .expect_err("两个字段不一致必须拒绝");
+        assert_eq!(error_code(&err), "VALIDATION", "{err:?}");
+        assert!(
+            err.user_message().contains("不一致"),
+            "错误必须说明字段冲突: {}",
+            err.user_message()
+        );
+    }
+
+    #[tokio::test]
+    async fn patch_plan_by_plan_id_returns_planning_project() {
+        let db = Arc::new(Db::open_in_memory().expect("内存库"));
+        seed_project(&db, "proj-plan", "plan-plan");
+        let (principal, row_id) =
+            agent_with_capabilities(&db, "plan", &[("projects.write", "")]);
+        grant_project(&db, &row_id, "proj-plan");
+
+        let data = call(
+            &rest_state(&db),
+            &principal,
+            "PATCH",
+            "/api/v1/plans/plan-plan",
+            &json!({ "status": "in_progress", "expectedRevision": 3 }),
+        )
+        .await
+        .expect("计划聚合必须成功");
+        // 计划聚合返回 PlanningProject（snake_case）：id/revision 是计划自身。
+        assert_eq!(data["id"], json!("plan-plan"));
         assert_eq!(data["status"], json!("in_progress"));
+        assert_eq!(data["revision"], json!(4), "计划 revision +1");
+        assert_eq!(data["workspace_project_id"], json!("proj-plan"));
+    }
+
+    #[tokio::test]
+    async fn aggregates_only_accept_their_own_id_domain() {
+        let db = Arc::new(Db::open_in_memory().expect("内存库"));
+        seed_project(&db, "proj-agg", "plan-agg");
+        let (principal, row_id) =
+            agent_with_capabilities(&db, "agg", &[("projects.write", "")]);
+        grant_project(&db, &row_id, "proj-agg");
+
+        // PATCH /projects/{planId}：入参兼容计划 ID，归一到项目根成功。
+        let data = call(
+            &rest_state(&db),
+            &principal,
+            "PATCH",
+            "/api/v1/projects/plan-agg",
+            &json!({ "name": "经计划改根" }),
+        )
+        .await
+        .expect("项目聚合兼容计划 ID");
+        assert_eq!(data["id"], json!("proj-agg"), "响应归一为项目根");
+
+        // PATCH /plans/{rootId}：计划聚合不接受根 ID（计划行存在性由 planning 服务校验）。
+        let err = call(
+            &rest_state(&db),
+            &principal,
+            "PATCH",
+            "/api/v1/plans/proj-agg",
+            &json!({ "name": "不得命中根" }),
+        )
+        .await
+        .expect_err("计划聚合必须拒绝根 ID，不伪造计划行");
+        // 错误类别锁定：load_plan_row 是 optional→Validation（4xx），
+        // 绝不能退化为 DATABASE/500 这类把身份错误当基础设施故障的响应。
+        assert!(
+            matches!(err, AppError::Validation(_)),
+            "根 ID 落在计划聚合必须是 Validation: {err:?}"
+        );
+        // 成功的根改名（根 5→6）+ 失败的计划请求不得改变任何 revision（计划 3）。
+        assert_eq!(sql_revisions(&db, "proj-agg", "plan-agg"), (6, 3));
+    }
+
+    #[tokio::test]
+    async fn patch_project_mirrors_name_to_plan_rows() {
+        let db = Arc::new(Db::open_in_memory().expect("内存库"));
+        seed_project(&db, "proj-mirror", "plan-mirror");
+        let principal = Principal::local(Source::Rest);
+
+        call(
+            &rest_state(&db),
+            &principal,
+            "PATCH",
+            "/api/v1/projects/proj-mirror",
+            &json!({ "name": "根改名", "description": "根描述" }),
+        )
+        .await
+        .expect("LocalHuman 直接成功");
+        // 兼容镜像：计划行的 name/description 同步为根字段（唯一事实源是项目根）。
+        let mirrored: (String, String) = db
+            .with_read(|conn| {
+                conn.query_row(
+                    "SELECT name, description FROM planning_projects WHERE id = ?1",
+                    rusqlite::params!["plan-mirror"],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .map_err(AppError::from)
+            })
+            .expect("计划行存在");
+        assert_eq!(mirrored.0, "根改名", "计划行名称镜像根名称");
+        assert_eq!(mirrored.1, "根描述", "计划行描述镜像根描述");
+    }
+
+    #[tokio::test]
+    async fn patch_project_lifecycle_keeps_plan_execution_status() {
+        let db = Arc::new(Db::open_in_memory().expect("内存库"));
+        seed_project(&db, "proj-lc", "plan-lc");
+        let principal = Principal::local(Source::Rest);
+
+        let data = call(
+            &rest_state(&db),
+            &principal,
+            "PATCH",
+            "/api/v1/projects/proj-lc",
+            &json!({ "lifecycleStatus": "archived" }),
+        )
+        .await
+        .expect("归档项目根成功");
+        assert_eq!(data["status"], json!("archived"));
+        let plan_status: String = db
+            .with_read(|conn| {
+                conn.query_row(
+                    "SELECT status FROM planning_projects WHERE id = ?1",
+                    rusqlite::params!["plan-lc"],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)
+            })
+            .expect("计划行存在");
+        assert_eq!(plan_status, "planning", "项目根生命周期不影响计划执行状态");
+    }
+
+    #[tokio::test]
+    async fn patch_plan_execution_status_keeps_root_lifecycle() {
+        let db = Arc::new(Db::open_in_memory().expect("内存库"));
+        seed_project(&db, "proj-exec", "plan-exec");
+        let principal = Principal::local(Source::Rest);
+
+        let data = call(
+            &rest_state(&db),
+            &principal,
+            "PATCH",
+            "/api/v1/plans/plan-exec",
+            &json!({ "status": "completed" }),
+        )
+        .await
+        .expect("改计划执行状态成功");
+        assert_eq!(data["id"], json!("plan-exec"));
+        assert_eq!(data["status"], json!("completed"));
+        let root_status: String = db
+            .with_read(|conn| {
+                conn.query_row(
+                    "SELECT status FROM workspace_projects WHERE id = ?1",
+                    rusqlite::params!["proj-exec"],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)
+            })
+            .expect("根行存在");
+        assert_eq!(root_status, "active", "计划执行状态不改项目根生命周期");
+    }
+
+    #[tokio::test]
+    async fn root_and_plan_revisions_are_independent() {
+        let db = Arc::new(Db::open_in_memory().expect("内存库"));
+        seed_project(&db, "proj-rev", "plan-rev");
+        let principal = Principal::local(Source::Rest);
+        assert_eq!(sql_revisions(&db, "proj-rev", "plan-rev"), (5, 3), "种子状态");
+
+        // 计划聚合只改执行状态：计划 revision +1，根 revision 不变。
+        call(
+            &rest_state(&db),
+            &principal,
+            "PATCH",
+            "/api/v1/plans/plan-rev",
+            &json!({ "status": "paused" }),
+        )
+        .await
+        .expect("计划聚合成功");
+        assert_eq!(sql_revisions(&db, "proj-rev", "plan-rev"), (5, 4));
+
+        // 项目聚合只改根字段：根 revision +1，计划 revision 不变（镜像不动计划版本）。
+        call(
+            &rest_state(&db),
+            &principal,
+            "PATCH",
+            "/api/v1/projects/proj-rev",
+            &json!({ "name": "只动根" }),
+        )
+        .await
+        .expect("项目聚合成功");
+        assert_eq!(sql_revisions(&db, "proj-rev", "plan-rev"), (6, 4));
+    }
+
+    #[tokio::test]
+    async fn get_patch_get_chain_stays_consistent() {
+        let db = Arc::new(Db::open_in_memory().expect("内存库"));
+        seed_project(&db, "proj-chain", "plan-chain");
+        let (principal, row_id) = agent_with_capabilities(
+            &db,
+            "chain",
+            &[("projects.read", ""), ("projects.write", "")],
+        );
+        grant_project(&db, &row_id, "proj-chain");
+        let state = rest_state(&db);
+
+        let before = call(&state, &principal, "GET", "/api/v1/projects/proj-chain", &json!({}))
+            .await
+            .expect("GET 项目详情");
+        assert_eq!(before["projectId"], json!("proj-chain"));
+        assert_eq!(before["summary"]["revision"], json!(5));
+        assert_eq!(before["summary"]["activePlanId"], json!("plan-chain"));
+
+        let patched = call(
+            &state,
+            &principal,
+            "PATCH",
+            "/api/v1/projects/proj-chain",
+            &json!({ "name": "链路改名", "expectedRevision": 5 }),
+        )
+        .await
+        .expect("PATCH 成功");
+        assert_eq!(patched["revision"], json!(6));
+
+        let after = call(&state, &principal, "GET", "/api/v1/projects/proj-chain", &json!({}))
+            .await
+            .expect("GET 项目详情");
+        // GET 详情读模型（agent_access::service::ProjectSummary）的 revision
+        // 与 PATCH 返回值同源（workspace_projects.revision）。
+        assert_eq!(after["summary"]["revision"], json!(6), "revision 与 PATCH 返回一致");
+        assert_eq!(after["summary"]["name"], json!("链路改名"));
+        assert_eq!(after["summary"]["activePlanId"], json!("plan-chain"));
+        assert_eq!(after["summary"]["status"], json!("active"));
+    }
+
+    #[tokio::test]
+    async fn plan_patch_requires_root_grant_but_local_human_passes() {
+        let db = Arc::new(Db::open_in_memory().expect("内存库"));
+        seed_project(&db, "proj-authz", "plan-authz");
+        // Agent 有能力但无根 grant → FORBIDDEN（授权锚定项目根）。
+        let (agent, _) =
+            agent_with_capabilities(&db, "no-grant", &[("projects.write", "")]);
+        let err = call(
+            &rest_state(&db),
+            &agent,
+            "PATCH",
+            "/api/v1/plans/plan-authz",
+            &json!({ "status": "in_progress" }),
+        )
+        .await
+        .expect_err("无 grant 必须拒绝");
+        assert_eq!(error_code(&err), "FORBIDDEN", "{err:?}");
+        assert_eq!(http_status(error_code(&err)), 403);
+
+        // LocalHuman 直过：同一计划、同一补丁。
+        let data = call(
+            &rest_state(&db),
+            &Principal::local(Source::Rest),
+            "PATCH",
+            "/api/v1/plans/plan-authz",
+            &json!({ "status": "in_progress" }),
+        )
+        .await
+        .expect("LocalHuman 直接成功");
+        assert_eq!(data["id"], json!("plan-authz"));
+        assert_eq!(data["status"], json!("in_progress"));
+        assert_eq!(data["revision"], json!(4), "拒绝路径不消耗计划 revision");
     }
 
     #[tokio::test]

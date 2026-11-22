@@ -282,24 +282,21 @@ fn project_name(db: &Db, id: &str) -> AppResult<String> {
         return Ok(String::new());
     }
     db.with_read(|conn| {
-        let planning: Option<String> = conn
-            .query_row(
-                "SELECT name FROM planning_projects WHERE id=?1",
-                rusqlite::params![id],
-                |r| r.get(0),
-            )
-            .ok();
-        if let Some(name) = planning {
-            return Ok(name);
-        }
-        let workspace: Option<String> = conn
+        // 入参可能是项目根或计划 ID：经统一解析入口归一到项目根后取根名称
+        // （名称唯一事实源是 workspace_projects，计划行只是兼容镜像）。
+        // 禁止按字符串猜测实体类型。
+        let root = crate::project_hub::service::resolve_project_root(conn, id)?;
+        let Some(root) = root else {
+            return Ok(String::new());
+        };
+        let name: Option<String> = conn
             .query_row(
                 "SELECT name FROM workspace_projects WHERE id=?1",
-                rusqlite::params![id],
+                rusqlite::params![root],
                 |r| r.get(0),
             )
             .ok();
-        Ok(workspace.unwrap_or_default())
+        Ok(name.unwrap_or_default())
     })
 }
 

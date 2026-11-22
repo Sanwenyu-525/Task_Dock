@@ -196,8 +196,9 @@ OS 用户或沙箱中；本模块只保证「不因目录可写而越权修改 T
 ## 项目创建权限（2026-11-21，v92 补齐入口一致性）
 
 - 新增 `projects.create`（**全局**能力，`global_only`）：项目尚不存在，逐资源授权无法表达；
-- 新增 `projects.write`（项目级）：项目改名/归档等写操作（MCP `taskdock_update_project`、
-  REST `PATCH /api/v1/projects/{projectId}`；CLI `project update` 为后续项）；
+- 新增 `projects.write`（项目级）：项目改名/归档等写操作（MCP `taskdock_update_project` /
+  `taskdock_update_plan`、REST `PATCH /api/v1/projects/{id}` / `PATCH /api/v1/plans/{id}`、
+  CLI `project update`——第三轮已全链路实现）；
 - `scope=project_rw` 只代表「可写」，**不再隐含创建权**，也**不隐含项目授权**：
   写项目 = `projects.write` 能力 + 该项目根 grant；MCP/CLI/REST 都先校验 `projects.create`；
 - **目录创建门禁（v92）**：`create_new` 只允许本机人类（LocalHuman）——UI 弹窗与未带 token 的
@@ -213,3 +214,18 @@ OS 用户或沙箱中；本模块只保证「不因目录可写而越权修改 T
 - 计划 ID 入参先解析到项目根再判定（`ensure_grant` / `perms::require`），计划授权不会跨项目生效；
 - Agent 项目列表按授权过滤：全局能力 + readonly 返回全部；只有项目级授权的 Agent 只看到
   被授权项目；无任何授权返回 `FORBIDDEN`（total 为过滤后数量）。
+
+## 双聚合授权与创建事务（2026-11-22，第三轮）
+
+- **授权恒锚定项目根**：计划聚合写（`PATCH /api/v1/plans/{planId}`、`taskdock_update_plan`）
+  同样要求 `projects.write` + 计划所属项目根 grant——计划不是独立授权对象；
+  计划工具传根 ID → Validation 指路（身份防混用），项目聚合传计划 ID → 边界归一根；
+- **创建单事务**（`CreateProjectForAgentUseCase`）：`create_for_agent(_in_conn)` 把
+  scope 重读（撤销即时生效）→ `projects.create` → 创建 → 项目根自动授权收进同一事务；
+  授权失败 = 整体回滚，不存在「半条授权」或「无权成功」；MCP/CLI/REST 三入口共用；
+  `CreatorProjectAndPlan` 降级为兼容别名（行为 = 只授项目根）；
+- **幂等 fail-closed**：缺行 ID 的 RegisteredAgent 创建直接 Validation 拒绝（不再静默当作
+  人类）；历史事件兜底按主体类别判定，Agent 任何情况不进入；事件 actor 与
+  `payload.principal.principalId` 记真实主体行 ID；
+- **审计**：`taskdock_update_plan` 与 `taskdock_update_project` 同列 `HIGH_RISK_ACTIONS`
+  （项目级状态迁移写）。

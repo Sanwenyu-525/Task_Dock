@@ -173,7 +173,9 @@ pub enum AgentAccessPolicy {
     None,
     /// 只授予刚创建的项目根。
     CreatorProject,
-    /// 项目根 + 该计划 ID（兼容按计划 ID 判定的旧调用）。
+    /// **deprecated**：与 `CreatorProject` 行为完全一致（只授项目根）。
+    /// `mcp_agent_grants.project_id` 外键在 v91 已指向项目根，计划级授权不再存在；
+    /// 保留枚举与 parse 只为兼容旧调用与旧审计记录，新代码一律用 `CreatorProject`。
     CreatorProjectAndPlan,
 }
 
@@ -307,6 +309,8 @@ struct Prepared {
     mode: DirectoryMode,
     dev_project_id: Option<String>,
     policy: AgentAccessPolicy,
+    /// 发起者真实身份：与 scope 独立（scope=None 时身份仍然在场，绝不丢失）。
+    principal: RequestPrincipal,
     /// 幂等作用域（None = 未提供 clientRequestId 或身份缺失，不做幂等）。
     scope: Option<IdempotencyScope>,
     digest_v1: String,
@@ -385,6 +389,16 @@ fn digest_v2(prepared: &Prepared, clean: &CleanCreate) -> String {
 
 /// 纯函数：清洗 + 摘要。不碰数据库、不碰文件系统。
 fn prepare(conn: &Connection, request: CreateProjectRequest) -> AppResult<Prepared> {
+    // fail-closed：Agent 归属缺行 ID 时无法定位主体，拒绝请求而不是静默当作人类。
+    // （旧行为：scope=None → 身份信息丢失，actor 记成 user——审计与幂等同时失真。）
+    if request.principal.kind == PrincipalKind::RegisteredAgent
+        && request.principal.id.trim().is_empty()
+    {
+        return Err(AppError::Validation(
+            "Agent 创建缺少主体行 ID，拒绝无归属请求".into(),
+        ));
+    }
+    let principal = request.principal;
     let hub_input = CreateProjectInput {
         name: request.name,
         kind: request.kind,
@@ -452,6 +466,7 @@ fn prepare(conn: &Connection, request: CreateProjectRequest) -> AppResult<Prepar
         mode,
         dev_project_id,
         policy: request.agent_access_policy,
+        principal,
         scope: None,
         digest_v2: String::new(),
     };
@@ -459,7 +474,7 @@ fn prepare(conn: &Connection, request: CreateProjectRequest) -> AppResult<Prepar
     // 幂等作用域在 clean 之后计算（client_request_id 已清洗；摘要不含身份，
     // 身份只决定「同一请求 ID 归谁」，不改变业务参数指纹）。
     prepared.scope =
-        IdempotencyScope::from_principal(&request.principal, &prepared.clean.client_request_id);
+        IdempotencyScope::from_principal(&prepared.principal, &prepared.clean.client_request_id);
     Ok(prepared)
 }
 
@@ -1244,11 +1259,9 @@ fn check_replay(conn: &Connection, prepared: &Prepared) -> AppResult<Replay> {
     // 2) 历史兼容（v92 之前只有 project_events，无归属记录）：只对**本机人类**生效
     //    （旧事件基本来自 UI）。Agent 请求一律走新表，不进入该兜底：
     //    宁可重放视为新请求，也不给「跨主体命中旧事件」留通道。
-    if prepared
-        .scope
-        .as_ref()
-        .is_some_and(|scope| scope.principal_kind != PrincipalKind::LocalHuman)
-    {
+    //    按 principal 判定而非 scope：Agent 缺行 ID（scope=None）时同样不进人类兜底，
+    //    且缺行 ID 的请求已在 prepare() fail-closed 拒绝。
+    if prepared.principal.kind != PrincipalKind::LocalHuman {
         return Ok(Replay::Fresh);
     }
     let legacy: Option<(String, Option<String>, Option<String>)> = conn
@@ -1401,16 +1414,18 @@ pub fn create_in_conn(
     }
     // actor 列保留既有枚举（UI 兼容），真实主体 ID 记入 payload：
     // 不能只记 actor=agent，授权审计必须能定位到具体 Agent。
-    let actor = match prepared.scope.as_ref().map(|scope| scope.principal_kind) {
-        Some(PrincipalKind::RegisteredAgent) => "agent",
-        _ => "user",
+    // actor 与 principal 一律来自 prepared.principal（prepare 已 fail-closed：
+    // RegisteredAgent 必有行 ID），绝不因 scope=None 退化为伪造的 local_human。
+    let actor = match prepared.principal.kind {
+        PrincipalKind::RegisteredAgent => "agent",
+        PrincipalKind::LocalHuman => "user",
     };
-    let principal_json = match prepared.scope.as_ref() {
-        Some(scope) => serde_json::json!({
-            "principalKind": scope.principal_kind.as_str(),
-            "principalId": scope.principal_id,
+    let principal_json = match prepared.principal.kind {
+        PrincipalKind::RegisteredAgent => serde_json::json!({
+            "principalKind": prepared.principal.kind.as_str(),
+            "principalId": prepared.principal.id,
         }),
-        None => serde_json::json!({
+        PrincipalKind::LocalHuman => serde_json::json!({
             "principalKind": PrincipalKind::LocalHuman.as_str(),
             "principalId": IdempotencyScope::LOCAL_PRINCIPAL_ID,
         }),
@@ -2055,7 +2070,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_without_row_id_scope_does_not_replay() {
+    fn agent_without_row_id_is_rejected_fail_closed() {
         let db = Db::open_in_memory().unwrap();
         let a = agent_row(&db, "agent-a");
         let created = create(
@@ -2064,14 +2079,102 @@ mod tests {
         )
         .unwrap();
         assert!(created.created);
-        // 身份缺行 ID（无法定位主体）：fail-closed，不参与幂等，也不会命中他人请求。
-        let orphaned = create(
+        // 身份缺行 ID（无法定位主体）：fail-closed，直接 Validation 拒绝，
+        // 绝不静默当作本机人类处理（旧实现会丢失身份并落进人类历史兜底）。
+        let error = create(
             &db,
             request_as("正常归属", "scope-ok", RequestPrincipal::agent("")),
         )
+        .unwrap_err();
+        assert!(matches!(error, AppError::Validation(_)), "{error:?}");
+        assert!(error.user_message().contains("主体行 ID"), "{error:?}");
+        // 有行 ID 的同请求不受影响：仍能独立创建。
+        let retried = create(
+            &db,
+            request_as("正常归属", "scope-ok", RequestPrincipal::agent(&a)),
+        )
         .unwrap();
-        assert!(orphaned.created, "缺主体 ID 的请求必须独立处理");
-        assert_ne!(orphaned.project.id, created.project.id);
+        assert!(!retried.created, "有行 ID 的重试必须命中幂等");
+        assert_eq!(retried.project.id, created.project.id);
+    }
+
+    /// Agent 请求绝不进入人类历史事件兜底：即使库里有 actor='user'、
+    /// clientRequestId 相同的旧事件（且无 v92 归属行），Agent 也必须新建，
+    /// 缺行 ID 的同请求必须被拒绝——跨主体重放通道彻底关闭。
+    #[test]
+    fn agent_never_enters_human_legacy_event_fallback() {
+        let db = Db::open_in_memory().unwrap();
+        let a = agent_row(&db, "agent-a");
+        // 人类先创建，留下 actor='user' + clientRequestId='legacy-x' 的事件。
+        let human = create(&db, request("人类项目", "legacy-x")).unwrap();
+        assert!(human.created);
+        // 模拟 v92 之前的旧环境：没有归属记录（project_create_requests）。
+        db.with_transaction(|conn| {
+            conn.execute(
+                "DELETE FROM project_create_requests WHERE client_request_id = ?1",
+                params!["legacy-x"],
+            )
+            .map_err(AppError::from)
+        })
+        .unwrap();
+        // 有行 ID 的 Agent 用同一 requestId：Fresh（新建项目），绝不命中人类事件。
+        let agent_created = create(
+            &db,
+            request_as("Agent 项目", "legacy-x", RequestPrincipal::agent(&a)),
+        )
+        .unwrap();
+        assert!(agent_created.created, "Agent 必须独立创建，不得重放人类事件");
+        assert_ne!(agent_created.project.id, human.project.id);
+        // 缺行 ID 的同请求：fail-closed Validation 拒绝（旧行为会落进人类兜底）。
+        let error = create(
+            &db,
+            request_as("Agent 项目", "legacy-x", RequestPrincipal::agent("")),
+        )
+        .unwrap_err();
+        assert!(matches!(error, AppError::Validation(_)), "{error:?}");
+    }
+
+    /// 事件 actor 与 payload.principal 必须反映真实主体：
+    /// Agent 创建 → actor='agent' + principalId=行 ID；人类创建 → actor='user'。
+    #[test]
+    fn creation_events_record_true_principal() {
+        let db = Db::open_in_memory().unwrap();
+        let a = agent_row(&db, "agent-a");
+        // 人类创建。
+        let human = create(&db, request("人类事件", "actor-human")).unwrap();
+        let (human_actor, human_principal): (String, String) = db
+            .with_read(|conn| {
+                Ok(conn.query_row(
+                    "SELECT actor, json_extract(payload_json, '$.principal.principalId')
+                     FROM project_events WHERE kind = 'project_created' AND project_id = ?1",
+                    params![human.project.id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(human_actor, "user", "本机人类创建的 actor 必须是 user");
+        assert_eq!(human_principal, "local");
+        // Agent 创建。
+        let agent_created = create(
+            &db,
+            request_as("Agent 事件", "actor-agent", RequestPrincipal::agent(&a)),
+        )
+        .unwrap();
+        let (agent_actor, kind, principal_id): (String, String, String) = db
+            .with_read(|conn| {
+                Ok(conn.query_row(
+                    "SELECT actor,
+                            json_extract(payload_json, '$.principal.principalKind'),
+                            json_extract(payload_json, '$.principal.principalId')
+                     FROM project_events WHERE kind = 'project_created' AND project_id = ?1",
+                    params![agent_created.project.id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(agent_actor, "agent", "Agent 创建的 actor 必须是 agent");
+        assert_eq!(kind, "registered_agent");
+        assert_eq!(principal_id, a, "principalId 必须是真实主体行 ID");
     }
 
     #[test]

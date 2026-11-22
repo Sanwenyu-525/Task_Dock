@@ -1089,6 +1089,17 @@ fn plans_and_projects_read_reveal_plan_metadata() {
     fx.grant(&row_id, "context.read", "");
     fx.project("proj-a");
     fx.planning_project("proj-a", "保密项目名称", "in_progress");
+    // 统一契约（v93/§七）：计划名只是根名的兼容镜像，唯一事实源是 workspace_projects。
+    // 旧夹具让根名与计划名不一致，靠「先读计划名」的猜测语义掩盖——改为一致的镜像状态。
+    fx.db
+        .with_conn(|conn| {
+            conn.execute(
+                "UPDATE workspace_projects SET name = '保密项目名称' WHERE id = 'proj-a'",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("同步根名镜像");
     fx.feature("proj-a", "保密功能", "in_progress");
     fx.grant(&row_id, "projects.read", "proj-a");
     fx.grant(&row_id, "plans.read", "proj-a");

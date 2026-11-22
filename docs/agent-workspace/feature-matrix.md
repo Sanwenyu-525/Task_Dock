@@ -80,5 +80,17 @@
 | 幂等请求归属隔离 | 已实现 | `project_create_requests`（v92）：同主体重试返回原项目，跨主体相同 requestId 独立创建，无跨 Agent 授权 |
 | 授权判定统一 | 已实现 | `require` 四层（身份→scope→capability→grant），CLI/MCP/REST 同规则；`taskdock_update_project` 需 `projects.write` 能力 |
 | 项目列表授权过滤 | 已实现 | 全局能力返回全部；项目级授权返回被授权项目；无授权 FORBIDDEN |
-| `projects.write` 更新链路 | 部分 | MCP + REST PATCH 已实现（expectedRevision→409）；CLI `project update` 为后续项 |
+| `projects.write` 更新链路 | 部分（第三轮已补齐 CLI，见下表） | MCP + REST PATCH 已实现（expectedRevision→409）；CLI `project update` 为后续项 |
 | MCP 设置 UI 项目根授权 | 已实现 | 数据源改项目根列表，授权按根 ID 匹配名称；能力清单补齐项目族 |
+
+## Project/Plan 双聚合（2026-11-22，第三轮）
+
+| 能力 | 状态 | 实现锚点 |
+|---|---|---|
+| 项目根 revision（乐观并发） | 已实现 | `workspace_projects.revision`（v93）+ `update_project_fields_tx` 同事务读→比对→+1；`check_expected_revision_tx` 唯一实现 |
+| REST 双聚合端点 | 已实现 | `PATCH /api/v1/projects/{id}`（根聚合，返回 ProjectSummary）+ `PATCH /api/v1/plans/{id}`（计划聚合，返回 PlanningProject）；旧执行状态传项目端点 → 400 指路 |
+| MCP 根读模型 + 计划工具 | 已实现 | `taskdock_list_projects/get_project/update_project` 按项目根（根 revision、activePlanId、plans）；新增 `taskdock_get_plan`/`taskdock_update_plan`；`project_id` 接受旧计划 ID 归一根 |
+| CLI project update | 已实现 | `taskdock project update <id> --name/--description/--status active\|archived/--target-date/--base-revision`；走 `perms::require` + `update_project_fields_tx`；操作记录 `project.update` |
+| 创建授权单事务 | 已实现 | `agent_access::project_creation::create_for_agent(_in_conn)`：MCP/CLI/REST 三入口共用；授权失败整体回滚 |
+| 幂等 fail-closed | 已实现 | 缺行 ID Agent 创建拒绝；Agent 永不进人类历史兜底；actor/principal 记真实主体 |
+| 双 revision 独立性 | 已测试 | 改根只动根 revision；计划只改执行状态只动计划 revision；各自过期分别 409/Conflict |

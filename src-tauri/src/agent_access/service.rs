@@ -92,7 +92,11 @@ pub struct ProjectSummary {
     /// 项目类型（general / novel / game / ai_comic / development）
     pub kind: String,
     pub status: String,
+    /// 项目描述：事实源是 `workspace_projects.description` 列（PATCH /projects 可写），
+    /// 不再混用工作空间「备注」（note）。
     pub description: String,
+    /// 项目目标：事实源是 `workspace_projects.goal` 列（PATCH /projects 可写）。
+    pub goal: String,
     pub root_path: String,
     pub root_exists: bool,
     pub active_plan_id: Option<String>,
@@ -106,11 +110,9 @@ pub struct ProjectSummary {
 }
 
 fn project_summary(db: &Db, project: &WorkspaceProject) -> AppResult<ProjectSummary> {
-    let (counter, counter_at, _) = db.with_read(|conn| {
-        store::read_revision(conn, "project", &project.id)
-    })?;
-    let revision = store::effective_revision(counter, &counter_at, &project.updated_at);
-    let counts = db.with_read(|conn| {
+    // 项目根 revision 唯一事实源 = workspace_projects.revision（v93 列），
+    // 与 REST PATCH /projects/{id} 的并发判定同一来源；计划 revision 只保护计划行。
+    let (plan_count, feature_total, feature_done, active_plan_id, revision, description, goal) = db.with_read(|conn| {
         let row = conn.query_row(
             "SELECT
                (SELECT COUNT(*) FROM planning_projects WHERE workspace_project_id = ?1),
@@ -120,7 +122,10 @@ fn project_summary(db: &Db, project: &WorkspaceProject) -> AppResult<ProjectSumm
                (SELECT COUNT(*) FROM planning_features f
                   JOIN planning_projects p ON p.id = f.project_id
                  WHERE p.workspace_project_id = ?1 AND f.status = 'completed'),
-               (SELECT active_plan_id FROM workspace_projects WHERE id = ?1)
+               (SELECT active_plan_id FROM workspace_projects WHERE id = ?1),
+               (SELECT revision FROM workspace_projects WHERE id = ?1),
+               (SELECT COALESCE(description, '') FROM workspace_projects WHERE id = ?1),
+               (SELECT COALESCE(goal, '') FROM workspace_projects WHERE id = ?1)
              ",
             rusqlite::params![project.id],
             |r| {
@@ -129,6 +134,9 @@ fn project_summary(db: &Db, project: &WorkspaceProject) -> AppResult<ProjectSumm
                     r.get::<_, i64>(1)?,
                     r.get::<_, i64>(2)?,
                     r.get::<_, Option<String>>(3)?,
+                    r.get::<_, i64>(4)?,
+                    r.get::<_, String>(5)?,
+                    r.get::<_, String>(6)?,
                 ))
             },
         )?;
@@ -139,15 +147,16 @@ fn project_summary(db: &Db, project: &WorkspaceProject) -> AppResult<ProjectSumm
         name: project.name.clone(),
         kind: project.kind.clone(),
         status: project.status.clone(),
-        description: project.note.clone(),
+        description,
+        goal,
         root_path: project.root_path.clone(),
         root_exists: project.root_exists,
-        active_plan_id: counts.3,
-        plan_count: counts.0,
+        active_plan_id,
+        plan_count,
         updated_at: project.updated_at.clone(),
         revision,
-        feature_total: counts.1,
-        feature_done: counts.2,
+        feature_total,
+        feature_done,
         task_total: project.task_link_count,
         item_total: project.item_count,
     })

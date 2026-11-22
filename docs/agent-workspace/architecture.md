@@ -205,3 +205,31 @@ Agent 侧所有「项目」引用统一解析到 `workspace_projects.id`：
   CLI / MCP / REST 一律拒绝。详见
   [统一项目身份与创建服务](../project-hub/10-统一项目身份与创建服务.md) §14 与
   [permission-model.md](permission-model.md)。
+
+## Project/Plan 双聚合契约（2026-11-22，v93，ADR-0011）
+
+第二轮后 REST/MCP 的「项目」实际仍可能指计划行（授权按根、更新落计划），项目根也没有自己的
+并发版本。第三轮把两个聚合彻底分开：
+
+- **revision 模型**：项目根并发令牌 = `workspace_projects.revision`（迁移 v93，DEFAULT 1）；
+  `update_project_fields_tx` 同事务「读 → 比对 expected_revision → +1」，并把
+  name/description/target_date 镜像同步到全部计划行；计划聚合沿用 `planning_projects.revision`
+  （v37）。校验唯一实现 `project_hub::service::check_expected_revision_tx`。
+- **读模型同源**：`project_hub::service::ProjectSummary.revision` 与
+  `agent_access::service::project_summary` 都读根列（弃用 agent_resource_revisions 计数器
+  派生），description/goal 改读 `workspace_projects.description/goal` 事实源列（原映射
+  note 列，与 PATCH 写入不对称）。
+- **资源边界**：`GET/PATCH /api/v1/projects/{projectId}` 与 `taskdock_get_project` /
+  `taskdock_update_project` = 项目根聚合（lifecycleStatus=active|archived、根 revision）；
+  `PATCH /api/v1/plans/{planId}`（新增）与 `taskdock_get_plan` / `taskdock_update_plan`
+  （新增）= 计划聚合（执行状态、计划 revision）。计划工具传根 ID → Validation 指路；
+  项目聚合传计划 ID 仍兼容（边界归一根）。
+- **创建事务统一**：`agent_access::project_creation::create_for_agent(_in_conn)`——
+  行 ID fail-closed → 拒 `create_new` → scope 重读（撤销即时生效）→ `projects.create`
+  → 创建 → 项目根自动授权，单事务原子提交；CLI/MCP/REST 三入口共用，
+  「创建已提交、事务外授权失败」窗口消除。人类 UI 保持 `creation::create()`。
+- **幂等 fail-closed**：`Prepared` 携带独立 `principal`；缺行 ID 的 Agent 直接拒绝；
+  历史兜底按主体类别判定（Agent 永不进人类事件兜底）；actor/`payload.principal` 记真实主体。
+- **全局 ID 契约**：`resolve_project_ref` / `resolve_project_root` 是唯一解析入口；
+  `context.rs::project_name` 已从「先查计划再查根」改为归一根（字符串猜测消除）；
+  collab 表 `project_id` 是 FK→planning_projects（类型化计划 ID，合法 Plan 聚合归属）。

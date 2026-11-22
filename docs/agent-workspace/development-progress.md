@@ -303,3 +303,48 @@ complete_tx COALESCE 回填）后复验通过。场景 F（MCP 设置真实窗�
 `commands::settings` 布局宽度文案、`commands::projection_window` 吸附宽度、
 backup/restore/shelf 的 voice 资产三处为其他在途任务存量失败，未在本轮范围；CLI `project update`
 子命令未实现（REST/MCP 已覆盖，见 feature-matrix「projects.write 更新链路」）。
+
+## 2026-11-22：第三轮架构治理（v93，Project/Plan 双聚合契约）
+
+已完成：项目根获得独立并发版本——迁移 v93（`workspace_projects.revision DEFAULT 1`），
+`update_project_fields_tx` 同事务「读→比对 expected_revision→revision+1」并把
+name/description/target_date 镜像同步到全部计划行（镜像写不动计划 revision）；
+`check_expected_revision_tx` 收敛为 `project_hub::service` 唯一实现（commands/planning 4 处调用改指）；
+`ProjectSummary` 与 agent_access 读模型（`project_summary`）同读根 revision，description/goal
+改读根事实源列（原 note 映射不对称）。
+
+接口契约拆分：REST `PATCH /api/v1/projects/{id}` 重写为项目根聚合（lifecycleStatus +
+expectedRevision + 根 revision；旧执行状态值 → Validation 指路），新增
+`PATCH /api/v1/plans/{id}` 计划聚合（planning::update_project_tx + 计划 revision）；
+MCP `taskdock_list_projects/get_project/update_project` 改根读模型与根聚合，新增
+`taskdock_get_plan` / `taskdock_update_plan`（计划聚合），旧 `project_id` 传计划 ID 兼容归一根，
+计划工具传根 ID → Validation（身份防混用），`taskdock_update_plan` 列入 HIGH_RISK_ACTIONS；
+CLI 新增 `taskdock project update <id> [--name/--description/--status active|archived/
+--target-date/--base-revision]`（`perms::require` + 根服务 + 操作记录 `project.update` + 退出码）。
+
+创建授权统一：新 `agent_access::project_creation::create_for_agent(_in_conn)` 收敛 CLI/MCP/REST
+三入口——行 ID fail-closed → 拒 create_new → scope 每次请求重读（撤销即时生效）→
+`projects.create` 全局能力 → `create_with_conn` → 项目根自动授权，全部单事务原子提交
+（消除 MCP「事务内授权」与 CLI/REST「提交后授权」的两个世界）；人类 UI 保持 `creation::create()`，
+`CreatorProjectAndPlan` 降级为兼容别名（只授项目根，无全局授权）。幂等：`Prepared` 携带独立
+`principal`，缺行 ID 的 RegisteredAgent 直接 Validation 拒绝（不再静默按人类处理），
+历史事件兜底按主体类别判定（Agent 永不进入），事件 actor 与 `payload.principal` 记真实主体。
+§七 全局 ID 审计的唯一代码违例 `context.rs::project_name`（先查计划再查根）改为归一根。
+
+验证：`cargo test --lib -- project_hub:: agent_access:: mcp:: commands::planning::` **365/0**
+（单次编译四组过滤，370.04s）；集成套件 `project_creation_identity`（18/18）与 `mcp_e2e`（3/3）
+在登记隔离 target（`target-dualagg`，绕开运行实例对主 bin 的写锁）中编译运行通过；
+`npm run typecheck` 0 错误；前端 `McpAccessSection.test.tsx` 14/0、`usePlanningStore.test.ts` 29/0、
+`ProjectHubPanel.test.tsx` 17/0（当前共享树状态）。
+
+真实场景验收（CLI 端到端，隔离库 `tmp/debug/agent-gov-round4/`，证据
+`tmp/acceptance/agent-gov-round4/`）：A 人类创建（归属 local_human）→ B Agent 按 ProjectId 读根
+→ C Agent 按 PlanId 读计划 → D Agent 带根 revision 改名（1→2）→ F 人类读回 → G/H 未授权
+FORBIDDEN（exit=6）与授权后可读写 → I 过期根 revision Conflict（exit=5，信息指向根）→
+计划 ID 入参归根更新（兼容语义）→ SQL 核对根 revision 链 1→2→3→4 而计划 revision 恒 1、
+计划执行状态不随根写迁移；E（计划执行状态更新）无 CLI 动词，按协议映射由 MCP/REST 测试覆盖；
+J（删除清理）由 `delete_project_cleans_grants_and_idempotency_rows` 单测覆盖（FK CASCADE）。
+
+文档：新增 ADR-0011（编号 0010 已被并行 ProjectContext 任务占用）+ project-hub/05/06/10、
+agent-workspace 五件同步；上一轮「CLI `project update` 未实现」的记录已在本轮更正
+（见 feature-matrix）。

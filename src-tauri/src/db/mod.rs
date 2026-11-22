@@ -2177,6 +2177,8 @@ CREATE INDEX idx_sec_audit_cat ON security_audit_log(category, created_at);
     crate::agent_access::schema::MIGRATION_91,
     // 统一项目身份第二轮（v92）：幂等请求归属表 + project_kind 收敛为 'project'。
     crate::agent_access::schema::MIGRATION_92,
+    // 统一项目身份第三轮（v93）：项目根乐观并发版本列（Project/Plan 双聚合 revision 分离）。
+    crate::project_hub::schema::MIGRATION_93,
 ];
 
 /// 历史测试数据的保守回填（幂等）。

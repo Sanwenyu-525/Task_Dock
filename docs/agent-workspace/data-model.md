@@ -168,3 +168,16 @@
 - **修复存量测试假设**：`db::tests` 的「迁移步数 == `MIGRATIONS.len()`」断言在 v87 被跳过
   （v86.1 占用 v88）后即失效，改为「最后一条迁移的真实版本号」；历史前缀夹具按条目版本号
   而非下标推进。
+
+## v93：项目根 revision 列（2026-11-22，双聚合契约）
+
+- `ALTER TABLE workspace_projects ADD COLUMN revision INTEGER NOT NULL DEFAULT 1`
+  （`project_hub/schema.rs::MIGRATION_93`，登记 `db/mod.rs::MIGRATIONS` 末尾；纯加列，
+  不改已发布迁移）；
+- 语义：项目根乐观并发版本，与计划 `planning_projects.revision`（v37）互相独立；
+  旧行为（不传 expectedRevision）完全不变；
+- 写入点：`update_project_fields_tx` 同事务「读→比对→+1」（镜像同步写不动计划 revision）；
+  计划更新携带 name/description/targetDate 时经同一内核写根，根 revision 相应递增；
+- 读取点：`project_hub::service::ProjectSummary.revision`、
+  `agent_access::service::project_summary`（REST/CLI 读模型，弃用计数器派生）；
+- 备份登记：无新表（仅加列），`BACKUP_TABLES` 不变。

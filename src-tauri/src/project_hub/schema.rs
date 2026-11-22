@@ -374,3 +374,16 @@ CREATE INDEX idx_crl_project ON capability_resource_links(project_id, capability
 CREATE INDEX idx_crl_kind ON capability_resource_links(resource_kind, resource_id);
 "#,
 );
+
+/// 统一项目身份第三轮（v93）：项目根获得独立乐观并发版本。
+///
+/// 项目根与计划是两个聚合：计划的 revision（v37，`planning_projects.revision`）只保护
+/// 计划行；此前项目根没有 revision，REST/MCP 更新长期借用计划 revision（身份混用）。
+/// - `DEFAULT 1`：既有行从 revision=1 起步；不传 expectedRevision 的旧调用完全不变。
+/// - 纯加列，不改既有列语义，不触碰任何已发布迁移。
+pub const MIGRATION_93: (i64, &str) = (
+    93,
+    r#"
+ALTER TABLE workspace_projects ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+"#,
+);

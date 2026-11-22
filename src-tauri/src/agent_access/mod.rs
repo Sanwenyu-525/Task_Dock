@@ -17,6 +17,7 @@ pub mod handoff;
 pub mod mcp_tools;
 pub mod operations;
 pub mod permissions;
+pub mod project_creation;
 pub mod projection;
 pub mod rest;
 pub mod schema;

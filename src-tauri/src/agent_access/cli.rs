@@ -32,6 +32,9 @@ pub const USAGE: &str = r#"Task Dock Agent CLI
   taskdock project create --name ... [--kind general] [--goal ...] [--template ID]
                           [--root <绝对目录>] [--dir-mode metadata_only|attach_existing|create_new]
                           [--request-id ID]
+  taskdock project update <project_id|plan_id> [--name ...] [--description ...]
+                          [--status active|archived] [--target-date YYYY-MM-DD]
+                          [--base-revision N]
   taskdock task list [--status pending|completed|all] [--search KW] [--limit N]
   taskdock task get <task_id>
   taskdock task create --title <标题> [--description ...] [--priority 0-3] [--due ISO] [--tag x]
@@ -93,7 +96,7 @@ struct Outcome {
 pub const COMMANDS: &[(&str, &str, &str)] = &[
     ("status", "-", "接口/工作空间/数据库/版本总览"),
     ("info", "-", "版本、路径、协议、schema"),
-    ("project", "list|get|current|create", "项目列表/详情/当前/创建"),
+    ("project", "list|get|current|create|update", "项目列表/详情/当前/创建/更新"),
     ("task", "list|get|create|update|complete|search", "任务读写"),
     ("plan", "list|current|get", "规划列表/当前/详情"),
     ("knowledge", "bases|search|get|create|update", "知识检索与写入"),
@@ -232,6 +235,7 @@ fn classify_cli_write(args: &[String]) -> Option<(&'static str, &'static str, St
         .map(String::as_str);
     let (action, kind) = match (group, sub, third) {
         ("project", "create", _) => ("project.create", "project"),
+        ("project", "update", _) => ("project.update", "project"),
         ("task", "create", _) => ("task.create", "task"),
         ("task", "update", _) => ("task.update", "task"),
         ("task", "complete", _) => ("task.complete", "task"),
@@ -688,8 +692,9 @@ fn execute_inner(
                     plan_description: None,
                     plan_status: None,
                     draft: Default::default(),
+                    // 只授项目根（CreatorProject）：计划级授权已随 v91 外键迁移废弃。
                     agent_access_policy:
-                        crate::project_hub::creation::AgentAccessPolicy::CreatorProjectAndPlan,
+                        crate::project_hub::creation::AgentAccessPolicy::CreatorProject,
                     principal: match principal.identity {
                         Identity::RegisteredAgent => {
                             crate::project_hub::creation::RequestPrincipal::agent(
@@ -699,15 +704,18 @@ fn execute_inner(
                         _ => crate::project_hub::creation::RequestPrincipal::local_human(),
                     },
                 };
-                let created = crate::project_hub::creation::create(db, request)?;
-                if let Some(row_id) = principal.agent_row_id.as_deref() {
-                    // 只授予刚创建的项目根（+ 该计划），不扩大为全局权限。
-                    perms::grant_created_project(
-                        db,
-                        row_id,
-                        &created.project.id,
-                    )?;
-                }
+                // Agent 走统一创建用例（scope/能力/创建/自动授权单事务完成）；
+                // 本机人类保持原路径（create_new 的目录初始化与失败补偿只在 db 版入口可用）。
+                let created = match principal.identity {
+                    Identity::RegisteredAgent => {
+                        crate::agent_access::project_creation::create_for_agent(
+                            db,
+                            principal.agent_row_id.as_deref().unwrap_or_default(),
+                            request,
+                        )?
+                    }
+                    _ => crate::project_hub::creation::create(db, request)?,
+                };
                 let data = serde_json::to_value(&created)?;
                 Ok(Outcome {
                     human: format!(
@@ -718,6 +726,56 @@ fn execute_inner(
                         created.provisioning_status
                     ),
                     data,
+                    page: None,
+                })
+            }
+            "update" => {
+                // 入参兼容计划 ID：先归一到项目根（解析不出 → NotFound）。
+                let id = require_positional(args, "project_id")?;
+                let root = db
+                    .with_read(|conn| perms::resolve_project_root(conn, id.trim()))?
+                    .ok_or_else(|| AppError::NotFound(format!("项目不存在: {id}")))?;
+                let patch = crate::project_hub::service::ProjectPatch {
+                    name: take_flag(args, "--name"),
+                    description: take_flag(args, "--description"),
+                    // 项目根生命周期状态只允许 active | archived（服务层同域校验）。
+                    status: match take_flag(args, "--status") {
+                        Some(raw) => {
+                            let status = raw.trim().to_string();
+                            if status != "active" && status != "archived" {
+                                return Err(usage_err("--status 允许 active | archived"));
+                            }
+                            Some(status)
+                        }
+                        None => None,
+                    },
+                    // 传了 = 设置（空串按服务层语义清除）；不传 = 保持。
+                    target_date: take_flag(args, "--target-date").map(Some),
+                    // 传了才做乐观并发校验；不传不假设当前值。
+                    expected_revision: match take_flag(args, "--base-revision") {
+                        Some(raw) => Some(
+                            raw.trim()
+                                .parse::<i64>()
+                                .map_err(|_| usage_err("--base-revision 需要整数"))?,
+                        ),
+                        None => None,
+                    },
+                    ..Default::default()
+                };
+                // 项目根元数据写：统一授权（身份 → scope → 能力 → grant）。
+                perms::require(db, principal, Capability::ProjectsWrite, &root)?;
+                // 统一服务内核（update_project_fields_tx 单事务读→比对→递增），
+                // 不自行写 UPDATE SQL。
+                let summary = db.with_transaction(|conn| {
+                    crate::project_hub::service::update_project_fields_tx(conn, &root, patch)?;
+                    crate::project_hub::service::load_summary(conn, &root)
+                })?;
+                Ok(Outcome {
+                    human: format!(
+                        "已更新 {}（projectId={}, revision={}）",
+                        summary.name, summary.id, summary.revision
+                    ),
+                    data: serde_json::to_value(&summary)?,
                     page: None,
                 })
             }
@@ -1772,5 +1830,210 @@ mod create_gate_tests {
             "错误必须指明缺失的能力: {}",
             err.user_message()
         );
+    }
+}
+
+#[cfg(test)]
+mod project_update_tests {
+    use super::*;
+
+    fn args(raw: &[&str]) -> Vec<String> {
+        raw.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn cli() -> Cli {
+        Cli {
+            json: false,
+            limit: 50,
+            offset: 0,
+            fields: Vec::new(),
+        }
+    }
+
+    /// 本机人类创建一个 metadata_only 项目，返回 (根 ID, 计划 ID)。
+    fn create_human_project(db: &Db, name: &str) -> (String, String) {
+        let outcome = execute(
+            db,
+            &Principal::local(Source::Cli),
+            &cli(),
+            args(&["project", "create", "--name", name]),
+            &store::NoGuard,
+        )
+        .expect("本机用户创建项目");
+        let root = outcome.data["project"]["id"].as_str().expect("项目根 ID");
+        let plan = outcome.data["activePlan"]["id"].as_str().expect("计划 ID");
+        (root.to_string(), plan.to_string())
+    }
+
+    #[test]
+    fn local_human_updates_project_and_revision_bumps() {
+        let db = Db::open_in_memory().expect("内存库");
+        let (root, _) = create_human_project(&db, "更新前");
+
+        let outcome = execute(
+            &db,
+            &Principal::local(Source::Cli),
+            &cli(),
+            args(&["project", "update", &root, "--name", "更新后"]),
+            &store::NoGuard,
+        )
+        .expect("本机用户更新项目");
+
+        assert_eq!(outcome.data["id"].as_str(), Some(root.as_str()), "data.id 是项目根");
+        assert_eq!(outcome.data["name"], serde_json::json!("更新后"));
+        assert_eq!(outcome.data["revision"], serde_json::json!(2), "更新后 revision 递增");
+    }
+
+    #[test]
+    fn stale_base_revision_conflicts() {
+        let db = Db::open_in_memory().expect("内存库");
+        let (root, _) = create_human_project(&db, "并发项目");
+
+        let err = match execute(
+            &db,
+            &Principal::local(Source::Cli),
+            &cli(),
+            args(&["project", "update", &root, "--name", "过期提交", "--base-revision", "99"]),
+            &store::NoGuard,
+        ) {
+            Err(err) => err,
+            Ok(_) => panic!("过期 revision 必须冲突"),
+        };
+
+        assert!(matches!(err, AppError::Conflict(_)), "{err:?}");
+    }
+
+    #[test]
+    fn agent_without_project_grant_is_forbidden() {
+        let db = Db::open_in_memory().expect("内存库");
+        let (root, _) = create_human_project(&db, "他人项目");
+        // project_rw + 全局 projects.write 能力，但没有该项目根的 grant（v92 第三层）。
+        let created =
+            crate::mcp::auth::create_agent(&db, "upd-no-grant", "无授权 Agent").expect("创建 Agent");
+        crate::mcp::auth::set_agent_scope(&db, &created.info.id, "project_rw").expect("设置 scope");
+        crate::mcp::permissions::grant(&db, &created.info.id, "projects.write", "")
+            .expect("授予能力");
+        let principal = Principal::agent(
+            created.info.id.clone(),
+            created.info.agent_id.clone(),
+            Source::Cli,
+        );
+
+        let err = match execute(
+            &db,
+            &principal,
+            &cli(),
+            args(&["project", "update", &root, "--name", "越权更新"]),
+            &store::NoGuard,
+        ) {
+            Err(err) => err,
+            Ok(_) => panic!("无 grant 必须拒绝"),
+        };
+
+        assert_eq!(super::super::error_code(&err), "FORBIDDEN", "{err:?}");
+        assert!(err.user_message().contains("未授权项目"), "{err:?}");
+    }
+
+    #[test]
+    fn plan_id_resolves_to_root_and_mirrors_name() {
+        let db = Db::open_in_memory().expect("内存库");
+        let (root, plan) = create_human_project(&db, "归一根前");
+
+        let outcome = execute(
+            &db,
+            &Principal::local(Source::Cli),
+            &cli(),
+            args(&["project", "update", &plan, "--name", "归一根后"]),
+            &store::NoGuard,
+        )
+        .expect("计划 ID 入参必须归一到项目根");
+
+        assert_eq!(
+            outcome.data["id"].as_str(),
+            Some(root.as_str()),
+            "更新落在项目根上"
+        );
+        assert_eq!(outcome.data["revision"], serde_json::json!(2));
+        // 计划容器镜像列同步更新。
+        let mirrored: Vec<String> = db
+            .with_read(|conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT name FROM planning_projects WHERE workspace_project_id = ?1",
+                )?;
+                let rows = stmt.query_map(rusqlite::params![root], |r| r.get(0))?;
+                rows.collect::<Result<Vec<_>, _>>()
+                    .map_err(AppError::from)
+            })
+            .expect("查询计划镜像");
+        assert_eq!(mirrored, vec!["归一根后".to_string()], "计划镜像名同步");
+    }
+
+    #[test]
+    fn operation_record_points_to_root() {
+        let db = Db::open_in_memory().expect("内存库");
+        let (_, plan) = create_human_project(&db, "操作记录项目");
+        let principal = Principal::local(Source::Cli);
+        // 仿 main_entry：写命令先登记操作，业务成功后写终态。
+        let operation = operations::try_start(
+            &db,
+            &principal,
+            &operations::OperationInput {
+                action: "project.update",
+                resource_kind: "project",
+                resource_id: &plan,
+                project_id: "",
+                request_id: "req-update-test",
+                detail: "",
+            },
+        )
+        .expect("登记操作");
+
+        let outcome = execute(
+            &db,
+            &principal,
+            &cli(),
+            args(&["project", "update", &plan, "--name", "操作记录后"]),
+            &store::NoGuard,
+        )
+        .expect("更新成功");
+        // 终态提取：ProjectSummary（顶层 id）形状 → resource_id 与 project 指针都是根。
+        let result = cli_operation_result(&outcome.data, "project");
+        operations::complete(&db, &operation.id, &result).expect("写操作终态");
+
+        let (status, resource_kind, resource_id, project_id, revision): (
+            String,
+            String,
+            String,
+            String,
+            i64,
+        ) = db
+            .with_read(|conn| {
+                Ok(conn.query_row(
+                    "SELECT status, resource_kind, resource_id, project_id, revision
+                     FROM agent_operations WHERE id = ?1",
+                    rusqlite::params![operation.id],
+                    |r| {
+                        Ok((
+                            r.get(0)?,
+                            r.get(1)?,
+                            r.get(2)?,
+                            r.get(3)?,
+                            r.get(4)?,
+                        ))
+                    },
+                )?)
+            })
+            .expect("查询操作记录");
+        assert_eq!(status, "committed");
+        assert_eq!(resource_kind, "project");
+        assert_eq!(resource_id, root_of(&db, &plan), "resource_id 归一到项目根");
+        assert_eq!(project_id, root_of(&db, &plan), "project_id 是项目根");
+        assert_eq!(revision, 2, "操作记录携带更新后的项目根 revision");
+    }
+
+    fn root_of(db: &Db, plan_id: &str) -> String {
+        db.with_read(|conn| perms::resolve_project_root(conn, plan_id))
+            .expect("解析项目根")
+            .expect("计划 ID 必须能归一根")
     }
 }

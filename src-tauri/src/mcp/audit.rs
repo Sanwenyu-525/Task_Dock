@@ -128,6 +128,7 @@ pub fn list_page(conn: &Connection, offset: u32, limit: u32) -> AppResult<AuditP
 const HIGH_RISK_ACTIONS: &[&str] = &[
     "taskdock_create_project",
     "taskdock_update_project",
+    "taskdock_update_plan",
     "taskdock_submit_for_review",
     "taskdock_link_agent_session",
     "taskdock_unlink_agent_session",

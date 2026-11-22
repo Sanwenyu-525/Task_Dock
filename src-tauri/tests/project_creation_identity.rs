@@ -10,8 +10,9 @@
 use task_dock_lib::db::Db;
 use task_dock_lib::project_hub::creation::{
     create, AgentAccessPolicy, CreateProjectRequest, DirectoryMode, InitialPlanDraft,
+    RequestPrincipal,
 };
-use task_dock_lib::project_hub::service::{resolve_project_ref, ProjectRef};
+use task_dock_lib::project_hub::service::{resolve_project_ref, PlanId, ProjectId, ProjectRef};
 
 fn request(name: &str, request_id: &str) -> CreateProjectRequest {
     CreateProjectRequest {
@@ -31,6 +32,7 @@ fn request(name: &str, request_id: &str) -> CreateProjectRequest {
         plan_status: None,
         draft: InitialPlanDraft::default(),
         agent_access_policy: AgentAccessPolicy::None,
+        principal: RequestPrincipal::local_human(),
     }
 }
 
@@ -72,8 +74,8 @@ fn plan_id_resolves_back_to_project_root() {
     assert_eq!(
         resolved,
         ProjectRef::Plan {
-            plan_id: created.active_plan.id.clone(),
-            project_id: created.project.id.clone(),
+            plan_id: PlanId(created.active_plan.id.clone()),
+            project_id: ProjectId(created.project.id.clone()),
         }
     );
 }

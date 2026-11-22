@@ -44,6 +44,8 @@ pub struct ProjectSummary {
     pub active_plan_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// 项目根乐观并发版本（v93）：只随项目根字段写入递增，与计划 revision 独立。
+    pub revision: i64,
     pub phase_count: i64,
     pub task_count: i64,
     pub completed_task_count: i64,
@@ -338,6 +340,8 @@ pub struct ProjectPatch {
     pub goal: Option<String>,
     pub status: Option<String>,
     pub target_date: Option<Option<String>>,
+    /// 乐观并发（v93）：Some 时与当前项目根 revision 比对，不匹配返回 Conflict。
+    pub expected_revision: Option<i64>,
 }
 
 /// 计划容器写入输入（同一项目可有多个计划，只有一个 active）。
@@ -394,18 +398,19 @@ fn row_to_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectSummary> {
         active_plan_id: row.get(7)?,
         created_at: row.get(8)?,
         updated_at: row.get(9)?,
-        phase_count: row.get(10)?,
-        task_count: row.get(11)?,
-        completed_task_count: row.get(12)?,
-        capability_count: row.get(13)?,
-        capability_gap_count: row.get(14)?,
-        deliverable_count: row.get(15)?,
+        revision: row.get(10)?,
+        phase_count: row.get(11)?,
+        task_count: row.get(12)?,
+        completed_task_count: row.get(13)?,
+        capability_count: row.get(14)?,
+        capability_gap_count: row.get(15)?,
+        deliverable_count: row.get(16)?,
     })
 }
 
 fn summary_sql() -> &'static str {
     "SELECT p.id, p.name, p.kind, p.status, p.description, p.goal, p.target_date,
-            p.active_plan_id, p.created_at, p.updated_at,
+            p.active_plan_id, p.created_at, p.updated_at, p.revision,
             (SELECT COUNT(*) FROM planning_milestones m
               WHERE m.project_id = p.active_plan_id AND m.kind = 'phase') AS phase_count,
             (SELECT COUNT(*) FROM tasks t WHERE t.id IN (
@@ -1365,6 +1370,35 @@ pub fn get_project(db: &Db, project_id: &str) -> AppResult<ProjectSummary> {
     db.with_read(|conn| load_summary(conn, project_id))
 }
 
+/// 乐观并发（v37 计划 / v93 项目根）：校验 expected_revision 与当前 revision 一致。
+/// 不匹配返回 Conflict（携带当前 revision），防止客户端后写无声覆盖。
+/// 不传（None）保持旧行为——UI 命令向后兼容，MCP/REST 工具层对根更新强制传值。
+pub(crate) fn check_expected_revision_tx(
+    conn: &Connection,
+    table: &str,
+    id: &str,
+    expected: Option<i64>,
+) -> AppResult<()> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    let current: i64 = conn
+        .query_row(
+            &format!("SELECT revision FROM {table} WHERE id = ?1"),
+            rusqlite::params![id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::Validation(format!("对象不存在: {}", id)))?;
+    if current != expected {
+        return Err(AppError::Conflict(format!(
+            "版本冲突：期望 revision {expected}，当前 {current}（请重新读取后再提交）"
+        )));
+    }
+    Ok(())
+}
+
 /// 修改项目根字段（名称/类型/描述/目标/日期/生命周期），并把兼容镜像列
 /// （`planning_projects.name/description/target_date`）同步到该项目下的全部计划。
 /// 调用方必须已处于事务中。
@@ -1383,6 +1417,8 @@ pub(crate) fn update_project_fields_tx(
         )
         .optional()?
         .ok_or_else(|| AppError::NotFound(format!("工作空间项目不存在: {project_id}")))?;
+    // 项目根 revision（v93）：同一事务内「读 → 比对 → 递增」，不匹配即 Conflict。
+    check_expected_revision_tx(conn, "workspace_projects", project_id, patch.expected_revision)?;
 
     let name = match patch.name {
         Some(value) => clean_text(&value, "项目名称", MAX_NAME, false)?,
@@ -1412,7 +1448,7 @@ pub(crate) fn update_project_fields_tx(
     conn.execute(
         "UPDATE workspace_projects
          SET name = ?1, kind = ?2, description = ?3, goal = ?4, target_date = ?5,
-             status = ?6, updated_at = ?7
+             status = ?6, updated_at = ?7, revision = revision + 1
          WHERE id = ?8",
         params![name, kind, description, goal, target_date, status, now, project_id],
     )?;

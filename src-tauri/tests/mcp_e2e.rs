@@ -109,6 +109,9 @@ impl StdioSession {
 }
 
 /// 测试内表示「用户已创建、未经 Agent 授权」的项目夹具。
+///
+/// `revision` 是**项目根** revision（双聚合契约：taskdock_update_project 的并发令牌
+/// 是 workspace_projects.revision，不再使用计划 revision）。
 struct ExistingProject {
     id: String,
     revision: i64,
@@ -181,7 +184,9 @@ async fn stdio_end_to_end_handshake_read_write_conflict_audit_reconnect() {
     .unwrap();
     let existing = ExistingProject {
         id: "proj-user".into(),
-        revision: 3,
+        // 项目根 revision（v93 DEFAULT 1）。计划行 revision=3 有意与根不同，
+        // 证明 update_project 用的是根聚合令牌而不是计划 revision。
+        revision: 1,
     };
 
     // ── 会话 1：握手 → 工具发现 → 读 → 未授权写 → 授权后写 → 幂等 → 冲突 ──
@@ -375,13 +380,26 @@ async fn stdio_without_agent_token_reports_authorization_error() {
         .unwrap();
     task_dock_lib::mcp::write_transport_config(&dir, bridge.port, &bridge.token, true).unwrap();
 
-    // 未配置 TASKDOCK_MCP_TOKEN → stdio 侧直接报不可用/未配置，不挂死
+    // 未配置 TASKDOCK_MCP_TOKEN → 明确报未授权（-32001，配置问题不可重试），不挂死。
+    // v94 更正：旧断言写 -32000「不可用」，与 bridge.rs「缺失凭据 → 401 → unauthorized」
+    // 的实现及 protocol.rs 注释意图（配置问题不可重试）不符，属过期断言（HEAD 上即失败）。
     let mut s = StdioSession::spawn(&dir, None);
     let resp =
         s.raw(&json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}).to_string());
     assert_eq!(
-        resp["error"]["code"], -32000,
-        "缺少 agent token 应明确报错: {resp}"
+        resp["error"]["code"], -32001,
+        "缺少 agent token 应明确报未授权: {resp}"
+    );
+    assert!(
+        resp["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("未配置 agent token"),
+        "错误文案应指明缺失项: {resp}"
+    );
+    assert_eq!(
+        resp["error"]["data"]["retryable"], false,
+        "凭据缺失是配置问题，重试不会自愈"
     );
     let _ = bridge.stop().await;
     std::fs::remove_dir_all(&dir).ok();
