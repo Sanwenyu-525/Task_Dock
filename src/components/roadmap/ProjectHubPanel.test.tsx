@@ -11,13 +11,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import ProjectHubPanel from "./ProjectHubPanel";
+import { useUiStore } from "../../store/useUiStore";
+import { ProjectContextProvider, type ProjectContextValue } from "../../workbench/ProjectContext";
 import type {
   ProjectHubCreateInput,
   ProjectHubProjectSummary,
   ProjectHubResourceCandidate,
   ProjectHubResourceLink,
   ProjectHubSnapshot,
+  WorkspaceProject,
 } from "../../lib/bridge";
 
 const bridge = vi.hoisted(() => ({
@@ -128,9 +132,66 @@ function snapshot(id: string, overrides: Partial<ProjectHubSnapshot> = {}): Proj
 
 const WAIT = { timeout: 2000 };
 
+function workspaceProject(id: string, name: string): WorkspaceProject {
+  return {
+    id,
+    name,
+    kind: "general",
+    status: "active",
+    rootPath: "",
+    rootExists: false,
+    devProjectId: null,
+    devProjectExists: false,
+    devProjectName: null,
+    note: "",
+    itemCount: 0,
+    taskLinkCount: 0,
+    createdAt: "2026-11-20T00:00:00Z",
+    updatedAt: "2026-11-20T00:00:00Z",
+  };
+}
+
+/** 全局项目上下文替身：projectId 由测试控制，selectProject/refreshProjects 可断言。 */
+function makeContext(overrides: Partial<ProjectContextValue> = {}): ProjectContextValue {
+  return {
+    projectId: "p-a",
+    selectedProject: workspaceProject("p-a", "项目 A"),
+    projects: [workspaceProject("p-a", "项目 A")],
+    projectsLoading: false,
+    projectsError: null,
+    selectProject: vi.fn().mockResolvedValue(true),
+    refreshProjects: vi.fn().mockResolvedValue([]),
+    ...overrides,
+  };
+}
+
+function renderHub(value: ProjectContextValue) {
+  return render(
+    <ProjectContextProvider value={value}>
+      <ProjectHubPanel />
+    </ProjectContextProvider>,
+  );
+}
+
+/** 全局项目切换模拟：点击按钮把 Provider 切到另一份上下文（面板自己不再有选择器）。 */
+function SwitchableHub({
+  contexts,
+}: {
+  contexts: [ProjectContextValue, ProjectContextValue];
+}) {
+  const [current, setCurrent] = useState(0);
+  return (
+    <div>
+      <button onClick={() => setCurrent(1)}>switch-global</button>
+      <ProjectContextProvider value={contexts[current]}>
+        <ProjectHubPanel />
+      </ProjectContextProvider>
+    </div>
+  );
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
-  bridge.projectHubListProjects.mockResolvedValue([summary("p-a", "项目 A")]);
   bridge.projectHubGetProject.mockImplementation(async (id: string) => snapshot(id));
   bridge.projectHubCreateProject.mockImplementation(async (input: ProjectHubCreateInput) =>
     snapshot("new", {
@@ -149,17 +210,16 @@ afterEach(() => {
 });
 
 describe("项目中枢面板", () => {
-  it("加载项目列表并渲染总览", async () => {
-    render(<ProjectHubPanel />);
+  it("由全局 projectId 加载快照并渲染总览", async () => {
+    renderHub(makeContext());
     expect(await screen.findByRole("heading", { name: "项目 A" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: /总览/ })).toBeTruthy();
+    // 工具栏只读展示当前项目，不再有第二个项目选择器
+    expect(screen.queryByLabelText("选择项目")).toBeNull();
+    expect(screen.getByText("项目 A", { selector: ".ph-project-name" })).toBeTruthy();
   });
 
-  it("切换项目时使用最新请求的结果，不串数据", async () => {
-    bridge.projectHubListProjects.mockResolvedValue([
-      summary("p-a", "项目 A"),
-      summary("p-b", "项目 B"),
-    ]);
+  it("全局切换项目后快照跟随，迟到的旧响应不覆盖新项目", async () => {
     bridge.projectHubGetProject.mockImplementation(async (id: string) => {
       if (id === "p-a") {
         await new Promise((resolve) => setTimeout(resolve, 60));
@@ -169,10 +229,21 @@ describe("项目中枢面板", () => {
     });
 
     const user = userEvent.setup();
-    render(<ProjectHubPanel />);
+    render(
+      <SwitchableHub
+        contexts={[
+          makeContext(),
+          makeContext({
+            projectId: "p-b",
+            selectedProject: workspaceProject("p-b", "项目 B"),
+            projects: [workspaceProject("p-a", "项目 A"), workspaceProject("p-b", "项目 B")],
+          }),
+        ]}
+      />,
+    );
     await screen.findByRole("heading", { name: "项目 A" });
 
-    await user.selectOptions(screen.getByLabelText("选择项目"), "p-b");
+    await user.click(screen.getByText("switch-global"));
     expect(await screen.findByRole("heading", { name: "项目 B" })).toBeTruthy();
 
     // 迟到的 A 响应不得覆盖当前选择
@@ -181,9 +252,10 @@ describe("项目中枢面板", () => {
     expect(screen.queryByRole("heading", { name: "项目 A" })).toBeNull();
   });
 
-  it("创建项目携带功能草案（标题 + 阶段下标 + 优先级 + 验收标准）", async () => {
+  it("创建项目携带功能草案并把新项目根提交给全局上下文", async () => {
     const user = userEvent.setup();
-    render(<ProjectHubPanel />);
+    const ctx = makeContext();
+    renderHub(ctx);
     await screen.findByRole("heading", { name: "项目 A" });
 
     await user.click(screen.getByRole("button", { name: /新建项目/ }));
@@ -202,6 +274,36 @@ describe("项目中枢面板", () => {
     expect(typeof feature?.phaseIndex).toBe("number");
     expect(["P0", "P1", "P2"]).toContain(feature?.priority);
     expect(input.clientRequestId).toBeTruthy();
+    // 新建成功后：先刷新 Shell 列表，再经全局上下文切换到新项目根
+    await waitFor(() => expect(ctx.selectProject).toHaveBeenCalledWith("new"), WAIT);
+    expect(ctx.refreshProjects).toHaveBeenCalled();
+  });
+
+  it("全局切换失败时如实提示「已创建但未切换」", async () => {
+    bridge.projectHubCreateProject.mockImplementation(async (input: ProjectHubCreateInput) =>
+      snapshot("new", { project: summary("new", input.name) }),
+    );
+    const user = userEvent.setup();
+    const ctx = makeContext({ selectProject: vi.fn().mockResolvedValue(false) });
+    renderHub(ctx);
+    await screen.findByRole("heading", { name: "项目 A" });
+
+    await user.click(screen.getByRole("button", { name: /新建项目/ }));
+    await user.type(await screen.findByPlaceholderText(/2D Roguelike/), "我要写一本科幻小说");
+    await user.click(screen.getByRole("button", { name: "开始规划" }));
+    await user.click(await screen.findByRole("button", { name: "确认并创建" }));
+
+    await waitFor(() => expect(ctx.selectProject).toHaveBeenCalledWith("new"), WAIT);
+    // 创建成功但不伪装成切换成功：给出明确警告（toast 由 useUiStore 记录）
+    await waitFor(
+      () =>
+        expect(
+          useUiStore.getState().toasts.some((toast) =>
+            toast.message.includes("已创建，但全局项目切换未完成"),
+          ),
+        ).toBe(true),
+      WAIT,
+    );
   });
 
   it("同一草案重试复用同一个请求 ID（超时后重试不重复创建）", async () => {
@@ -212,7 +314,7 @@ describe("项目中枢面板", () => {
       );
 
     const user = userEvent.setup();
-    render(<ProjectHubPanel />);
+    renderHub(makeContext());
     await screen.findByRole("heading", { name: "项目 A" });
 
     await user.click(screen.getByRole("button", { name: /新建项目/ }));
@@ -250,7 +352,7 @@ describe("项目中枢面板", () => {
         ],
       }),
     );
-    render(<ProjectHubPanel />);
+    renderHub(makeContext());
     await screen.findByRole("heading", { name: "项目 A" });
 
     const metrics = screen.getByText("阶段完成").parentElement as HTMLElement;
@@ -261,7 +363,7 @@ describe("项目中枢面板", () => {
 
   it("功能与看板视图展示功能状态", async () => {
     const user = userEvent.setup();
-    render(<ProjectHubPanel />);
+    renderHub(makeContext());
     await screen.findByRole("heading", { name: "项目 A" });
     await user.click(screen.getByRole("tab", { name: /功能与看板/ }));
     expect(await screen.findByText("功能一")).toBeTruthy();
@@ -296,7 +398,7 @@ describe("项目中枢面板", () => {
     bridge.projectHubResourceLinks.mockResolvedValue([link]);
 
     const user = userEvent.setup();
-    render(<ProjectHubPanel />);
+    renderHub(makeContext());
     await screen.findByRole("heading", { name: "项目 A" });
     await user.click(screen.getByRole("tab", { name: /项目资源/ }));
 
@@ -336,7 +438,7 @@ describe("项目中枢面板", () => {
         ],
       }),
     );
-    render(<ProjectHubPanel />);
+    renderHub(makeContext());
     await screen.findByRole("heading", { name: "项目 A" });
     await user.click(screen.getByRole("tab", { name: /能力/ }));
     const section = await screen.findByText("能力需求与缺口");

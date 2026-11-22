@@ -26,9 +26,14 @@
   min-width: 0;
 }
 
-.project-hub .ph-project-select .select {
-  min-width: 180px;
+.project-hub .ph-project-name {
+  min-width: 0;
   max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+  font-size: 13px;
 }
 
 .project-hub .ph-toolbar-meta {
@@ -630,9 +635,7 @@
     min-width: 0;
   }
 
-  .project-hub .ph-project-select .select {
-    min-width: 0;
-    width: 100%;
+  .project-hub .ph-project-name {
     max-width: none;
   }
 

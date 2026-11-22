@@ -30,18 +30,18 @@ import {
   openProjectWorkspaceWindow,
   projectHubCreateProject,
   projectHubGetProject,
-  projectHubListProjects,
   projectHubResourceCandidates,
   projectHubResourceLink,
   projectHubResourceLinks,
   projectHubResourceUnlink,
   projectHubResourceValidate,
   type ProjectHubCreateInput,
-  type ProjectHubProjectSummary,
   type ProjectHubResourceCandidate,
   type ProjectHubResourceLink,
   type ProjectHubSnapshot,
 } from "../../lib/bridge";
+import { useProjectContext } from "../../workbench/ProjectContext";
+import { useUiStore } from "../../store/useUiStore";
 import { SectionTabs } from "../ui";
 import {
   buildCapabilityInput,
@@ -125,8 +125,11 @@ export interface ProjectHubPanelProps {
 }
 
 export default function ProjectHubPanel({ onOpenPlanning }: ProjectHubPanelProps = {}) {
-  const [projects, setProjects] = useState<ProjectHubProjectSummary[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // 全局项目上下文（ADR-0010）：本面板不再维护第二份项目列表/选择状态，
+  // 快照只由全局 projectId 驱动；列表与选择器统一由 Shell 顶栏提供。
+  const { projectId, selectedProject, projects, projectsLoading, selectProject, refreshProjects } =
+    useProjectContext();
+  const showToast = useUiStore((s) => s.showToast);
   const [snapshot, setSnapshot] = useState<ProjectHubSnapshot | null>(null);
   const [view, setView] = useState<HubView>("overview");
   const [loading, setLoading] = useState(false);
@@ -136,45 +139,36 @@ export default function ProjectHubPanel({ onOpenPlanning }: ProjectHubPanelProps
   const [planningMode, setPlanningMode] = useState<"summary" | "edit">("summary");
   const loadSeq = useRef(0);
 
-  const loadProjects = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const rows = await projectHubListProjects();
-      setProjects(rows);
-      setSelectedId((current) => current ?? rows[0]?.id ?? null);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void loadProjects();
-  }, [loadProjects]);
-
-  useEffect(() => {
-    if (!selectedId) {
+  // 快照加载：代际防乱序 + 归属校验（返回的 project.id 必须等于请求的 projectId）。
+  const reloadSnapshot = useCallback(async (id: string | null) => {
+    if (!id) {
       setSnapshot(null);
       return;
     }
     const seq = ++loadSeq.current;
     setLoading(true);
     setError(null);
-    projectHubGetProject(selectedId)
-      .then((next) => {
-        if (seq === loadSeq.current) setSnapshot(next);
-      })
-      .catch((cause) => {
-        if (seq === loadSeq.current) {
-          setError(cause instanceof Error ? cause.message : String(cause));
-        }
-      })
-      .finally(() => {
-        if (seq === loadSeq.current) setLoading(false);
-      });
-  }, [selectedId]);
+    try {
+      const next = await projectHubGetProject(id);
+      if (seq !== loadSeq.current) return;
+      if (next.project.id !== id) {
+        // 一致性错误不落地：宁可如实报错，也不用错项目数据渲染。
+        setError("项目快照与请求的项目不一致，请重试");
+        return;
+      }
+      setSnapshot(next);
+    } catch (cause) {
+      if (seq === loadSeq.current) {
+        setError(cause instanceof Error ? cause.message : String(cause));
+      }
+    } finally {
+      if (seq === loadSeq.current) setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void reloadSnapshot(projectId);
+  }, [projectId, reloadSnapshot]);
 
   const active = snapshot;
 
@@ -190,43 +184,40 @@ export default function ProjectHubPanel({ onOpenPlanning }: ProjectHubPanelProps
     [active],
   );
 
+  // 创建项目（ADR-0010）：先刷新 Shell 项目列表，再经全局上下文切换到新项目根；
+  // 切换失败时如实提示「已创建但未切换」，不伪装成功也不重复创建。
   const onCreate = async (input: ProjectHubCreateInput) => {
     const created = await projectHubCreateProject(input);
-    setProjects((rows) => {
-      const without = rows.filter((row) => row.id !== created.project.id);
-      return [created.project, ...without];
-    });
-    setSelectedId(created.project.id);
     setSnapshot(created);
     setCreateMode(null);
     setView("overview");
+    await refreshProjects();
+    const switched = await selectProject(created.project.id);
+    if (!switched) {
+      showToast(`项目「${created.project.name}」已创建，但全局项目切换未完成`, {
+        kind: "warning",
+      });
+    }
   };
 
   return (
     <div className="project-hub page-fill">
       <div className="ph-toolbar">
-        <label className="ph-project-select">
+        {/* 全局上下文只读展示（ADR-0010）：项目根选择器唯一在 Shell 顶栏。 */}
+        <div className="ph-project-select">
           <span>当前项目</span>
-          <select
-            className="select"
-            value={selectedId ?? ""}
-            onChange={(event) => setSelectedId(event.target.value || null)}
-            disabled={projects.length === 0}
-            aria-label="选择项目"
-          >
-            {projects.length === 0 ? <option value="">暂无项目</option> : null}
-            {projects.map((project) => (
-              <option key={project.id} value={project.id}>
-                {project.name}
-              </option>
-            ))}
-          </select>
-        </label>
+          <strong className="ph-project-name">
+            {selectedProject?.name ?? (projectId ? "…" : "未选择项目")}
+          </strong>
+        </div>
         <div className="ph-toolbar-meta">
           got {projects.length} 个项目 · 阶段 {active?.project.phaseCount ?? 0} · 任务{" "}
           {active?.project.taskCount ?? 0}
         </div>
-        <button className="btn btn-ghost btn-sm" onClick={() => void loadProjects()}>
+        <button
+          className="btn btn-ghost btn-sm"
+          onClick={() => void refreshProjects().then(() => reloadSnapshot(projectId))}
+        >
           刷新
         </button>
         <button className="btn btn-primary btn-sm" onClick={() => setCreateMode("intent")}>
@@ -237,13 +228,13 @@ export default function ProjectHubPanel({ onOpenPlanning }: ProjectHubPanelProps
       {error ? (
         <div className="ph-error" role="alert">
           <AlertTriangle size={16} /> {error}
-          <button className="btn btn-ghost btn-sm" onClick={() => void loadProjects()}>
+          <button className="btn btn-ghost btn-sm" onClick={() => void reloadSnapshot(projectId)}>
             重试
           </button>
         </div>
       ) : null}
 
-      {!loading && projects.length === 0 ? (
+      {!projectsLoading && projects.length === 0 ? (
         <div className="ph-empty">
           <Sparkles size={28} />
           <h3>还没有项目</h3>
@@ -252,6 +243,24 @@ export default function ProjectHubPanel({ onOpenPlanning }: ProjectHubPanelProps
             开始规划
           </button>
         </div>
+      ) : null}
+
+      {/* 有项目但全局未选择：引导到顶栏选择器，不静默挑第一个项目。 */}
+      {!projectsLoading && !projectId && projects.length > 0 ? (
+        <div className="ph-empty">
+          <Sparkles size={28} />
+          <h3>尚未选择项目</h3>
+          <p>使用顶栏的项目选择器选择一个项目，或创建新项目。</p>
+          <button className="btn btn-primary" onClick={() => setCreateMode("intent")}>
+            新建项目
+          </button>
+        </div>
+      ) : null}
+
+      {loading && !active ? (
+        <p className="ph-muted" role="status">
+          正在加载项目…
+        </p>
       ) : null}
 
       {active ? (
