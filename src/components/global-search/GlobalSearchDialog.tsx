@@ -433,6 +433,9 @@ export function GlobalSearchDialog({
           anchorRef={anchorRef}
           placement="bottom-start"
           offsetPx={6}
+          // 面板与顶栏字段严格等宽（左右缘对齐搜索框）；maxWidth 只作
+          // 可用宽兜底，正常情况下字段宽（≤392）远小于它。
+          widthMode="exact-match"
           maxWidth={SEARCH_METRICS.panelMax}
           maxHeight={520}
           className="gs-popover"

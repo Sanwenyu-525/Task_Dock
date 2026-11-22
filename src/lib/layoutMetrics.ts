@@ -63,11 +63,14 @@ export function isUltraNarrow(width: number): boolean {
 /**
  * 全局搜索的共享几何（CSS px）。
  *
- * 顶栏搜索框与结果面板是两件事：字段更窄（不挤压项目选择器/窗口控制），
- * 面板可以更宽（结果标题/分类按钮要完整显示）。四处必须同源：
- * - `--layout-search-max` / `--layout-search-basis`：顶栏字段（`workbench.css`）
- * - `--layout-search-panel-max`：结果面板（`global-search.css`）
- * - `GlobalSearchDialog` 的 `maxWidth`（浮层基元的尺寸上限）
+ * 顶栏搜索框与结果面板是两件事：字段更窄（不挤压项目选择器/窗口控制）；
+ * **模态**面板更宽（结果标题/分类按钮要完整显示），**下拉**面板则与
+ * 字段严格等宽（`Popover widthMode="exact-match"`，2026-11-22）。
+ * 同源关系：
+ * - `--layout-search-max` / `--layout-search-basis` / `--layout-search-min`：
+ *   顶栏字段（`workbench.css`；下拉面板的 min-width 兜底也用它）
+ * - `--layout-search-panel-max`：模态结果面板（`global-search.css` 的 .gs-panel）
+ * - `GlobalSearchDialog` 的 `maxWidth`（浮层基元的可用宽兜底）
  * `layoutMetrics.test.ts` 会校验 CSS 与本文件一致。
  */
 export const SEARCH_METRICS = {

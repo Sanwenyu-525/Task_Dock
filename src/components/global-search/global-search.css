@@ -26,14 +26,16 @@
 
   /* 锚定下拉形态（工作台顶栏搜索字段）：与模态共用 .gs-panel 内部结构，
      只去掉遮罩与居中定位——外壳交给 ui/Popover 负责锚定、翻转与边界收敛。
-     可用高度由基元写入的 --popover-max-h 约束，长结果在面板内滚动。 */
+     可用高度由基元写入的 --popover-max-h 约束，长结果在面板内滚动。
+     宽度：Popover `widthMode="exact-match"` 把外壳宽写成顶栏字段宽
+     （--popover-exact-w），面板与搜索框左右缘对齐；min-width 兜底
+     --layout-search-min——超窄图标档（字段收成 32px）下面板不被压成
+     不可读的一列（min-width 按规范压过 max-width）。 */
   .gs-popover {
     padding: 0;
     background: var(--dialog-face);
     overflow: hidden;
-    /* 面板的目标宽度：实际宽度还会被基元的「本次可用宽」上限收敛，
-       因此靠近右缘时会整体收窄，而不是把右侧内容横向裁掉。 */
-    width: min(var(--layout-search-panel-max, 472px), calc(100vw - 32px));
+    min-width: max(var(--layout-search-min, 132px), var(--popover-min-w, 0px));
   }
 
   /* 下拉面板：宽度比字段更宽以保证结果标题/片段可读，但必须跟随外壳宽度。 */

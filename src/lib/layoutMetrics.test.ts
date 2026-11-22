@@ -259,11 +259,17 @@ describe("全局搜索几何同源", () => {
     }
   });
 
-  it("结果面板（模态/下拉）用同一 Token，且不与字段等宽", () => {
+  it("模态面板走 panelMax 上限；下拉面板与字段严格等宽（exact-match）", () => {
     expect(globalSearchCss).toContain("var(--layout-search-panel-max");
     // 560 只允许出现在高度上限（max-height），宽度上限必须走 Token
     expect(globalSearchCss).not.toMatch(/width:\s*min\(560px/);
+    // 模态面板仍比字段宽（结果标题/分类按钮完整显示）；下拉形态的宽度
+    // 改由 Popover exact-match 写入锚点宽（与顶栏搜索框左右缘对齐），
+    // 面板自身只保留 --layout-search-min 兜底，不再自设目标宽度。
     expect(SEARCH_METRICS.panelMax).toBeGreaterThan(SEARCH_METRICS.fieldMax);
+    expect(globalSearchDialogSource).toContain('widthMode="exact-match"');
+    expect(globalSearchCss).toMatch(/\.gs-popover\s*\{[^}]*--layout-search-min/);
+    expect(globalSearchCss).not.toMatch(/\.gs-popover\s*\{[^}]*width:\s*min\(/);
   });
 
   it("GlobalSearchDialog 的 maxWidth 使用共享常量", () => {
