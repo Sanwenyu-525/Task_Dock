@@ -64,6 +64,7 @@ import { describeError } from "../lib/errors";
 import { useWindowInsets } from "../lib/insets";
 import { sendReceiptToDesktop } from "../lib/life/receiptTransfer";
 import { receiptAction, receiptCountText } from "../lib/life/receiptState";
+import { createRequestGeneration } from "../lib/life/requestGeneration";
 import {
   createLifeTaskWithReminder,
   LIFE_TASK_CATEGORY,
@@ -170,34 +171,37 @@ export function LifeScreen({ nav }: { nav: Nav }) {
 
   const [lightbox, setLightbox] = useState<{ images: LightboxImage[]; index: number } | null>(null);
   const [taskEditorOpen, setTaskEditorOpen] = useState(false);
+  const [showCompleted, setShowCompleted] = useState(false);
+
+  /** 页面列表与详情各自有请求代际：快速切换/刷新时旧响应不得覆盖新状态。 */
+  const refreshGeneration = useRef(createRequestGeneration());
+  const detailGeneration = useRef(createRequestGeneration());
 
   const refresh = useCallback(async () => {
+    const seq = refreshGeneration.current.next();
     setLoading(true);
     try {
-      const [nextOverview, nextRecent, nextLinks, nextItems, allTasks] = await Promise.all([
+      const [nextOverview, nextRecent, nextLinks, nextItems, lifeTasks] = await Promise.all([
         lifeOverview(),
         listRecentPurchases(8),
         listDocumentLinks(null, null, 40),
         listItems("", 40),
-        listTasks(),
+        // 生活待办在 SQLite 层按 category 过滤并限量，复用同一个 tasks 仓储。
+        listTasks({ category: LIFE_CATEGORY, limit: 60 }),
       ]);
+      if (!refreshGeneration.current.isCurrent(seq)) return;
       setOverview(nextOverview);
       setRecent(nextRecent);
       setLinks(nextLinks);
       setItems(nextItems);
-      setTasks(
-        [...allTasks]
-          .filter((task) => task.category === LIFE_CATEGORY)
-          .sort((left, right) => {
-            if (left.status !== right.status) return left.status === "pending" ? -1 : 1;
-            return (left.dueAt ?? Number.MAX_SAFE_INTEGER) - (right.dueAt ?? Number.MAX_SAFE_INTEGER);
-          }),
-      );
+      // 排序已由 SQL 完成（待办在前、截止时间升序），不再读全表后 JS 过滤。
+      setTasks(lifeTasks);
       setError(null);
     } catch (reason) {
+      if (!refreshGeneration.current.isCurrent(seq)) return;
       setError(describeError(reason));
     } finally {
-      setLoading(false);
+      if (refreshGeneration.current.isCurrent(seq)) setLoading(false);
     }
   }, []);
 
@@ -371,36 +375,44 @@ export function LifeScreen({ nav }: { nav: Nav }) {
   // ── 详情 ───────────────────────────────────────────────
 
   const openItem = useCallback(async (itemId: string) => {
+    const seq = detailGeneration.current.next();
     setDetailBusy(true);
     setDetail(null);
     setEventDetail(null);
     setSheet({ type: "item", id: itemId });
     try {
       const next = await getItemHistory(itemId, 50);
+      if (!detailGeneration.current.isCurrent(seq)) return;
       if (!next) throw new Error("商品不存在或已删除");
       setDetail(next);
     } catch (reason) {
+      // 旧请求失败不得关闭新详情，也不得弹出与新详情无关的报错。
+      if (!detailGeneration.current.isCurrent(seq)) return;
       showToast(describeError(reason), "danger");
       setSheet(null);
     } finally {
-      setDetailBusy(false);
+      // 旧请求结束不得提前关掉新请求的 loading。
+      if (detailGeneration.current.isCurrent(seq)) setDetailBusy(false);
     }
   }, [showToast]);
 
   const openEvent = useCallback(async (eventId: string) => {
+    const seq = detailGeneration.current.next();
     setDetailBusy(true);
     setEventDetail(null);
     setDetail(null);
     setSheet({ type: "event", id: eventId });
     try {
       const next = await getEventDetail(eventId);
+      if (!detailGeneration.current.isCurrent(seq)) return;
       if (!next) throw new Error("生活记录不存在或已删除");
       setEventDetail(next);
     } catch (reason) {
+      if (!detailGeneration.current.isCurrent(seq)) return;
       showToast(describeError(reason), "danger");
       setSheet(null);
     } finally {
-      setDetailBusy(false);
+      if (detailGeneration.current.isCurrent(seq)) setDetailBusy(false);
     }
   }, [showToast]);
 
@@ -720,7 +732,12 @@ export function LifeScreen({ nav }: { nav: Nav }) {
     () => tasks.filter((task) => task.status === "pending"),
     [tasks],
   );
-  const doneCount = tasks.length - pendingTasks.length;
+  // 已完成任务复用同一批查询结果，不新建任务仓库；恢复也复用 toggleTask。
+  const completedTasks = useMemo(
+    () => tasks.filter((task) => task.status !== "pending"),
+    [tasks],
+  );
+  const doneCount = completedTasks.length;
 
   return (
     <View style={[styles.root, { backgroundColor: tokens.bg }]}>
@@ -899,9 +916,18 @@ export function LifeScreen({ nav }: { nav: Nav }) {
               <View style={styles.sectionHead}>
                 <Text style={[styles.sectionTitle, { color: tokens.text }]}>生活待办</Text>
                 <View style={styles.inlineActions}>
-                  <Text style={[styles.sectionMeta, { color: tokens.muted }]}>
-                    分类 LIFE{doneCount > 0 ? ` · 已完成 ${doneCount}` : ""}
-                  </Text>
+                  <Text style={[styles.sectionMeta, { color: tokens.muted }]}>分类 LIFE</Text>
+                  {doneCount > 0 ? (
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={showCompleted ? "收起已完成待办" : "查看已完成待办"}
+                      onPress={() => setShowCompleted((value) => !value)}
+                    >
+                      <Text style={[styles.linkText, { color: tokens.accentText }]}>
+                        {showCompleted ? "收起已完成" : `已完成 ${doneCount}`}
+                      </Text>
+                    </Pressable>
+                  ) : null}
                   <Pressable accessibilityRole="button" onPress={() => setTaskEditorOpen(true)}>
                     <Text style={[styles.linkText, { color: tokens.accentText }]}>新增</Text>
                   </Pressable>
@@ -942,6 +968,27 @@ export function LifeScreen({ nav }: { nav: Nav }) {
                   </View>
                 ))
               )}
+              {/* 已完成入口复用 toggleTask：查看与恢复都不复制任务操作逻辑。 */}
+              {showCompleted
+                ? completedTasks.slice(0, 8).map((task) => (
+                    <View key={task.id} style={[styles.taskRow, { borderColor: tokens.separator }]}>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={`恢复 ${task.title}`}
+                        onPress={() => void toggleLifeTask(task)}
+                        style={({ pressed }) => [styles.restoreButton, { opacity: pressed ? 0.7 : 1 }]}
+                      >
+                        <Text style={[styles.linkText, { color: tokens.accentText }]}>恢复</Text>
+                      </Pressable>
+                      <View style={styles.rowMain}>
+                        <Text style={[styles.rowTitle, { color: tokens.muted }]} numberOfLines={1}>
+                          {task.title}
+                        </Text>
+                        <Text style={[styles.rowMeta, { color: tokens.muted }]}>已完成</Text>
+                      </View>
+                    </View>
+                  ))
+                : null}
             </View>
 
             <View style={[styles.card, { backgroundColor: tokens.card, borderColor: tokens.cardBorder }]}>
@@ -1701,6 +1748,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
+  },
+  restoreButton: {
+    width: 40,
+    alignItems: "center",
+    paddingVertical: 2,
   },
   sheetContent: { paddingHorizontal: space.lg, paddingBottom: space.xl, gap: space.sm },
   sheetLoading: { paddingVertical: space.xl, alignItems: "center" },

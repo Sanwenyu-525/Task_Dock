@@ -262,52 +262,114 @@ export function currencyDecimals(currency: string): number {
   return scale;
 }
 
-/** 十进制金额 → 最小货币单位整数；按货币精度解析，非法返回 null / 抛错。 */
+/** 单笔金额上限（最小货币单位）。与桌面端 `MAX_AMOUNT_MINOR` 相同。 */
+export const MAX_AMOUNT_MINOR = 1_000_000_000_000;
+/** 数量整数部分最大位数。与桌面端 `MAX_QUANTITY_INT_DIGITS` 相同。 */
+export const MAX_QUANTITY_INTEGER_DIGITS = 12;
+
+/**
+ * 解析该行金额使用的小数位，规则与桌面端 `resolve_amount_scale` 一致：
+ * - 未指定：按货币 ISO 精度；
+ * - 已指定：必须是 0–3 的整数，且不得低于货币精度（编辑历史行时允许沿用更细的旧精度）。
+ */
+export function resolveAmountScale(
+  currency: string,
+  requested?: number | null,
+): number {
+  const code = normalizeCurrency(currency);
+  const canonical = code ? currencyDecimals(code) : 2;
+  if (requested === null || requested === undefined) return canonical;
+  if (!Number.isInteger(requested) || requested < 0 || requested > 3) {
+    throw new Error("金额小数位必须是 0–3 的整数");
+  }
+  if (code && requested < canonical) {
+    throw new Error(`金额小数位不能低于货币精度（${code} 为 ${canonical} 位小数）`);
+  }
+  return requested;
+}
+
+/**
+ * 十进制金额 → 最小货币单位整数。
+ *
+ * 与桌面端 `parse_minor` 共用同一套书写规则（`docs/life/life-contract-vectors.json`）：
+ * 只接受 ASCII 数字与至多一个小数点，必须有整数位、小数点后必须有数字，
+ * 不接受千分位/空格/科学计数法/显式正负号，结果不得超过 `MAX_AMOUNT_MINOR`。
+ */
 export function parseMoneyMinor(
   raw: string | null | undefined,
   currency: string,
   amountScale?: number | null,
 ): number | null {
-  const value = (raw ?? "").trim().replace(/,/g, "");
+  const value = (raw ?? "").trim();
   if (value === "") return null;
   const code = normalizeCurrency(currency);
   if (!code) throw new Error("填写金额时必须选择货币");
-  const scale =
-    typeof amountScale === "number" &&
-    Number.isInteger(amountScale) &&
-    amountScale >= 0 &&
-    amountScale <= 3
-      ? amountScale
-      : currencyDecimals(code);
-  const pattern = scale === 0 ? /^\d+$/ : new RegExp(`^\\d+(\\.\\d{1,${scale}})?$`);
-  if (!pattern.test(value)) {
-    throw new Error(
-      scale === 0
-        ? `${code} 不支持小数金额`
-        : `金额格式不正确：${code} 只支持最多 ${scale} 位小数`,
-    );
+  const scale = resolveAmountScale(code, amountScale);
+  if (value.startsWith("-")) throw new Error("金额不能为负数");
+  if (value.startsWith("+")) throw new Error("金额不能带正号，请直接填写数字");
+  const match = /^([0-9]+)(?:\.([0-9]+))?$/.exec(value);
+  if (!match) {
+    if (/^[0-9]*\.[0-9]+\./.test(value) || /^[0-9]+\.[0-9]*\./.test(value)) {
+      throw new Error("金额格式非法：小数点过多");
+    }
+    if (value.startsWith(".")) {
+      throw new Error("金额必须包含整数部分，例如 0.5");
+    }
+    if (/^[0-9]+\.$/.test(value)) {
+      throw new Error("金额小数点后必须有数字");
+    }
+    throw new Error("金额只能包含数字和一个小数点（不接受千分位或空格）");
   }
-  const [whole, fraction = ""] = value.split(".");
+  const whole = match[1];
+  const fraction = match[2] ?? "";
+  if (fraction.length > scale) {
+    throw new Error(`该货币金额最多支持 ${scale} 位小数`);
+  }
   const minor =
     Number(whole) * 10 ** scale + Number(fraction.padEnd(scale, "0") || "0");
-  if (!Number.isSafeInteger(minor) || minor > 1_000_000_000_000) {
-    throw new Error("金额超出可用范围");
+  if (!Number.isSafeInteger(minor) || minor > MAX_AMOUNT_MINOR) {
+    throw new Error("金额超出可用范围（单笔上限 10000000000）");
   }
   return minor;
 }
 
-/** 数量规范化：最多三位小数，去尾零；空返回 null。 */
+/**
+ * 数量规范化：最多三位小数、去尾零、整数部分最多 12 位，且必须大于 0。
+ * 书写规则与 `parseMoneyMinor` 相同（无符号、无千分位、必须有整数位）。
+ *
+ * 历史记录里已存的 `0` 不会被改写；同步复制由数据层原样落库，
+ * 只有新的用户输入要求正数。
+ */
 export function normalizeQuantity(raw: string | null | undefined): string | null {
-  const value = (raw ?? "").trim().replace(/,/g, "");
+  const value = (raw ?? "").trim();
   if (value === "") return null;
-  if (!/^\d+(\.\d{1,3})?$/.test(value)) {
-    throw new Error("数量格式不正确：只支持最多三位小数的非负数字");
+  if (value.startsWith("-")) throw new Error("数量不能为负数");
+  if (value.startsWith("+")) throw new Error("数量不能带正号，请直接填写数字");
+  const match = /^([0-9]+)(?:\.([0-9]+))?$/.exec(value);
+  if (!match) {
+    if (/^[0-9]*\.[0-9]+\./.test(value) || /^[0-9]+\.[0-9]*\./.test(value)) {
+      throw new Error("数量格式非法：小数点过多");
+    }
+    if (value.startsWith(".")) {
+      throw new Error("数量必须包含整数部分，例如 0.5");
+    }
+    if (/^[0-9]+\.$/.test(value)) {
+      throw new Error("数量小数点后必须有数字");
+    }
+    throw new Error("数量只能包含数字和一个小数点（不接受千分位或空格）");
   }
-  if (!/[1-9]/.test(value)) throw new Error("数量必须大于 0");
-  const [whole, fraction = ""] = value.split(".");
+  const fraction = match[2] ?? "";
+  if (fraction.length > 3) {
+    throw new Error("数量最多支持 3 位小数");
+  }
+  const whole = match[1].replace(/^0+/, "") || "0";
+  if (whole.length > MAX_QUANTITY_INTEGER_DIGITS) {
+    throw new Error("数量过大（整数部分最多 12 位）");
+  }
   const trimmed = fraction.replace(/0+$/, "");
-  const normalizedWhole = whole.replace(/^0+/, "") || "0";
-  return trimmed ? `${normalizedWhole}.${trimmed}` : normalizedWhole;
+  const canonical = trimmed ? `${whole}.${trimmed}` : whole;
+  if (canonical === "0") throw new Error("数量必须大于 0");
+  return canonical;
 }
 
 export function normalizeCurrency(raw: string | null | undefined): string {

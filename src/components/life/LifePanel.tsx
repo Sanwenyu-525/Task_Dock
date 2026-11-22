@@ -26,6 +26,7 @@ import {
 import {
   lifeDocumentLinkCreate,
   lifeDocumentLinkDelete,
+  lifeDocumentLinkGet,
   lifeDocumentLinksList,
   lifeEventCreate,
   lifeEventDelete,
@@ -48,6 +49,7 @@ import {
 } from "../../lib/lifeBridge";
 import {
   listTasks,
+  mobileFileReveal,
   shelfGetItem,
   shelfList,
   shelfOpenItem,
@@ -96,12 +98,125 @@ function currencyMaxScale(currency: string): number {
   return 2;
 }
 
-function receiptStateLabel(state: LifeDocumentLink["transfer_state"]): string {
-  if (state === "transferred") return "已传输";
-  if (state === "local") return "本机";
-  if (state === "missing") return "文件缺失";
-  return "待传输";
+/** 票据在桌面端可执行的动作。`pending` = 原图还不在本机，任何“打开”都会说谎。 */
+export type ReceiptAction = "shelf" | "mobile_file" | "pending" | "missing" | "unsupported";
+
+export interface ReceiptState {
+  /** 徽标文案：描述文件现在真实在哪，不只看 transfer_state。 */
+  label: string;
+  /** 复用既有 life-chip 色调类，不新增平行视觉机制。 */
+  tone: "local" | "transferred" | "metadata_only" | "missing";
+  action: ReceiptAction;
+  /** 桌面端可直接打开的暂存架条目 id。 */
+  shelfRef: string | null;
+  /** 文件互传记录 id（文件已到电脑，但尚未导入暂存架）。 */
+  mobileFileId: string | null;
 }
+
+/**
+ * 票据状态判定。
+ *
+ * `transfer_state` 只说明“同步到哪一步”，不能单独决定展示：
+ * - `remote_source=shelf_item`：原图已导入桌面暂存架，可直接预览；
+ * - `remote_source=file`：文件已到电脑（文件互传接收目录），但**尚未导入暂存架**，
+ *   不能再显示“原图尚未传输”，只能定位文件并提示导入；
+ * - `document_source=shelf_item` 且无远端引用：桌面自己选的暂存架文件；
+ * - `document_source=capture_asset` 且无远端引用：只有元数据同步，原图仍在手机。
+ */
+export function receiptStateInfo(link: LifeDocumentLink): ReceiptState {
+  const remoteRef = (link.remote_ref ?? "").trim();
+  const docRef = (link.document_ref ?? "").trim();
+  if (link.transfer_state === "missing") {
+    return {
+      label: "原始文件缺失",
+      tone: "missing",
+      action: "missing",
+      shelfRef: null,
+      mobileFileId: null,
+    };
+  }
+  if (remoteRef && link.remote_source === "shelf_item") {
+    return {
+      label: "已导入暂存架",
+      tone: "transferred",
+      action: "shelf",
+      shelfRef: remoteRef,
+      mobileFileId: null,
+    };
+  }
+  if (remoteRef && link.remote_source === "file") {
+    return {
+      label: "已到电脑 · 待导入",
+      tone: "metadata_only",
+      action: "mobile_file",
+      shelfRef: null,
+      mobileFileId: remoteRef,
+    };
+  }
+  if (link.transfer_state === "transferred") {
+    // 数据库里不该出现：transferred 必须带 remote_ref（B2 已禁止裸创建）。
+    // 展示成异常而不是“待传输”，避免把损坏状态伪装成正常流程。
+    return {
+      label: "状态异常 · 缺少远端引用",
+      tone: "missing",
+      action: "pending",
+      shelfRef: null,
+      mobileFileId: null,
+    };
+  }
+  if (link.document_source === "shelf_item") {
+    return {
+      label: "本机文件",
+      tone: "local",
+      action: "shelf",
+      shelfRef: docRef,
+      mobileFileId: null,
+    };
+  }
+  if (link.document_source === "capture_asset") {
+    return {
+      label: "仅元数据同步",
+      tone: "metadata_only",
+      action: "pending",
+      shelfRef: null,
+      mobileFileId: null,
+    };
+  }
+  if (link.document_source === "file") {
+    return {
+      label: "本机文件引用",
+      tone: "local",
+      action: "unsupported",
+      shelfRef: null,
+      mobileFileId: null,
+    };
+  }
+  return {
+    label: "任务附件",
+    tone: "local",
+    action: "unsupported",
+    shelfRef: null,
+    mobileFileId: null,
+  };
+}
+
+/** 详情数据与它的关联票据是一个整体：切换实体时一起失效，不保留上一实体的任何字段。 */
+type DetailState =
+  | {
+      kind: "item";
+      id: string;
+      item: LifeItemHistory | null;
+      links: LifeDocumentLink[];
+      /** 全局搜索定位到某张票据时高亮该行。 */
+      focusLinkId: string | null;
+    }
+  | {
+      kind: "event";
+      id: string;
+      event: LifeEventDetail | null;
+      links: LifeDocumentLink[];
+      focusLinkId: string | null;
+    };
 
 interface PurchaseForm {
   mode: "create" | "edit";
@@ -170,9 +285,7 @@ export default function LifePanel() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  const [selected, setSelected] = useState<LifeItemHistory | null>(null);
-  const [selectedEvent, setSelectedEvent] = useState<LifeEventDetail | null>(null);
-  const [itemLinks, setItemLinks] = useState<LifeDocumentLink[]>([]);
+  const [detail, setDetail] = useState<DetailState | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
 
   const [form, setForm] = useState<PurchaseForm | null>(null);
@@ -193,6 +306,7 @@ export default function LifePanel() {
   const [previewBusy, setPreviewBusy] = useState(false);
 
   const requestSeq = useRef(0);
+  const detailSeq = useRef(0);
 
   const loadAll = useCallback(async (search: string) => {
     const seq = ++requestSeq.current;
@@ -236,35 +350,70 @@ export default function LifePanel() {
     void loadAll(activeQuery);
   }, [activeQuery, loadAll]);
 
-  const selectItem = useCallback(async (itemId: string) => {
+  const closeDetail = useCallback(() => {
+    // 关闭即作废在途请求：晚到的响应不得把详情重新打开。
+    detailSeq.current += 1;
+    setDetail(null);
     setDetailError(null);
-    setSelectedEvent(null);
-    try {
-      const [history, nextLinks] = await Promise.all([
-        lifeItemHistory(itemId, 50),
-        lifeDocumentLinksList("item", itemId),
-      ]);
-      setSelected(history);
-      setItemLinks(nextLinks);
-    } catch (error) {
-      setSelected(null);
-      setDetailError(errorMessage(error));
-    }
   }, []);
 
-  const openEvent = useCallback(async (eventId: string) => {
-    setDetailError(null);
-    setSelected(null);
-    try {
-      const detail = await lifeEventDetail(eventId);
-      setSelectedEvent(detail);
-    } catch (error) {
-      setSelectedEvent(null);
-      setDetailError(errorMessage(error));
-    }
-  }, []);
+  const selectItem = useCallback(
+    async (itemId: string, options?: { focusLinkId?: string | null }) => {
+      const seq = ++detailSeq.current;
+      const focusLinkId = options?.focusLinkId ?? null;
+      setDetailError(null);
+      // 旧实体的商品历史与票据立即清空：加载期间不得显示上一个商品的任何数据。
+      setDetail({ kind: "item", id: itemId, item: null, links: [], focusLinkId });
+      try {
+        const [history, nextLinks] = await Promise.all([
+          lifeItemHistory(itemId, 50),
+          lifeDocumentLinksList("item", itemId),
+        ]);
+        if (seq !== detailSeq.current) return;
+        setDetail({ kind: "item", id: itemId, item: history, links: nextLinks, focusLinkId });
+      } catch (error) {
+        // 旧请求失败不得关闭或污染用户已经打开的新详情。
+        if (seq !== detailSeq.current) return;
+        setDetailError(errorMessage(error));
+      }
+    },
+    [],
+  );
 
-  // 全局搜索定位：消费一次性意图（商品 → 历史；事件/票据 → 事件详情）。
+  const openEvent = useCallback(
+    async (eventId: string, options?: { focusLinkId?: string | null }) => {
+      const seq = ++detailSeq.current;
+      const focusLinkId = options?.focusLinkId ?? null;
+      setDetailError(null);
+      setDetail({ kind: "event", id: eventId, event: null, links: [], focusLinkId });
+      try {
+        // 事件详情已由后端合并「事件级 + 事件内商品的商品级」票据，前端不再拼装。
+        const next = await lifeEventDetail(eventId);
+        if (seq !== detailSeq.current) return;
+        setDetail({ kind: "event", id: eventId, event: next, links: next.links, focusLinkId });
+      } catch (error) {
+        if (seq !== detailSeq.current) return;
+        setDetailError(errorMessage(error));
+      }
+    },
+    [],
+  );
+
+  const refreshDetail = useCallback(
+    async (target: DetailState) => {
+      if (target.kind === "event") {
+        await openEvent(target.id, { focusLinkId: target.focusLinkId });
+      } else {
+        await selectItem(target.id, { focusLinkId: target.focusLinkId });
+      }
+    },
+    [openEvent, selectItem],
+  );
+
+  // 全局搜索定位：消费一次性意图。
+  // - 商品 → 商品历史；事件 → 事件详情；
+  // - 票据：target_id 是 owner_id、parent_id 是关联 id，先读关联拿到 owner_type，
+  //   再打开对应详情，禁止用「事件打不开就当商品」的异常回退去猜。
   const pendingLocate = useGlobalSearchStore((s) => s.pendingLocate);
   const consumeLocate = useGlobalSearchStore((s) => s.consumeLocate);
   useEffect(() => {
@@ -276,12 +425,34 @@ export default function LifePanel() {
       void selectItem(intent.id);
       return;
     }
+    if (intent.kind !== "life_receipt") {
+      void openEvent(intent.id);
+      return;
+    }
+    const linkId = intent.parentId;
+    if (!linkId) {
+      // 没有关联 id 就无法确定 owner 类型：如实报错，不回退猜测。
+      setDetailError("票据定位信息不完整：缺少关联 id，请重新搜索。");
+      return;
+    }
     void (async () => {
+      const seq = ++detailSeq.current;
+      setDetailError(null);
       try {
-        await openEvent(intent.id);
-      } catch {
-        // 票据可能挂在商品上：事件不存在时回退为商品历史。
-        await selectItem(intent.id);
+        const link = await lifeDocumentLinkGet(linkId);
+        if (seq !== detailSeq.current) return;
+        if (!link) {
+          setDetailError("该票据关联已被解除，无法定位。");
+          return;
+        }
+        if (link.owner_type === "item") {
+          await selectItem(link.owner_id, { focusLinkId: link.id });
+        } else {
+          await openEvent(link.owner_id, { focusLinkId: link.id });
+        }
+      } catch (error) {
+        if (seq !== detailSeq.current) return;
+        setDetailError(`定位票据失败：${errorMessage(error)}`);
       }
     })();
   }, [pendingLocate, consumeLocate, selectItem, openEvent]);
@@ -338,7 +509,7 @@ export default function LifePanel() {
       mode: "edit",
       eventId: purchase.event_id,
       name: purchase.item_name,
-      category: selected?.item.category ?? "",
+      category: detail?.kind === "item" ? (detail.item?.item.category ?? "") : "",
       date: formatLifeDate(purchase.occurred_at),
       quantity: purchase.quantity_value ?? "",
       unit: purchase.quantity_unit,
@@ -421,8 +592,8 @@ export default function LifePanel() {
         });
       }
       await loadAll(activeQuery);
-      if (selected) {
-        await selectItem(selected.item.id);
+      if (detail?.kind === "item") {
+        await selectItem(detail.id);
       } else {
         const primaryItem = saved.items[0]?.item_id;
         if (primaryItem) await selectItem(primaryItem);
@@ -441,10 +612,10 @@ export default function LifePanel() {
     try {
       await lifeEventDelete(deleteTarget.id);
       setDeleteTarget(null);
-      if (selectedEvent?.event.id === deleteTarget.id) setSelectedEvent(null);
+      if (detail?.kind === "event" && detail.id === deleteTarget.id) closeDetail();
       showToast("购买记录已删除", { kind: "success" });
       await loadAll(activeQuery);
-      if (selected) await selectItem(selected.item.id);
+      if (detail?.kind === "item") await selectItem(detail.id);
     } catch (error) {
       showToast(`删除失败：${errorMessage(error)}`, { kind: "error" });
     } finally {
@@ -453,15 +624,16 @@ export default function LifePanel() {
   };
 
   const openLinkDialog = async () => {
-    const target = selectedEvent
-      ? {
-          type: "event" as const,
-          id: selectedEvent.event.id,
-          label: selectedEvent.event.title || "当前生活记录",
-        }
-      : selected
-        ? { type: "item" as const, id: selected.item.id, label: selected.item.name }
-        : null;
+    const target =
+      detail?.kind === "event" && detail.event
+        ? {
+            type: "event" as const,
+            id: detail.event.event.id,
+            label: detail.event.event.title || "当前生活记录",
+          }
+        : detail?.kind === "item" && detail.item
+          ? { type: "item" as const, id: detail.item.item.id, label: detail.item.item.name }
+          : null;
     if (!target) {
       showToast("请先选择一个商品或购买记录", { kind: "warning" });
       return;
@@ -488,7 +660,7 @@ export default function LifePanel() {
     setLinking(true);
     setLinkError(null);
     try {
-      await lifeDocumentLinkCreate({
+      const created = await lifeDocumentLinkCreate({
         owner_type: linkTarget.type,
         owner_id: linkTarget.id,
         document_ref: choice.id,
@@ -500,9 +672,17 @@ export default function LifePanel() {
       });
       setLinkDialogOpen(false);
       showToast("票据已关联", { kind: "success" });
+      // 只把新关联并入当前详情；详情所属实体与其余字段保持不变。
+      setDetail((current) => {
+        if (!current) return current;
+        const ownerKind = created.owner_type === "event" ? "event" : "item";
+        if (current.kind !== ownerKind || current.id !== created.owner_id) return current;
+        return {
+          ...current,
+          links: [created, ...current.links.filter((link) => link.id !== created.id)],
+        };
+      });
       await loadAll(activeQuery);
-      if (selected) await selectItem(selected.item.id);
-      if (selectedEvent) await openEvent(selectedEvent.event.id);
     } catch (error) {
       setLinkError(errorMessage(error));
     } finally {
@@ -511,26 +691,58 @@ export default function LifePanel() {
   };
 
   const openLink = async (link: LifeDocumentLink) => {
-    // 手机采集的原图经文件互传后，桌面端真正可预览的是 remote_ref（暂存架条目）；
-    // document_ref 仍保留手机/本地来源，不能拿它去桌面暂存架查文件。
-    const localSource = link.document_source;
-    const localRef = link.document_ref;
-    const remoteRef = link.remote_ref?.trim() ?? "";
-    if (localSource === "shelf_item") {
-      // 桌面端自己选择的暂存架文件。
-    } else if (remoteRef && link.remote_source === "shelf_item") {
-      // 已由手机传输并入库。
-    } else if (localSource === "capture_asset") {
+    const state = receiptStateInfo(link);
+    if (state.action === "missing") {
+      showToast("票据原文件缺失：关联仍保留，但文件已被删除或从未传输成功。", {
+        kind: "warning",
+      });
+      return;
+    }
+    if (state.action === "pending") {
+      if (link.transfer_state === "transferred") {
+        showToast("票据状态异常：标记为已传输但缺少远端引用，请重新从手机发送。", {
+          kind: "error",
+        });
+        return;
+      }
       showToast(
         "票据元数据已同步，但原图尚未传输到这台电脑。请在手机的生活票据详情里点「发送到电脑」后重试。",
         { kind: "warning" },
       );
       return;
-    } else {
-      showToast(`该票据来源（${localSource}）暂不支持在桌面预览`, { kind: "warning" });
+    }
+    if (state.action === "unsupported") {
+      showToast(`该票据来源（${link.document_source}）暂不支持在桌面预览`, {
+        kind: "warning",
+      });
       return;
     }
-    const shelfRef = localSource === "shelf_item" ? localRef : remoteRef;
+    if (state.action === "mobile_file") {
+      const fileId = state.mobileFileId;
+      if (!fileId) return;
+      setPreviewBusy(true);
+      try {
+        // 文件已在电脑的互传接收目录，但还没导入暂存架：定位给用户看，不谎称可预览。
+        await mobileFileReveal(fileId);
+        showToast(
+          "文件已到这台电脑，但尚未导入文件暂存架；请在「文件互传」中导入后即可预览。",
+          { kind: "info" },
+        );
+      } catch (error) {
+        showToast(
+          `定位文件失败：${errorMessage(error)}。请到「文件互传」查看该文件。`,
+          { kind: "error" },
+        );
+      } finally {
+        setPreviewBusy(false);
+      }
+      return;
+    }
+    const shelfRef = state.shelfRef;
+    if (!shelfRef) {
+      showToast("该票据缺少可打开的暂存架引用。", { kind: "warning" });
+      return;
+    }
     setPreviewBusy(true);
     try {
       const shelfItem = await shelfGetItem(shelfRef);
@@ -544,28 +756,40 @@ export default function LifePanel() {
   };
 
   const removeLink = async (link: LifeDocumentLink) => {
+    // 只允许操作当前详情真实展示的关联：防止过期行/别的实体的票据被解除。
+    const current = detail;
+    if (!current || !current.links.some((item) => item.id === link.id)) {
+      showToast("该票据不属于当前详情，请刷新后重试", { kind: "warning" });
+      return;
+    }
     try {
       await lifeDocumentLinkDelete(link.id);
       showToast("已解除票据关联，原文件未删除", { kind: "success" });
+      setDetail((state) =>
+        state ? { ...state, links: state.links.filter((item) => item.id !== link.id) } : state,
+      );
       await loadAll(activeQuery);
-      if (selected) await selectItem(selected.item.id);
-      if (selectedEvent) await openEvent(selectedEvent.event.id);
     } catch (error) {
       showToast(`解除关联失败：${errorMessage(error)}`, { kind: "error" });
     }
   };
 
-  const visibleLinks = useMemo(() => {
-    const seen = new Set<string>();
-    return [...(selectedEvent?.links ?? []), ...itemLinks].filter((link) => {
-      if (seen.has(link.id)) return false;
-      seen.add(link.id);
-      return true;
-    });
-  }, [selectedEvent, itemLinks]);
+  const itemNamesByOwner = useMemo(() => {
+    const map = new Map<string, string>();
+    if (detail?.kind === "event" && detail.event) {
+      for (const item of detail.event.items) {
+        if (item.item_id) map.set(item.item_id, item.item_name_snapshot);
+      }
+    }
+    return map;
+  }, [detail]);
 
   const recentLinks = links.slice(0, 6);
-  const showDetail = Boolean(selected || selectedEvent);
+  const showDetail = detail !== null;
+  const eventDetail = detail?.kind === "event" ? detail.event : null;
+  const itemDetail = detail?.kind === "item" ? detail.item : null;
+  const detailLinks = detail?.links ?? [];
+  const focusLinkId = detail?.focusLinkId ?? null;
 
   return (
     <div className="life-panel page-fill ui-page-frame">
@@ -726,17 +950,20 @@ export default function LifePanel() {
               </div>
             ) : (
               <ul className="life-receipt-list">
-                {recentLinks.map((link) => (
-                  <li key={link.id}>
-                    <button type="button" className="life-receipt-row" onClick={() => void openLink(link)}>
-                      <FileImage size={14} aria-hidden="true" />
-                      <span className="life-receipt-name">{link.document_name || "生活票据"}</span>
-                      <span className={`life-chip ${link.transfer_state}`}>
-                        {receiptStateLabel(link.transfer_state)}
-                      </span>
-                    </button>
-                  </li>
-                ))}
+                {recentLinks.map((link) => {
+                  const receipt = receiptStateInfo(link);
+                  return (
+                    <li key={link.id}>
+                      <button type="button" className="life-receipt-row" onClick={() => void openLink(link)}>
+                        <FileImage size={14} aria-hidden="true" />
+                        <span className="life-receipt-name">{link.document_name || "生活票据"}</span>
+                        <span className={`life-chip ${receipt.tone}`}>
+                          {receipt.label}
+                        </span>
+                      </button>
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </section>
@@ -749,22 +976,22 @@ export default function LifePanel() {
             </div>
           )}
 
-          {selectedEvent ? (
+          {eventDetail ? (
             <div className="life-detail">
               <div className="life-detail-head">
                 <div>
-                  <h2>{selectedEvent.event.title || "购买记录"}</h2>
+                  <h2>{eventDetail.event.title || "购买记录"}</h2>
                   <p className="life-muted">
-                    {formatLifeDate(selectedEvent.event.occurred_at)}
-                    {selectedEvent.event.merchant ? ` · ${selectedEvent.event.merchant}` : ""}
+                    {formatLifeDate(eventDetail.event.occurred_at)}
+                    {eventDetail.event.merchant ? ` · ${eventDetail.event.merchant}` : ""}
                   </p>
                 </div>
-                <button type="button" className="icon-btn sm" aria-label="关闭详情" data-tip="关闭详情" onClick={() => setSelectedEvent(null)}>
+                <button type="button" className="icon-btn sm" aria-label="关闭详情" data-tip="关闭详情" onClick={closeDetail}>
                   <X size={13} aria-hidden="true" />
                 </button>
               </div>
               <ul className="life-detail-items">
-                {selectedEvent.items.map((item) => (
+                {eventDetail.items.map((item) => (
                   <li key={item.id}>
                     <div className="life-detail-item-title">
                       <strong>{item.item_name_snapshot}</strong>
@@ -781,9 +1008,9 @@ export default function LifePanel() {
                 <button
                   type="button"
                   className="btn sm"
-                  disabled={!selectedEvent.items[0]?.item_id}
+                  disabled={!eventDetail.items[0]?.item_id}
                   onClick={() => {
-                    const itemId = selectedEvent.items[0]?.item_id;
+                    const itemId = eventDetail.items[0]?.item_id;
                     if (itemId) void selectItem(itemId);
                   }}
                 >
@@ -793,7 +1020,7 @@ export default function LifePanel() {
                   添加票据
                 </button>
                 <button type="button" className="btn sm danger" onClick={() => {
-                  const summary = events.find((event) => event.id === selectedEvent.event.id);
+                  const summary = events.find((event) => event.id === eventDetail.event.id);
                   if (summary) setDeleteTarget(summary);
                 }}>
                   删除记录
@@ -801,36 +1028,44 @@ export default function LifePanel() {
               </div>
               <div className="life-detail-links">
                 <h3>关联票据</h3>
-                {selectedEvent.links.length === 0 ? (
+                {detailLinks.length === 0 ? (
                   <p className="life-muted">未关联票据</p>
                 ) : (
-                  selectedEvent.links.map((link) => (
-                    <div key={link.id} className="life-link-row">
-                      <button type="button" className="life-link-open" onClick={() => void openLink(link)}>
-                        <ReceiptText size={13} aria-hidden="true" /> {link.document_name || "生活票据"}
-                      </button>
-                      <span className={`life-chip ${link.transfer_state}`}>
-                        {receiptStateLabel(link.transfer_state)}
-                      </span>
-                      <button type="button" className="btn sm" onClick={() => void removeLink(link)}>
-                        解除
-                      </button>
-                    </div>
-                  ))
+                  detailLinks.map((link) => {
+                    const receipt = receiptStateInfo(link);
+                    const ownerName = itemNamesByOwner.get(link.owner_id);
+                    return (
+                      <div
+                        key={link.id}
+                        className={`life-link-row${focusLinkId === link.id ? " is-focused" : ""}`}
+                      >
+                        <button type="button" className="life-link-open" onClick={() => void openLink(link)}>
+                          <ReceiptText size={13} aria-hidden="true" /> {link.document_name || "生活票据"}
+                        </button>
+                        <span className="life-muted life-link-owner">
+                          {link.owner_type === "item" ? (ownerName ? `商品票据 · ${ownerName}` : "商品票据") : "事件票据"}
+                        </span>
+                        <span className={`life-chip ${receipt.tone}`}>{receipt.label}</span>
+                        <button type="button" className="btn sm" onClick={() => void removeLink(link)}>
+                          解除
+                        </button>
+                      </div>
+                    );
+                  })
                 )}
               </div>
             </div>
-          ) : selected ? (
+          ) : itemDetail ? (
             <div className="life-detail">
               <div className="life-detail-head">
                 <div>
-                  <h2>{selected.item.name}</h2>
+                  <h2>{itemDetail.item.name}</h2>
                   <p className="life-muted">
-                    {selected.item.category || "未分类"}
-                    {selected.item.aliases.length > 0 ? ` · 别名：${selected.item.aliases.join("、")}` : ""}
+                    {itemDetail.item.category || "未分类"}
+                    {itemDetail.item.aliases.length > 0 ? ` · 别名：${itemDetail.item.aliases.join("、")}` : ""}
                   </p>
                 </div>
-                <button type="button" className="icon-btn sm" aria-label="关闭详情" data-tip="关闭详情" onClick={() => setSelected(null)}>
+                <button type="button" className="icon-btn sm" aria-label="关闭详情" data-tip="关闭详情" onClick={closeDetail}>
                   <X size={13} aria-hidden="true" />
                 </button>
               </div>
@@ -838,16 +1073,16 @@ export default function LifePanel() {
               <div className="life-detail-stats">
                 <div>
                   <span>最近购买</span>
-                  <strong>{formatLifeDate(selected.item.last_purchase_at) || "尚无记录"}</strong>
+                  <strong>{formatLifeDate(itemDetail.item.last_purchase_at) || "尚无记录"}</strong>
                 </div>
                 <div>
                   <span>购买次数</span>
-                  <strong>{selected.item.purchase_count}</strong>
+                  <strong>{itemDetail.item.purchase_count}</strong>
                 </div>
                 <div>
                   <span>两次间隔</span>
                   <strong>
-                    {selected.item.interval_days === null ? "暂无足够记录" : `${selected.item.interval_days} 天`}
+                    {itemDetail.item.interval_days === null ? "暂无足够记录" : `${itemDetail.item.interval_days} 天`}
                   </strong>
                 </div>
               </div>
@@ -857,14 +1092,14 @@ export default function LifePanel() {
                   type="button"
                   className="btn sm primary"
                   onClick={() => {
-                    const base = emptyForm(defaultCurrency || selected.item.last_currency);
+                    const base = emptyForm(defaultCurrency || itemDetail.item.last_currency);
                     setFormError(null);
                     setForm({
                       ...base,
-                      name: selected.item.name,
-                      category: selected.item.category,
-                      unit: selected.item.last_quantity_unit,
-                      currency: base.currency || selected.item.last_currency,
+                      name: itemDetail.item.name,
+                      category: itemDetail.item.category,
+                      unit: itemDetail.item.last_quantity_unit,
+                      currency: base.currency || itemDetail.item.last_currency,
                     });
                   }}
                 >
@@ -878,13 +1113,13 @@ export default function LifePanel() {
               <div className="life-history">
                 <div className="life-section-head">
                   <h3>购买历史</h3>
-                  <span className="life-muted">{selected.total_count} 条</span>
+                  <span className="life-muted">{itemDetail.total_count} 条</span>
                 </div>
-                {selected.purchases.length === 0 ? (
+                {itemDetail.purchases.length === 0 ? (
                   <p className="life-muted">尚无购买记录</p>
                 ) : (
                   <ul className="life-history-list">
-                    {selected.purchases.map((purchase) => (
+                    {itemDetail.purchases.map((purchase) => (
                       <li key={purchase.item_row_id}>
                         <div className="life-history-main">
                           <span className="life-history-date">{formatLifeDate(purchase.occurred_at)}</span>
@@ -946,59 +1181,95 @@ export default function LifePanel() {
                 )}
               </div>
 
-              {visibleLinks.length > 0 && (
+              {detailLinks.length > 0 && (
                 <div className="life-detail-links">
                   <h3>关联票据</h3>
-                  {visibleLinks.map((link) => (
-                    <div key={link.id} className="life-link-row">
-                      <button type="button" className="life-link-open" onClick={() => void openLink(link)}>
-                        <ReceiptText size={13} aria-hidden="true" /> {link.document_name || "生活票据"}
-                      </button>
-                      <button type="button" className="btn sm" onClick={() => void removeLink(link)}>解除</button>
-                    </div>
-                  ))}
+                  <p className="life-hint">只显示挂在该商品上的票据；某次购买的小票显示在对应历史行里。</p>
+                  {detailLinks.map((link) => {
+                    const receipt = receiptStateInfo(link);
+                    return (
+                      <div
+                        key={link.id}
+                        className={`life-link-row${focusLinkId === link.id ? " is-focused" : ""}`}
+                      >
+                        <button type="button" className="life-link-open" onClick={() => void openLink(link)}>
+                          <ReceiptText size={13} aria-hidden="true" /> {link.document_name || "生活票据"}
+                        </button>
+                        <span className={`life-chip ${receipt.tone}`}>{receipt.label}</span>
+                        <button type="button" className="btn sm" onClick={() => void removeLink(link)}>解除</button>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
           ) : (
-            <div className="life-items">
-              <div className="life-section-head">
-                <h2>商品</h2>
-                <span className="life-muted">{items.length} 个</span>
-              </div>
-              {loading ? (
-                <div className="life-loading" role="status">
-                  <Loader2 size={14} className="spin" aria-hidden="true" /> 加载中…
-                </div>
-              ) : items.length === 0 ? (
-                <div className="life-empty">
-                  <p>{activeQuery ? "尚无购买记录" : "还没有商品记录"}</p>
-                  {!activeQuery && (
-                    <button type="button" className="btn sm" onClick={openCreate}>
-                      记录购买
-                    </button>
+            <>
+              {detail && (
+                <div className="life-detail life-detail-pending" role="status">
+                  {detailError ? (
+                    <>
+                      <p className="life-muted">详情加载失败。</p>
+                      <div className="life-detail-actions">
+                        <button type="button" className="btn sm" onClick={() => void refreshDetail(detail)}>
+                          重试
+                        </button>
+                        <button type="button" className="btn sm" onClick={closeDetail}>
+                          关闭
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="life-loading">
+                      <Loader2 size={14} className="spin" aria-hidden="true" /> 加载中…
+                    </div>
                   )}
                 </div>
-              ) : (
-                <ul className="life-item-list">
-                  {items.map((item) => (
-                    <li key={item.id}>
-                      <button type="button" className="life-item-row" onClick={() => void selectItem(item.id)}>
-                        <span className="life-item-name">{item.name}</span>
-                        <span className="life-item-meta">
-                          {item.last_purchase_at
-                            ? `最近 ${formatLifeDate(item.last_purchase_at)} · ${item.purchase_count} 次`
-                            : "尚无购买记录"}
-                        </span>
-                        <span className="life-item-price">
-                          {formatMoneyMinor(item.last_total_price_minor, item.last_currency, item.last_amount_scale)}
-                        </span>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
               )}
-            </div>
+              {/* 商品详情加载期间保留商品列表：用户可以在结果回来前继续切换，
+                  列表不是「上一个详情的数据」，不会造成状态污染。事件详情从主区进入，
+                  加载中只显示占位，避免把商品列表误当成事件内容。 */}
+              {(!detail || detail.kind === "item") && (
+                <div className="life-items">
+                  <div className="life-section-head">
+                    <h2>商品</h2>
+                    <span className="life-muted">{items.length} 个</span>
+                  </div>
+                  {loading ? (
+                    <div className="life-loading" role="status">
+                      <Loader2 size={14} className="spin" aria-hidden="true" /> 加载中…
+                    </div>
+                  ) : items.length === 0 ? (
+                    <div className="life-empty">
+                      <p>{activeQuery ? "尚无购买记录" : "还没有商品记录"}</p>
+                      {!activeQuery && (
+                        <button type="button" className="btn sm" onClick={openCreate}>
+                          记录购买
+                        </button>
+                      )}
+                    </div>
+                  ) : (
+                    <ul className="life-item-list">
+                      {items.map((item) => (
+                        <li key={item.id}>
+                          <button type="button" className="life-item-row" onClick={() => void selectItem(item.id)}>
+                            <span className="life-item-name">{item.name}</span>
+                            <span className="life-item-meta">
+                              {item.last_purchase_at
+                                ? `最近 ${formatLifeDate(item.last_purchase_at)} · ${item.purchase_count} 次`
+                                : "尚无购买记录"}
+                            </span>
+                            <span className="life-item-price">
+                              {formatMoneyMinor(item.last_total_price_minor, item.last_currency, item.last_amount_scale)}
+                            </span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+            </>
           )}
         </aside>
       </div>

@@ -560,6 +560,30 @@
   align-items: center;
   gap: 6px;
   min-width: 0;
+  padding: 2px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+}
+
+/* 全局搜索定位到具体票据时，只做位置提示，不改变票据状态徽标的语义。 */
+.life-link-row.is-focused {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.life-link-owner {
+  flex: none;
+  font-size: 11px;
+  max-width: 132px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.life-detail-pending {
+  min-height: 96px;
+  justify-content: center;
+  gap: 8px;
 }
 
 .life-link-open {

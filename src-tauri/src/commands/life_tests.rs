@@ -474,3 +474,563 @@ fn life_events_recent_returns_grouped_totals_from_real_rows() {
     })
     .unwrap();
 }
+
+// ── 跨端契约向量（与 apps/mobile/src/domain/__tests__/lifeMoney.test.ts 共用）──
+//
+// 唯一事实源：docs/life/life-contract-vectors.json。Rust 与 TypeScript 都读这一份，
+// 任何一端单独放宽/收紧金额、数量、货币精度或名称归一规则，都会在同一组用例上失败。
+
+#[derive(Debug, serde::Deserialize)]
+struct VectorName {
+    input: String,
+    normalized: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct VectorCurrency {
+    input: String,
+    #[serde(default)]
+    currency: Option<String>,
+    #[serde(default)]
+    decimals: Option<i64>,
+    #[serde(default)]
+    reason: Option<String>,
+    #[serde(default, rename = "messagePattern")]
+    message_pattern: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct VectorScale {
+    currency: String,
+    #[serde(default)]
+    requested: Option<i64>,
+    #[serde(default)]
+    scale: Option<i64>,
+    #[serde(default)]
+    reason: Option<String>,
+    #[serde(default, rename = "messagePattern")]
+    message_pattern: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct VectorMoney {
+    input: String,
+    currency: String,
+    #[serde(default, rename = "amountScale")]
+    amount_scale: Option<i64>,
+    #[serde(default)]
+    minor: Option<i64>,
+    #[serde(default)]
+    reason: Option<String>,
+    #[serde(default, rename = "messagePattern")]
+    message_pattern: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct VectorQuantity {
+    input: String,
+    #[serde(default)]
+    quantity: Option<String>,
+    #[serde(default)]
+    reason: Option<String>,
+    #[serde(default, rename = "messagePattern")]
+    message_pattern: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ContractVectors {
+    limits: VectorLimits,
+    name_normalization: Vec<VectorName>,
+    currency_normalization: Vec<VectorCurrency>,
+    currency_decimals: Vec<VectorCurrency>,
+    amount_scale: Vec<VectorScale>,
+    money: Vec<VectorMoney>,
+    quantity: Vec<VectorQuantity>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct VectorLimits {
+    max_amount_minor: i64,
+    max_quantity_integer_digits: usize,
+}
+
+fn contract_vectors() -> ContractVectors {
+    serde_json::from_str(include_str!(
+        "../../../docs/life/life-contract-vectors.json"
+    ))
+    .expect("契约向量文件必须是合法 JSON")
+}
+
+fn validation_text(error: AppError) -> String {
+    match error {
+        AppError::Validation(message) => message,
+        other => panic!("期望校验错误，实际 {other:?}"),
+    }
+}
+
+#[test]
+fn contract_limits_match_code_constants() {
+    let vectors = contract_vectors();
+    assert_eq!(vectors.limits.max_amount_minor, MAX_AMOUNT_MINOR);
+    assert_eq!(
+        vectors.limits.max_quantity_integer_digits,
+        MAX_QUANTITY_INT_DIGITS
+    );
+}
+
+#[test]
+fn contract_name_normalization_is_identical() {
+    for vector in contract_vectors().name_normalization {
+        assert_eq!(
+            normalize_name(&vector.input),
+            vector.normalized,
+            "名称归一化不一致：{:?}",
+            vector.input
+        );
+    }
+}
+
+#[test]
+fn contract_currency_normalization_and_precision() {
+    let vectors = contract_vectors();
+    for vector in vectors.currency_normalization {
+        match vector.currency {
+            Some(expected) => assert_eq!(
+                normalize_currency(Some(vector.input.as_str())).unwrap(),
+                expected,
+                "货币规范化不一致：{:?}",
+                vector.input
+            ),
+            None => {
+                let message = validation_text(
+                    normalize_currency(Some(vector.input.as_str())).unwrap_err(),
+                );
+                assert!(
+                    message.contains(vector.message_pattern.as_deref().unwrap_or("")),
+                    "货币 {:?} 的错误信息不符：{message}",
+                    vector.input
+                );
+            }
+        }
+    }
+    for vector in vectors.currency_decimals {
+        match vector.decimals {
+            Some(expected) => assert_eq!(
+                currency_scale(&vector.input).unwrap(),
+                expected,
+                "货币精度不一致：{}",
+                vector.input
+            ),
+            None => {
+                let message = validation_text(currency_scale(&vector.input).unwrap_err());
+                assert!(
+                    message.contains(vector.message_pattern.as_deref().unwrap_or("")),
+                    "货币 {} 的错误信息不符：{message}",
+                    vector.input
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn contract_amount_scale_resolution() {
+    for vector in contract_vectors().amount_scale {
+        match vector.scale {
+            Some(expected) => assert_eq!(
+                resolve_amount_scale(&vector.currency, vector.requested).unwrap(),
+                expected,
+                "金额精度不一致：{} requested={:?}",
+                vector.currency,
+                vector.requested
+            ),
+            None => {
+                let message = validation_text(
+                    resolve_amount_scale(&vector.currency, vector.requested).unwrap_err(),
+                );
+                assert!(
+                    message.contains(vector.message_pattern.as_deref().unwrap_or("")),
+                    "{} requested={:?} 的错误信息不符：{message}",
+                    vector.currency,
+                    vector.requested
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn contract_money_parsing() {
+    let vectors = contract_vectors();
+    let mut db: Option<Db> = None;
+    for vector in vectors.money {
+        if let Some(expected) = vector.minor {
+            let scale = resolve_amount_scale(&vector.currency, vector.amount_scale)
+                .unwrap_or_else(|error| panic!("{vector:?} 精度解析失败：{error:?}"));
+            assert_eq!(
+                parse_minor(&vector.input, scale).unwrap(),
+                expected,
+                "金额解析不一致：{:?} {}",
+                vector.input,
+                vector.currency
+            );
+            continue;
+        }
+        let pattern = vector.message_pattern.clone().unwrap_or_default();
+        if vector.currency.is_empty() {
+            // 空货币由仓库层拒绝（需要默认货币设置），不是 parse_minor 的职责。
+            let db = db.get_or_insert_with(|| Db::open_in_memory().unwrap());
+            let item = LifeItemInput {
+                name: Some("契约测试".into()),
+                total_price: Some(vector.input.clone()),
+                ..Default::default()
+            };
+            let message = validation_text(build_event_item_values(db, &item).unwrap_err());
+            assert!(
+                message.contains(&pattern),
+                "空货币金额 {:?} 的错误信息不符：{message}",
+                vector.input
+            );
+            continue;
+        }
+        let outcome = resolve_amount_scale(&vector.currency, vector.amount_scale)
+            .and_then(|scale| parse_minor(&vector.input, scale));
+        let message = validation_text(outcome.unwrap_err());
+        assert!(
+            message.contains(&pattern),
+            "金额 {:?}（{}）应被拒绝为 {:?}，实际：{message}",
+            vector.input,
+            vector.currency,
+            vector.reason
+        );
+    }
+}
+
+#[test]
+fn contract_quantity_parsing() {
+    for vector in contract_vectors().quantity {
+        match vector.quantity {
+            Some(expected) => assert_eq!(
+                canonical_quantity(&vector.input).unwrap().as_deref(),
+                Some(expected.as_str()),
+                "数量规范化不一致：{:?}",
+                vector.input
+            ),
+            None => {
+                if vector.reason.is_none() {
+                    assert_eq!(
+                        canonical_quantity(&vector.input).unwrap(),
+                        None,
+                        "空数量应解析为 None：{:?}",
+                        vector.input
+                    );
+                    continue;
+                }
+                let message = validation_text(canonical_quantity(&vector.input).unwrap_err());
+                assert!(
+                    message.contains(vector.message_pattern.as_deref().unwrap_or("")),
+                    "数量 {:?} 的错误信息不符：{message}",
+                    vector.input
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn sync_quantity_copy_accepts_legacy_zero_but_input_does_not() {
+    // 旧桌面端曾把数量 0 写入数据库；复制既有记录不能让同步失败。
+    assert_eq!(
+        canonical_quantity_for_sync("0").unwrap().as_deref(),
+        Some("0")
+    );
+    assert_eq!(
+        canonical_quantity_for_sync("0.000").unwrap().as_deref(),
+        Some("0")
+    );
+    assert!(canonical_quantity("0").is_err());
+    // 格式仍然严格：同步也不能把千分位或科学计数法带进库。
+    assert!(canonical_quantity_for_sync("1,000").is_err());
+    assert!(canonical_quantity_for_sync("1e3").is_err());
+}
+
+// ── 票据关联：幂等、来源校验、删除语义 ─────────────────────
+
+fn insert_shelf_item(db: &Db, id: &str, name: &str) {
+    let now = now_iso();
+    db.with_transaction(|conn| {
+        conn.execute(
+            "INSERT INTO shelf_items
+             (id, kind, display_name, source_kind, storage_mode, byte_size, created_at, updated_at)
+             VALUES (?1, 'image', ?2, 'manual', 'managed', 2048, ?3, ?3)",
+            params![id, name, now],
+        )?;
+        Ok::<_, AppError>(())
+    })
+    .unwrap();
+}
+
+fn link_input(
+    owner_type: &str,
+    owner_id: &str,
+    document_ref: &str,
+    document_source: &str,
+) -> LifeDocumentLinkInput {
+    LifeDocumentLinkInput {
+        owner_type: owner_type.into(),
+        owner_id: owner_id.into(),
+        document_ref: document_ref.into(),
+        document_source: document_source.into(),
+        document_name: "小票.jpg".into(),
+        mime: "image/jpeg".into(),
+        byte_size: Some(2048),
+        transfer_state: Some("local".into()),
+    }
+}
+
+fn link_count(db: &Db, owner_type: &str, owner_id: &str) -> i64 {
+    db.with_read(|conn| {
+        Ok(conn.query_row(
+            "SELECT COUNT(*) FROM life_document_links
+              WHERE owner_type = ?1 AND owner_id = ?2 AND deleted_at IS NULL",
+            params![owner_type, owner_id],
+            |row| row.get(0),
+        )?)
+    })
+    .unwrap()
+}
+
+#[test]
+fn document_link_create_returns_existing_row_on_duplicate() {
+    let db = Db::open_in_memory().unwrap();
+    let event_id = insert_purchase(&db, "大米", "2026-11-03", Some("5"), Some("48"), Some("CNY"));
+    insert_shelf_item(&db, "si_receipt", "小票.jpg");
+    let input = link_input("event", &event_id, "si_receipt", "shelf_item");
+
+    let now = now_iso();
+    let first = db
+        .with_transaction(|conn| create_document_link_tx(conn, &input, &now))
+        .unwrap();
+    let second = db
+        .with_transaction(|conn| create_document_link_tx(conn, &input, &now))
+        .unwrap();
+
+    // 幂等：第二次必须返回已有行 ID；命令层用返回值查询，不能再按新生成的 ID 查。
+    assert_eq!(first, second, "重复提交不得创建第二条关联");
+    assert_eq!(link_count(&db, "event", &event_id), 1);
+    let loaded = db
+        .with_read(|conn| load_link(conn, &second))
+        .unwrap()
+        .expect("按事务返回的最终 ID 必须能查到关联");
+    assert_eq!(loaded.document_ref, "si_receipt");
+    assert_eq!(loaded.document_source, "shelf_item");
+    assert_eq!(loaded.transfer_state, "local");
+}
+
+#[test]
+fn document_link_rejects_missing_and_deleted_owner() {
+    let db = Db::open_in_memory().unwrap();
+    insert_shelf_item(&db, "si_receipt", "小票.jpg");
+    let now = now_iso();
+    let missing = link_input("event", "ev_missing", "si_receipt", "shelf_item");
+    let error = db
+        .with_transaction(|conn| create_document_link_tx(conn, &missing, &now))
+        .unwrap_err();
+    assert!(matches!(error, AppError::NotFound(_)), "悬空 owner 必须 NotFound");
+
+    let event_id = insert_purchase(&db, "大米", "2026-11-03", Some("5"), Some("48"), Some("CNY"));
+    db.with_transaction(|conn| {
+        conn.execute(
+            "UPDATE life_events SET deleted_at = ?1, updated_at = ?1 WHERE id = ?2",
+            params![now, event_id],
+        )?;
+        Ok::<_, AppError>(())
+    })
+    .unwrap();
+    let deleted = link_input("event", &event_id, "si_receipt", "shelf_item");
+    let error = db
+        .with_transaction(|conn| create_document_link_tx(conn, &deleted, &now))
+        .unwrap_err();
+    assert!(matches!(error, AppError::NotFound(_)), "已删除 owner 必须拒绝");
+
+    // 非法 owner_type 属于校验错误，不是 NotFound。
+    let mut bad_type = link_input("event", &event_id, "si_receipt", "shelf_item");
+    bad_type.owner_type = "receipt".into();
+    let error = db
+        .with_transaction(|conn| create_document_link_tx(conn, &bad_type, &now))
+        .unwrap_err();
+    assert!(matches!(error, AppError::Validation(_)));
+}
+
+#[test]
+fn document_link_rejects_missing_shelf_reference() {
+    let db = Db::open_in_memory().unwrap();
+    let event_id = insert_purchase(&db, "大米", "2026-11-03", Some("5"), Some("48"), Some("CNY"));
+    let now = now_iso();
+    let input = link_input("event", &event_id, "si_gone", "shelf_item");
+    let error = db
+        .with_transaction(|conn| create_document_link_tx(conn, &input, &now))
+        .unwrap_err();
+    match error {
+        AppError::NotFound(message) => assert!(message.contains("文件暂存"), "{message}"),
+        other => panic!("期望 NotFound，实际 {other:?}"),
+    }
+    // capture_asset 由另一端持有，桌面端不要求本机存在记录（保持既有语义）。
+    let capture = link_input("event", &event_id, "asset_from_phone", "capture_asset");
+    let created = db
+        .with_transaction(|conn| create_document_link_tx(conn, &capture, &now))
+        .unwrap();
+    assert!(created.starts_with("ldl_"));
+}
+
+#[test]
+fn document_link_rejects_invalid_size_state_and_reference() {
+    let db = Db::open_in_memory().unwrap();
+    let event_id = insert_purchase(&db, "大米", "2026-11-03", Some("5"), Some("48"), Some("CNY"));
+    insert_shelf_item(&db, "si_receipt", "小票.jpg");
+    let now = now_iso();
+
+    let mut negative = link_input("event", &event_id, "si_receipt", "shelf_item");
+    negative.byte_size = Some(-1);
+    assert!(db
+        .with_transaction(|conn| create_document_link_tx(conn, &negative, &now))
+        .is_err());
+
+    let mut unknown_state = link_input("event", &event_id, "si_receipt", "shelf_item");
+    unknown_state.transfer_state = Some("uploading".into());
+    assert!(db
+        .with_transaction(|conn| create_document_link_tx(conn, &unknown_state, &now))
+        .is_err());
+
+    // “已传输”必须有 remote_ref，而创建入口无法提供 → 直接拒绝，避免造出打不开的票据。
+    let mut transferred = link_input("event", &event_id, "si_receipt", "shelf_item");
+    transferred.transfer_state = Some("transferred".into());
+    let error = db
+        .with_transaction(|conn| create_document_link_tx(conn, &transferred, &now))
+        .unwrap_err();
+    assert!(validation_text(error).contains("远端引用"));
+
+    let empty = link_input("event", &event_id, "   ", "shelf_item");
+    assert!(db
+        .with_transaction(|conn| create_document_link_tx(conn, &empty, &now))
+        .is_err());
+
+    let control = link_input("event", &event_id, "si_re\nceipt", "shelf_item");
+    assert!(db
+        .with_transaction(|conn| create_document_link_tx(conn, &control, &now))
+        .is_err());
+
+    let relative = link_input("event", &event_id, "receipts/a.jpg", "file");
+    let error = db
+        .with_transaction(|conn| create_document_link_tx(conn, &relative, &now))
+        .unwrap_err();
+    assert!(validation_text(error).contains("绝对路径"));
+
+    let absolute = link_input("event", &event_id, "C://receipts//a.jpg", "file");
+    assert!(db
+        .with_transaction(|conn| create_document_link_tx(conn, &absolute, &now))
+        .is_ok());
+}
+
+#[test]
+fn document_link_delete_is_idempotent_and_keeps_source_file() {
+    let db = Db::open_in_memory().unwrap();
+    let event_id = insert_purchase(&db, "大米", "2026-11-03", Some("5"), Some("48"), Some("CNY"));
+    insert_shelf_item(&db, "si_receipt", "小票.jpg");
+    let now = now_iso();
+    let link_id = db
+        .with_transaction(|conn| {
+            create_document_link_tx(
+                conn,
+                &link_input("event", &event_id, "si_receipt", "shelf_item"),
+                &now,
+            )
+        })
+        .unwrap();
+
+    db.with_transaction(|conn| delete_document_link_tx(conn, &link_id, &now))
+        .unwrap();
+    // 第二次删除必须仍然成功（幂等），不能报 NotFound。
+    db.with_transaction(|conn| delete_document_link_tx(conn, &link_id, &now))
+        .unwrap();
+
+    db.with_read(|conn| {
+        assert!(load_link(conn, &link_id)?.is_none(), "解除关联后不得再返回");
+        assert!(
+            load_event(conn, &event_id)?.is_some(),
+            "解除关联不得删除生活记录"
+        );
+        let shelf: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM shelf_items WHERE id = 'si_receipt'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(shelf, 1, "解除关联不得删除暂存架原文件记录");
+        Ok::<_, AppError>(())
+    })
+    .unwrap();
+}
+
+#[test]
+fn event_detail_includes_item_links_only_for_its_own_items() {
+    let db = Db::open_in_memory().unwrap();
+    let event_a = insert_purchase(&db, "大米", "2026-11-03", Some("5"), Some("48"), Some("CNY"));
+    let event_b = insert_purchase(&db, "牛奶", "2026-11-04", Some("2"), Some("20"), Some("CNY"));
+    insert_shelf_item(&db, "si_item_a", "大米小票.jpg");
+    insert_shelf_item(&db, "si_item_b", "牛奶小票.jpg");
+    insert_shelf_item(&db, "si_event_a", "整单小票.jpg");
+    let now = now_iso();
+
+    let (item_a, item_b) = db
+        .with_read(|conn| {
+            let item_a: String = conn.query_row(
+                "SELECT item_id FROM life_event_items WHERE event_id = ?1",
+                params![event_a],
+                |row| row.get(0),
+            )?;
+            let item_b: String = conn.query_row(
+                "SELECT item_id FROM life_event_items WHERE event_id = ?1",
+                params![event_b],
+                |row| row.get(0),
+            )?;
+            Ok::<_, AppError>((item_a, item_b))
+        })
+        .unwrap();
+
+    db.with_transaction(|conn| {
+        create_document_link_tx(
+            conn,
+            &link_input("event", &event_a, "si_event_a", "shelf_item"),
+            &now,
+        )?;
+        create_document_link_tx(
+            conn,
+            &link_input("item", &item_a, "si_item_a", "shelf_item"),
+            &now,
+        )?;
+        create_document_link_tx(
+            conn,
+            &link_input("item", &item_b, "si_item_b", "shelf_item"),
+            &now,
+        )?;
+        Ok::<_, AppError>(())
+    })
+    .unwrap();
+
+    db.with_read(|conn| {
+        let detail = load_event_detail(conn, &event_a)?;
+        let refs: Vec<&str> = detail
+            .links
+            .iter()
+            .map(|link| link.document_ref.as_str())
+            .collect();
+        assert!(refs.contains(&"si_event_a"), "事件级票据必须显示");
+        assert!(refs.contains(&"si_item_a"), "事件内商品的商品级票据必须显示");
+        assert!(
+            !refs.contains(&"si_item_b"),
+            "其它事件的商品票据不得串进来：{refs:?}"
+        );
+        Ok::<_, AppError>(())
+    })
+    .unwrap();
+}

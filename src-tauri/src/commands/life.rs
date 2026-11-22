@@ -253,12 +253,28 @@ pub fn normalize_name(raw: &str) -> String {
     trimmed.to_lowercase()
 }
 
+/// 单笔金额上限（最小货币单位）。与移动端 `MAX_AMOUNT_MINOR` 相同：
+/// 超出后 JS `Number` 不再能安全表示，两端宁可拒绝也不静默丢精度。
+pub(crate) const MAX_AMOUNT_MINOR: i64 = 1_000_000_000_000;
+
+/// 数量整数部分最大位数。与移动端 `MAX_QUANTITY_INT_DIGITS` 相同。
+pub(crate) const MAX_QUANTITY_INT_DIGITS: usize = 12;
+
 /// 金额解析：十进制字符串 → 最小货币单位整数（按该货币的小数位）。
 ///
-/// 只接受非负、最多 `scale` 位小数的十进制文本；`48`（CNY, scale 2）→ 4800，
-/// `48.5` → 4850；JPY（scale 0）只接受整数；KWD（scale 3）接受三位小数。
-/// 拒绝科学计数法、千分位与超出精度的小数，避免静默舍入。
+/// 跨端统一规则（`docs/life/life-contract-vectors.json` 是唯一事实源）：
+/// - 只接受 ASCII 数字与**至多一个**小数点，不接受千分位、空格、科学计数法；
+/// - 不接受显式正负号（`-1` 是负数，`+1` 属于非法书写）；
+/// - 必须至少有一位整数数字（`.5` 非法），小数点后也必须有数字（`1.` 非法）；
+/// - 小数位不得超过 `scale`；`scale` 必须是 0–3；
+/// - 结果必须 ≤ [`MAX_AMOUNT_MINOR`]。
+///
+/// `48`（CNY, scale 2）→ 4800，`48.5` → 4850；JPY（scale 0）只接受整数；
+/// KWD（scale 3）接受三位小数。
 fn parse_minor(raw: &str, scale: i64) -> AppResult<i64> {
+    if !(0..=3).contains(&scale) {
+        return Err(AppError::Validation("货币精度非法".into()));
+    }
     let text = raw.trim();
     if text.is_empty() {
         return Err(AppError::Validation("金额不能为空".into()));
@@ -266,19 +282,39 @@ fn parse_minor(raw: &str, scale: i64) -> AppResult<i64> {
     if text.starts_with('-') {
         return Err(AppError::Validation("金额不能为负数".into()));
     }
-    let unsigned = text.strip_prefix('+').unwrap_or(text);
-    if !unsigned.chars().all(|c| c.is_ascii_digit() || c == '.') {
-        return Err(AppError::Validation("金额只能包含数字和小数点".into()));
+    if text.starts_with('+') {
+        return Err(AppError::Validation(
+            "金额不能带正号，请直接填写数字".into(),
+        ));
     }
-    let mut parts = unsigned.split('.');
-    let int_part = parts.next().unwrap_or("");
-    let frac_part = parts.next().unwrap_or("");
-    if parts.next().is_some() {
-        return Err(AppError::Validation("金额格式非法：小数点过多".into()));
+    let mut dot: Option<usize> = None;
+    for (index, byte) in text.bytes().enumerate() {
+        match byte {
+            b'0'..=b'9' => {}
+            b'.' => {
+                if dot.is_some() {
+                    return Err(AppError::Validation("金额格式非法：小数点过多".into()));
+                }
+                dot = Some(index);
+            }
+            _ => {
+                return Err(AppError::Validation(
+                    "金额只能包含数字和一个小数点（不接受千分位或空格）".into(),
+                ))
+            }
+        }
     }
-    let int_digits = if int_part.is_empty() { "0" } else { int_part };
-    if int_digits.len() > 12 {
-        return Err(AppError::Validation("金额过大".into()));
+    let (int_part, frac_part) = match dot {
+        Some(index) => (&text[..index], &text[index + 1..]),
+        None => (text, ""),
+    };
+    if int_part.is_empty() {
+        return Err(AppError::Validation(
+            "金额必须包含整数部分，例如 0.5".into(),
+        ));
+    }
+    if dot.is_some() && frac_part.is_empty() {
+        return Err(AppError::Validation("金额小数点后必须有数字".into()));
     }
     let scale_usize = scale as usize;
     if frac_part.len() > scale_usize {
@@ -286,26 +322,28 @@ fn parse_minor(raw: &str, scale: i64) -> AppResult<i64> {
             "该货币金额最多支持 {scale} 位小数"
         )));
     }
-    let frac: i64 = if frac_part.is_empty() {
+    let whole: i64 = int_part
+        .parse::<i64>()
+        .map_err(|_| AppError::Validation("金额超出可用范围".into()))?;
+    let factor = 10_i64.pow(scale as u32);
+    let frac_scaled = if frac_part.is_empty() {
         0
     } else {
-        frac_part
+        let frac: i64 = frac_part
             .parse::<i64>()
-            .map_err(|_| AppError::Validation("金额格式非法".into()))?
+            .map_err(|_| AppError::Validation("金额超出可用范围".into()))?;
+        frac * 10_i64.pow((scale_usize - frac_part.len()) as u32)
     };
-    let factor = 10_i64
-        .checked_pow(scale as u32)
-        .ok_or_else(|| AppError::Validation("货币精度非法".into()))?;
-    let frac_scaled = frac
-        .checked_mul(10_i64.pow((scale_usize - frac_part.len()) as u32))
-        .ok_or_else(|| AppError::Validation("金额过大".into()))?;
-    let whole: i64 = int_digits
-        .parse::<i64>()
-        .map_err(|_| AppError::Validation("金额格式非法".into()))?;
-    whole
+    let minor = whole
         .checked_mul(factor)
-        .and_then(|v| v.checked_add(frac_scaled))
-        .ok_or_else(|| AppError::Validation("金额过大".into()))
+        .and_then(|value| value.checked_add(frac_scaled))
+        .ok_or_else(|| AppError::Validation("金额超出可用范围".into()))?;
+    if minor > MAX_AMOUNT_MINOR {
+        return Err(AppError::Validation(
+            "金额超出可用范围（单笔上限 10000000000）".into(),
+        ));
+    }
+    Ok(minor)
 }
 
 /// ISO 4217 常用货币的小数位。未列入的代码明确报错，不假设所有货币都是两位小数。
@@ -337,7 +375,26 @@ pub(crate) fn currency_scale(currency: &str) -> AppResult<i64> {
 }
 
 /// 数量解析：十进制字符串 → 规范文本（最多 3 位小数，去掉末尾 0）。
+///
+/// 跨端统一规则（与 [`parse_minor`] 同一套书写约束）：
+/// - ASCII 数字 + 至多一个小数点，不接受千分位/空格/正负号；
+/// - 必须至少有一位整数数字，小数点后必须有数字；
+/// - 小数最多 3 位，整数部分最多 12 位；
+/// - **购买数量必须大于 0**（`0`、`0.000` 拒绝）。
+///
+/// 历史数据里已存在的 `0` 不在写入路径上被改写；同步复制走
+/// [`canonical_quantity_for_sync`]，允许 `0` 以便旧记录继续跨端复制。
 pub(crate) fn canonical_quantity(raw: &str) -> AppResult<Option<String>> {
+    canonical_quantity_with(raw, false)
+}
+
+/// 同步复制专用：与 [`canonical_quantity`] 格式规则相同，但允许 `0`。
+/// 旧版桌面端曾接受数量 0，复制这些既有记录不能让同步卡死。
+pub(crate) fn canonical_quantity_for_sync(raw: &str) -> AppResult<Option<String>> {
+    canonical_quantity_with(raw, true)
+}
+
+fn canonical_quantity_with(raw: &str, allow_zero: bool) -> AppResult<Option<String>> {
     let text = raw.trim();
     if text.is_empty() {
         return Ok(None);
@@ -345,15 +402,39 @@ pub(crate) fn canonical_quantity(raw: &str) -> AppResult<Option<String>> {
     if text.starts_with('-') {
         return Err(AppError::Validation("数量不能为负数".into()));
     }
-    let unsigned = text.strip_prefix('+').unwrap_or(text);
-    if !unsigned.chars().all(|c| c.is_ascii_digit() || c == '.') {
-        return Err(AppError::Validation("数量只能包含数字和小数点".into()));
+    if text.starts_with('+') {
+        return Err(AppError::Validation(
+            "数量不能带正号，请直接填写数字".into(),
+        ));
     }
-    let mut parts = unsigned.split('.');
-    let int_raw = parts.next().unwrap_or("");
-    let frac_raw = parts.next().unwrap_or("");
-    if parts.next().is_some() {
-        return Err(AppError::Validation("数量格式非法：小数点过多".into()));
+    let mut dot: Option<usize> = None;
+    for (index, byte) in text.bytes().enumerate() {
+        match byte {
+            b'0'..=b'9' => {}
+            b'.' => {
+                if dot.is_some() {
+                    return Err(AppError::Validation("数量格式非法：小数点过多".into()));
+                }
+                dot = Some(index);
+            }
+            _ => {
+                return Err(AppError::Validation(
+                    "数量只能包含数字和一个小数点（不接受千分位或空格）".into(),
+                ))
+            }
+        }
+    }
+    let (int_raw, frac_raw) = match dot {
+        Some(index) => (&text[..index], &text[index + 1..]),
+        None => (text, ""),
+    };
+    if int_raw.is_empty() {
+        return Err(AppError::Validation(
+            "数量必须包含整数部分，例如 0.5".into(),
+        ));
+    }
+    if dot.is_some() && frac_raw.is_empty() {
+        return Err(AppError::Validation("数量小数点后必须有数字".into()));
     }
     if frac_raw.len() > 3 {
         return Err(AppError::Validation("数量最多支持 3 位小数".into()));
@@ -364,8 +445,10 @@ pub(crate) fn canonical_quantity(raw: &str) -> AppResult<Option<String>> {
     } else {
         int_trimmed
     };
-    if int_part.len() > 12 {
-        return Err(AppError::Validation("数量过大".into()));
+    if int_part.len() > MAX_QUANTITY_INT_DIGITS {
+        return Err(AppError::Validation(
+            "数量过大（整数部分最多 12 位）".into(),
+        ));
     }
     let frac_trimmed = frac_raw.trim_end_matches('0');
     let canonical = if frac_trimmed.is_empty() {
@@ -373,6 +456,9 @@ pub(crate) fn canonical_quantity(raw: &str) -> AppResult<Option<String>> {
     } else {
         format!("{}.{}", int_part, frac_trimmed)
     };
+    if !allow_zero && canonical == "0" {
+        return Err(AppError::Validation("数量必须大于 0".into()));
+    }
     Ok(Some(canonical))
 }
 
@@ -386,6 +472,31 @@ pub(crate) fn normalize_currency(raw: Option<&str>) -> AppResult<String> {
         return Err(AppError::Validation("货币必须是三位字母代码（如 CNY）".into()));
     }
     Ok(text)
+}
+
+/// 解析该行金额使用的小数位。
+///
+/// - 未指定：按货币 ISO 精度（CNY/USD=2、JPY=0、KWD=3）；
+/// - 已指定：必须是 0–3 的整数，且**不得低于**该货币的 ISO 精度。
+///   编辑历史行时允许沿用更细的旧精度（例如旧 JPY 行按 2 位存过），
+///   因为把 `100.50` 收紧成 0 位会静默改写金额含义。
+pub(crate) fn resolve_amount_scale(currency: &str, requested: Option<i64>) -> AppResult<i64> {
+    let canonical = currency_scale(currency)?;
+    match requested {
+        None => Ok(canonical),
+        Some(scale) if !(0..=3).contains(&scale) => Err(AppError::Validation(
+            "金额小数位必须是 0–3 的整数".into(),
+        )),
+        Some(scale) => {
+            let code = currency.trim().to_uppercase();
+            if !code.is_empty() && scale < canonical {
+                return Err(AppError::Validation(format!(
+                    "金额小数位不能低于货币精度（{code} 为 {canonical} 位小数）"
+                )));
+            }
+            Ok(scale)
+        }
+    }
 }
 
 /// 实际发生时间：接受 RFC3339、`YYYY-MM-DD`、`YYYY-MM-DDTHH:MM`。
@@ -958,11 +1069,48 @@ fn load_event(conn: &Connection, event_id: &str) -> AppResult<Option<LifeEvent>>
     Ok(row)
 }
 
+fn load_link(conn: &Connection, link_id: &str) -> AppResult<Option<LifeDocumentLink>> {
+    let link = conn
+        .query_row(
+            "SELECT id, owner_type, owner_id, document_ref, document_source, document_name,
+                    mime, byte_size, remote_ref, remote_source, transfer_state, created_at, updated_at
+             FROM life_document_links WHERE id = ?1 AND deleted_at IS NULL",
+            params![link_id],
+            map_link_row,
+        )
+        .optional()?;
+    Ok(link)
+}
+
+/// 事件详情里的关联票据 = 事件级关联 + **事件内商品**的商品级关联。
+///
+/// 与移动端 `getEventDetail` 使用同一语义：商品级票据属于商品，但因为该商品出现在
+/// 这次购买里，查看事件时也必须能看到；否则「先给商品挂票据、再记一笔购买」在桌面端
+/// 会表现为票据凭空消失。两条路径都不跨事件复用：只看当前事件包含的商品。
+fn load_event_detail_links(conn: &Connection, event_id: &str) -> AppResult<Vec<LifeDocumentLink>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, owner_type, owner_id, document_ref, document_source, document_name,
+                mime, byte_size, remote_ref, remote_source, transfer_state, created_at, updated_at
+         FROM life_document_links
+         WHERE deleted_at IS NULL
+           AND ((owner_type = 'event' AND owner_id = ?1)
+             OR (owner_type = 'item' AND owner_id IN (
+                   SELECT item_id FROM life_event_items
+                    WHERE event_id = ?1 AND item_id IS NOT NULL)))
+         ORDER BY created_at DESC, id DESC
+         LIMIT 200",
+    )?;
+    let rows = stmt
+        .query_map(params![event_id], map_link_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
 fn load_event_detail(conn: &Connection, event_id: &str) -> AppResult<LifeEventDetail> {
     let event = load_event(conn, event_id)?
         .ok_or_else(|| AppError::NotFound("生活记录不存在或已删除".into()))?;
     let items = load_event_items(conn, event_id)?;
-    let links = load_links(conn, Some("event"), Some(event_id))?;
+    let links = load_event_detail_links(conn, event_id)?;
     Ok(LifeEventDetail {
         event,
         items,
@@ -1323,15 +1471,7 @@ fn build_event_item_values(
             .filter(|s| !s.is_empty())
             .is_some();
     let currency = resolve_currency(db, input.currency.as_deref(), has_amount)?;
-    let scale = match input.amount_scale {
-        Some(value) if (0..=3).contains(&value) => value,
-        Some(_) => {
-            return Err(AppError::Validation(
-                "金额小数位必须是 0–3 的整数".into(),
-            ))
-        }
-        None => currency_scale(&currency)?,
-    };
+    let scale = resolve_amount_scale(&currency, input.amount_scale)?;
     let unit_price = match input.unit_price.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(raw) => Some(parse_minor(raw, scale)?),
         None => None,
@@ -1863,16 +2003,77 @@ fn owner_exists(conn: &Connection, owner_type: &str, owner_id: &str) -> AppResul
     Ok(exists)
 }
 
-#[tauri::command]
-pub fn life_document_link_create(
-    db: State<'_, Arc<Db>>,
-    input: LifeDocumentLinkInput,
-) -> AppResult<LifeDocumentLink> {
+/// 票据引用格式校验。
+///
+/// - 任何来源都不接受控制字符（换行/制表符等会把日志与路径搞乱）；
+/// - `shelf_item` 是暂存架条目 ID，必须存在且不含空白；
+/// - `file` 必须是绝对路径（盘符或 UNC），否则桌面端无法定位；
+/// - `capture_asset` / `attachment` 由另一端或其它模块持有，桌面端只校验格式，
+///   不要求本机存在记录（原有手机采集素材语义保持不变）。
+fn validate_document_ref(reference: &str, source: &str) -> AppResult<()> {
+    if reference.is_empty() {
+        return Err(AppError::Validation("票据引用不能为空".into()));
+    }
+    if reference.chars().any(char::is_control) {
+        return Err(AppError::Validation("票据引用包含非法控制字符".into()));
+    }
+    match source {
+        "shelf_item" => {
+            if reference.chars().any(char::is_whitespace) {
+                return Err(AppError::Validation(
+                    "暂存架票据引用不能包含空白字符".into(),
+                ));
+            }
+        }
+        "file" => {
+            let bytes = reference.as_bytes();
+            let has_drive = bytes.len() >= 3
+                && bytes[0].is_ascii_alphabetic()
+                && bytes[1] == b':'
+                && (bytes[2] == b'\\' || bytes[2] == b'/');
+            let unc = reference.starts_with("\\\\") || reference.starts_with("//");
+            let posix = reference.starts_with('/');
+            if !(has_drive || unc || posix) {
+                return Err(AppError::Validation(
+                    "本地文件票据必须使用绝对路径".into(),
+                ));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn shelf_item_exists(conn: &Connection, item_id: &str) -> AppResult<bool> {
+    let exists = conn
+        .query_row(
+            "SELECT 1 FROM shelf_items WHERE id = ?1",
+            params![item_id],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    Ok(exists)
+}
+
+/// 在已开启的事务里创建票据关联，返回**最终生效**的关联 ID。
+///
+/// 幂等：同一 `owner_type + owner_id + document_ref + document_source` 重复提交时
+/// 返回已有行 ID（不是新生成的 ID），调用方必须使用返回值查询，否则会 NotFound。
+fn create_document_link_tx(
+    conn: &Connection,
+    input: &LifeDocumentLinkInput,
+    now: &str,
+) -> AppResult<String> {
     let owner_type = input.owner_type.trim();
     if !matches!(owner_type, "event" | "item") {
         return Err(AppError::Validation(
             "owner_type 只能是 event 或 item".into(),
         ));
+    }
+    let owner_id = input.owner_id.trim();
+    if owner_id.is_empty() {
+        return Err(AppError::Validation("owner_id 不能为空".into()));
     }
     let source = input.document_source.trim();
     if !matches!(source, "capture_asset" | "shelf_item" | "attachment" | "file") {
@@ -1881,92 +2082,125 @@ pub fn life_document_link_create(
         ));
     }
     let reference = input.document_ref.trim();
-    if reference.is_empty() {
-        return Err(AppError::Validation("票据引用不能为空".into()));
-    }
+    validate_document_ref(reference, source)?;
     validate_text(reference, "票据引用", 500)?;
+    // 已传输必须由「手机上传文件 → 桌面收到 → 回写 remote_ref」产生；
+    // 裸创建无法提供远端引用，允许它会造出永远打不开的“已传输”票据。
     let state = match input.transfer_state.as_deref() {
         None | Some("") => "local",
-        Some("local") | Some("metadata_only") | Some("transferred") | Some("missing") => {
+        Some("transferred") => {
+            return Err(AppError::Validation(
+                "不能直接创建“已传输”票据：远端引用必须由文件互传写入后同步".into(),
+            ))
+        }
+        Some("local") | Some("metadata_only") | Some("missing") => {
             input.transfer_state.as_deref().unwrap()
         }
         Some(_) => return Err(AppError::Validation("transfer_state 非法".into())),
     };
+    if let Some(size) = input.byte_size {
+        if size < 0 {
+            return Err(AppError::Validation("byte_size 不能为负数".into()));
+        }
+    }
     let name = input.document_name.trim().to_string();
     validate_text(&name, "票据名称", 200)?;
     let mime = input.mime.trim().to_string();
     validate_text(&mime, "MIME", 100)?;
-    let now = now_iso();
+
+    // owner 必须存在：禁止悬空关联（已软删的对象同样拒绝）。
+    if !owner_exists(conn, owner_type, owner_id)? {
+        return Err(AppError::NotFound("关联对象不存在或已删除".into()));
+    }
+    // 暂存架来源必须真实存在：选中后被删除的条目不能留下打不开的关联。
+    if source == "shelf_item" && !shelf_item_exists(conn, reference)? {
+        return Err(AppError::NotFound(
+            "票据文件已不在文件暂存中，请重新选择".into(),
+        ));
+    }
+
+    let existing: Option<String> = conn
+        .query_row(
+            "SELECT id FROM life_document_links
+             WHERE deleted_at IS NULL AND owner_type = ?1 AND owner_id = ?2
+               AND document_ref = ?3 AND document_source = ?4",
+            params![owner_type, owner_id, reference, source],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(id) = existing {
+        return Ok(id);
+    }
+
     let link_id = format!("ldl_{}", Uuid::new_v4());
-    db.with_transaction(|conn| {
-        // owner 必须存在：禁止悬空关联。
-        if !owner_exists(conn, owner_type, &input.owner_id)? {
-            return Err(AppError::NotFound("关联对象不存在或已删除".into()));
-        }
-        // 幂等：同一对象 + 同一文件重复提交直接返回已有行。
-        let existing: Option<String> = conn
-            .query_row(
-                "SELECT id FROM life_document_links
-                 WHERE deleted_at IS NULL AND owner_type = ?1 AND owner_id = ?2
-                   AND document_ref = ?3 AND document_source = ?4",
-                params![owner_type, input.owner_id, reference, source],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if let Some(id) = existing {
-            return Ok(id);
-        }
-        conn.execute(
-            "INSERT INTO life_document_links
-             (id, owner_type, owner_id, document_ref, document_source, document_name, mime,
-              byte_size, transfer_state, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)",
-            params![
-                link_id,
-                owner_type,
-                input.owner_id,
-                reference,
-                source,
-                name,
-                mime,
-                input.byte_size,
-                state,
-                now
-            ],
-        )?;
-        Ok(link_id.clone())
-    })?;
+    conn.execute(
+        "INSERT INTO life_document_links
+         (id, owner_type, owner_id, document_ref, document_source, document_name, mime,
+          byte_size, transfer_state, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)",
+        params![
+            link_id,
+            owner_type,
+            owner_id,
+            reference,
+            source,
+            name,
+            mime,
+            input.byte_size,
+            state,
+            now
+        ],
+    )?;
+    Ok(link_id)
+}
+
+#[tauri::command]
+pub fn life_document_link_create(
+    db: State<'_, Arc<Db>>,
+    input: LifeDocumentLinkInput,
+) -> AppResult<LifeDocumentLink> {
+    let now = now_iso();
+    let actual_link_id = db.with_transaction(|conn| create_document_link_tx(conn, &input, &now))?;
     db.with_read(|conn| {
-        let links = load_links(conn, Some(owner_type), Some(&input.owner_id))?;
-        links
-            .into_iter()
-            .find(|l| l.id == link_id)
+        load_link(conn, &actual_link_id)?
             .ok_or_else(|| AppError::NotFound("票据关联不存在".into()))
     })
+}
+
+/// 单个票据关联（全局搜索定位票据时必须先确认 owner_type 与 owner_id，
+/// 不能靠“事件打不开就当商品”的异常回退来猜）。
+#[tauri::command]
+pub fn life_document_link_get(
+    db: State<'_, Arc<Db>>,
+    link_id: String,
+) -> AppResult<Option<LifeDocumentLink>> {
+    db.with_read(|conn| load_link(conn, &link_id))
+}
+
+/// 软删除票据关联；已删除（或不存在）再次删除视为成功，保持幂等。
+/// 只写 `deleted_at`：暂存架条目、采集素材与本地文件都不动。
+fn delete_document_link_tx(conn: &Connection, link_id: &str, now: &str) -> AppResult<()> {
+    let exists: Option<String> = conn
+        .query_row(
+            "SELECT id FROM life_document_links WHERE id = ?1 AND deleted_at IS NULL",
+            params![link_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if exists.is_none() {
+        return Ok(());
+    }
+    conn.execute(
+        "UPDATE life_document_links SET deleted_at = ?1, updated_at = ?1 WHERE id = ?2",
+        params![now, link_id],
+    )?;
+    Ok(())
 }
 
 #[tauri::command]
 pub fn life_document_link_delete(db: State<'_, Arc<Db>>, link_id: String) -> AppResult<()> {
     let now = now_iso();
-    db.with_transaction(|conn| {
-        let exists: Option<String> = conn
-            .query_row(
-                "SELECT id FROM life_document_links WHERE id = ?1 AND deleted_at IS NULL",
-                params![link_id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if exists.is_none() {
-            // 幂等：已解除的关联再次删除视为成功。
-            return Ok(());
-        }
-        // 只解除关联：不删除 capture_assets / shelf_items / 本地文件。
-        conn.execute(
-            "UPDATE life_document_links SET deleted_at = ?1, updated_at = ?1 WHERE id = ?2",
-            params![now, link_id],
-        )?;
-        Ok(())
-    })
+    db.with_transaction(|conn| delete_document_link_tx(conn, &link_id, &now))
 }
 
 #[tauri::command]

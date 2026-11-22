@@ -38,10 +38,41 @@ export interface TaskPatch {
   tags?: string[] | null;
 }
 
-export async function listTasks(): Promise<Task[]> {
+/** 列表查询选项：只在调用方显式给出时才收窄，未给出的调用方保持原行为。 */
+export interface ListTasksOptions {
+  /** 精确匹配 tasks.category（生活页传「生活」）。 */
+  category?: string | null;
+  /** 最大返回条数，钳制到 1–500；生活页只取自己需要的一页。 */
+  limit?: number;
+}
+
+export async function listTasks(options?: ListTasksOptions): Promise<Task[]> {
   const db = getDatabase();
+  if (!options || (!options.category && options.limit == null)) {
+    // 原有调用方（任务页、小组件、设置等）的语义逐字保留：不排序、不限制条数。
+    const rows = await db.getAllAsync<TaskDbRow>(
+      `SELECT ${TASK_COLUMNS} FROM tasks WHERE deleted_at IS NULL`,
+    );
+    return rows.map(mapTaskRow);
+  }
+  // 生活待办复用同一张 tasks 表与同一仓储：过滤/排序/限量全部下推 SQLite，
+  // 不再先读全表再在 JS 里 filter。分页上限避免异常大数据拖垮页面。
+  const where = ["deleted_at IS NULL"];
+  const params: Array<string | number> = [];
+  if (options.category) {
+    where.push("category = ?");
+    params.push(options.category);
+  }
+  const limit = Math.max(1, Math.min(500, Math.floor(options.limit ?? 200)));
+  params.push(limit);
   const rows = await db.getAllAsync<TaskDbRow>(
-    `SELECT ${TASK_COLUMNS} FROM tasks WHERE deleted_at IS NULL`,
+    `SELECT ${TASK_COLUMNS} FROM tasks
+      WHERE ${where.join(" AND ")}
+      ORDER BY (status = 'pending') DESC,
+               COALESCE(due_at, 9223372036854775807) ASC,
+               created_at DESC, id ASC
+      LIMIT ?`,
+    params,
   );
   return rows.map(mapTaskRow);
 }

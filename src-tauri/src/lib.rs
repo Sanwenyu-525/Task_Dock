@@ -1396,6 +1396,7 @@ pub fn run() {
             commands::life::life_overview,
             commands::life::life_quick_query,
             commands::life::life_document_link_create,
+            commands::life::life_document_link_get,
             commands::life::life_document_link_delete,
             commands::life::life_document_links_list,
             // 任务统计（tasks.stats-trends）：只读聚合，打开统计子视图时按需调用

@@ -216,6 +216,15 @@ export const lifeDocumentLinkCreate = (input: LifeDocumentLinkInput) =>
 export const lifeDocumentLinkDelete = (linkId: string) =>
   invoke<void>("life_document_link_delete", { linkId });
 
+/**
+ * 单个票据关联（含 `owner_type`/`owner_id`）。
+ *
+ * 全局搜索只给 `target_id`（owner）与 `parent_id`（关联 id），不保证 owner 是商品还是事件；
+ * 定位票据必须先读这条关联，禁止用「事件打不开就当商品」的异常回退去猜。
+ */
+export const lifeDocumentLinkGet = (linkId: string) =>
+  invoke<LifeDocumentLink | null>("life_document_link_get", { linkId });
+
 export const lifeDocumentLinksList = (ownerType?: string | null, ownerId?: string | null) =>
   invoke<LifeDocumentLink[]>("life_document_links_list", {
     ownerType: ownerType ?? null,

@@ -11,7 +11,7 @@
 
 use super::*;
 use crate::commands::life::{
-    canonical_quantity, normalize_currency, normalize_name, LifeEventInput,
+    canonical_quantity_for_sync, normalize_currency, normalize_name, LifeEventInput,
 };
 
 pub(crate) fn entity_order(entity: &str) -> u8 {
@@ -647,7 +647,8 @@ fn patch_iso_optional(patch: &Map<String, Value>, key: &str) -> AppResult<Option
 fn patch_quantity(patch: &Map<String, Value>, key: &str) -> AppResult<Option<String>> {
     match optional_text_value(patch, key)? {
         None => Ok(None),
-        Some(raw) => canonical_quantity(&raw),
+        // 复制既有记录：允许旧客户端写入的 0，不能让同步因历史数据卡死。
+        Some(raw) => canonical_quantity_for_sync(&raw),
     }
 }
 
@@ -1361,3 +1362,48 @@ fn update_life_document_link_from_patch(
 // 文件本身仍走既有的 `mobile_sync::files` 通道。
 #[allow(dead_code)]
 fn _life_event_input_contract_marker(_input: &LifeEventInput) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn patch(key: &str, value: serde_json::Value) -> serde_json::Map<String, Value> {
+        let mut map = serde_json::Map::new();
+        map.insert(key.to_string(), value);
+        map
+    }
+
+    #[test]
+    fn patch_quantity_keeps_legacy_zero_without_accepting_garbage() {
+        // 同步复制的是既有记录，不能因为输入层现在要求正数就让历史 0 卡住同步。
+        assert_eq!(
+            patch_quantity(&patch("quantityValue", Value::String("0".into())), "quantityValue")
+                .unwrap()
+                .as_deref(),
+            Some("0")
+        );
+        assert_eq!(
+            patch_quantity(
+                &patch("quantityValue", Value::String("5.500".into())),
+                "quantityValue"
+            )
+            .unwrap()
+            .as_deref(),
+            Some("5.5")
+        );
+        assert_eq!(
+            patch_quantity(&patch("quantityValue", Value::Null), "quantityValue").unwrap(),
+            None
+        );
+        assert!(patch_quantity(
+            &patch("quantityValue", Value::String("1,000".into())),
+            "quantityValue"
+        )
+        .is_err());
+        assert!(patch_quantity(
+            &patch("quantityValue", Value::String("1e3".into())),
+            "quantityValue"
+        )
+        .is_err());
+    }
+}

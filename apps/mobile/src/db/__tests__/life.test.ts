@@ -19,6 +19,7 @@ import {
   updatePurchase,
 } from "../life";
 import { closeDatabase, getDatabase, openDatabase } from "../database";
+import { createTask, listTasks } from "../tasks";
 
 function day(year: number, month: number, date: number): number {
   return new Date(year, month - 1, date, 0, 0, 0, 0).getTime();
@@ -378,5 +379,26 @@ describe("生活票据关联", () => {
       [linkId],
     );
     expect(outbox.some((row) => row.payload.includes('"update"'))).toBe(true);
+  });
+});
+
+
+describe("生活待办复用现有任务系统", () => {
+  it("查询层按 category=生活 过滤、排序并限量，不读取其它分类任务", async () => {
+    const now = Date.now();
+    await createTask({ title: "生活-晚", category: "生活", dueAt: now + 2_000 });
+    await createTask({ title: "生活-早", category: "生活", dueAt: now + 1_000 });
+    await createTask({ title: "工作-不该出现", category: "工作" });
+
+    const all = await listTasks();
+    expect(all).toHaveLength(3); // 未传选项的旧调用方行为不变
+
+    const life = await listTasks({ category: "生活", limit: 2 });
+    expect(life.map((task) => task.title)).toEqual(["生活-早", "生活-晚"]);
+    expect(life.every((task) => task.category === "生活")).toBe(true);
+    expect(life.some((task) => task.title.includes("工作"))).toBe(false);
+
+    const limited = await listTasks({ category: "生活", limit: 1 });
+    expect(limited.map((task) => task.title)).toEqual(["生活-早"]);
   });
 });
