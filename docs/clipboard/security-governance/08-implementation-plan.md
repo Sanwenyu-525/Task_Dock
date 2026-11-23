@@ -366,11 +366,36 @@
   `cargo test --lib commands::settings::tests::clipboard_encryption_and_export_cleanup_settings_are_allowlisted`
   1 passed；`npx vitest run src/components/settings/SettingsPanel.test.tsx` 24 passed；`npm run typecheck` 0。
 - 未改变边界：导出包仍为明文；自动清理是 opt-in，不默认删除升级前生成的导出；
-  目录显式 ACL 与 Agent 能力白名单仍未实现。
+  批次 8 交付时目录显式 ACL 与 Agent 能力白名单仍未实现；ACL 已在批次 9 补齐，能力白名单仍无接入点。
 
-### 6.14 尚未执行（等待后续批次）
+### 6.14 批次 9（2026-11-23，已实施）
+
+已落地剪贴板数据目录显式 ACL 加固：
+
+- 新增 `clipboard/acl.rs`；Windows 下用 `OpenProcessToken(TokenUser)` 取当前用户 SID，
+  用 `ConvertStringSidToSidW("S-1-5-32-544")` 取 Administrators SID，构造只含两条
+  `FILE_ALL_ACCESS` ACE 的显式 DACL；目录 ACE 带 `OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE`，
+  文件 ACE 不带继承标志。
+- 通过 `SetNamedSecurityInfoW(DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION)`
+  阻止父目录继承 ACE 重新放宽；根 `data_dir` 只设置自身，已有 `clipboard/`、
+  `clipboard-exports/`、`clipboard-backups/`、`backups/`、`restore/`、`shelf/` 递归处理，
+  `task-dock.db(-wal/-shm/-journal)` 单独处理。符号链接/junction 跳过，不跟随到其它目录。
+- `lib.rs` 在启动时、`Db::open` 前调用；`--agentctl` 在打开 DB 前同样调用。
+  失败只计数并告警（`first_error` 仅 Windows/IO 错误码，不写用户路径），不阻塞启动；
+  FAT/网络盘等不支持 ACL 的文件系统按失败计数。
+- Cargo 仅向 `windows-sys 0.60` 追加 `Win32_Security_Authorization` feature，无新增 crate。
+- 测试新增 2 项（独立模块验证）：根与子目录/子文件均为 protected DACL、ACE 恰好当前用户
+  与 Administrators；重复执行结果一致、缺失路径计入 skipped，不产生 failed。
+- 本批验证（MSVC）：独立 `acl-verify` crate `cargo test --offline` 2 passed / 0 failed；
+  `cargo clippy --offline --all-targets -- -D warnings` 通过。TaskDock 主 crate 的
+  `cargo test --lib clipboard::acl` 被共享工作区其它在途编译错误阻塞（17 个错误，
+  均在 `agent_access`/`comic_workspace` 等非本批文件），未取得通过结论；
+  启动集成与真机 ACL 行为待 Dev 验收。
+- 未改变边界：ACL 不防管理员取得所有权、内存读取、磁盘镜像/卷影副本；导出包仍为明文。
+
+### 6.15 尚未执行（等待后续批次）
 
 - 批次 4c（余项）：旧明文包一次性加密迁移；恢复续跑日志对资产重加密后的版本兼容复核。
-- 目录显式 ACL、真机 Dev 验收（尤其启动自动清理与设置页交互）与性能基准。
-- 本批次未执行：数据库 schema 迁移、Agent 能力白名单。
+- Dev 真机验收（启动 ACL/自动清理、设置页交互）与性能基准。
+- Agent 能力白名单：导出未暴露给 Agent API/MCP，当前无接入点。
 - 残余风险按 ADR §14「实施偏差与影响」如实登记，不得对外宣称剪贴板历史已全面加密。

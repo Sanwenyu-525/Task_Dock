@@ -723,6 +723,26 @@ pub fn run() {
             // 投屏控制栏窗口服务：登记 AppHandle，供 vd_start 的伴随窗口线程使用。
             commands::projection_window::init(&handle);
 
+            // 剪贴板数据目录显式 ACL（ADR-0012 批次 9）：在数据库打开前收紧根目录
+            // 与已有剪贴板/备份/恢复/暂存架/DB 文件权限，并保护 DACL 不被父目录继承放宽。
+            // 失败只告警，不阻塞启动；FAT/网络盘等不支持 ACL 的文件系统按计数上报。
+            let acl_report = clipboard::acl::harden_clipboard_storage(&data_dir);
+            if acl_report.failed > 0 {
+                tracing::warn!(
+                    "剪贴板数据目录 ACL 加固未完全成功：applied={}, skipped={}, failed={}, first_error={}",
+                    acl_report.applied,
+                    acl_report.skipped,
+                    acl_report.failed,
+                    acl_report.first_error.as_deref().unwrap_or("unknown")
+                );
+            } else {
+                tracing::debug!(
+                    "剪贴板数据目录 ACL 已加固：applied={}, skipped={}",
+                    acl_report.applied,
+                    acl_report.skipped
+                );
+            }
+
             let db = Arc::new(Db::open(&data_dir.join("task-dock.db")).expect("数据库打开失败"));
             // 剪贴板静态加密（ADR-0012）：启动即把已落库的 CEK 信封加载进进程缓存，
             // 否则重启后读不到已加密的正文。信封不存在时保持为空（不凭空创建密钥）；
@@ -2724,6 +2744,17 @@ pub fn agentctl(args: &[String]) -> i32 {
     }
     let data_dir = headless_data_dir();
     let _ = std::fs::create_dir_all(&data_dir);
+    // 无头命令也可能先于主界面打开数据库；同样在 DB 打开前收紧 ACL。
+    let acl_report = clipboard::acl::harden_clipboard_storage(&data_dir);
+    if acl_report.failed > 0 {
+        eprintln!(
+            "剪贴板数据目录 ACL 加固未完全成功：applied={}, skipped={}, failed={}, first_error={}",
+            acl_report.applied,
+            acl_report.skipped,
+            acl_report.failed,
+            acl_report.first_error.as_deref().unwrap_or("unknown")
+        );
+    }
     let db = match Db::open(&data_dir.join("task-dock.db")) {
         Ok(d) => std::sync::Arc::new(d),
         Err(e) => {

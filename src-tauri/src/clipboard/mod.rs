@@ -12,6 +12,7 @@
 //! 安全原则：日志只记录类型/大小/计数，绝不记录内容；剪贴板正文只存在于本地库。
 
 pub mod agent_bridge;
+pub mod acl;
 pub mod backup_crypto;
 pub mod engine;
 pub mod export;

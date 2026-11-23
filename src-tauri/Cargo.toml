@@ -120,6 +120,9 @@ windows-sys = { version = "0.60", features = [
   "Win32_System_Memory",
   "Win32_System_LibraryLoader",
   "Win32_Security",
+  # 剪贴板数据目录 ACL（ADR-0012 批次 9）：SetNamedSecurityInfoW / SID 转换。
+  # 仅追加 feature，不新增 crate 下载。
+  "Win32_Security_Authorization",
   "Win32_Graphics_Gdi",
   # 真实应用图标：SHGetFileInfoW / ExtractIconExW（shell32）
   "Win32_UI_Shell",

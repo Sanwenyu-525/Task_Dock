@@ -435,6 +435,20 @@ failed/cancelled/confirmed`，其中 `confirmed` 仅在存在独立接收信号�
 - 手动审计 `trigger=manual`、启动审计 `trigger=startup`；明细仍只含保留天数与计数，不写路径、
   文件名或正文。自动清理默认关闭，升级不会静默删除用户导出。
 
+### 5.7 数据目录显式 ACL（ADR-0012，批次 9）
+
+- `clipboard/acl.rs` 在启动时、`Db::open` 之前执行；`--agentctl` 打开 DB 前同样执行。
+  Windows 下取当前进程 token 的用户 SID，并解析 `S-1-5-32-544`（Administrators），
+  构造仅含两条 `FILE_ALL_ACCESS` ACE 的显式 DACL；目录 ACE 带对象/容器继承标志，
+  文件 ACE 不带，后续新建文件/子目录由父目录 DACL 继续约束。
+- `SetNamedSecurityInfoW` 同时传 `DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION`，
+  阻止 `%APPDATA%` 父目录继承 ACE 放宽权限。覆盖 `data_dir` 根、`clipboard/`、
+  `clipboard-exports/`、`clipboard-backups/`、`backups/`、`restore/`、`shelf/`
+  及 `task-dock.db(-wal/-shm/-journal)`；只递归已存在的选中路径，不扫描整个数据目录。
+- 跳过 `FILE_ATTRIBUTE_REPARSE_POINT`（符号链接/junction），避免加固越界到其它目录。
+  非 Windows 返回空报告；单个路径失败累计 `failed` 与首个错误码，启动只告警不阻塞，
+  日志不含用户路径。
+
 ## 六、降级与边界
 
 - 监听启动失败：`ClipboardRuntime::start` 记录警告，运行时继续工作；

@@ -134,8 +134,11 @@ TaskDock 剪贴板历史当前以 SQLite 明文保存正文/HTML/预览，图片
    最多扫描最近/最常用 5000 条（见 §14 偏差 1）；全局搜索对剪贴板只解密标题/预览/来源/路径。
 3. 资产加密是逐文件 GCM 封装还是目录级容器；预览缓存纳入哪一层。
 4. 数据目录与剪贴板目录显式 ACL 加固的具体范围与测试方式。
+   **已定（批次 9）**：protected DACL 仅当前用户 + Administrators；覆盖 `data_dir` 根、
+   剪贴板/导出/备份/恢复/暂存架与 DB 文件；只递归已存在路径，junction 跳过；模块级单测 +
+   独立 crate 验证，启动集成与真机行为列入 Dev 验收。
 
-## 14. 实施状态（2026-11-23，批次 1–8）
+## 14. 实施状态（2026-11-23，批次 1–9）
 
 代码：`src-tauri/src/clipboard/secure.rs`、`secure_migration.rs`、`store.rs` 读写接入、`db::Settings` 新增开关；前端仅同步类型。
 
@@ -163,7 +166,7 @@ TaskDock 剪贴板历史当前以 SQLite 明文保存正文/HTML/预览，图片
 | Agent 导出审计 | 已实现（批次 5b） | 成功/失败/清理均写 `security_audit_log`（category=`clipboard`，事件 `CLIPBOARD_EXPORT_SUCCEEDED`/`CLIPBOARD_EXPORT_FAILED`/`CLIPBOARD_EXPORT_PURGED`）；明细只含目标类型、条目/图片计数、保留天数或错误码，**不含目录/文件名/正文**；诊断中心新增「剪贴板」分类 |
 | Agent 导出目录手动清理 | 已实现（批次 5a） | `clipboard_purge_agent_exports`：只删 `clipboard-exports/` 直接子目录，按 mtime 保留 N 天（0=全部、默认 7）；跳过符号链接/普通文件，失败保留并计数；返回 `{removed, skipped, failed, bytes}`，不落路径；设置页需危险操作确认 |
 | Agent 导出自动清理与设置持久化 | 已实现（批次 8） | 新增 `clipboard_export_retention_days`（1–365，默认 7）与 `clipboard_export_auto_purge`（默认关闭）；两键同时进入 `db::CLIPBOARD_SETTING_KEYS` 与 `commands::settings::ALLOWED_KEYS`，并补齐 `clipboard_encrypt_history` 的历史白名单遗漏。开启后启动阶段在设置加载完成、剪贴板 runtime 启动前用 `spawn_blocking` 清理过期导出，不阻塞启动；审计 reason 追加 `;trigger=startup`，手动清理为 `;trigger=manual`，明细仍不含路径/正文。设置页保留天数改为持久化值，手动与自动清理共用同一窗口；两个清理设置并入 `LOCAL_PRIVACY_SETTINGS`，恢复旧备份不会开启自动清理或改短保留天数 |
-| 目录显式 ACL | 未实现 | 批次 5 |
+| 目录显式 ACL | 已实现（批次 9） | `clipboard/acl.rs`：启动与 `--agentctl` 打开 DB 前，对 `data_dir` 根、`clipboard/`、`clipboard-exports/`、`clipboard-backups/`、`backups/`、`restore/`、`shelf/` 与 `task-dock.db(-wal/-shm/-journal)` 设置 protected DACL，仅当前用户 + `BUILTIN\\Administrators` 完全控制；根与其他目录使用可继承 ACE，已有目录递归处理，符号链接/junction 跳过；失败只计数告警，不阻塞启动 |
 
 ### 实施偏差与影响（必须如实告知）
 
@@ -177,4 +180,4 @@ TaskDock 剪贴板历史当前以 SQLite 明文保存正文/HTML/预览，图片
 8. **备份包内剪贴板段是可移植明文**：口令或恢复密钥解封后，正文与元数据按设计可读；资产相对路径、明文大小、SHA-256 仍随记录可见，用于恢复校验。
 9. **备份加密覆盖剪贴板文本类表与图片字节**：批次 4b/4c-2 对剪贴板类表和图片原图/缩略图加密，但资产文件名/大小/SHA-256 仍可见；批次 4c-3 恢复时会按本机开关把正文与图片重加密，目标机开关关闭时仍以明文落盘。口令或密钥不落盘，两者都丢失时该备份的剪贴板段不可恢复。
 10. **旧版加密备份的兼容边界**：4b/4c-1 生成的密封包若来自已开启加密的机器，包内正文/图片仍是原机 CEK 密文，换机恢复会在 `normalize_clipboard_for_restore` 明确失败（不会写入半解密数据）；需要在新机可用的备份，请用当前版本重新生成。旧包在本机同用户恢复仍可用。
-11. **Agent 导出仍是明文，但已有导出前确认与可选的启动清理**：批次 7 增加只读预览 + 120 秒单次 token，命令层校验目标/任务/内容指纹；UI 确认框明示“明文留存、同用户进程可读”。批次 8 增加启动自动清理，默认关闭，用户显式开启后才按持久化保留天数删除过期导出目录；手动与自动清理均只删直接子目录、失败保留并计数，审计用 `trigger` 区分来源。目录 ACL 与 Agent 能力白名单仍未实现；导出未暴露给 Agent API/MCP，token 门槛只防误触与确认后内容漂移，不防已攻陷渲染进程。
+11. **Agent 导出仍是明文，但已有导出前确认与可选的启动清理**：批次 7 增加只读预览 + 120 秒单次 token，命令层校验目标/任务/内容指纹；UI 确认框明示“明文留存、同用户进程可读”。批次 8 增加启动自动清理，默认关闭，用户显式开启后才按持久化保留天数删除过期导出目录；手动与自动清理均只删直接子目录、失败保留并计数，审计用 `trigger` 区分来源。批次 9 对数据目录根与剪贴板/导出/备份/恢复/暂存架/DB 文件设置显式 protected DACL（当前用户 + 管理员），不跟随 junction；FAT/网络盘等不支持 ACL 时只告警。导出未暴露给 Agent API/MCP，token 门槛只防误触与确认后内容漂移，不防已攻陷渲染进程；管理员取得所有权仍可读取，属 Windows 模型固有风险。

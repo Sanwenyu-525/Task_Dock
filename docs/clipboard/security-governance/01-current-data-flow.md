@@ -140,9 +140,9 @@
 
 ## 8. 不同 Windows 用户之间的隔离现状
 
-- 数据目录按 Tauri `app_data_dir()` 解析到当前用户 `%APPDATA%`；ACL 继承用户目录权限。**代码内未对 `data_dir`、`clipboard/`、`clipboard-exports/` 显式设置受限 ACL**（未发现 `SetNamedSecurityInfo`/显式 DACL 调用）。
+- 数据目录按 Tauri `app_data_dir()` 解析到当前用户 `%APPDATA%`。批次 9 起，`clipboard/acl.rs` 在启动及 `--agentctl` 打开 DB 前显式设置 protected DACL：`data_dir` 根与 `clipboard/`、`clipboard-exports/`、`clipboard-backups/`、`backups/`、`restore/`、`shelf/`、`task-dock.db(-wal/-shm/-journal)` 仅当前用户 + `BUILTIN\\Administrators` 完全控制；根与目录 ACE 可继承，已有目录递归处理，符号链接/junction 跳过。FAT/网络盘等不支持 ACL 时只计数告警，不阻塞启动。
 - DPAPI 既有封装（`personal_hub/crypto/dpapi.rs`）仅当前用户作用域，不传 `CRYPTPROTECT_LOCAL_MACHINE`，带应用固定 entropy，`CRYPTPROTECT_UI_FORBIDDEN` 失败即 fail-closed；可作为剪贴板密钥保护的参考实现，但其 entropy 与错误类型属 Personal Hub 用途，**不得直接复用其常量**。
-- 风险：同机另一管理员用户若能读取该用户 `%APPDATA%`（或磁盘镜像/卷影副本/备份盘），当前明文库与图片可被直接读取；现有模型只依赖目录位置隔离，没有密码学边界。
+- 风险：同机另一管理员用户取得所有权后仍可读取；ACL 不改变 Windows 管理模型，也不覆盖磁盘镜像/卷影副本/备份盘等离线介质。
 
 ## 9. 现有敏感内容过滤能力与边界
 
@@ -155,12 +155,12 @@
 
 ## 10. 治理前缺口小结（基线，部分已修复）
 
-> 本清单保留 2026-11-23 调查时的基线，用于追溯；批次 1–8 已修复正文/元数据/图片静态明文、备份明文、导出无确认与导出无自动清理等问题。仍存在：Agent 导出包明文、目录显式 ACL、WAL 物理残留、真机与性能验证。
+> 本清单保留 2026-11-23 调查时的基线，用于追溯；批次 1–9 已修复正文/元数据/图片静态明文、备份明文、导出无确认/无自动清理与目录无显式 ACL 等问题。仍存在：Agent 导出包明文、WAL 物理残留、真机与性能验证。
 
 1. 库内正文/HTML/预览、图片原图/缩略图/预览缓存均为静态明文。
 2. WAL 未做面向隐私的 checkpoint/擦除策略；删除条目后明文可能滞留 WAL。
 3. 备份 bundle 明文携带剪贴板正文与图片；无备份加密层。
 4. Agent 导出包为明文目录，授权粒度、过期清理、审计待复核。
-5. 目录隔离依赖 Windows 用户目录 ACL，缺少密码学保护；跨用户/磁盘镜像场景无边界。
+5. 目录隔离依赖 Windows 用户目录 ACL，缺少密码学保护；跨用户/磁盘镜像场景无边界（批次 9 已补显式 DACL，但磁盘镜像仍无边界）。
 6. 图片采集无内容级敏感识别；OCR 文本不自动入史（现状）。
 7. 预览缓存、导出目录、staging 临时文件、配置损坏备份的明文处置未纳入统一生命周期。
