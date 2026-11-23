@@ -281,6 +281,32 @@ pub struct GameOk {
     pub ok: bool,
 }
 
+/// 游戏项目概览统计（项目中枢「专业工作进展」摘要）。
+///
+/// 口径（全部为整表聚合，不加载资源 / 构建 / 测试行，也不扫描产物与日志文件）：
+/// - `asset_count`：登记资源总数（不判断路径是否存在，避免逐条磁盘探测）；
+/// - `build_count` 与三种状态计数：构建真实状态 `success` / `failed` / `planned`；
+/// - `test_count` 与三种结果计数：测试真实结果 `passed` / `failed` / `blocked`；
+/// - `latest_build_at` / `latest_build_status`：按 `built_at` 排序的最近一条构建，无记录为 `None`；
+/// - `updated_at`：领域表最近一次 `updated_at`，空项目为 `None`。
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct GameOverviewStats {
+    pub project_id: String,
+    pub asset_count: i64,
+    pub build_count: i64,
+    pub successful_build_count: i64,
+    pub failed_build_count: i64,
+    pub planned_build_count: i64,
+    pub test_count: i64,
+    pub passed_test_count: i64,
+    pub failed_test_count: i64,
+    pub blocked_test_count: i64,
+    pub latest_build_at: Option<String>,
+    pub latest_build_status: Option<String>,
+    pub updated_at: Option<String>,
+}
+
 // ── 公共校验与门禁 ─────────────────────────────────────────────────────
 
 fn validate_text(value: &str, field: &str, max_chars: usize, allow_empty: bool) -> AppResult<String> {
@@ -1302,6 +1328,103 @@ pub fn game_test_delete_impl(db: &Db, id: &str) -> AppResult<()> {
     })
 }
 
+// ── 项目概览统计（项目中枢「专业工作进展」摘要）────────────────────────
+
+/// 游戏项目概览统计：单次只读聚合，不加载资源/构建/测试行，不扫描产物与日志。
+///
+/// 隔离：每条 SQL 都带 `project_id = ?1`；门禁复用 `ensure_game_project`，
+/// `require_active = false` 使归档项目仍可查看概览（只读 ≠ 不可见）。
+pub fn game_overview_stats_impl(db: &Db, project_id: &str) -> AppResult<GameOverviewStats> {
+    let project_id = project_id.trim().to_string();
+    if project_id.is_empty() {
+        return Err(AppError::Validation("项目 ID 不能为空".into()));
+    }
+    db.with_read(|conn| {
+        ensure_game_project(conn, &project_id, false)?;
+
+        let asset_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM game_assets WHERE project_id = ?1",
+            params![project_id],
+            |r| r.get(0),
+        )?;
+
+        let (build_count, successful_build_count, failed_build_count, planned_build_count): (
+            i64,
+            i64,
+            i64,
+            i64,
+        ) = conn.query_row(
+            "SELECT COUNT(*),
+                    COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN status = 'planned' THEN 1 ELSE 0 END), 0)
+             FROM game_builds WHERE project_id = ?1",
+            params![project_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )?;
+
+        let (test_count, passed_test_count, failed_test_count, blocked_test_count): (
+            i64,
+            i64,
+            i64,
+            i64,
+        ) = conn.query_row(
+            "SELECT COUNT(*),
+                    COALESCE(SUM(CASE WHEN result = 'passed' THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN result = 'failed' THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN result = 'blocked' THEN 1 ELSE 0 END), 0)
+             FROM game_tests WHERE project_id = ?1",
+            params![project_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )?;
+
+        // 最近一次构建：与 `game_build_list_impl` 相同的排序口径（build 时间优先），
+        // 无记录时两个字段都是 None，不填默认状态。
+        let latest: Option<(String, String)> = conn
+            .query_row(
+                "SELECT built_at, status FROM game_builds
+                 WHERE project_id = ?1
+                 ORDER BY built_at DESC, id
+                 LIMIT 1",
+                params![project_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let (latest_build_at, latest_build_status) = match latest {
+            Some((at, status)) => (Some(at), Some(status)),
+            None => (None, None),
+        };
+
+        // 最近一次领域数据更新时间；全空时 MAX 为 NULL，如实返回 None。
+        let updated_at: Option<String> = conn.query_row(
+            "SELECT MAX(updated_at) FROM (
+                 SELECT MAX(updated_at) AS updated_at FROM game_assets WHERE project_id = ?1
+                 UNION ALL SELECT MAX(updated_at) FROM game_builds WHERE project_id = ?1
+                 UNION ALL SELECT MAX(updated_at) FROM game_tests WHERE project_id = ?1
+                 UNION ALL SELECT MAX(updated_at) FROM game_project_facts WHERE project_id = ?1
+             )",
+            params![project_id],
+            |r| r.get::<_, Option<String>>(0),
+        )?;
+
+        Ok(GameOverviewStats {
+            project_id,
+            asset_count,
+            build_count,
+            successful_build_count,
+            failed_build_count,
+            planned_build_count,
+            test_count,
+            passed_test_count,
+            failed_test_count,
+            blocked_test_count,
+            latest_build_at,
+            latest_build_status,
+            updated_at,
+        })
+    })
+}
+
 // ── 薄 Tauri 命令（注册进 lib.rs 由集成负责人完成）─────────────────────
 
 #[tauri::command]
@@ -1475,6 +1598,15 @@ pub fn game_test_save(
 pub fn game_test_delete(db: State<'_, Arc<Db>>, id: String) -> AppResult<GameOk> {
     game_test_delete_impl(&db, &id)?;
     Ok(GameOk { ok: true })
+}
+
+/// 游戏项目概览统计（项目中枢专业摘要；只读，不触发构建/探测/文件扫描）。
+#[tauri::command]
+pub fn game_overview_stats(
+    db: State<'_, Arc<Db>>,
+    project_id: String,
+) -> AppResult<GameOverviewStats> {
+    game_overview_stats_impl(&db, &project_id)
 }
 
 // ── 自测 ────────────────────────────────────────────────────────────────

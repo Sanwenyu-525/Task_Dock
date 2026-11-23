@@ -64,6 +64,7 @@ import {
 import type { ProjectDraft, ProjectKind } from "../../lib/projectHub/types";
 import { Dialog } from "../ui/Dialog";
 import PlanningWorkspace from "./PlanningWorkspace";
+import ProjectHubDomainSummary from "./ProjectHubDomainSummary";
 import "./project-hub.css";
 
 type HubView = "overview" | "planning" | "features" | "capability" | "resources" | "execution";
@@ -145,6 +146,8 @@ export default function ProjectHubPanel({ onOpenPlanning }: ProjectHubPanelProps
   // 规划编辑视图：默认概览；编辑模式复用 PlanningWorkspace，不复制第二套 CRUD。
   const [planningMode, setPlanningMode] = useState<"summary" | "edit">("summary");
   const loadSeq = useRef(0);
+  // 专业摘要只在「总览」视图挂载；用户点刷新时递增，触发一次手动重取（不轮询）。
+  const [domainRefreshToken, setDomainRefreshToken] = useState(0);
   // 刷新按钮等延迟回调需要「最新」projectId，不能捕获点击时的旧值。
   const projectIdRef = useRef<string | null>(projectId);
 
@@ -234,7 +237,10 @@ export default function ProjectHubPanel({ onOpenPlanning }: ProjectHubPanelProps
         </div>
         <button
           className="btn btn-ghost btn-sm"
-          onClick={() => void refreshProjects().then(() => reloadSnapshot(projectIdRef.current))}
+          onClick={() => {
+            setDomainRefreshToken((n) => n + 1);
+            void refreshProjects().then(() => reloadSnapshot(projectIdRef.current));
+          }}
         >
           刷新
         </button>
@@ -355,6 +361,12 @@ export default function ProjectHubPanel({ onOpenPlanning }: ProjectHubPanelProps
               aria-labelledby="ph-tab-overview"
               className="ph-view ph-overview"
             >
+              {/* 专业工作进展：只读摘要，失败/为空都不影响下方公共项目视图。 */}
+              <ProjectHubDomainSummary
+                projectId={active.project.id}
+                projectKind={active.project.kind}
+                refreshToken={domainRefreshToken}
+              />
               <section className="ph-section">
                 <h3><Target size={16} /> 下一步</h3>
                 {active.risks.length > 0 ? (

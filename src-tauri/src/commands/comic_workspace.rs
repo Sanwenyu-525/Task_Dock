@@ -729,6 +729,32 @@ pub struct ComicOk {
     pub ok: bool,
 }
 
+/// 漫剧项目概览统计（项目中枢「专业工作进展」摘要）。
+///
+/// 口径（全部来自整表聚合，不加载剧集 / 分镜 / 素材行）：
+/// - `episode_count` / `completed_episode_count`：剧集总数与 `status = 'done'`；
+/// - `shot_count` 与四个状态计数：镜头真实状态 `todo` / `doing` / `blocked` / `done`；
+/// - `character_count` / `scene_count` / `media_count` / `adopted_media_count`；
+/// - `updated_at`：五张领域表最近一次 `updated_at`；空项目为 `None`
+///   （不拿「查询时间」冒充数据更新时间）。
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ComicOverviewStats {
+    pub project_id: String,
+    pub episode_count: i64,
+    pub completed_episode_count: i64,
+    pub shot_count: i64,
+    pub completed_shot_count: i64,
+    pub pending_shot_count: i64,
+    pub doing_shot_count: i64,
+    pub blocked_shot_count: i64,
+    pub character_count: i64,
+    pub scene_count: i64,
+    pub media_count: i64,
+    pub adopted_media_count: i64,
+    pub updated_at: Option<String>,
+}
+
 // ── 校验与门禁 ─────────────────────────────────────────────────────────
 
 fn validate_enum(value: &str, field: &str, allowed: &[&str]) -> AppResult<String> {
@@ -2802,6 +2828,96 @@ pub fn comic_media_delete_impl(db: &Db, id: &str) -> AppResult<()> {
     })
 }
 
+// ── 项目概览统计（项目中枢「专业工作进展」摘要）────────────────────────
+
+/// 漫剧项目概览统计：单次只读聚合，不遍历剧集/分镜/素材，也不触碰外部素材目录。
+///
+/// 隔离：每条 SQL 都带 `project_id = ?1`，不同项目的记录不可能混入计数。
+/// 门禁：复用 `ensure_comic_project`（`require_active = false`，归档项目仍可读概览）。
+pub fn comic_overview_stats_impl(db: &Db, project_id: &str) -> AppResult<ComicOverviewStats> {
+    let project_id = project_id.trim().to_string();
+    if project_id.is_empty() {
+        return Err(AppError::Validation("项目 ID 不能为空".into()));
+    }
+    db.with_read(|conn| {
+        ensure_comic_project(conn, &project_id, false)?;
+
+        let (episode_count, completed_episode_count): (i64, i64) = conn.query_row(
+            "SELECT COUNT(*),
+                    COALESCE(SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END), 0)
+             FROM comic_episodes WHERE project_id = ?1",
+            params![project_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+
+        let (shot_count, completed_shot_count, pending_shot_count, doing_shot_count, blocked_shot_count): (
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+        ) = conn.query_row(
+            "SELECT COUNT(*),
+                    COALESCE(SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN status = 'todo' THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN status = 'doing' THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END), 0)
+             FROM comic_shots WHERE project_id = ?1",
+            params![project_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )?;
+
+        let character_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM comic_characters WHERE project_id = ?1",
+            params![project_id],
+            |r| r.get(0),
+        )?;
+        let scene_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM comic_scenes WHERE project_id = ?1",
+            params![project_id],
+            |r| r.get(0),
+        )?;
+
+        let (media_count, adopted_media_count): (i64, i64) = conn.query_row(
+            "SELECT COUNT(*),
+                    COALESCE(SUM(CASE WHEN status = 'adopted' THEN 1 ELSE 0 END), 0)
+             FROM comic_media_versions WHERE project_id = ?1",
+            params![project_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+
+        // 最近一次领域数据更新时间；全空时 MAX 为 NULL，如实返回 None。
+        // 五个 `updated_at` 都是同一 ISO8601 写入格式，字符串比较即时间先后。
+        let updated_at: Option<String> = conn.query_row(
+            "SELECT MAX(updated_at) FROM (
+                 SELECT MAX(updated_at) AS updated_at FROM comic_episodes WHERE project_id = ?1
+                 UNION ALL SELECT MAX(updated_at) FROM comic_shots WHERE project_id = ?1
+                 UNION ALL SELECT MAX(updated_at) FROM comic_characters WHERE project_id = ?1
+                 UNION ALL SELECT MAX(updated_at) FROM comic_scenes WHERE project_id = ?1
+                 UNION ALL SELECT MAX(updated_at) FROM comic_media_versions WHERE project_id = ?1
+             )",
+            params![project_id],
+            |r| r.get::<_, Option<String>>(0),
+        )?;
+
+        Ok(ComicOverviewStats {
+            project_id,
+            episode_count,
+            completed_episode_count,
+            shot_count,
+            completed_shot_count,
+            pending_shot_count,
+            doing_shot_count,
+            blocked_shot_count,
+            character_count,
+            scene_count,
+            media_count,
+            adopted_media_count,
+            updated_at,
+        })
+    })
+}
+
 // ── 提示词模板与不可变版本（v96）──────────────────────────────────────
 
 const PROMPT_VERSION_COLUMNS: &str = "id, template_id, version_no, content, variables_json, \
@@ -4432,6 +4548,15 @@ pub fn comic_generation_record_list(
             shot_id.as_deref(),
         )?,
     })
+}
+
+/// 漫剧项目概览统计（项目中枢专业摘要；只读，不触发任何领域写入）。
+#[tauri::command]
+pub fn comic_overview_stats(
+    db: State<'_, Arc<Db>>,
+    project_id: String,
+) -> AppResult<ComicOverviewStats> {
+    comic_overview_stats_impl(&db, &project_id)
 }
 
 // ── 测试 ──────────────────────────────────────────────────────────────

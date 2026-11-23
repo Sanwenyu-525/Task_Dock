@@ -12,6 +12,7 @@ import type {
   ComicGenerationRecordInput,
   ComicGenerationRun,
   ComicMediaVersion,
+  ComicOverviewStats,
   ComicPromptPreview,
   ComicPromptTemplate,
   ComicPromptVersion,
@@ -206,6 +207,16 @@ export function comicSceneSave(input: SceneSaveInput) {
 
 export function comicSceneDelete(id: string) {
   return creativeInvoke<{ ok: boolean }>("comic_scene_delete", { id });
+}
+
+// ── 项目概览统计（项目中枢专业摘要）────────────────────────────────────
+
+/**
+ * 漫剧项目概览统计：后端一次只读聚合，只按 `projectId` 作用域统计，
+ * 不加载剧集/分镜/素材行，也不扫描外部素材目录。
+ */
+export function comicOverviewStats(projectId: string) {
+  return creativeInvoke<ComicOverviewStats>("comic_overview_stats", { projectId });
 }
 
 // ── 素材与产物版本 ────────────────────────────────────────────────────

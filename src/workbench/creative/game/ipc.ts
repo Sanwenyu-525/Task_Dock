@@ -9,6 +9,7 @@ import type {
   GameAsset,
   GameBuild,
   GameDetectionReport,
+  GameOverviewStats,
   GameProjectFact,
   GameTestRecord,
 } from "./types";
@@ -150,6 +151,16 @@ export function gameTestSave(input: {
 
 export function gameTestDelete(id: string) {
   return creativeInvoke<{ ok: boolean }>("game_test_delete", { id });
+}
+
+// ── 项目概览统计（项目中枢专业摘要）────────────────────────────────────
+
+/**
+ * 游戏项目概览统计：后端一次只读聚合，只按 `projectId` 作用域统计，
+ * 不加载资源/构建/测试行，不扫描产物与日志，也不触发任何构建或探测。
+ */
+export function gameOverviewStats(projectId: string) {
+  return creativeInvoke<GameOverviewStats>("game_overview_stats", { projectId });
 }
 
 // ── 既有制作事项（复用 workspace_items，不另建表）─────────────────────────

@@ -25,6 +25,13 @@ import type {
   ProjectHubSnapshot,
   WorkspaceProject,
 } from "../../lib/bridge";
+import {
+  emptyComicStats,
+  emptyDevSummary,
+  emptyGameStats,
+  emptyGeneralStats,
+  emptyNovelStats,
+} from "./projectHubDomainFixtures";
 
 const bridge = vi.hoisted(() => ({
   projectHubListProjects: vi.fn(),
@@ -41,6 +48,32 @@ const bridge = vi.hoisted(() => ({
 vi.mock("../../lib/bridge", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../lib/bridge")>()),
   ...bridge,
+}));
+
+// 专业摘要适配层调用的五个领域接口：本文件只验证「项目中枢不被领域摘要拖垮」，
+// 领域内部细节由 ProjectHubDomainSummary.test.tsx 覆盖。
+const domainIpc = vi.hoisted(() => ({
+  novelOverviewStats: vi.fn(),
+  comicOverviewStats: vi.fn(),
+  gameOverviewStats: vi.fn(),
+  dwsDevelopmentSummary: vi.fn(),
+  generalStats: vi.fn(),
+}));
+
+vi.mock("../../workbench/creative/novel/ipc", () => ({
+  novelOverviewStats: domainIpc.novelOverviewStats,
+}));
+vi.mock("../../workbench/creative/comic/ipc", () => ({
+  comicOverviewStats: domainIpc.comicOverviewStats,
+}));
+vi.mock("../../workbench/creative/game/ipc", () => ({
+  gameOverviewStats: domainIpc.gameOverviewStats,
+}));
+vi.mock("../../workbench/creative/development/ipc", () => ({
+  dwsDevelopmentSummary: domainIpc.dwsDevelopmentSummary,
+}));
+vi.mock("../../workbench/creative/general/ipc", () => ({
+  generalStats: domainIpc.generalStats,
 }));
 
 function nameOf(id: string): string {
@@ -239,6 +272,12 @@ beforeEach(() => {
   bridge.projectHubResourceLink.mockResolvedValue({} as ProjectHubResourceLink);
   bridge.projectHubResourceUnlink.mockResolvedValue(undefined);
   bridge.projectHubResourceValidate.mockResolvedValue({} as ProjectHubResourceLink);
+  // 默认项目类型是 general：给一份「领域为空」的真实零值，避免摘要区影响既有断言。
+  domainIpc.generalStats.mockResolvedValue({ stats: emptyGeneralStats() });
+  domainIpc.novelOverviewStats.mockResolvedValue(emptyNovelStats());
+  domainIpc.comicOverviewStats.mockResolvedValue(emptyComicStats());
+  domainIpc.gameOverviewStats.mockResolvedValue(emptyGameStats());
+  domainIpc.dwsDevelopmentSummary.mockResolvedValue({ summary: emptyDevSummary() });
 });
 
 afterEach(() => {
@@ -716,4 +755,40 @@ describe("项目中枢竞态与空态", () => {
     expect(screen.queryByRole("heading", { name: "项目 B" })).toBeNull();
     expect(screen.queryByRole("status")).toBeNull();
   });
+
+  it("专业摘要只在总览挂载：离开总览不再请求，回到总览按需重取一次", async () => {
+    const user = userEvent.setup();
+    renderHub(makeContext());
+    await screen.findByRole("heading", { name: "项目 A" });
+    // 总览首次挂载会取一次领域摘要（缺省项目类型 general）
+    await waitFor(() => expect(domainIpc.generalStats).toHaveBeenCalledTimes(1), WAIT);
+
+    await user.click(screen.getByRole("tab", { name: /目标与规划/ }));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect(domainIpc.generalStats).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getByRole("tab", { name: /总览/ }));
+    await waitFor(() => expect(domainIpc.generalStats).toHaveBeenCalledTimes(2), WAIT);
+    expect(ipcCalls()).toHaveLength(2);
+    expect(ipcCalls().every((args) => args === "p-a")).toBe(true);
+  });
+
+  it("专业摘要失败不影响公共项目中枢：基本信息、指标与规划仍可用", async () => {
+    domainIpc.generalStats.mockRejectedValue(new Error("领域服务不可用"));
+    renderHub(makeContext());
+
+    expect(await screen.findByRole("heading", { name: "项目 A" })).toBeTruthy();
+    const domainError = await screen.findByTestId("ph-domain-error", {}, WAIT);
+    expect(domainError.textContent).toContain("专业摘要暂不可用");
+    // 公共项目指标与视图切换不受影响
+    expect(screen.getByText("任务完成")).toBeTruthy();
+    expect(screen.getByRole("tab", { name: /执行/ })).toBeTruthy();
+  });
 });
+
+/** 领域摘要的调用参数（用于断言「只查当前项目」）。 */
+function ipcCalls(): unknown[] {
+  return domainIpc.generalStats.mock.calls.map((call) => call[0]);
+}

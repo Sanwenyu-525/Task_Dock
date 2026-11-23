@@ -105,6 +105,29 @@ export interface GameTestRecord {
   itemExists: boolean;
 }
 
+/**
+ * 游戏项目概览统计（项目中枢「专业工作进展」摘要）。
+ *
+ * 与 `game_workspace.rs::GameOverviewStats` 一一对应：后端整表聚合，不加载
+ * 资源/构建/测试行，也不扫描产物与日志。`latestBuildAt/Status` 无记录时为 `null`，
+ * `updatedAt` 空项目为 `null`（不伪造成功或默认状态）。
+ */
+export interface GameOverviewStats {
+  projectId: string;
+  assetCount: number;
+  buildCount: number;
+  successfulBuildCount: number;
+  failedBuildCount: number;
+  plannedBuildCount: number;
+  testCount: number;
+  passedTestCount: number;
+  failedTestCount: number;
+  blockedTestCount: number;
+  latestBuildAt: string | null;
+  latestBuildStatus: string | null;
+  updatedAt: string | null;
+}
+
 /** 制作事项分类（承载在 `workspace_items.metadataJson.category`）。 */
 export const GAME_ITEM_CATEGORIES = [
   { value: "system", label: "游戏系统" },

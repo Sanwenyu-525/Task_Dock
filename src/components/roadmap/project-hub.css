@@ -643,3 +643,255 @@
     flex-wrap: wrap;
   }
 }
+
+/* ── 专业工作进展（项目中枢领域摘要，2026-11-23）────────────────────────
+   统一的是设计语言：外壳（标题/加载/空态/错误态）一套；
+   业务内容由各领域按真实 DTO 提供，不做五套重复面板。 */
+.project-hub .ph-domain {
+  grid-column: 1 / -1;
+  border-left: 3px solid var(--accent);
+  background: var(--surface-raised);
+}
+
+.project-hub .ph-domain-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin-bottom: 8px;
+}
+
+.project-hub .ph-domain-head h3 {
+  margin: 0;
+  flex: 0 0 auto;
+}
+
+.project-hub .ph-domain-meta {
+  margin-left: auto;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.project-hub .ph-domain-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  gap: 8px;
+}
+
+.project-hub .ph-domain-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--card-face);
+}
+
+.project-hub .ph-domain-metric span {
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.project-hub .ph-domain-metric strong {
+  color: var(--text-primary);
+  font-size: 16px;
+}
+
+.project-hub .ph-domain-metric small {
+  color: var(--text-tertiary);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.project-hub .ph-domain-metric strong.tone-ok,
+.project-hub .ph-domain-lines b.tone-ok {
+  color: var(--status-success);
+}
+
+.project-hub .ph-domain-metric strong.tone-warn,
+.project-hub .ph-domain-lines b.tone-warn {
+  color: var(--status-warning);
+}
+
+.project-hub .ph-domain-metric strong.tone-danger,
+.project-hub .ph-domain-lines b.tone-danger {
+  color: var(--status-danger);
+}
+
+.project-hub .ph-domain-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.project-hub .ph-domain-lines li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.project-hub .ph-domain-lines li > span {
+  flex: 0 0 auto;
+}
+
+.project-hub .ph-domain-lines b {
+  min-width: 0;
+  color: var(--text-secondary);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.project-hub .ph-domain-progress {
+  margin-top: 10px;
+}
+
+.project-hub .ph-domain-progress-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.project-hub .ph-domain-progress-head b {
+  color: var(--text-primary);
+}
+
+.project-hub .ph-domain-bar {
+  height: 6px;
+  margin-top: 4px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  overflow: hidden;
+}
+
+.project-hub .ph-domain-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+.project-hub .ph-domain-repos {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(216px, 1fr));
+  gap: 8px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.project-hub .ph-domain-repos li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--card-face);
+}
+
+.project-hub .ph-domain-repo-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.project-hub .ph-domain-repo-head strong {
+  min-width: 0;
+  color: var(--text-primary);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-hub .ph-domain-repo-head .ph-tag {
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+.project-hub .ph-domain-repos small {
+  color: var(--text-tertiary);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.project-hub .ph-dot.warn {
+  background: var(--status-warning);
+}
+
+.project-hub .ph-dot.danger {
+  background: var(--status-danger);
+}
+
+.project-hub .ph-domain-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.project-hub .ph-domain-skeleton span {
+  height: 12px;
+  border-radius: 6px;
+  background: var(--accent-soft);
+  animation: ph-domain-pulse 1.4s ease-in-out infinite;
+}
+
+.project-hub .ph-domain-skeleton span:nth-child(2) {
+  width: 82%;
+}
+
+.project-hub .ph-domain-skeleton span:nth-child(3) {
+  width: 64%;
+}
+
+@keyframes ph-domain-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .project-hub .ph-domain-skeleton span {
+    animation: none;
+  }
+}
+
+.project-hub .ph-domain-error {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--status-danger);
+  font-size: 12px;
+}
+
+.project-hub .ph-domain-foot {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 10px 0 0;
+  color: var(--text-tertiary);
+  font-size: 11px;
+}

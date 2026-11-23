@@ -77,6 +77,29 @@ export interface ComicScene {
   updatedAt: string;
 }
 
+/**
+ * 漫剧项目概览统计（项目中枢「专业工作进展」摘要）。
+ *
+ * 与 `comic_workspace.rs::ComicOverviewStats` 一一对应：后端整表聚合，
+ * 前端不遍历剧集/分镜/素材。`updatedAt` 是五张领域表的最近更新时间，
+ * 空项目为 `null`（后端不拿查询时间冒充数据更新时间）。
+ */
+export interface ComicOverviewStats {
+  projectId: string;
+  episodeCount: number;
+  completedEpisodeCount: number;
+  shotCount: number;
+  completedShotCount: number;
+  pendingShotCount: number;
+  doingShotCount: number;
+  blockedShotCount: number;
+  characterCount: number;
+  sceneCount: number;
+  mediaCount: number;
+  adoptedMediaCount: number;
+  updatedAt: string | null;
+}
+
 export interface ComicMediaVersion {
   id: string;
   projectId: string;

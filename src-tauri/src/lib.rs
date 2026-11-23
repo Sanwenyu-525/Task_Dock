@@ -2147,6 +2147,8 @@ pub fn run() {
             commands::game_workspace::game_test_list,
             commands::game_workspace::game_test_save,
             commands::game_workspace::game_test_delete,
+            // 游戏 / 漫剧项目中枢摘要（只读聚合，不触发构建、探测或文件扫描）
+            commands::game_workspace::game_overview_stats,
             // AI 漫剧 C1（v61）：剧集 / 分镜 / 角色 / 场景 / 素材版本
             commands::comic_workspace::comic_episode_list,
             commands::comic_workspace::comic_episode_get,
@@ -2185,6 +2187,8 @@ pub fn run() {
             commands::comic_workspace::comic_skill_snapshot_get,
             commands::comic_workspace::comic_generation_record_create,
             commands::comic_workspace::comic_generation_record_list,
+            // 漫剧项目中枢摘要（只读聚合，不加载剧集/分镜/素材行）
+            commands::comic_workspace::comic_overview_stats,
             // 通用 U1（v62）：模板 / 里程碑 / 项目资料 / 真实统计
             commands::general_workspace::general_apply_template,
             commands::general_workspace::general_milestone_list,
