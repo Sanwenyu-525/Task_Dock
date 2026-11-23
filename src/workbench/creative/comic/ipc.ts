@@ -238,7 +238,11 @@ export interface MediaImportInput {
   mediaKind: MediaKind;
   versionLabel?: string | null;
   reviewNote?: string | null;
-  /** 可选：本次导入的素材由哪条外部生成记录产出（必须同项目/同镜头/同剧集）。 */
+  /**
+   * 可选：本次导入的素材由哪条外部生成记录产出。
+   * 镜头级记录（shotId 有值）必须同项目同镜头；整集级记录（shotId 为 null）
+   * 允许关联本集任意镜头，跨集/跨项目一律拒绝。
+   */
   generationRunId?: string | null;
 }
 

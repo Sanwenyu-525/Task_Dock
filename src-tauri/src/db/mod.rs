@@ -2184,6 +2184,10 @@ CREATE INDEX idx_sec_audit_cat ON security_audit_log(category, created_at);
     // 外部生成追溯；并在迁移内回填「历史镜头角色 → 剧集出场名单」，避免新校验卡住旧数据。
     // 注意：v95 已被小说章节资料占用（并行任务），此处顺延，不能复用版本号。
     crate::commands::comic_workspace::MIGRATION_96,
+    // 漫剧第三阶段返工（v99，2026-11-23）：Skill 快照身份改为完整指纹（声明版本/附属清单
+    // 变化不再复用旧元数据），生成记录补「实际提示词 Hash + 上下文摘要」与提示词快照
+    // 不可变触发器；重建快照表时按原 id 回填，历史生成记录外键不失效。v98 已占用，顺延。
+    crate::commands::comic_workspace::MIGRATION_99,
 ];
 
 /// 历史测试数据的保守回填（幂等）。

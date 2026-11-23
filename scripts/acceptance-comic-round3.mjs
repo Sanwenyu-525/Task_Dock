@@ -15,7 +15,7 @@
  * 隔离：数据目录 `tmp/acceptance/comic-round3/run-<stamp>/data`，不触碰真实用户数据。
  * 证据：同目录 screenshots/*.png、summary.md、acceptance.log。
  */
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import net from "node:net";
@@ -65,6 +65,12 @@ function record(name, ok, detail = "") {
 
 function assert(cond, message) {
   if (!cond) throw new Error(message);
+}
+
+/** 环境阻塞：不伪造通过，也不当代码失败；在 summary 单独计数。 */
+function recordBlocked(name, detail = "") {
+  results.push({ name, ok: false, blocked: true, detail });
+  log(`BLOCKED  ${name}${detail ? ` — ${detail}` : ""}`);
 }
 
 function wait(ms) {
@@ -283,7 +289,7 @@ async function openModule(label) {
   await wait(900);
 }
 
-async function seed(outputPath) {
+async function seed(outputPath, refImagePath) {
   const skillDir = SKILL_DIR;
   fs.mkdirSync(skillDir, { recursive: true });
   fs.writeFileSync(
@@ -293,7 +299,7 @@ async function seed(outputPath) {
   );
   fs.writeFileSync(path.join(skillDir, "notes.md"), "附属说明文件（只记录指纹）", "utf8");
 
-  return page.evaluate(async ({ skillDir, skillParent, outputPath }) => {
+  return page.evaluate(async ({ skillDir, skillParent, outputPath, refImagePath }) => {
     const bridge = await import("/src/lib/bridge.ts");
     const comic = await import("/src/workbench/creative/comic/ipc.ts");
 
@@ -309,7 +315,7 @@ async function seed(outputPath) {
         name: "林远",
         role: "主角",
         description: "18 岁，黑色短发，运动型身材",
-        refImagePath: "",
+        refImagePath,
       })
     ).character;
     const c2 = (
@@ -335,6 +341,7 @@ async function seed(outputPath) {
         projectId: project.id,
         name: "篮球场",
         description: "室内体育馆",
+        refImagePath,
       })
     ).scene;
 
@@ -377,6 +384,54 @@ async function seed(outputPath) {
       })
     ).shot;
 
+    const shot1b = (
+      await comic.comicShotSave({
+        projectId: project.id,
+        episodeId: ep1.id,
+        description: "林远接球推进",
+        characterIds: [c1.id, c2.id],
+        sceneId: scene.id,
+        dialogue: "传球！",
+        shotSize: "近景",
+        cameraMove: "跟镜",
+        durationSec: 2.0,
+        status: "todo",
+        note: "",
+      })
+    ).shot;
+
+    const shotEmptyDialogue = (
+      await comic.comicShotSave({
+        projectId: project.id,
+        episodeId: ep1.id,
+        description: "空镜：球馆顶灯",
+        characterIds: [c1.id],
+        sceneId: scene.id,
+        dialogue: "",
+        shotSize: "特写",
+        cameraMove: "固定",
+        durationSec: 1.5,
+        status: "todo",
+        note: "",
+      })
+    ).shot;
+
+    const shotEp2 = (
+      await comic.comicShotSave({
+        projectId: project.id,
+        episodeId: ep2.id,
+        description: "成年复出登场",
+        characterIds: [c1.id],
+        sceneId: scene.id,
+        dialogue: "「我回来了。」",
+        shotSize: "全景",
+        cameraMove: "推镜",
+        durationSec: 4.0,
+        status: "todo",
+        note: "",
+      })
+    ).shot;
+
     await comic.comicEpisodeCharacterOverrideSave({
       projectId: project.id,
       episodeId: ep1.id,
@@ -386,8 +441,8 @@ async function seed(outputPath) {
       appearanceDescription: "16 岁，黑色短发",
       costumeDescription: "蓝白校服",
       hairStyleDescription: "自然短发",
-      stateDescription: "正常状态",
-      visualPromptOverride: "",
+      stateDescription: "右手受伤",
+      visualPromptOverride: "左脸有一道浅疤，右手缠着白色绷带",
       refImagePath: "",
     });
     await comic.comicEpisodeCharacterOverrideSave({
@@ -429,6 +484,19 @@ async function seed(outputPath) {
       })
     ).version;
 
+    // 带空格的合法占位符：解析器 trim 后得到 shot.dialogue，必填校验必须按解析结果执行。
+    const spacedVersion = (
+      await comic.comicPromptVersionCreate({
+        templateId: template.id,
+        content: "台词：{{ shot.dialogue }}\n（带空格占位符）",
+        variablesJson: JSON.stringify(["shot.dialogue"]),
+        changeNote: "空格占位符校验",
+      })
+    ).version;
+
+    // 新建版本默认会接管默认标记；验收仍需 v2 作为默认版本（v3 只用于空格校验）。
+    await comic.comicPromptVersionSetDefault(template.id, v2.id);
+
     await bridge.capabilitySkillScan([skillParent]);
     const skills = await comic.comicSkillList();
     const skill = skills.find((item) => item.name === "验收分镜 Skill");
@@ -443,20 +511,175 @@ async function seed(outputPath) {
       ep1: ep1.id,
       ep2: ep2.id,
       shot1: shot1.id,
+      shot1b: shot1b.id,
+      shotEmptyDialogue: shotEmptyDialogue.id,
+      shotEp2: shotEp2.id,
       templateId: template.id,
       promptVersion: v2.id,
+      spacedVersion: spacedVersion.id,
       skillId: skill.id,
       snapshotId: snapshot.id,
       snapshotHash: snapshot.contentHash,
+      snapshotFingerprint: snapshot.snapshotFingerprint,
+      filesManifestHash: snapshot.filesManifestHash,
+      refImagePath,
       outputPath,
     };
-  }, { skillDir, skillParent: path.dirname(skillDir), outputPath });
+  }, { skillDir, skillParent: path.dirname(skillDir), outputPath, refImagePath });
+}
+
+async function verifyPromptTrace(ctx) {
+  return page.evaluate(async (c) => {
+    const comic = await import("/src/workbench/creative/comic/ipc.ts");
+    const ep1Preview = (
+      await comic.comicPromptRender({
+        projectId: c.projectId,
+        promptVersionId: c.promptVersion,
+        episodeId: c.ep1,
+        shotId: c.shot1,
+      })
+    ).preview;
+    const ep2Preview = (
+      await comic.comicPromptRender({
+        projectId: c.projectId,
+        promptVersionId: c.promptVersion,
+        episodeId: c.ep2,
+        shotId: c.shotEp2,
+      })
+    ).preview;
+    const spaced = (
+      await comic.comicPromptRender({
+        projectId: c.projectId,
+        promptVersionId: c.spacedVersion,
+        episodeId: c.ep1,
+        shotId: c.shot1,
+      })
+    ).preview;
+    const spacedEmptyError = await comic
+      .comicPromptRender({
+        projectId: c.projectId,
+        promptVersionId: c.spacedVersion,
+        episodeId: c.ep1,
+        shotId: c.shotEmptyDialogue,
+      })
+      .then(() => null)
+      .catch((error) => JSON.stringify(error) ?? String(error));
+
+    const versions = (await comic.comicPromptVersionList(c.templateId)).versions;
+    const runVersion = versions.find((item) => item.id === c.promptVersion);
+
+    // 修改剧本不应触碰已登记生成记录里的提示词快照。
+    const episodes = (await comic.comicEpisodeList(c.projectId)).episodes;
+    const ep1 = episodes.find((item) => item.id === c.ep1);
+    await comic.comicEpisodeSave({
+      id: ep1.id,
+      projectId: c.projectId,
+      title: ep1.title,
+      synopsis: ep1.synopsis,
+      script: `${ep1.script}\n新增第三行：教练叫停，林远下场处理伤口。`,
+      status: ep1.status,
+      progress: ep1.progress,
+      characterIds: ep1.characterIds,
+    });
+
+    const runs = (await comic.comicGenerationRecordList(c.projectId)).runs;
+    const run = runs.find((item) => item.id === c.runId);
+    const episodeRun = runs.find((item) => item.id === c.episodeRunId);
+
+    return {
+      ep1Rendered: ep1Preview.rendered,
+      ep1Characters: ep1Preview.context.characters,
+      ep2Rendered: ep2Preview.rendered,
+      spacedRendered: spaced.rendered,
+      spacedEmptyError,
+      runVersionHash: runVersion?.contentHash ?? "",
+      runAfterScriptEdit: {
+        snapshot: run?.renderedPromptSnapshot ?? "",
+        hash: run?.promptContentHashSnapshot ?? "",
+        outputCount: (run?.outputMediaIds ?? []).length,
+      },
+      episodeRunAfter: {
+        shotId: episodeRun?.shotId ?? null,
+        snapshot: episodeRun?.renderedPromptSnapshot ?? "",
+        outputIds: episodeRun?.outputMediaIds ?? [],
+      },
+      totalRuns: runs.length,
+    };
+  }, ctx);
+}
+
+async function verifySkillMetadata(ctx) {
+  const skillFile = path.join(SKILL_DIR, "SKILL.md");
+  const notesFile = path.join(SKILL_DIR, "notes.md");
+  const skillParent = path.dirname(SKILL_DIR);
+  const rescan = async () => {
+    await page.evaluate(
+      async ({ parent }) => {
+        const bridge = await import("/src/lib/bridge.ts");
+        await bridge.capabilitySkillScan([parent]);
+      },
+      { parent: skillParent },
+    );
+  };
+  const capture = () =>
+    page.evaluate(async (c) => {
+      const comic = await import("/src/workbench/creative/comic/ipc.ts");
+      const snapshot = (await comic.comicSkillSnapshotCapture(c.projectId, c.skillId)).snapshot;
+      const list = (await comic.comicSkillSnapshotList(c.projectId, c.skillId)).snapshots;
+      return {
+        captured: snapshot,
+        list: list.map((item) => ({
+          id: item.id,
+          declaredVersion: item.declaredVersion,
+          contentHash: item.contentHash,
+          filesManifestHash: item.filesManifestHash,
+          snapshotFingerprint: item.snapshotFingerprint,
+        })),
+      };
+    }, ctx);
+
+  // 只改 SKILL.md 声明版本，正文不变。
+  fs.writeFileSync(
+    skillFile,
+    "---\nname: 验收分镜 Skill\ndescription: 第三阶段验收用 Skill\nversion: 1.4.0\n---\n\n分镜拆解正文：先定景别，再定运镜。\n第二行内容。\n",
+    "utf8",
+  );
+  await rescan();
+  const declared = await capture();
+
+  // 只改附属文件，SKILL.md 与声明版本不变。
+  fs.writeFileSync(notesFile, "附属说明文件（变更后的指纹）\n新增一行。", "utf8");
+  await rescan();
+  const attachments = await capture();
+
+  return { declared, attachments };
+}
+
+function readClipboard() {
+  try {
+    const out = execFileSync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-Clipboard -Raw",
+      ],
+      { encoding: "utf8", timeout: 15000 },
+    );
+    return out.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trimEnd();
+  } catch (error) {
+    return `READ_FAILED: ${String(error).slice(0, 200)}`;
+  }
 }
 
 async function seedGeneration(ctx, outputPath) {
   return page.evaluate(
     async ({ ctx, outputPath }) => {
       const comic = await import("/src/workbench/creative/comic/ipc.ts");
+      // 用户从外部工具粘贴回来的「实际使用」文本：与自动预览不同，必须逐字保存。
+      const ACTUAL_PROMPT =
+        "【整集视觉】赛场灯光偏冷，观众席虚化\n【角色】林远：左脸浅疤，右臂白色绷带（外部工具实际使用版）\n避免：多余手指、文字水印。";
       const run = (
         await comic.comicGenerationRecordCreate({
           projectId: ctx.projectId,
@@ -472,6 +695,7 @@ async function seedGeneration(ctx, outputPath) {
           inputMediaIds: [],
           externalJobId: "job-c3-1",
           note: "第三阶段验收：真实外部生成登记",
+          renderedPromptSnapshot: ACTUAL_PROMPT,
         })
       ).run;
       const output = (
@@ -485,7 +709,89 @@ async function seedGeneration(ctx, outputPath) {
           generationRunId: run.id,
         })
       ).version;
-      return { runId: run.id, outputId: output.id, generationRunId: output.generationRunId };
+
+      // 整集级记录（shotId = null）：允许关联本集任意镜头产物。
+      const episodeRun = (
+        await comic.comicGenerationRecordCreate({
+          projectId: ctx.projectId,
+          episodeId: ctx.ep1,
+          shotId: null,
+          promptVersionId: ctx.promptVersion,
+          skillSnapshotId: ctx.snapshotId,
+          modelProvider: "外部工具",
+          modelName: "model-ep",
+          modelVersion: "1",
+          parametersJson: '{"steps": 28, "ar": "16:9"}',
+          seed: "7",
+          inputMediaIds: [],
+          externalJobId: "job-c3-episode",
+          note: "整集级生成登记：同一次出图覆盖多个镜头",
+          renderedPromptSnapshot: "整集统一画风提示词\n第二行：保持人物一致。",
+        })
+      ).run;
+      const outA = (
+        await comic.comicMediaImport({
+          projectId: ctx.projectId,
+          shotId: ctx.shot1,
+          filePath: outputPath,
+          mediaKind: "image",
+          versionLabel: "整集输出 A",
+          reviewNote: "",
+          generationRunId: episodeRun.id,
+        })
+      ).version;
+      const outB = (
+        await comic.comicMediaImport({
+          projectId: ctx.projectId,
+          shotId: ctx.shot1b,
+          filePath: outputPath,
+          mediaKind: "image",
+          versionLabel: "整集输出 B",
+          reviewNote: "",
+          generationRunId: episodeRun.id,
+        })
+      ).version;
+
+      const crossEpisodeError = await comic
+        .comicMediaImport({
+          projectId: ctx.projectId,
+          shotId: ctx.shotEp2,
+          filePath: outputPath,
+          mediaKind: "image",
+          versionLabel: "跨集非法关联",
+          reviewNote: "",
+          generationRunId: episodeRun.id,
+        })
+        .then(() => null)
+        .catch((error) => JSON.stringify(error) ?? String(error));
+      const crossShotError = await comic
+        .comicMediaImport({
+          projectId: ctx.projectId,
+          shotId: ctx.shot1b,
+          filePath: outputPath,
+          mediaKind: "image",
+          versionLabel: "镜头级跨镜头非法关联",
+          reviewNote: "",
+          generationRunId: run.id,
+        })
+        .then(() => null)
+        .catch((error) => JSON.stringify(error) ?? String(error));
+
+      return {
+        actualPrompt: ACTUAL_PROMPT,
+        runId: run.id,
+        promptSnapshot: run.renderedPromptSnapshot,
+        promptContentHashSnapshot: run.promptContentHashSnapshot,
+        contextSnapshotJson: run.contextSnapshotJson,
+        outputId: output.id,
+        generationRunId: output.generationRunId,
+        episodeRunId: episodeRun.id,
+        episodePromptSnapshot: episodeRun.renderedPromptSnapshot,
+        episodeOutputs: [outA.id, outB.id],
+        episodeOutputLinks: [outA.generationRunId, outB.generationRunId],
+        crossEpisodeError,
+        crossShotError,
+      };
     },
     { ctx, outputPath },
   );
@@ -499,19 +805,109 @@ async function main() {
   await launchGui();
 
   const outputPath = path.join(FIXTURES, "comic-c3-output.png");
-  fs.writeFileSync(
-    outputPath,
-    Buffer.from(
-      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
-      "base64",
-    ),
+  const refImagePath = path.join(FIXTURES, "角色参考图-本机绝对路径.png");
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+    "base64",
   );
-  const ctx = await seed(outputPath);
+  fs.writeFileSync(outputPath, png);
+  fs.writeFileSync(refImagePath, png);
+  const ctx = await seed(outputPath, refImagePath);
   log(`种子项目 ${ctx.projectId}`);
 
   assert(ctx.outputPath, "未取得输出素材路径");
   const generation = await seedGeneration(ctx, ctx.outputPath);
   assert(generation.generationRunId === generation.runId, "素材未关联生成记录");
+  const traceCtx = { ...ctx, runId: generation.runId, episodeRunId: generation.episodeRunId };
+  const errText = (error) =>
+    typeof error === "string"
+      ? error
+      : JSON.stringify(error)?.slice(0, 300) ?? String(error);
+
+  // ── 0. 后端契约：本集视觉补充 / 实际提示词快照 / 关联约束 / 路径脱敏 ──
+  const trace = await verifyPromptTrace(traceCtx);
+  record(
+    "本集视觉补充进入 Prompt",
+    trace.ep1Rendered.includes("本集视觉提示词补充：左脸有一道浅疤，右手缠着白色绷带"),
+    "第一集预览",
+  );
+  record(
+    "第二集不包含第一集视觉补充",
+    !trace.ep2Rendered.includes("左脸有一道浅疤"),
+    "第二集预览",
+  );
+  record(
+    "上下文字段保留本集视觉补充（结构化）",
+    trace.ep1Characters.some(
+      (item) => item.visualPromptOverride === "左脸有一道浅疤，右手缠着白色绷带",
+    ),
+  );
+  record(
+    "全局角色档案未被本集补充污染",
+    trace.ep1Characters.find((item) => item.name === "林远")?.baseDescription ===
+      "18 岁，黑色短发，运动型身材" &&
+      trace.ep1Characters.filter((item) => item.name !== "林远").every(
+        (item) => item.visualPromptOverride === "",
+      ),
+  );
+  record(
+    "带空格占位符正常渲染",
+    trace.spacedRendered.includes("台词：") && !trace.spacedRendered.includes("{{"),
+    trace.spacedRendered.replace(/\n/g, "⏎").slice(0, 120),
+  );
+  record(
+    "带空格占位符必填校验仍拦截空值",
+    /必填|为空/.test(trace.spacedEmptyError ?? ""),
+    String(trace.spacedEmptyError).slice(0, 120),
+  );
+  record(
+    "Prompt 不包含本机绝对路径",
+    !trace.ep1Rendered.includes(refImagePath) &&
+      !trace.ep1Rendered.includes(FIXTURES) &&
+      !trace.ep1Rendered.includes(path.basename(refImagePath)),
+  );
+  record(
+    "角色与场景参考图均改为外部手动上传提示",
+    (trace.ep1Rendered.match(/参考图：已在 Task Dock 关联，请在外部生成工具手动上传/g) ?? [])
+      .length >= 2,
+  );
+  record(
+    "结构化上下文仍保留参考图路径",
+    trace.ep1Characters.some((item) => item.refImagePath === refImagePath),
+  );
+  record(
+    "生成记录保存用户提交的实际提示词",
+    trace.runAfterScriptEdit.snapshot === generation.actualPrompt,
+    `快照 ${trace.runAfterScriptEdit.snapshot.length} 字 / 提交 ${generation.actualPrompt.length} 字`,
+  );
+  record(
+    "生成记录保存提交时的 Prompt 内容 Hash",
+    trace.runAfterScriptEdit.hash === trace.runVersionHash &&
+      trace.runAfterScriptEdit.hash.length === 64,
+    `记录 ${trace.runAfterScriptEdit.hash.slice(0, 8)} / 版本 ${trace.runVersionHash.slice(0, 8)}`,
+  );
+  record(
+    "修改剧本不覆盖已有生成记录",
+    trace.runAfterScriptEdit.snapshot === generation.actualPrompt &&
+      (trace.runAfterScriptEdit.outputCount ?? 0) >= 1,
+  );
+  record(
+    "整集级记录挂到本集多个镜头产物",
+    trace.episodeRunAfter.shotId === null &&
+      trace.episodeRunAfter.outputIds.length === 2 &&
+      generation.episodeOutputLinks.every((id) => id === generation.episodeRunId),
+    trace.episodeRunAfter.outputIds.join(","),
+  );
+  record(
+    "镜头级记录拒绝关联其他镜头",
+    /镜头/.test(generation.crossShotError ?? ""),
+    String(generation.crossShotError),
+  );
+  record(
+    "整集级记录拒绝关联其他剧集",
+    /剧集/.test(generation.crossEpisodeError ?? ""),
+    String(generation.crossEpisodeError),
+  );
 
   await openWorkbench();
   await pickProject("漫剧第三阶段验收");
@@ -675,7 +1071,36 @@ async function main() {
   await shot("prompts-template.png");
 
   // v2 声明了必填变量 shot.description：必须明确选一个镜头，不能按整集预览。
+  const episodeCombo = page.getByRole("combobox", { name: "预览剧集" });
+  await episodeCombo.scrollIntoViewIfNeeded().catch(() => {});
+  await wait(300);
+  record(
+    "预览剧集控件已加载剧集",
+    ((await episodeCombo.textContent()) ?? "").includes("第一集"),
+    `${(await episodeCombo.textContent()) ?? ""} / disabled=${await episodeCombo.isDisabled()}`,
+  );
+  await episodeCombo.click();
+  await wait(500);
+  await shot("prompts-episode-options.png");
+  const listboxTexts = await page.locator('[role="listbox"]').allInnerTexts();
+  record(
+    "预览剧集下拉出现选项",
+    listboxTexts.some((text) => /第一集 · 高中/.test(text)),
+    listboxTexts.join(" || ").slice(0, 160),
+  );
+  await page.getByRole("option", { name: /第一集 · 高中/ }).click();
+  await wait(600);
   await page.getByRole("combobox", { name: "预览镜头" }).click();
+  await wait(800);
+  const shotOptionTexts = await page.getByRole("option").allInnerTexts();
+  record(
+    "预览镜头选项包含本集三个镜头",
+    shotOptionTexts.some((text) => /少年起跳投篮/.test(text)) &&
+      shotOptionTexts.some((text) => /林远接球推进/.test(text)) &&
+      shotOptionTexts.some((text) => /空镜：球馆顶灯/.test(text)),
+    shotOptionTexts.join(" | ").slice(0, 160),
+  );
+  await shot("prompts-shot-options.png");
   await page.getByRole("option", { name: /少年起跳投篮/ }).click();
   await wait(300);
   await page.getByRole("button", { name: "渲染预览" }).click();
@@ -687,8 +1112,75 @@ async function main() {
   record("预览包含本集形象（第一集蓝白校服）", previewText.includes("本集服装：蓝白校服"));
   record("预览包含场景与镜头", previewText.includes("【场景】篮球场") && previewText.includes("画面：少年起跳投篮"));
   record("预览保留中文与换行", previewText.includes("\n"));
+  record(
+    "预览包含本集视觉提示词补充",
+    previewText.includes("本集视觉提示词补充：左脸有一道浅疤，右手缠着白色绷带"),
+  );
+  record(
+    "预览不包含本机绝对路径",
+    !previewText.includes(FIXTURES) &&
+      !previewText.includes(path.basename(ctx.refImagePath)) &&
+      !/:\\.*\\/.test(previewText),
+  );
+  record(
+    "预览提示参考图需在外部工具手动上传",
+    previewText.includes("参考图：已在 Task Dock 关联，请在外部生成工具手动上传"),
+  );
   await page.locator(".comic-prompt-pre").first().scrollIntoViewIfNeeded();
   await shot("prompts-preview.png");
+
+  // 复制渲染结果：先看受控剪贴板的真实反馈，再读系统剪贴板核对内容。
+  await page.getByRole("button", { name: "复制提示词" }).click();
+  let copyToast = "";
+  for (let attempt = 0; attempt < 20 && !copyToast; attempt += 1) {
+    await wait(250);
+    if ((await page.getByText(/已复制提示词到剪贴板/).count()) > 0) {
+      copyToast = "已复制提示词到剪贴板";
+      break;
+    }
+    const failure = page.getByText(/复制失败：/);
+    if ((await failure.count()) > 0) {
+      copyToast = await failure.first().innerText();
+      break;
+    }
+  }
+  if (copyToast === "已复制提示词到剪贴板") {
+    record("复制成功有可见反馈", true);
+    const clipboard = readClipboard();
+    if (clipboard === previewText.replace(/\r\n/g, "\n").trimEnd()) {
+      record("复制内容与预览一致", true);
+    } else {
+      recordBlocked(
+        "读取系统剪贴板核对内容（宿主剪贴板不可访问）",
+        `${clipboard.slice(0, 60)} / 预览 ${previewText.length} 字`,
+      );
+    }
+  } else if (/复制失败/.test(copyToast)) {
+    record("复制失败时如实提示", true, copyToast);
+    recordBlocked("复制提示词到系统剪贴板（系统剪贴板被其他程序占用）", copyToast);
+  } else {
+    record("复制按钮有可观察反馈", false, "20 次轮询未出现成功/失败提示");
+  }
+
+  // 版本切换必须清除旧预览：不能出现「选了 v1/v3 还显示 v2 内容」。
+  await page.getByText(/^v1$/).first().click();
+  await waitFor(
+    async () => (await page.getByText(/选择已变化，之前的预览已过期并被清除/).count()) > 0,
+    { label: "预览过期提示", timeout: 15000 },
+  );
+  record("切换版本后旧预览被清除", (await page.locator(".comic-prompt-pre").count()) === 0);
+  record(
+    "空预览时无法复制",
+    (await page.getByRole("button", { name: "复制提示词" }).count()) === 0 ||
+      (await page.getByRole("button", { name: "复制提示词" }).first().isDisabled()),
+  );
+  await shot("prompts-preview-stale.png");
+  await page.getByText(/^v2 · 默认/).first().click();
+  await wait(500);
+  await page.getByRole("button", { name: "渲染预览" }).click();
+  await waitFor(async () => (await page.getByText(/【角色】林远/).count()) > 0, {
+    label: "重新渲染",
+  });
 
   await page.getByText("验收分镜 Skill").first().click();
   await page.getByRole("button", { name: "捕获当前版本为快照" }).click();
@@ -703,6 +1195,61 @@ async function main() {
   );
   await shot("prompts-skill.png");
 
+  // 只改声明版本 / 只改附属文件：必须形成新快照，而旧快照元数据不变。
+  const skillMeta = await verifySkillMetadata(ctx);
+  record(
+    "只改声明版本后捕获新快照（1.4.0）",
+    skillMeta.declared.captured.declaredVersion === "1.4.0" &&
+      skillMeta.declared.captured.contentHash === ctx.snapshotHash,
+    `${skillMeta.declared.captured.declaredVersion} / 正文未变`,
+  );
+  record(
+    "只改声明版本后指纹变化",
+    skillMeta.declared.captured.snapshotFingerprint !== ctx.snapshotFingerprint,
+  );
+  record(
+    "旧快照（1.3.0）元数据未被新捕获修改",
+    skillMeta.declared.list.some(
+      (item) =>
+        item.id === ctx.snapshotId &&
+        item.declaredVersion === "1.3.0" &&
+        item.contentHash === ctx.snapshotHash &&
+        item.snapshotFingerprint === ctx.snapshotFingerprint,
+    ),
+  );
+  record(
+    "只改附属文件后文件清单 Hash 变化",
+    skillMeta.attachments.captured.filesManifestHash !==
+      skillMeta.declared.captured.filesManifestHash &&
+      skillMeta.attachments.captured.contentHash === ctx.snapshotHash,
+  );
+  record(
+    "附属文件变化形成独立指纹",
+    skillMeta.attachments.captured.snapshotFingerprint !==
+      skillMeta.declared.captured.snapshotFingerprint,
+  );
+  record(
+    "同一完整快照重复捕获复用同一记录",
+    skillMeta.attachments.captured.id ===
+      skillMeta.attachments.list.find(
+        (item) =>
+          item.snapshotFingerprint === skillMeta.attachments.captured.snapshotFingerprint,
+      )?.id && skillMeta.attachments.list.length === 3,
+    `快照数 ${skillMeta.attachments.list.length}`,
+  );
+
+  // 刷新 Skill 面板，确认 UI 展示 1.4.0 与三条历史快照。
+  await openModule("剧集");
+  await openModule("提示词与 Skill");
+  await waitFor(async () => (await page.getByText("验收分镜 Skill").count()) > 0, {
+    label: "Skill 列表刷新",
+  });
+  await page.getByText("验收分镜 Skill").first().click();
+  await wait(800);
+  record("刷新后展示新声明版本 1.4.0", (await page.getByText(/声明版本 1\.4\.0/).count()) > 0);
+  record("历史快照保留旧声明版本 1.3.0", (await page.getByText(/声明 1\.3\.0/).count()) > 0);
+  await shot("prompts-skill-versions.png");
+
   // ── 6. 外部生成记录与素材关联 ──────────────────────────────────────
   await openModule("素材与产物");
   await waitFor(async () => (await page.getByText(/外部工具 · model-x/).count()) > 0, {
@@ -713,6 +1260,43 @@ async function main() {
     "生成记录展示 Skill 内容 Hash",
     (await page.getByText(new RegExp(`内容 ${ctx.snapshotHash.slice(0, 8)}`)).count()) > 0,
   );
+
+  // 素材面板展开的快照必须与用户提交的实际提示词逐字一致。
+  const shotRunItem = page
+    .locator(".comic-generation-run")
+    .filter({ hasText: /外部工具 · model-x/ })
+    .first();
+  await shotRunItem.getByRole("button", { name: "查看实际渲染提示词" }).click();
+  await waitFor(
+    async () => (await shotRunItem.locator(".comic-prompt-pre:not(.comic-prompt-manifest)").count()) > 0,
+    { label: "生成记录提示词快照" },
+  );
+  const runSnapshotText = await shotRunItem
+    .locator(".comic-prompt-pre:not(.comic-prompt-manifest)")
+    .innerText();
+  record(
+    "素材面板展示用户提交的实际提示词",
+    runSnapshotText.replace(/\r\n/g, "\n").trimEnd() === generation.actualPrompt,
+    `快照前 20 字：${runSnapshotText.slice(0, 20)}`,
+  );
+
+  const episodeRunItem = page
+    .locator(".comic-generation-run")
+    .filter({ hasText: /model-ep/ })
+    .first();
+  const episodeRunText = await episodeRunItem.innerText();
+  record("整集级记录标注为整集", episodeRunText.includes("整集"));
+  record(
+    "整集级记录展示 2 项本集输出素材",
+    /输出素材 2 项/.test(episodeRunText),
+    episodeRunText.replace(/\n/g, " ").slice(0, 120),
+  );
+  record(
+    "非法跨集/跨镜头关联未产生素材",
+    (await page.getByText(/跨集非法关联/).count()) === 0 &&
+      (await page.getByText(/镜头级跨镜头非法关联/).count()) === 0,
+  );
+
   await page.getByText(/外部生成输出/).first().click();
   await waitFor(async () => (await page.getByText(/生成来源：外部工具 · model-x · 1/).count()) > 0, {
     label: "素材生成来源",
@@ -734,20 +1318,83 @@ async function main() {
     const versions = await comic.comicPromptVersionList(c.templateId);
     const runs = await comic.comicGenerationRecordList(c.projectId);
     const media = await comic.comicMediaList(c.projectId, c.shot1);
+    const snapshots = await comic.comicSkillSnapshotList(c.projectId, c.skillId);
+    const preview = (
+      await comic.comicPromptRender({
+        projectId: c.projectId,
+        promptVersionId: c.promptVersion,
+        episodeId: c.ep1,
+        shotId: c.shot1,
+      })
+    ).preview;
+    const run = (runs.runs ?? []).find((item) => item.id === c.runId);
+    const episodeRun = (runs.runs ?? []).find((item) => item.id === c.episodeRunId);
+    const originalSnapshot = (snapshots.snapshots ?? []).find((item) => item.id === c.snapshotId);
     return {
       episodes: (episodes.episodes ?? []).length,
       override1: (overrides1.overrides ?? []).find((item) => item.characterId === c.c1)
         ?.appearanceLabel,
+      visualOverride: (overrides1.overrides ?? []).find((item) => item.characterId === c.c1)
+        ?.visualPromptOverride,
       versions: (versions.versions ?? []).length,
       runs: (runs.runs ?? []).length,
       linkedMedia: (media.versions ?? []).filter((item) => item.generationRunId).length,
+      runSnapshot: run?.renderedPromptSnapshot ?? "",
+      runHash: run?.promptContentHashSnapshot ?? "",
+      episodeRunOutputs: (episodeRun?.outputMediaIds ?? []).length,
+      episodeRunSnapshot: episodeRun?.renderedPromptSnapshot ?? "",
+      skillSnapshots: (snapshots.snapshots ?? []).length,
+      originalDeclared: originalSnapshot?.declaredVersion ?? "",
+      originalFingerprint: originalSnapshot?.snapshotFingerprint ?? "",
+      originalFilesHash: originalSnapshot?.filesManifestHash ?? "",
+      preview: preview.rendered,
+      crossEpisodeStillRejected: await comic
+        .comicMediaImport({
+          projectId: c.projectId,
+          shotId: c.shotEp2,
+          filePath: c.outputPath,
+          mediaKind: "image",
+          versionLabel: "重启后跨集校验",
+          reviewNote: "",
+          generationRunId: c.episodeRunId,
+        })
+        .then(() => null)
+        .catch((error) => JSON.stringify(error) ?? String(error)),
     };
-  }, ctx);
+  }, traceCtx);
   record("重启后剧集仍存在", persisted.episodes === 2, String(persisted.episodes));
   record("重启后第一集形象仍存在", persisted.override1 === "高中时期", String(persisted.override1));
-  record("重启后提示词版本仍为 2 个", persisted.versions === 2, String(persisted.versions));
-  record("重启后生成记录仍存在", persisted.runs >= 1, String(persisted.runs));
+  record(
+    "重启后本集视觉补充仍存在",
+    persisted.visualOverride === "左脸有一道浅疤，右手缠着白色绷带",
+  );
+  record("重启后提示词版本仍为 3 个", persisted.versions === 3, String(persisted.versions));
+  record("重启后生成记录仍存在", persisted.runs >= 2, String(persisted.runs));
   record("重启后素材仍关联生成记录", persisted.linkedMedia >= 1, String(persisted.linkedMedia));
+  record(
+    "重启后实际提示词快照未变",
+    persisted.runSnapshot === generation.actualPrompt && persisted.runHash === trace.runVersionHash,
+  );
+  record(
+    "重启后整集级记录仍关联 2 项产物",
+    persisted.episodeRunOutputs === 2 && persisted.episodeRunSnapshot === generation.episodePromptSnapshot,
+  );
+  record(
+    "重启后 Skill 历史指纹与元数据一致",
+    persisted.skillSnapshots === 3 &&
+      persisted.originalDeclared === "1.3.0" &&
+      persisted.originalFingerprint === ctx.snapshotFingerprint &&
+      persisted.originalFilesHash === ctx.filesManifestHash,
+  );
+  record(
+    "重启后 Prompt 仍不含本机绝对路径",
+    !persisted.preview.includes(FIXTURES) && !persisted.preview.includes(ctx.refImagePath),
+  );
+  record(
+    "重启后跨集关联仍被拒绝",
+    /剧集/.test(persisted.crossEpisodeStillRejected ?? ""),
+    String(persisted.crossEpisodeStillRejected).slice(0, 100),
+  );
 
   await openWorkbench();
   await pickProject("漫剧第三阶段验收");
@@ -763,23 +1410,26 @@ async function main() {
 
 async function finish() {
   const passed = results.filter((r) => r.ok).length;
+  const blocked = results.filter((r) => r.blocked).length;
+  const failed = results.length - passed - blocked;
   const lines = [
     `# 漫剧第三阶段 Dev 功能验收 ${stamp}`,
     "",
     `- 可执行文件：\`${EXE}\``,
     `- 数据目录：\`${DATA}\``,
-    `- 结果：${passed}/${results.length} 项通过`,
+    `- 结果：通过 ${passed} / 阻塞 ${blocked} / 失败 ${failed}（共 ${results.length} 项）`,
     "",
     "| 断言 | 结果 | 说明 |",
     "|---|---|---|",
     ...results.map(
-      (r) => `| ${r.name} | ${r.ok ? "PASS" : "FAIL"} | ${String(r.detail).replace(/\|/g, "\\|")} |`,
+      (r) =>
+        `| ${r.name} | ${r.blocked ? "BLOCKED" : r.ok ? "PASS" : "FAIL"} | ${String(r.detail).replace(/\|/g, "\\|")} |`,
     ),
     "",
     `截图目录：\`${SHOTS}\``,
   ];
   fs.writeFileSync(SUMMARY, lines.join("\n"), "utf8");
-  log(`结果 ${passed}/${results.length}`);
+  log(`结果：通过 ${passed} / 阻塞 ${blocked} / 失败 ${failed}（共 ${results.length} 项）`);
   if (gui) gui.kill();
   if (viteProc) viteProc.kill();
   if (!KEEP) {

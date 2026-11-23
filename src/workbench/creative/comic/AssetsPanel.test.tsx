@@ -24,8 +24,11 @@ const api = vi.hoisted(() => ({
   comicGenerationRecordCreate: vi.fn(),
   comicPromptTemplateList: vi.fn(),
   comicPromptVersionList: vi.fn(),
+  comicPromptRender: vi.fn(),
   comicSkillSnapshotList: vi.fn(),
 }));
+
+const clip = vi.hoisted(() => ({ copyText: vi.fn() }));
 
 const fs = vi.hoisted(() => ({
   fsThumbnail: vi.fn(),
@@ -37,8 +40,10 @@ const fs = vi.hoisted(() => ({
 
 vi.mock("./ipc", () => api);
 vi.mock("../../../lib/bridge", () => fs);
+vi.mock("../../../lib/clipboard", () => clip);
 
 import { AssetsPanel, mediaKindOfPath } from "./AssetsPanel";
+import { shortHash } from "./types";
 
 const base = {
   projectId: "p1",
@@ -128,6 +133,83 @@ const candidate = {
   reviewNote: "换构图",
 };
 
+const promptTemplate = {
+  id: "t1",
+  projectId: "p1",
+  name: "图片生成模板",
+  category: "image_generation" as const,
+  description: "",
+  versionCount: 1,
+  defaultVersionId: "pv1",
+  defaultVersionNo: 1,
+  defaultContentHash: "hash-1",
+  createdAt: "2026-11-16T09:00:00+00:00",
+  updatedAt: "2026-11-16T09:00:00+00:00",
+};
+
+const promptVersion = {
+  id: "pv1",
+  templateId: "t1",
+  versionNo: 1,
+  content: "{{characters.block}}",
+  variablesJson: "[]",
+  contentHash: "hash-1",
+  changeNote: "v1",
+  isDefault: true,
+  createdAt: "2026-11-16T09:00:00+00:00",
+};
+
+const promptPreview = {
+  promptVersionId: "pv1",
+  templateId: "t1",
+  templateName: "图片生成模板",
+  versionNo: 1,
+  contentHash: "hash-1",
+  requiredVariables: [],
+  rendered: "【角色】林远\n自动渲染的初始内容",
+  context: {
+    projectId: "p1",
+    episodeId: "e1",
+    shotId: null,
+    variables: {},
+    characters: [],
+    scenes: [],
+    shot: null,
+  },
+};
+
+function runStub(overrides: Record<string, unknown>) {
+  return {
+    id: "r0",
+    projectId: "p1",
+    episodeId: "e1",
+    episodeTitle: "第一集",
+    shotId: null,
+    shotNo: null,
+    promptVersionId: "pv1",
+    promptTemplateName: "图片生成模板",
+    promptVersionNo: 1,
+    promptContentHashSnapshot: "hash-1",
+    skillSnapshotId: null,
+    skillName: null,
+    skillDeclaredVersion: null,
+    renderedPromptSnapshot: "提示词",
+    contextSnapshotJson: "{}",
+    skillContentHashSnapshot: "",
+    modelProvider: "外部工具",
+    modelName: "",
+    modelVersion: "",
+    parametersJson: "{}",
+    seed: "",
+    inputMediaIds: [],
+    outputMediaIds: [],
+    externalJobId: "",
+    note: "",
+    createdAt: "2026-11-16T09:00:00+00:00",
+    ...overrides,
+  };
+}
+
 function openImportForm() {
   fireEvent.click(screen.getByRole("button", { name: "导入本地素材" }));
 }
@@ -176,6 +258,8 @@ beforeEach(() => {
   });
   api.comicPromptTemplateList.mockResolvedValue({ templates: [] });
   api.comicPromptVersionList.mockResolvedValue({ versions: [] });
+  api.comicPromptRender.mockResolvedValue({ preview: promptPreview });
+  clip.copyText.mockResolvedValue(true);
   api.comicSkillSnapshotList.mockResolvedValue({ snapshots: [] });
   fs.fsThumbnail.mockResolvedValue(null);
   fs.fsReadBinary.mockRejectedValue(new Error("读取失败"));
@@ -370,4 +454,110 @@ describe("AssetsPanel", () => {
     expect(mediaKindOfPath("D:/a/b.mp4")).toBe("video");
     expect(mediaKindOfPath("D:/a/b.psd")).toBe("other");
   });
+
+  it("登记外部生成：自动渲染→复制→修改实际提示词后原样提交", async () => {
+    api.comicPromptTemplateList.mockResolvedValue({ templates: [promptTemplate] });
+    api.comicPromptVersionList.mockResolvedValue({ versions: [promptVersion] });
+    const onNotice = vi.fn();
+    render(<AssetsPanel {...base} archived={false} onNotice={onNotice} />);
+    await screen.findByText(/v1/);
+
+    fireEvent.click(screen.getByRole("button", { name: "登记外部生成" }));
+    pickSelect("生成记录剧集", "第 1 集 · 第一集");
+    pickSelect("生成记录提示词模板", "图片生成模板 · 图片生成");
+    await waitFor(() => {
+      expect(api.comicPromptVersionList).toHaveBeenCalledWith("t1");
+    });
+    pickSelect("生成记录提示词版本", `v1 · 默认 · ${shortHash("hash-1")}`);
+
+    await waitFor(() => {
+      expect(
+        (screen.getByRole("textbox", { name: "实际使用提示词" }) as HTMLTextAreaElement).value,
+      ).toBe(promptPreview.rendered);
+    });
+    expect(api.comicPromptRender).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: "p1", promptVersionId: "pv1", episodeId: "e1" }),
+    );
+    expect(screen.getByText(`v1 · Hash ${shortHash("hash-1")}`)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /^复制提示词$/ }));
+    await waitFor(() => {
+      expect(clip.copyText).toHaveBeenCalledWith(promptPreview.rendered);
+    });
+    expect(await screen.findByRole("button", { name: /已复制提示词/ })).toBeTruthy();
+    expect(onNotice).toHaveBeenCalledWith("ok", "已复制提示词到剪贴板");
+
+    // 外部工具实际收到的文本可能被改过：登记必须保存这份文本，而不是自动渲染结果。
+    const edited = "【角色】林远\n外部工具实际收到的文本（已改）\n--ar 16:9，中文标点：。";
+    fireEvent.change(screen.getByRole("textbox", { name: "实际使用提示词" }), { target: { value: edited } });
+    expect(screen.getByText(/已修改：登记将保存当前文本/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "登记生成记录" }));
+    await waitFor(() => {
+      expect(api.comicGenerationRecordCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: "p1",
+          episodeId: "e1",
+          shotId: null,
+          promptVersionId: "pv1",
+          renderedPromptSnapshot: edited,
+        }),
+      );
+    });
+  });
+
+  it("实际使用提示词为空时拒绝登记，不伪造空记录", async () => {
+    api.comicPromptTemplateList.mockResolvedValue({ templates: [promptTemplate] });
+    api.comicPromptVersionList.mockResolvedValue({ versions: [promptVersion] });
+    render(<AssetsPanel {...base} archived={false} onNotice={vi.fn()} />);
+    await screen.findByText(/v1/);
+
+    fireEvent.click(screen.getByRole("button", { name: "登记外部生成" }));
+    pickSelect("生成记录剧集", "第 1 集 · 第一集");
+    pickSelect("生成记录提示词模板", "图片生成模板 · 图片生成");
+    await waitFor(() => {
+      expect(api.comicPromptVersionList).toHaveBeenCalledWith("t1");
+    });
+    pickSelect("生成记录提示词版本", `v1 · 默认 · ${shortHash("hash-1")}`);
+    await waitFor(() => {
+      expect(
+        (screen.getByRole("textbox", { name: "实际使用提示词" }) as HTMLTextAreaElement).value,
+      ).toBe(promptPreview.rendered);
+    });
+
+    fireEvent.change(screen.getByRole("textbox", { name: "实际使用提示词" }), {
+      target: { value: "   \n  " },
+    });
+    expect(
+      (screen.getByRole("button", { name: /^复制提示词$/ }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "登记生成记录" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert").textContent).toContain("请填写外部工具实际收到的提示词");
+    });
+    expect(api.comicGenerationRecordCreate).not.toHaveBeenCalled();
+  });
+
+  it("导入素材：整集级记录只能选本集镜头，跨集记录不出现", async () => {
+    api.comicGenerationRecordList.mockResolvedValue({
+      runs: [
+        runStub({ id: "r1", shotId: "h1", shotNo: 1, modelProvider: "同镜头记录" }),
+        runStub({ id: "r2", shotId: null, modelProvider: "整集本集记录" }),
+        runStub({ id: "r3", shotId: null, episodeId: "e2", modelProvider: "整集跨集记录" }),
+        runStub({ id: "r4", shotId: "h9", shotNo: 9, modelProvider: "别的镜头记录" }),
+      ],
+    });
+    render(<AssetsPanel {...base} archived={false} onNotice={vi.fn()} />);
+    await screen.findAllByText(/v1/);
+    openImportForm();
+    pickSelect("关联对象", "镜头 1 · A-镜头1描述");
+
+    fireEvent.click(screen.getByRole("combobox", { name: "关联生成记录" }));
+    expect(screen.getByRole("option", { name: /同镜头记录/ })).toBeTruthy();
+    expect(screen.getByRole("option", { name: /整集本集记录/ })).toBeTruthy();
+    expect(screen.queryByRole("option", { name: /整集跨集记录/ })).toBeNull();
+    expect(screen.queryByRole("option", { name: /别的镜头记录/ })).toBeNull();
+  });
 });
+

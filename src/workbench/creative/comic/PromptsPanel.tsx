@@ -8,7 +8,9 @@
 //! - Skill 列表来自能力中心（`capability_skill_list`），本模块不复制第二套 Skill 存储。
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Check, Copy } from "lucide-react";
 import { Select, type SelectOption } from "../../../components/ui";
+import { copyText } from "../../../lib/clipboard";
 import type { CreativeModuleProps } from "../types";
 import {
   comicEpisodeList,
@@ -110,6 +112,22 @@ export function PromptsPanel({ projectId, archived, onNotice }: CreativeModulePr
   const [preview, setPreview] = useState<ComicPromptPreview | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [previewing, setPreviewing] = useState(false);
+  /** 选择变化后旧预览被清除，明确提示「已过期」而不是让用户误读旧内容。 */
+  const [previewStale, setPreviewStale] = useState(false);
+  const [previewCopied, setPreviewCopied] = useState(false);
+  const copyTimerRef = useRef<number | null>(null);
+  const previewKeyRef = useRef("");
+  /**
+   * 「模板已创建、v1 失败」恢复时用：下一次加载空版本列表要保留用户已输入的正文，
+   * 而不是把编辑区清空（否则用户还得重新敲一遍才能重试 v1）。
+   */
+  const draftPreserveRef = useRef<{
+    content: string;
+    variables: string[];
+    note: string;
+  } | null>(null);
+  /** 首次创建模板成功但 v1 失败时的持久提示（不随版本列表刷新被清掉）。 */
+  const [recoveryNotice, setRecoveryNotice] = useState<string | null>(null);
 
   // ── Skill / 快照 ───────────────────────────────────────────────────
   const [skills, setSkills] = useState<ComicSkillOption[]>([]);
@@ -189,6 +207,32 @@ export function PromptsPanel({ projectId, archived, onNotice }: CreativeModulePr
     };
   }, [projectId, previewEpisodeId]);
 
+  /**
+   * 预览失效：模板/版本/剧集/镜头任一变化，下方的旧渲染结果必须清除，
+   * 绝不允许「上面选了 v3、下面还显示 v2 的旧预览」。
+   */
+  useEffect(() => {
+    const key = [
+      selectedTemplateId ?? "",
+      selectedVersionId ?? "",
+      previewEpisodeId,
+      previewShotId,
+    ].join("|");
+    if (previewKeyRef.current && previewKeyRef.current !== key) {
+      setPreview(null);
+      setPreviewStale(true);
+      setPreviewCopied(false);
+    }
+    previewKeyRef.current = key;
+  }, [selectedTemplateId, selectedVersionId, previewEpisodeId, previewShotId]);
+
+  useEffect(
+    () => () => {
+      if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
+    },
+    [],
+  );
+
   /** 选中模板后加载版本；默认选中默认版本，否则最新版本。 */
   const loadVersions = useCallback(
     async (templateId: string, preferVersionId?: string) => {
@@ -209,10 +253,17 @@ export function PromptsPanel({ projectId, archived, onNotice }: CreativeModulePr
           setRequiredVariables(parseVariables(preferred.variablesJson));
           setChangeNote("");
         } else {
+          // 空模板：若刚从「创建 v1 失败」恢复，保留用户已输入的正文供直接重试。
+          const preserved = draftPreserveRef.current;
+          draftPreserveRef.current = null;
           setSelectedVersionId(null);
-          setContentDraft("");
-          setRequiredVariables([]);
-          setChangeNote("");
+          setContentDraft(preserved?.content ?? "");
+          setRequiredVariables(preserved?.variables ?? []);
+          setChangeNote(preserved?.note ?? "");
+          if (preserved) {
+            // 正文已恢复，提示由 recoveryNotice 常驻展示，无需再写入 saveError。
+            return;
+          }
         }
         setSaveError(null);
       } catch (error) {
@@ -276,11 +327,13 @@ export function PromptsPanel({ projectId, archived, onNotice }: CreativeModulePr
     setSaveError(null);
     setPreview(null);
     setPreviewError(null);
+    setRecoveryNotice(null);
   }
 
   function selectTemplate(template: ComicPromptTemplate) {
     setRightMode("template");
     setCreatingTemplate(false);
+    setRecoveryNotice(null);
     setSelectedTemplateId(template.id);
     setMetaDraft({
       name: template.name,
@@ -309,6 +362,9 @@ export function PromptsPanel({ projectId, archived, onNotice }: CreativeModulePr
     }
     setSaving(true);
     setSaveError(null);
+    // 「创建模板 + v1」是两次调用：第二步失败时模板已经存在，必须退出创建态并
+    // 载入该模板，否则用户会停留在永远失败的「新建」界面（只能刷新页面才能恢复）。
+    let savedTemplate: ComicPromptTemplate | null = null;
     try {
       const saved = await comicPromptTemplateSave({
         id: creatingTemplate ? null : selectedTemplateId,
@@ -317,6 +373,7 @@ export function PromptsPanel({ projectId, archived, onNotice }: CreativeModulePr
         category: metaDraft.category,
         description: metaDraft.description,
       });
+      savedTemplate = saved.template;
       if (createFirstVersion) {
         await comicPromptVersionCreate({
           templateId: saved.template.id,
@@ -339,8 +396,31 @@ export function PromptsPanel({ projectId, archived, onNotice }: CreativeModulePr
       await loadVersions(saved.template.id);
       setPreview(null);
     } catch (error) {
-      setSaveError(errorText(error));
-      onNotice("error", `保存模板失败：${errorText(error)}`);
+      if (savedTemplate) {
+        const recoveryError =
+          `模板「${savedTemplate.name}」已创建，但首个版本保存失败：${errorText(error)}。` +
+          "可直接在右侧重试「创建新版本（v1）」，无需刷新页面。";
+        // 版本列表随后由 selectedTemplateId 的 effect 加载；用 ref 把用户已输入的正文
+        // 带过那一次「空版本列表」刷新，避免编辑区被清空（提示也一并保留）。
+        draftPreserveRef.current = {
+          content: contentDraft,
+          variables: requiredVariables,
+          note: changeNote,
+        };
+        setCreatingTemplate(false);
+        setRecoveryNotice(recoveryError);
+        setMetaDraft({
+          name: savedTemplate.name,
+          category: savedTemplate.category,
+          description: savedTemplate.description,
+        });
+        await loadTemplates();
+        setSelectedTemplateId(savedTemplate.id);
+        onNotice("error", `模板已创建，但 v1 保存失败：${errorText(error)}`);
+      } else {
+        setSaveError(errorText(error));
+        onNotice("error", `保存模板失败：${errorText(error)}`);
+      }
     } finally {
       setSaving(false);
     }
@@ -372,6 +452,8 @@ export function PromptsPanel({ projectId, archived, onNotice }: CreativeModulePr
       await loadTemplates();
       await loadVersions(selectedTemplate.id, result.version.id);
       setPreview(null);
+      // 重试 v1 成功后，之前「模板已创建但 v1 失败」的提示不再需要。
+      setRecoveryNotice(null);
     } catch (error) {
       setSaveError(errorText(error));
       onNotice("error", `创建版本失败：${errorText(error)}`);
@@ -420,6 +502,8 @@ export function PromptsPanel({ projectId, archived, onNotice }: CreativeModulePr
         shotId: previewShotId || null,
       });
       setPreview(result.preview);
+      setPreviewStale(false);
+      setPreviewCopied(false);
       onNotice("ok", "已按真实上下文渲染提示词预览（只读，未写入任何数据）");
     } catch (error) {
       setPreview(null);
@@ -427,6 +511,28 @@ export function PromptsPanel({ projectId, archived, onNotice }: CreativeModulePr
     } finally {
       setPreviewing(false);
     }
+  }
+
+  /** 复制渲染结果：统一走 Task Dock 受控剪贴板，成功/失败都如实反馈。 */
+  async function copyPreview() {
+    const text = preview?.rendered ?? "";
+    if (!text.trim()) {
+      setPreviewError("预览为空，无法复制");
+      return;
+    }
+    setPreviewError(null);
+    const ok = await copyText(text);
+    if (!ok) {
+      onNotice("error", "复制失败：剪贴板被占用或系统拒绝写入");
+      return;
+    }
+    setPreviewCopied(true);
+    onNotice("ok", "已复制提示词到剪贴板");
+    if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
+    copyTimerRef.current = window.setTimeout(() => {
+      setPreviewCopied(false);
+      copyTimerRef.current = null;
+    }, 2000);
   }
 
   async function captureSkill(skill: ComicSkillOption) {
@@ -719,6 +825,12 @@ export function PromptsPanel({ projectId, archived, onNotice }: CreativeModulePr
               />
             </Field>
 
+            {recoveryNotice && (
+              <p className="ws-notice" data-tone="error" role="alert">
+                <span>{recoveryNotice}</span>
+              </p>
+            )}
+
             <div className="ws-form-actions">
               {creatingTemplate ? (
                 <>
@@ -751,13 +863,15 @@ export function PromptsPanel({ projectId, archived, onNotice }: CreativeModulePr
               )}
             </div>
 
-            {selectedTemplate && (
+            {(selectedTemplate || creatingTemplate) && (
               <>
                 <div className="comic-prompt-version-head">
                   <span className="comic-field-label">
                     提示词正文
                     <em className="comic-field-hint">
-                      正在基于 v{selectedVersion?.versionNo ?? "—"} 编辑；保存会创建新版本
+                      {creatingTemplate
+                        ? "新模板暂无版本：填写正文后随模板一起创建 v1"
+                        : `正在基于 v${selectedVersion?.versionNo ?? "—"} 编辑；保存会创建新版本`}
                     </em>
                   </span>
                   <span className="ws-meta">
@@ -827,25 +941,28 @@ export function PromptsPanel({ projectId, archived, onNotice }: CreativeModulePr
                   </p>
                 )}
 
-                <div className="ws-form-actions">
-                  <button
-                    type="button"
-                    className="ws-btn ws-btn-primary"
-                    disabled={archived || saving || !contentDraft.trim()}
-                    onClick={() => void createVersion()}
-                  >
-                    {saving ? "保存中…" : `创建新版本（v${(versions[0]?.versionNo ?? 0) + 1}）`}
-                  </button>
-                  <button
-                    type="button"
-                    className="ws-btn"
-                    disabled={archived || saving || !selectedVersion}
-                    onClick={() => selectedVersion && selectVersion(selectedVersion)}
-                  >
-                    放弃修改，回到已选版本
-                  </button>
-                </div>
+                {selectedTemplate && (
+                  <div className="ws-form-actions">
+                    <button
+                      type="button"
+                      className="ws-btn ws-btn-primary"
+                      disabled={archived || saving || !contentDraft.trim()}
+                      onClick={() => void createVersion()}
+                    >
+                      {saving ? "保存中…" : `创建新版本（v${(versions[0]?.versionNo ?? 0) + 1}）`}
+                    </button>
+                    <button
+                      type="button"
+                      className="ws-btn"
+                      disabled={archived || saving || !selectedVersion}
+                      onClick={() => selectedVersion && selectVersion(selectedVersion)}
+                    >
+                      放弃修改，回到已选版本
+                    </button>
+                  </div>
+                )}
 
+                {selectedTemplate && (
                 <section className="comic-prompt-preview" aria-label="提示词预览">
                   <div className="comic-stats-head">
                     <span className="comic-field-label">按真实数据预览</span>
@@ -892,17 +1009,41 @@ export function PromptsPanel({ projectId, archived, onNotice }: CreativeModulePr
                     </p>
                   )}
 
+                  {previewStale && !preview && (
+                    <p className="ws-notice" data-tone="info" role="status">
+                      <span>选择已变化，之前的预览已过期并被清除，请重新渲染。</span>
+                    </p>
+                  )}
+
                   {preview && (
                     <div className="comic-prompt-preview-result">
-                      <p className="ws-meta">
-                        模板「{preview.templateName}」v{preview.versionNo} · Hash{" "}
-                        {shortHash(preview.contentHash)} · 角色{" "}
-                        {preview.context.characters.length} 个 · 场景{" "}
-                        {preview.context.scenes.length} 个
-                        {preview.context.shot
-                          ? ` · 镜头 ${preview.context.shot.shotNo}`
-                          : " · 整集"}
-                      </p>
+                      <div className="comic-stats-head">
+                        <span className="ws-meta">
+                          模板「{preview.templateName}」v{preview.versionNo} · Hash{" "}
+                          {shortHash(preview.contentHash)} · 角色{" "}
+                          {preview.context.characters.length} 个 · 场景{" "}
+                          {preview.context.scenes.length} 个
+                          {preview.context.shot
+                            ? ` · 镜头 ${preview.context.shot.shotNo}`
+                            : " · 整集"}
+                        </span>
+                        <button
+                          type="button"
+                          className="ws-btn ws-btn-quiet"
+                          disabled={!preview.rendered.trim()}
+                          onClick={() => void copyPreview()}
+                        >
+                          {previewCopied ? (
+                            <>
+                              <Check size={13} aria-hidden="true" /> 已复制
+                            </>
+                          ) : (
+                            <>
+                              <Copy size={13} aria-hidden="true" /> 复制提示词
+                            </>
+                          )}
+                        </button>
+                      </div>
                       {preview.context.characters.length > 0 && (
                         <p className="ws-meta">
                           实际使用角色：
@@ -919,6 +1060,7 @@ export function PromptsPanel({ projectId, archived, onNotice }: CreativeModulePr
                     </div>
                   )}
                 </section>
+                )}
               </>
             )}
 

@@ -286,6 +286,98 @@ WHERE json_valid(character_ids_json) = 1
 "#,
 );
 
+/// 漫剧第三阶段返工（v99）：Skill 快照身份 + 生成记录提示词快照。
+///
+/// 解决的问题：
+/// 1. 旧 `UNIQUE(project_id, source_skill_id, content_hash)` 让「只改 SKILL.md 声明版本」
+///    或「只改附属文件」的捕获直接复用旧快照，返回过期元数据；
+///    新身份 = `snapshot_fingerprint`（来源 Skill + 正文 Hash + 声明版本 + 附属清单 Hash）。
+/// 2. 生成记录缺少「实际使用提示词」的独立落库字段，历史记录的提示词 Hash 只能靠联表推断。
+/// 3. 历史生成记录的提示词快照此前没有任何数据库级不可变约束。
+///
+/// 数据安全：
+/// - 快照表重建不丢行：旧表整行暂存 TEMP → 新表按**原 id** 回填 → 自检行数与 id 集合；
+/// - `comic_generation_runs.skill_snapshot_id` 的外键在事务内无法关闭，改用
+///   `PRAGMA defer_foreign_keys` 把检查推迟到提交：新表回填后引用重新成立，
+///   迁移失败则整体回滚，不会留下半套表；
+/// - 历史快照的 `files_manifest_hash` 记为 `''`（当时没有算过，不猜测、不回填假值），
+///   指纹按同一 `json_array` 口径回填，保证历史行身份稳定且互不冲突。
+pub const MIGRATION_99: (i64, &'static str) = (
+    99,
+    r#"
+PRAGMA defer_foreign_keys = ON;
+
+-- 1) Skill 快照表重建（保留全部历史行与原 id）
+DROP TABLE IF EXISTS temp._v99_comic_skill_snapshots;
+CREATE TEMP TABLE _v99_comic_skill_snapshots AS SELECT * FROM comic_skill_snapshots;
+
+DROP TABLE comic_skill_snapshots;
+CREATE TABLE comic_skill_snapshots (
+  id TEXT PRIMARY KEY NOT NULL,
+  project_id TEXT NOT NULL REFERENCES workspace_projects(id) ON DELETE CASCADE,
+  source_skill_id TEXT NOT NULL,
+  skill_name TEXT NOT NULL,
+  declared_version TEXT NOT NULL DEFAULT '',
+  content_hash TEXT NOT NULL,
+  content_snapshot TEXT NOT NULL,
+  files_manifest_json TEXT NOT NULL DEFAULT '[]',
+  files_manifest_hash TEXT NOT NULL DEFAULT '',
+  snapshot_fingerprint TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(project_id, source_skill_id, snapshot_fingerprint)
+);
+INSERT INTO comic_skill_snapshots
+  (id, project_id, source_skill_id, skill_name, declared_version, content_hash,
+   content_snapshot, files_manifest_json, files_manifest_hash, snapshot_fingerprint, created_at)
+SELECT id, project_id, source_skill_id, skill_name, declared_version, content_hash,
+       content_snapshot, files_manifest_json, '',
+       json_array(source_skill_id, content_hash, declared_version, ''), created_at
+FROM temp._v99_comic_skill_snapshots;
+CREATE INDEX idx_comic_skill_snapshots_project
+  ON comic_skill_snapshots(project_id, created_at);
+
+-- 自检：行数一致且 id 集合无缺失；任一不满足让 CHECK 失败，整个迁移回滚。
+DROP TABLE IF EXISTS temp._v99_guard;
+CREATE TEMP TABLE _v99_guard (ok INTEGER NOT NULL CHECK (ok = 1));
+INSERT INTO temp._v99_guard
+SELECT CASE WHEN
+  (SELECT COUNT(*) FROM comic_skill_snapshots)
+    = (SELECT COUNT(*) FROM temp._v99_comic_skill_snapshots)
+  AND NOT EXISTS (
+    SELECT id FROM temp._v99_comic_skill_snapshots
+    EXCEPT
+    SELECT id FROM comic_skill_snapshots
+  )
+  THEN 1 ELSE 0 END;
+DROP TABLE temp._v99_guard;
+DROP TABLE temp._v99_comic_skill_snapshots;
+
+-- 2) 生成记录：提示词内容 Hash 与实际提示词快照的不可变约束
+ALTER TABLE comic_generation_runs
+  ADD COLUMN prompt_content_hash_snapshot TEXT NOT NULL DEFAULT '';
+ALTER TABLE comic_generation_runs
+  ADD COLUMN context_snapshot_json TEXT NOT NULL DEFAULT '';
+-- 历史行回填：版本不可变，联表取当时的内容 Hash 是事实值；取不到则保持空串。
+UPDATE comic_generation_runs
+SET prompt_content_hash_snapshot = COALESCE((
+  SELECT v.content_hash FROM comic_prompt_versions v
+  WHERE v.id = comic_generation_runs.prompt_version_id
+), '')
+WHERE prompt_content_hash_snapshot = '';
+
+DROP TRIGGER IF EXISTS trg_comic_generation_prompt_snapshot_immutable;
+CREATE TRIGGER trg_comic_generation_prompt_snapshot_immutable
+BEFORE UPDATE OF rendered_prompt_snapshot ON comic_generation_runs
+WHEN OLD.rendered_prompt_snapshot <> NEW.rendered_prompt_snapshot
+BEGIN
+  SELECT RAISE(ABORT, '生成记录的提示词快照不可修改');
+END;
+
+-- 恢复到立即外键检查：若重建后的引用不成立，此处即失败并回滚。
+PRAGMA defer_foreign_keys = OFF;
+"#,
+);
+
 // ── 常量与上限 ─────────────────────────────────────────────────────────
 const MAX_TITLE_CHARS: usize = 240;
 const MAX_LONG_TEXT_CHARS: usize = 4000;
@@ -324,6 +416,13 @@ const MAX_SKILL_MANIFEST_FILE_BYTES: u64 = 16 * 1024 * 1024;
 /// 单次捕获的文件指纹总预算：超过后只记大小、不再读取内容，避免超大 Skill 目录拖死 UI。
 const MAX_SKILL_MANIFEST_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_OVERRIDE_PROMPT_CHARS: usize = 20_000;
+/// 参考图在提示词中的固定占位文本（v99）：外部生成工具无法读取本机绝对路径，
+/// 直接拼路径既无用又会把用户机器目录泄漏给第三方模型，因此只给可执行的动作说明。
+/// 本机界面仍可从结构化上下文的 `refImagePath` 查看真实路径。
+const REFERENCE_IMAGE_BLOCK_LINE: &str = "参考图：已在 Task Dock 关联，请在外部生成工具手动上传";
+/// 生成记录上下文摘要最多保留的角色/场景条数：超出时写 `truncated=true`，
+/// 明确标注被裁剪，而不是悄悄丢数据。
+const MAX_CONTEXT_SNAPSHOT_ITEMS: usize = 50;
 const PROMPT_CATEGORIES: &[&str] = &[
     "character_reference",
     "scene_reference",
@@ -512,6 +611,9 @@ pub struct ComicPromptContextCharacter {
     pub costume_description: String,
     pub hair_style_description: String,
     pub state_description: String,
+    /// 本集专属的视觉提示词补充（v99）：只在渲染本集时进入角色块，
+    /// 绝不写回 `comic_characters.description`，也不影响其它剧集。
+    pub visual_prompt_override: String,
     pub ref_image_path: String,
     pub using_override: bool,
 }
@@ -559,8 +661,12 @@ pub struct ComicPromptPreview {
     pub context: ComicPromptContext,
 }
 
-/// Skill 不可变内容快照（v96）。`content_hash` 是**实际装配内容**（SKILL.md 正文）的
-/// SHA-256，与能力中心登记的「原始文件 hash」区分；展示时用短标识。
+/// Skill 不可变内容快照（v96，v99 增加完整快照指纹）。
+///
+/// `content_hash` 是**实际装配内容**（SKILL.md 正文）的 SHA-256，与能力中心登记的
+/// 「原始文件 hash」区分；`files_manifest_hash` 是附属文件清单的 SHA-256；
+/// `snapshot_fingerprint` 由「来源 Skill + 正文 Hash + 声明版本 + 附属清单 Hash」
+/// 规范化组成，是快照身份的唯一判定依据（只改声明版本或附属文件也会产生新快照）。
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct ComicSkillSnapshot {
@@ -572,6 +678,8 @@ pub struct ComicSkillSnapshot {
     pub content_hash: String,
     pub content_snapshot: String,
     pub files_manifest_json: String,
+    pub files_manifest_hash: String,
+    pub snapshot_fingerprint: String,
     pub file_count: i64,
     pub created_at: String,
 }
@@ -589,10 +697,15 @@ pub struct ComicGenerationRun {
     pub prompt_version_id: String,
     pub prompt_template_name: String,
     pub prompt_version_no: i64,
+    /// 登记当时该提示词版本的内容 Hash（版本不可变，单独落库便于离线核对）。
+    pub prompt_content_hash_snapshot: String,
     pub skill_snapshot_id: Option<String>,
     pub skill_name: Option<String>,
     pub skill_declared_version: Option<String>,
+    /// 外部工具**实际收到**的提示词正文（用户确认后提交，不是登记时重新渲染的结果）。
     pub rendered_prompt_snapshot: String,
+    /// 渲染上下文的 JSON 快照（角色/场景/镜头/变量），空串表示未保存。
+    pub context_snapshot_json: String,
     pub skill_content_hash_snapshot: String,
     pub model_provider: String,
     pub model_name: String,
@@ -614,6 +727,9 @@ pub struct ComicGenerationRecordInput {
     pub episode_id: String,
     pub shot_id: Option<String>,
     pub prompt_version_id: String,
+    /// 必填：外部 AI 实际使用的最终提示词。允许用户粘贴/微调后的版本，
+    /// 后端**不得**用重新渲染的结果覆盖或截断它。
+    pub rendered_prompt_snapshot: String,
     pub skill_snapshot_id: Option<String>,
     pub model_provider: String,
     pub model_name: String,
@@ -1244,23 +1360,46 @@ fn read_episode(conn: &Connection, id: &str) -> AppResult<ComicEpisode> {
 
 pub fn comic_episode_list_impl(db: &Db, project_id: &str) -> AppResult<Vec<ComicEpisode>> {
     db.with_read(|conn| {
-        ensure_comic_project(conn, project_id, false)?;
-        let mut stmt = conn.prepare(
-            "SELECT id, project_id, episode_no, title, synopsis, script, status, progress,
-                    character_ids_json, sort_order, created_at, updated_at
-             FROM comic_episodes WHERE project_id = ?1
-             ORDER BY sort_order, created_at, id
-             LIMIT ?2",
+        let (rows, _total) = comic_episode_list_page_in_conn(
+            conn,
+            project_id,
+            MAX_LIST_ROWS as u32,
+            0,
         )?;
-        let rows = stmt.query_map(params![project_id, MAX_LIST_ROWS], |row| {
-            row_to_episode(conn, row)
-        })?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row.map_err(AppError::from)?);
-        }
-        Ok(out)
+        Ok(rows)
     })
+}
+
+/// 剧集分页读取（Agent 领域入口共用；调用方持有读连接）。
+/// 返回 `(当前页, 真实总数)`；行模型仍含 `script`，Agent DTO 负责裁掉正文。
+pub(crate) fn comic_episode_list_page_in_conn(
+    conn: &Connection,
+    project_id: &str,
+    limit: u32,
+    offset: u32,
+) -> AppResult<(Vec<ComicEpisode>, u32)> {
+    ensure_comic_project(conn, project_id, false)?;
+    let total: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM comic_episodes WHERE project_id = ?1",
+        params![project_id],
+        |r| r.get(0),
+    )?;
+    let mut stmt = conn.prepare(
+        "SELECT id, project_id, episode_no, title, synopsis, script, status, progress,
+                character_ids_json, sort_order, created_at, updated_at
+         FROM comic_episodes WHERE project_id = ?1
+         ORDER BY sort_order, created_at, id
+         LIMIT ?2 OFFSET ?3",
+    )?;
+    let rows = stmt.query_map(
+        params![project_id, limit as i64, offset as i64],
+        |row| row_to_episode(conn, row),
+    )?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(AppError::from)?);
+    }
+    Ok((out, total.max(0) as u32))
 }
 
 pub fn comic_episode_get_impl(db: &Db, id: &str) -> AppResult<ComicEpisode> {
@@ -1501,29 +1640,53 @@ pub fn comic_shot_list_impl(
     episode_id: Option<String>,
 ) -> AppResult<Vec<ComicShot>> {
     db.with_read(|conn| {
-        ensure_comic_project(conn, project_id, false)?;
-        if let Some(episode_id) = episode_id.as_deref().filter(|s| !s.is_empty()) {
-            ensure_episode_belongs(conn, project_id, episode_id)?;
-        }
-        let mut stmt = conn.prepare(
-            "SELECT id, project_id, episode_id, shot_no, description, character_ids_json,
-                    scene_id, dialogue, shot_size, camera_move, duration_sec, status,
-                    asset_refs_json, note, sort_order, created_at, updated_at
-             FROM comic_shots
-             WHERE project_id = ?1 AND (?2 IS NULL OR episode_id = ?2)
-             ORDER BY episode_id, sort_order, created_at, id
-             LIMIT ?3",
+        let (rows, _total) = comic_shot_list_page_in_conn(
+            conn,
+            project_id,
+            episode_id.as_deref(),
+            MAX_LIST_ROWS as u32,
+            0,
         )?;
-        let rows = stmt.query_map(
-            params![project_id, episode_id, MAX_LIST_ROWS],
-            row_to_shot,
-        )?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row.map_err(AppError::from)?);
-        }
-        Ok(out)
+        Ok(rows)
     })
+}
+
+/// 分镜分页读取（Agent 领域入口共用；调用方持有读连接）。
+pub(crate) fn comic_shot_list_page_in_conn(
+    conn: &Connection,
+    project_id: &str,
+    episode_id: Option<&str>,
+    limit: u32,
+    offset: u32,
+) -> AppResult<(Vec<ComicShot>, u32)> {
+    ensure_comic_project(conn, project_id, false)?;
+    if let Some(episode_id) = episode_id.filter(|s| !s.is_empty()) {
+        ensure_episode_belongs(conn, project_id, episode_id)?;
+    }
+    let total: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM comic_shots
+         WHERE project_id = ?1 AND (?2 IS NULL OR episode_id = ?2)",
+        params![project_id, episode_id],
+        |r| r.get(0),
+    )?;
+    let mut stmt = conn.prepare(
+        "SELECT id, project_id, episode_id, shot_no, description, character_ids_json,
+                scene_id, dialogue, shot_size, camera_move, duration_sec, status,
+                asset_refs_json, note, sort_order, created_at, updated_at
+         FROM comic_shots
+         WHERE project_id = ?1 AND (?2 IS NULL OR episode_id = ?2)
+         ORDER BY episode_id, sort_order, created_at, id
+         LIMIT ?3 OFFSET ?4",
+    )?;
+    let rows = stmt.query_map(
+        params![project_id, episode_id, limit as i64, offset as i64],
+        row_to_shot,
+    )?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(AppError::from)?);
+    }
+    Ok((out, total.max(0) as u32))
 }
 
 pub fn comic_shot_get_impl(db: &Db, id: &str) -> AppResult<ComicShot> {
@@ -2371,35 +2534,64 @@ pub fn comic_media_list_impl(
     shot_id: Option<String>,
 ) -> AppResult<Vec<ComicMediaVersion>> {
     db.with_read(|conn| {
-        ensure_comic_project(conn, project_id, false)?;
-        if let Some(shot_id) = shot_id.as_deref().filter(|s| !s.is_empty()) {
-            let owner: Option<String> = conn
-                .query_row(
-                    "SELECT project_id FROM comic_shots WHERE id = ?1",
-                    params![shot_id],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            match owner {
-                Some(owner) if owner == project_id => {}
-                Some(_) => return Err(AppError::Validation("镜头不属于当前项目".into())),
-                None => return Err(AppError::NotFound("镜头不存在".into())),
-            }
-        }
-        let sql = format!(
-            "SELECT {MEDIA_COLUMNS} FROM comic_media_versions m {MEDIA_JOINS}
-             WHERE m.project_id = ?1 AND (?2 IS NULL OR m.shot_id = ?2)
-             ORDER BY m.created_at, m.id
-             LIMIT ?3"
-        );
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(params![project_id, shot_id, MAX_LIST_ROWS], row_to_media)?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row.map_err(AppError::from)?);
-        }
-        Ok(out)
+        let (rows, _total) = comic_media_list_page_in_conn(
+            conn,
+            project_id,
+            shot_id.as_deref(),
+            MAX_LIST_ROWS as u32,
+            0,
+        )?;
+        Ok(rows)
     })
+}
+
+/// 素材版本分页读取（Agent 领域入口共用；调用方持有读连接）。
+///
+/// `shot_id` 给定时必须先确认镜头属于当前项目，避免跨项目探测。
+pub(crate) fn comic_media_list_page_in_conn(
+    conn: &Connection,
+    project_id: &str,
+    shot_id: Option<&str>,
+    limit: u32,
+    offset: u32,
+) -> AppResult<(Vec<ComicMediaVersion>, u32)> {
+    ensure_comic_project(conn, project_id, false)?;
+    if let Some(shot_id) = shot_id.filter(|s| !s.is_empty()) {
+        let owner: Option<String> = conn
+            .query_row(
+                "SELECT project_id FROM comic_shots WHERE id = ?1",
+                params![shot_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match owner {
+            Some(owner) if owner == project_id => {}
+            Some(_) => return Err(AppError::Validation("镜头不属于当前项目".into())),
+            None => return Err(AppError::NotFound("镜头不存在".into())),
+        }
+    }
+    let total: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM comic_media_versions
+         WHERE project_id = ?1 AND (?2 IS NULL OR shot_id = ?2)",
+        params![project_id, shot_id],
+        |r| r.get(0),
+    )?;
+    let sql = format!(
+        "SELECT {MEDIA_COLUMNS} FROM comic_media_versions m {MEDIA_JOINS}
+         WHERE m.project_id = ?1 AND (?2 IS NULL OR m.shot_id = ?2)
+         ORDER BY m.created_at, m.id
+         LIMIT ?3 OFFSET ?4"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(
+        params![project_id, shot_id, limit as i64, offset as i64],
+        row_to_media,
+    )?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(AppError::from)?);
+    }
+    Ok((out, total.max(0) as u32))
 }
 
 /// 导入本地素材：只登记绝对路径引用，不复制大文件；目标三选一（镜头/角色/场景）。
@@ -2650,8 +2842,13 @@ fn ensure_character_belongs(
     }
 }
 
-/// 素材与生成记录的关联校验（P1）：同项目、同镜头、同剧集，且记录本身必须挂了镜头。
-/// 生成记录代表一次具体镜头的产出，不允许被当成「项目级通用来源」复用。
+/// 素材与生成记录的关联校验（v99）：
+///
+/// - 记录必须属于当前项目；
+/// - 导入目标必须是镜头（角色/场景参考图不接受生成记录）；
+/// - 镜头级记录：目标镜头必须与记录镜头一致；
+/// - 整集级记录（`shot_id = NULL`）：目标镜头必须属于记录剧集，可关联本集任意镜头的产物；
+/// - 任何情况下都不允许跨项目、跨剧集关联。
 fn ensure_generation_run_links(
     conn: &Connection,
     project_id: &str,
@@ -2676,25 +2873,30 @@ fn ensure_generation_run_links(
             "生成记录只能关联到镜头素材；当前导入目标不是镜头".into(),
         ));
     };
-    match run_shot {
+    // 一次查询同时确认镜头存在、属于当前项目，并拿到所属剧集。
+    let target_episode: Option<String> = conn
+        .query_row(
+            "SELECT episode_id FROM comic_shots WHERE id = ?1 AND project_id = ?2",
+            params![target_shot, project_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(target_episode) = target_episode else {
+        return Err(AppError::Validation(
+            "目标镜头不存在或不属于当前项目".into(),
+        ));
+    };
+    match run_shot.as_deref() {
         Some(run_shot) if run_shot == target_shot => {}
         Some(_) => {
             return Err(AppError::Validation(
                 "生成记录关联的镜头与素材目标镜头不一致".into(),
             ));
         }
-        None => {
-            return Err(AppError::Validation(
-                "生成记录未关联镜头，不能作为该素材的生成来源".into(),
-            ));
-        }
+        // 整集级记录：允许同集任意镜头，但跨集一律拒绝。
+        None => {}
     }
-    let shot_episode: String = conn.query_row(
-        "SELECT episode_id FROM comic_shots WHERE id = ?1",
-        params![target_shot],
-        |r| r.get(0),
-    )?;
-    if shot_episode != run_episode {
+    if target_episode != run_episode {
         return Err(AppError::Validation(
             "生成记录关联的剧集与镜头所属剧集不一致".into(),
         ));
@@ -2702,7 +2904,10 @@ fn ensure_generation_run_links(
     Ok(())
 }
 
-/// 版本元信息编辑：版本标注 / 修改意见 / 候选-拒收状态。采用状态走 `adopt` 命令。
+/// 素材版本元信息编辑：版本标注 / 修改意见 / 候选-拒收状态。采用状态走 `adopt` 命令。
+///
+/// 校验统一在 `comic_media_save_in_conn` 内完成：IPC、Agent 领域、文件导入
+/// 共用同一套规则，入口层不再各写一份。这里只负责事务边界与回读。
 pub fn comic_media_save_impl(
     db: &Db,
     id: &str,
@@ -2710,33 +2915,64 @@ pub fn comic_media_save_impl(
     status: Option<String>,
     review_note: Option<String>,
 ) -> AppResult<ComicMediaVersion> {
-    let version_label = validate_text(
-        version_label.as_deref().unwrap_or_default(),
-        "版本标注",
-        MAX_TITLE_CHARS,
-        true,
-    )?;
-    let review_note = validate_text(
-        review_note.as_deref().unwrap_or_default(),
-        "修改意见",
-        MAX_LONG_TEXT_CHARS,
-        true,
-    )?;
-    let status = match status {
-        None => None,
-        Some(value) => Some(validate_enum(
-            &value,
-            "素材状态",
-            MEDIA_IMPORT_STATUSES,
-        )?),
-    };
     db.with_transaction(|conn| {
-        comic_media_save_in_conn(conn, id, version_label, status, review_note)
+        let previous_at: String = conn.query_row(
+            "SELECT updated_at FROM comic_media_versions WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )?;
+        let (_project_id, saved_at) = comic_media_save_in_conn(
+            conn,
+            id,
+            version_label.unwrap_or_default(),
+            status,
+            review_note.unwrap_or_default(),
+        )?;
+        // UI 写入与 Agent 领域核心共用业务校验，但只有 UI 包装层推进版本；
+        // 领域核心在自己的事务里推进，避免重复 +1。
+        crate::agent_access::domains::revision::note_ui_write(
+            conn,
+            "comic.media_version",
+            id,
+            &previous_at,
+            &saved_at,
+        )?;
+        Ok(())
     })?;
     db.with_read(|conn| read_media(conn, id))
 }
 
+/// 素材版本元信息业务校验（所有入口唯一事实源）。
+///
+/// - `version_label` ≤ 240 字符，允许空串；
+/// - `review_note` ≤ 4000 字符，允许空串；
+/// - `status` 只允许 candidate / rejected；`adopted` 必须走独立 adopt 操作；
+/// - 统一 trim 首尾空白并拒绝控制字符。
+pub(crate) fn validate_media_meta(
+    version_label: &str,
+    status: Option<&str>,
+    review_note: &str,
+) -> AppResult<(String, Option<String>, String)> {
+    let version_label = validate_text(version_label, "版本标注", MAX_TITLE_CHARS, true)?;
+    let review_note = validate_text(review_note, "修改意见", MAX_LONG_TEXT_CHARS, true)?;
+    let status = match status {
+        None => None,
+        Some(value) => {
+            if value.trim() == "adopted" {
+                return Err(AppError::Validation(
+                    "素材状态 adopted 只能通过独立的 comic.media.adopt 操作设置（candidate | rejected）"
+                        .into(),
+                ));
+            }
+            Some(validate_enum(value, "素材状态", MEDIA_IMPORT_STATUSES)?)
+        }
+    };
+    Ok((version_label, status, review_note))
+}
+
 /// 素材版本元信息写入的事务内实现（Agent 领域层复用）。
+///
+/// 校验也在这里完成，调用方不得在入口层重复实现规则或放宽上限。
 /// 返回 `(project_id, saved_at)`，供领域层做归属校验与 revision 推进。
 pub(crate) fn comic_media_save_in_conn(
     conn: &rusqlite::Connection,
@@ -2745,6 +2981,8 @@ pub(crate) fn comic_media_save_in_conn(
     status: Option<String>,
     review_note: String,
 ) -> AppResult<(String, String)> {
+    let (version_label, status, review_note) =
+        validate_media_meta(&version_label, status.as_deref(), &review_note)?;
     let project_id = owner_project_id(conn, "comic_media_versions", id)?;
     ensure_comic_project(conn, &project_id, true)?;
     let now = now_iso();
@@ -2767,7 +3005,33 @@ pub(crate) fn comic_media_save_in_conn(
 
 /// 标记采用：同一镜头下其余版本回到候选；未关联镜头的参考素材不能采用。
 pub fn comic_media_adopt_impl(db: &Db, id: &str) -> AppResult<ComicMediaVersion> {
-    db.with_transaction(|conn| comic_media_adopt_in_conn(conn, id))?;
+    db.with_transaction(|conn| {
+        let previous_at: String = conn.query_row(
+            "SELECT updated_at FROM comic_media_versions WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )?;
+        let (_project_id, _shot_id, saved_at, replaced) =
+            comic_media_adopt_in_conn(conn, id)?;
+        crate::agent_access::domains::revision::note_ui_write(
+            conn,
+            "comic.media_version",
+            id,
+            &previous_at,
+            &saved_at,
+        )?;
+        // 被本次采用替代的旧版本也发生了变化（adopted → candidate）。
+        for (old_id, old_updated_at) in replaced {
+            crate::agent_access::domains::revision::note_ui_write(
+                conn,
+                "comic.media_version",
+                &old_id,
+                &old_updated_at,
+                &saved_at,
+            )?;
+        }
+        Ok(())
+    })?;
     db.with_read(|conn| read_media(conn, id))
 }
 
@@ -3284,12 +3548,20 @@ fn render_comic_prompt_template(
     allowed_variables: &BTreeSet<String>,
 ) -> AppResult<String> {
     let segments = parse_comic_prompt_template(template, allowed_variables)?;
-    let mut out = String::with_capacity(template.len());
+    render_comic_prompt_segments(&segments, variables)
+}
+
+/// 按已解析片段渲染：与解析共用同一份结果，避免「解析一次、校验一次、渲染再解析」口径漂移。
+fn render_comic_prompt_segments(
+    segments: &[ComicPromptSegment],
+    variables: &BTreeMap<String, String>,
+) -> AppResult<String> {
+    let mut out = String::new();
     for segment in segments {
         match segment {
-            ComicPromptSegment::Text(text) => out.push_str(&text),
+            ComicPromptSegment::Text(text) => out.push_str(text),
             ComicPromptSegment::Variable(name) => {
-                let Some(value) = variables.get(&name) else {
+                let Some(value) = variables.get(name) else {
                     return Err(AppError::Validation(format!("缺少变量 {name} 的值")));
                 };
                 out.push_str(value);
@@ -3297,6 +3569,21 @@ fn render_comic_prompt_template(
         }
     }
     Ok(out)
+}
+
+/// 模板**实际用到**的变量集合（来自解析结果，而不是原始字符串匹配）。
+///
+/// 关键修复（v99）：`{{ shot.dialogue }}` 这类带空格的合法占位符解析后变量名会 trim，
+/// 若用 `content.contains("{{shot.dialogue}}")` 判断会被误判为「未使用」，
+/// 导致必填校验被绕过、空内容也能渲染。
+fn prompt_segment_variables(segments: &[ComicPromptSegment]) -> BTreeSet<String> {
+    segments
+        .iter()
+        .filter_map(|segment| match segment {
+            ComicPromptSegment::Variable(name) => Some(name.clone()),
+            ComicPromptSegment::Text(_) => None,
+        })
+        .collect()
 }
 
 /// 在连接上构建真实上下文（供预览与生成记录共用，避免两套拼装逻辑）。
@@ -3339,7 +3626,7 @@ fn build_comic_prompt_context_conn(
             Err(error) => return Err(error),
         };
         let override_row = read_override(conn, episode_id, character_id)?;
-        let (role, appearance_label, appearance_description, costume, hair, state, ref_image) =
+        let (role, appearance_label, appearance_description, costume, hair, state, visual, ref_image) =
             match &override_row {
                 Some(row) => (
                     if row.role_in_episode.trim().is_empty() {
@@ -3352,6 +3639,7 @@ fn build_comic_prompt_context_conn(
                     row.costume_description.clone(),
                     row.hair_style_description.clone(),
                     row.state_description.clone(),
+                    row.visual_prompt_override.clone(),
                     if row.ref_image_path.trim().is_empty() {
                         base.ref_image_path.clone()
                     } else {
@@ -3360,6 +3648,7 @@ fn build_comic_prompt_context_conn(
                 ),
                 None => (
                     base.role.clone(),
+                    String::new(),
                     String::new(),
                     String::new(),
                     String::new(),
@@ -3378,6 +3667,7 @@ fn build_comic_prompt_context_conn(
             costume_description: costume,
             hair_style_description: hair,
             state_description: state,
+            visual_prompt_override: visual,
             ref_image_path: ref_image,
             using_override: override_row.is_some(),
         });
@@ -3407,8 +3697,14 @@ fn build_comic_prompt_context_conn(
         if !character.state_description.trim().is_empty() {
             lines.push(format!("本集状态：{}", character.state_description.trim()));
         }
+        if !character.visual_prompt_override.trim().is_empty() {
+            lines.push(format!(
+                "本集视觉提示词补充：{}",
+                character.visual_prompt_override.trim()
+            ));
+        }
         if !character.ref_image_path.trim().is_empty() {
-            lines.push(format!("参考图：{}", character.ref_image_path.trim()));
+            lines.push(REFERENCE_IMAGE_BLOCK_LINE.to_string());
         }
         block_lines.push(lines.join("\n"));
     }
@@ -3431,7 +3727,7 @@ fn build_comic_prompt_context_conn(
                 lines.push(format!("设定：{}", scene.description.trim()));
             }
             if !scene.ref_image_path.trim().is_empty() {
-                lines.push(format!("参考图：{}", scene.ref_image_path.trim()));
+                lines.push(REFERENCE_IMAGE_BLOCK_LINE.to_string());
             }
             lines.join("\n")
         })
@@ -3514,10 +3810,13 @@ fn render_prompt_version_conn(
     }
     let context = build_comic_prompt_context_conn(conn, project_id, episode_id, shot_id)?;
     let required = parse_prompt_variables(&version.variables_json)?;
+    let allowed = comic_prompt_variable_set();
+    // 只解析一次：必填校验与渲染共用同一份片段集合。
+    let segments = parse_comic_prompt_template(&version.content, &allowed)?;
+    let used_variables = prompt_segment_variables(&segments);
     for name in &required {
         // 只对「模板里真正用到的」必填变量做空值检查：声明了但没用到不影响渲染。
-        let placeholder = format!("{{{{{name}}}}}");
-        if !version.content.contains(&placeholder) {
+        if !used_variables.contains(name.as_str()) {
             continue;
         }
         let empty = context
@@ -3531,8 +3830,7 @@ fn render_prompt_version_conn(
             )));
         }
     }
-    let allowed = comic_prompt_variable_set();
-    let rendered = render_comic_prompt_template(&version.content, &context.variables, &allowed)?;
+    let rendered = render_comic_prompt_segments(&segments, &context.variables)?;
     Ok(ComicPromptPreview {
         prompt_version_id: version.id.clone(),
         template_id: template.id,
@@ -3650,6 +3948,26 @@ fn build_skill_files_manifest(
     serde_json::to_string(&out).unwrap_or_else(|_| "[]".to_string())
 }
 
+/// 完整快照指纹（v99）：规范化 JSON 数组 `[来源 Skill, 正文 Hash, 声明版本, 附属清单 Hash]`。
+///
+/// 用 JSON 数组而不是分隔符拼接，避免字段本身含分隔符时产生歧义；
+/// 迁移 v99 对历史行用相同的 `json_array(...)` 口径回填（历史行附属清单 Hash 记空串，
+/// 因为没有在旧行上重新计算，也不允许猜测）。
+fn skill_snapshot_fingerprint(
+    source_skill_id: &str,
+    content_hash: &str,
+    declared_version: &str,
+    files_manifest_hash: &str,
+) -> AppResult<String> {
+    serde_json::to_string(&[
+        source_skill_id,
+        content_hash,
+        declared_version,
+        files_manifest_hash,
+    ])
+    .map_err(|_| AppError::Validation("Skill 快照指纹计算失败".into()))
+}
+
 fn row_to_skill_snapshot(row: &rusqlite::Row<'_>) -> rusqlite::Result<ComicSkillSnapshot> {
     let manifest: String = row.get("files_manifest_json")?;
     let file_count = serde_json::from_str::<serde_json::Value>(&manifest)
@@ -3674,13 +3992,16 @@ fn row_to_skill_snapshot(row: &rusqlite::Row<'_>) -> rusqlite::Result<ComicSkill
         content_hash: row.get("content_hash")?,
         content_snapshot: row.get("content_snapshot")?,
         files_manifest_json: manifest,
+        files_manifest_hash: row.get("files_manifest_hash")?,
+        snapshot_fingerprint: row.get("snapshot_fingerprint")?,
         file_count,
         created_at: row.get("created_at")?,
     })
 }
 
 const SKILL_SNAPSHOT_COLUMNS: &str = "id, project_id, source_skill_id, skill_name, declared_version, \
-    content_hash, content_snapshot, files_manifest_json, created_at";
+    content_hash, content_snapshot, files_manifest_json, files_manifest_hash, \
+    snapshot_fingerprint, created_at";
 
 fn read_skill_snapshot(conn: &Connection, id: &str) -> AppResult<ComicSkillSnapshot> {
     let sql = format!(
@@ -3693,8 +4014,13 @@ fn read_skill_snapshot(conn: &Connection, id: &str) -> AppResult<ComicSkillSnaps
 
 /// 捕获 Skill 当前内容为不可变快照。
 ///
-/// 校验链：真实 Skill 存在 → 已启用 → 未丢失 → 作用域允许当前项目 →
-/// 读取实际使用正文 → 内容 Hash → 同内容复用已有快照（幂等）。
+/// 身份判定（v99）不再只看正文 Hash：`snapshot_fingerprint` 由
+/// 「来源 Skill + 正文 Hash + SKILL.md 声明版本 + 附属文件清单 Hash」规范化组成。
+/// 因此只改声明版本、或只改附属文件，也会产出新的快照行，不会复用带着旧元数据的记录；
+/// 四项都相同才复用（幂等）。历史快照只追加、不更新。
+///
+/// 注意：本轮只有 SKILL.md 正文装配进上下文；附属文件只保存清单指纹，不保存正文，
+/// 也不参与模型调用——不要在文案或记录里宣称附件正文已被快照。
 pub fn comic_skill_snapshot_capture_impl(
     db: &Db,
     project_id: &str,
@@ -3738,17 +4064,24 @@ pub fn comic_skill_snapshot_capture_impl(
     }
     let content_hash = crate::capability::content_hash(detail.content.as_bytes());
     let manifest = build_skill_files_manifest(Path::new(&summary.source_path), &detail.files);
+    let files_manifest_hash = crate::capability::content_hash(manifest.as_bytes());
     let source_skill_id = summary.id.clone();
     let skill_name = summary.name.clone();
     let declared_version = summary.version.clone();
+    let snapshot_fingerprint = skill_snapshot_fingerprint(
+        &source_skill_id,
+        &content_hash,
+        &declared_version,
+        &files_manifest_hash,
+    )?;
 
     db.with_transaction(|conn| {
         ensure_comic_project(conn, &project_id, true)?;
         let existing: Option<String> = conn
             .query_row(
                 "SELECT id FROM comic_skill_snapshots
-                 WHERE project_id = ?1 AND source_skill_id = ?2 AND content_hash = ?3",
-                params![project_id, source_skill_id, content_hash],
+                 WHERE project_id = ?1 AND source_skill_id = ?2 AND snapshot_fingerprint = ?3",
+                params![project_id, source_skill_id, snapshot_fingerprint],
                 |row| row.get(0),
             )
             .optional()?;
@@ -3759,8 +4092,9 @@ pub fn comic_skill_snapshot_capture_impl(
         conn.execute(
             "INSERT INTO comic_skill_snapshots
              (id, project_id, source_skill_id, skill_name, declared_version, content_hash,
-              content_snapshot, files_manifest_json, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+              content_snapshot, files_manifest_json, files_manifest_hash, snapshot_fingerprint,
+              created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 id,
                 project_id,
@@ -3770,6 +4104,8 @@ pub fn comic_skill_snapshot_capture_impl(
                 content_hash,
                 detail.content,
                 manifest,
+                files_manifest_hash,
+                snapshot_fingerprint,
                 now_iso()
             ],
         )?;
@@ -3815,10 +4151,12 @@ pub fn comic_skill_snapshot_get_impl(db: &Db, snapshot_id: &str) -> AppResult<Co
 
 const GENERATION_RUN_COLUMNS: &str = "r.id, r.project_id, r.episode_id, e.title AS episode_title, \
     r.shot_id, s.shot_no AS shot_no, r.prompt_version_id, t.name AS template_name, \
-    v.version_no AS version_no, r.skill_snapshot_id, k.skill_name AS skill_name, \
+    v.version_no AS version_no, r.prompt_content_hash_snapshot, r.skill_snapshot_id, \
+    k.skill_name AS skill_name, \
     k.declared_version AS skill_declared_version, r.rendered_prompt_snapshot, \
-    r.skill_content_hash_snapshot, r.model_provider, r.model_name, r.model_version, \
-    r.parameters_json, r.seed, r.input_media_ids_json, r.external_job_id, r.note, r.created_at, \
+    r.context_snapshot_json, r.skill_content_hash_snapshot, r.model_provider, r.model_name, \
+    r.model_version, r.parameters_json, r.seed, r.input_media_ids_json, r.external_job_id, \
+    r.note, r.created_at, \
     (SELECT COALESCE(json_group_array(m.id), '[]') FROM comic_media_versions m \
       WHERE m.generation_run_id = r.id) AS output_media_ids_json";
 
@@ -3842,10 +4180,12 @@ fn row_to_generation_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<ComicGener
         prompt_version_id: row.get("prompt_version_id")?,
         prompt_template_name: row.get("template_name")?,
         prompt_version_no: row.get("version_no")?,
+        prompt_content_hash_snapshot: row.get("prompt_content_hash_snapshot")?,
         skill_snapshot_id: row.get("skill_snapshot_id")?,
         skill_name: row.get("skill_name")?,
         skill_declared_version: row.get("skill_declared_version")?,
         rendered_prompt_snapshot: row.get("rendered_prompt_snapshot")?,
+        context_snapshot_json: row.get("context_snapshot_json")?,
         skill_content_hash_snapshot: row.get("skill_content_hash_snapshot")?,
         model_provider: row.get("model_provider")?,
         model_name: row.get("model_name")?,
@@ -3867,10 +4207,62 @@ fn read_generation_run(conn: &Connection, id: &str) -> AppResult<ComicGeneration
         .ok_or_else(|| AppError::NotFound("生成记录不存在或已被删除".into()))
 }
 
+/// 生成记录附带的上下文摘要（v99）：只保存「当时用了哪些角色/场景/镜头」，
+/// 不复制剧本正文等大字段。参考图路径属于本地库内数据，可供本机界面核对；
+/// 它不会进入提示词正文（参考图在提示词里只用固定占位说明）。
+fn build_comic_context_snapshot_json(context: &ComicPromptContext) -> String {
+    let truncated =
+        context.characters.len() > MAX_CONTEXT_SNAPSHOT_ITEMS
+            || context.scenes.len() > MAX_CONTEXT_SNAPSHOT_ITEMS;
+    let characters: Vec<serde_json::Value> = context
+        .characters
+        .iter()
+        .take(MAX_CONTEXT_SNAPSHOT_ITEMS)
+        .map(|character| {
+            serde_json::json!({
+                "id": character.id,
+                "name": character.name,
+                "role": character.role,
+                "usingOverride": character.using_override,
+                "visualPromptOverride": character.visual_prompt_override,
+                "refImagePath": character.ref_image_path,
+            })
+        })
+        .collect();
+    let scenes: Vec<serde_json::Value> = context
+        .scenes
+        .iter()
+        .take(MAX_CONTEXT_SNAPSHOT_ITEMS)
+        .map(|scene| {
+            serde_json::json!({
+                "id": scene.id,
+                "name": scene.name,
+                "refImagePath": scene.ref_image_path,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "projectId": context.project_id,
+        "episodeId": context.episode_id,
+        "shotId": context.shot_id,
+        "characters": characters,
+        "scenes": scenes,
+        "shot": context.shot.as_ref().map(|shot| serde_json::json!({
+            "id": shot.id,
+            "shotNo": shot.shot_no,
+        })),
+        "variableKeys": context.variables.keys().collect::<Vec<_>>(),
+        "truncated": truncated,
+    })
+    .to_string()
+}
+
 /// 登记一次真实发生的外部生成。
 ///
-/// 渲染内容由后端按真实上下文重新生成（不接受前端传入的「渲染结果」），
-/// 确保记录里的提示词就是当时数据库状态对应的提示词；Skill 只保存内容 Hash 标识。
+/// 追溯原则（v99）：提示词快照 = 用户提交的「外部工具实际收到的文本」，
+/// 后端不再重新渲染并覆盖它；只校验归属（项目/剧集/镜头/版本）与长度，
+/// 中文、换行、标点原样保存，超限直接报错而不是静默截断。
+/// Skill 只保存内容 Hash 与快照外键，不复制正文。
 pub fn comic_generation_record_create_impl(
     db: &Db,
     input: ComicGenerationRecordInput,
@@ -3909,6 +4301,12 @@ pub fn comic_generation_record_create_impl(
     let note = validate_multiline_text(&input.note, "生成备注", MAX_GENERATION_NOTE_CHARS, true)?;
     let parameters_json = validate_parameters_json(input.parameters_json.as_deref())?;
     let input_media_ids = validate_id_list(input.input_media_ids, "输入素材", MAX_REF_COUNT)?;
+    let rendered_prompt_snapshot = validate_prompt_body(&input.rendered_prompt_snapshot)
+        .map_err(|_| {
+            AppError::Validation(
+                "实际使用的提示词不能为空、不能超过长度上限，也不能含非法控制字符".into(),
+            )
+        })?;
 
     db.with_transaction(|conn| {
         ensure_comic_project(conn, &project_id, true)?;
@@ -3943,8 +4341,15 @@ pub fn comic_generation_record_create_impl(
             }
         }
         let version = read_prompt_version(conn, &prompt_version_id)?;
-        let preview =
-            render_prompt_version_conn(conn, &project_id, &version, &episode_id, shot_id.as_deref())?;
+        let template = read_prompt_template(conn, &version.template_id)?;
+        if template.project_id != project_id {
+            return Err(AppError::Validation("提示词版本不属于当前项目".into()));
+        }
+        // 只为上下文摘要读取真实数据；提示词正文用用户提交的实际内容，绝不重新渲染覆盖。
+        let context =
+            build_comic_prompt_context_conn(conn, &project_id, &episode_id, shot_id.as_deref())?;
+        let context_snapshot_json = build_comic_context_snapshot_json(&context);
+        let prompt_content_hash_snapshot = version.content_hash.clone();
         let (skill_hash, snapshot_project) = match skill_snapshot_id.as_deref() {
             Some(snapshot_id) => {
                 let snapshot = read_skill_snapshot(conn, snapshot_id)?;
@@ -3962,19 +4367,23 @@ pub fn comic_generation_record_create_impl(
         let id = uuid::Uuid::new_v4().to_string();
         conn.execute(
             "INSERT INTO comic_generation_runs
-             (id, project_id, episode_id, shot_id, prompt_version_id, skill_snapshot_id,
-              rendered_prompt_snapshot, skill_content_hash_snapshot, model_provider,
+             (id, project_id, episode_id, shot_id, prompt_version_id,
+              prompt_content_hash_snapshot, skill_snapshot_id, rendered_prompt_snapshot,
+              context_snapshot_json, skill_content_hash_snapshot, model_provider,
               model_name, model_version, parameters_json, seed, input_media_ids_json,
               external_job_id, note, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
+                     ?17, ?18, ?19)",
             params![
                 id,
                 project_id,
                 episode_id,
                 shot_id,
                 prompt_version_id,
+                prompt_content_hash_snapshot,
                 skill_snapshot_id,
-                preview.rendered,
+                rendered_prompt_snapshot,
+                context_snapshot_json,
                 skill_hash,
                 model_provider,
                 model_name,
@@ -5476,6 +5885,37 @@ mod tests {
         .unwrap()
     }
 
+    /// 带「本集视觉提示词补充」的形象覆盖（v99），用于验证补充只进本集上下文。
+    #[allow(clippy::too_many_arguments)]
+    fn save_override_with_visual(
+        db: &Db,
+        project_id: &str,
+        episode_id: &str,
+        character_id: &str,
+        role: &str,
+        label: &str,
+        appearance: &str,
+        costume: &str,
+        visual_prompt: &str,
+        state: &str,
+    ) -> ComicEpisodeCharacterOverride {
+        comic_episode_character_override_save_impl(
+            db,
+            project_id,
+            episode_id,
+            character_id,
+            role.to_string(),
+            label.to_string(),
+            appearance.to_string(),
+            costume.to_string(),
+            String::new(),
+            state.to_string(),
+            visual_prompt.to_string(),
+            String::new(),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn comic_episode_character_overrides_are_isolated_and_global_stays_intact() {
         let db = Db::open_in_memory().unwrap();
@@ -5828,8 +6268,9 @@ mod tests {
             "中景".into(), "推镜".into(), Some(2.0), "todo".into(), None, "".into(), None,
         )
         .unwrap();
-        save_override(
-            &db, &project.id, &ep1.id, &character.id, "学生", "高中时期", "", "蓝白校服", "正常状态",
+        save_override_with_visual(
+            &db, &project.id, &ep1.id, &character.id, "学生", "高中时期", "", "蓝白校服",
+            "左脸有一道浅疤，右手缠着白色绷带", "右手受伤",
         );
 
         let template = comic_prompt_template_save_impl(
@@ -5915,14 +6356,40 @@ mod tests {
         assert!(preview.rendered.contains("【角色】林远"));
         assert!(preview.rendered.contains("基础设定：18 岁，黑色短发，运动型身材"));
         assert!(preview.rendered.contains("本集服装：蓝白校服"));
+        assert!(preview.rendered.contains("本集状态：右手受伤"));
+        assert!(
+            preview.rendered.contains("本集视觉提示词补充：左脸有一道浅疤，右手缠着白色绷带"),
+            "本集视觉提示词补充必须进入第一集角色块"
+        );
         assert!(preview.rendered.contains("【场景】篮球场"));
         assert!(preview.rendered.contains("画面：少年起跳投篮"));
         assert!(preview.rendered.contains('\n'));
         assert!(!preview.rendered.contains("{{"));
         assert_eq!(preview.context.characters.len(), 1);
         assert!(preview.context.characters[0].using_override);
+        assert_eq!(
+            preview.context.characters[0].visual_prompt_override,
+            "左脸有一道浅疤，右手缠着白色绷带"
+        );
         assert_eq!(preview.context.scenes.len(), 1);
         assert_eq!(preview.context.shot.as_ref().unwrap().shot_no, 1);
+
+        // 第二集没有形象覆盖：不能出现第一集的补充，也不能被写回全局档案。
+        let ep2_preview =
+            comic_prompt_render_impl(&db, &project.id, &v1.id, &ep2.id, None).unwrap();
+        assert!(
+            !ep2_preview.rendered.contains("浅疤") && !ep2_preview.rendered.contains("绷带"),
+            "第一集的视觉补充绝不能泄漏到第二集"
+        );
+        assert!(!ep2_preview.context.characters[0].using_override);
+        assert!(ep2_preview.context.characters[0].visual_prompt_override.is_empty());
+        let characters = comic_character_list_impl(&db, &project.id).unwrap();
+        let global = characters.iter().find(|item| item.id == character.id).unwrap();
+        assert_eq!(global.description, "18 岁，黑色短发，运动型身材");
+        assert!(
+            !global.description.contains("浅疤"),
+            "本集补充不得污染全局角色档案"
+        );
 
         // 剧集级预览：没有镜头时 shot 变量为空、场景装配项目全部场景。
         let episode_preview =
@@ -5955,6 +6422,36 @@ mod tests {
         )
         .unwrap_err();
         assert!(format!("{err}").contains("必填变量"), "{err}");
+
+        // 带空格的合法占位符（v99）：{{ shot.dialogue }} 解析后变量名会 trim，
+        // 必填校验必须跟随解析结果，不能因为原始字符串匹配不到而放行空内容。
+        let spaced = comic_prompt_version_create_impl(
+            &db, &template.id, "台词：{{ shot.dialogue }}".into(),
+            r#"["shot.dialogue"]"#.into(), "空格占位符".into(),
+        )
+        .unwrap();
+        let spaced_err = comic_prompt_render_impl(
+            &db, &project.id, &spaced.id, &ep1.id, Some(&empty_shot.id),
+        )
+        .unwrap_err();
+        assert!(
+            format!("{spaced_err}").contains("必填变量"),
+            "带空格占位符的必填变量不能绕过校验：{spaced_err}"
+        );
+        let spaced_ok =
+            comic_prompt_render_impl(&db, &project.id, &spaced.id, &ep1.id, Some(&shot.id))
+                .unwrap();
+        assert_eq!(spaced_ok.rendered, "台词：传球！");
+        // 非必填变量为空允许渲染（既有语义）：camera_move 为空且未声明必填。
+        let optional = comic_prompt_version_create_impl(
+            &db, &template.id, "运镜：{{ shot.camera_move }}".into(), "[]".into(),
+            "非必填".into(),
+        )
+        .unwrap();
+        let optional_preview =
+            comic_prompt_render_impl(&db, &project.id, &optional.id, &ep1.id, Some(&empty_shot.id))
+                .unwrap();
+        assert_eq!(optional_preview.rendered, "运镜：");
 
         // 纯函数级安全边界：不执行代码、缺变量报错、普通文本不转义。
         let allowed = comic_prompt_variable_set();
@@ -6032,6 +6529,80 @@ mod tests {
         .unwrap();
     }
 
+    /// 参考图只给可执行占位说明：本地绝对路径既不进提示词，也不需要外部模型「读文件」。
+    #[test]
+    fn comic_prompt_render_keeps_local_absolute_paths_out_of_prompt() {
+        let db = Db::open_in_memory().unwrap();
+        let project = create_comic_project(&db, "路径脱敏漫剧");
+        let dir = temp_dir("ref-path");
+        let character_ref = dir.join("角色参考.png");
+        let scene_ref = dir.join("场景参考.png");
+        std::fs::write(&character_ref, b"PNG").unwrap();
+        std::fs::write(&scene_ref, b"PNG").unwrap();
+        let character = comic_character_save_impl(
+            &db, None, project.id.clone(), "林远".into(), "主角".into(),
+            "18 岁，黑色短发".into(), Some(character_ref.to_string_lossy().into()), None,
+        )
+        .unwrap();
+        let scene = comic_scene_save_impl(
+            &db, None, project.id.clone(), "篮球场".into(), "室内体育馆".into(),
+            Some(scene_ref.to_string_lossy().into()), None,
+        )
+        .unwrap();
+        let episode = comic_episode_save_impl(
+            &db, None, project.id.clone(), Some(1), "第一集".into(), "".into(), "剧本".into(),
+            "draft".into(), 0, Some(vec![character.id.clone()]), None,
+        )
+        .unwrap();
+        let shot = comic_shot_save_impl(
+            &db, None, project.id.clone(), episode.id.clone(), Some(1), "起跳投篮".into(),
+            Some(vec![character.id.clone()]), Some(scene.id.clone()), "".into(), "".into(),
+            "".into(), None, "todo".into(), None, "".into(), None,
+        )
+        .unwrap();
+        let template = comic_prompt_template_save_impl(
+            &db, None, project.id.clone(), "路径模板".into(), "storyboard".into(), "".into(),
+        )
+        .unwrap();
+        let version = comic_prompt_version_create_impl(
+            &db, &template.id,
+            "{{characters.block}}\n\n{{scene.block}}\n\n画面：{{shot.description}}".into(),
+            r#"["characters.block","scene.block","shot.description"]"#.into(), "v1".into(),
+        )
+        .unwrap();
+
+        let preview =
+            comic_prompt_render_impl(&db, &project.id, &version.id, &episode.id, Some(&shot.id))
+                .unwrap();
+        let dir_text = dir.to_string_lossy().to_string();
+        assert!(
+            !preview.rendered.contains(&dir_text),
+            "提示词不能包含本机目录：{}",
+            preview.rendered
+        );
+        assert!(!preview.rendered.contains("角色参考.png"));
+        assert!(!preview.rendered.contains("场景参考.png"));
+        assert_eq!(
+            preview.rendered.matches("参考图：已在 Task Dock 关联，请在外部生成工具手动上传").count(),
+            2,
+            "角色与场景都应使用同一句可执行占位说明"
+        );
+        // 结构化上下文仍保留真实路径供本机界面查看。
+        assert_eq!(
+            preview.context.characters[0].ref_image_path,
+            character_ref.to_string_lossy().to_string()
+        );
+        assert_eq!(
+            preview.context.scenes[0].ref_image_path,
+            scene_ref.to_string_lossy().to_string()
+        );
+        // 其它变量不受影响。
+        assert!(preview.rendered.contains("【角色】林远"));
+        assert!(preview.rendered.contains("【场景】篮球场"));
+        assert!(preview.rendered.contains("画面：起跳投篮"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn comic_skill_snapshots_are_immutable_and_reuse_same_content() {
         let db = Db::open_in_memory().unwrap();
@@ -6064,6 +6635,55 @@ mod tests {
             1
         );
 
+        // 只改 SKILL.md 声明版本（正文不变）→ 必须产生新快照，不能复用旧元数据。
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE capability_skills SET version = '1.1.0' WHERE id = 'skill-1'",
+                params![],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let version_changed = comic_skill_snapshot_capture_impl(&db, &project.id, "skill-1").unwrap();
+        assert_ne!(version_changed.id, first.id, "声明版本变化必须产生新快照");
+        assert_eq!(version_changed.declared_version, "1.1.0");
+        assert_eq!(
+            version_changed.content_hash, first.content_hash,
+            "正文未变，内容 Hash 必须保持一致"
+        );
+        assert_eq!(
+            version_changed.files_manifest_hash, first.files_manifest_hash,
+            "附属文件未变，清单 Hash 必须一致"
+        );
+        assert_ne!(
+            version_changed.snapshot_fingerprint, first.snapshot_fingerprint,
+            "声明版本进入指纹，指纹必须变化"
+        );
+        let first_after_version = comic_skill_snapshot_get_impl(&db, &first.id).unwrap();
+        assert_eq!(first_after_version.declared_version, "1.0.0", "历史快照元数据不可被改写");
+        assert_eq!(first_after_version.snapshot_fingerprint, first.snapshot_fingerprint);
+
+        // 只改附属文件（正文与声明版本不变）→ 文件清单 Hash 与指纹都变化。
+        std::fs::write(dir.join("notes.md"), "附属说明已更新（本轮仍不装配进上下文）").unwrap();
+        let files_changed = comic_skill_snapshot_capture_impl(&db, &project.id, "skill-1").unwrap();
+        assert_ne!(files_changed.id, version_changed.id);
+        assert_eq!(files_changed.content_hash, first.content_hash);
+        assert_eq!(files_changed.declared_version, "1.1.0");
+        assert_ne!(
+            files_changed.files_manifest_hash, first.files_manifest_hash,
+            "附属文件变化必须体现在清单 Hash"
+        );
+        assert_ne!(
+            files_changed.snapshot_fingerprint, version_changed.snapshot_fingerprint
+        );
+        assert!(files_changed.files_manifest_json.contains("notes.md"));
+        // 完全相同的快照重复捕获仍然复用（四项都一致时幂等）。
+        let same_again = comic_skill_snapshot_capture_impl(&db, &project.id, "skill-1").unwrap();
+        assert_eq!(same_again.id, files_changed.id);
+        let first_after_files = comic_skill_snapshot_get_impl(&db, &first.id).unwrap();
+        assert_eq!(first_after_files.files_manifest_hash, first.files_manifest_hash);
+        assert_eq!(first_after_files.files_manifest_json, first.files_manifest_json);
+
         // 内容变化 → 新快照；旧快照正文不变。
         let body2 = "这是更新后的 Skill 正文。\n新版本。";
         db.with_conn(|conn| {
@@ -6076,13 +6696,14 @@ mod tests {
         .unwrap();
         let second = comic_skill_snapshot_capture_impl(&db, &project.id, "skill-1").unwrap();
         assert_ne!(second.id, first.id);
+        assert_ne!(second.content_hash, first.content_hash, "正文变化必须产生新内容 Hash");
         let first_after = comic_skill_snapshot_get_impl(&db, &first.id).unwrap();
         assert_eq!(first_after.content_snapshot, body, "历史快照不得被覆盖");
         assert_eq!(
             comic_skill_snapshot_list_impl(&db, &project.id, Some("skill-1"))
                 .unwrap()
                 .len(),
-            2
+            4
         );
 
         // 原始 Skill 删除不影响历史快照（无级联外键）。
@@ -6097,7 +6718,7 @@ mod tests {
         );
         assert_eq!(
             comic_skill_snapshot_list_impl(&db, &project.id, None).unwrap().len(),
-            2
+            4
         );
 
         // 禁用 / 丢失 / 作用域不符都拒绝捕获。
@@ -6128,7 +6749,7 @@ mod tests {
         assert!(comic_skill_snapshot_capture_impl(&db, &project.id, "skill-other").is_err());
         assert_eq!(
             comic_skill_snapshot_list_impl(&db, &project.id, None).unwrap().len(),
-            2
+            4
         );
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&dir_disabled);
@@ -6182,6 +6803,8 @@ mod tests {
         )
         .unwrap();
 
+        let submitted_prompt =
+            "【角色】林远\n起跳投篮（外部工具实际使用）\n参数：--ar 16:9，风格：电影感。";
         let run = comic_generation_record_create_impl(
             &db,
             ComicGenerationRecordInput {
@@ -6189,6 +6812,7 @@ mod tests {
                 episode_id: episode.id.clone(),
                 shot_id: Some(shot.id.clone()),
                 prompt_version_id: version.id.clone(),
+                rendered_prompt_snapshot: submitted_prompt.into(),
                 skill_snapshot_id: Some(snapshot.id.clone()),
                 model_provider: "Midjourney".into(),
                 model_name: "v6".into(),
@@ -6203,11 +6827,84 @@ mod tests {
         .unwrap();
         assert!(run.rendered_prompt_snapshot.contains("【角色】林远"));
         assert!(run.rendered_prompt_snapshot.contains("起跳投篮"));
+        // 登记内容 = 用户提交的实际文本（中文、换行、标点原样保留，不重渲染、不截断）。
+        assert_eq!(run.rendered_prompt_snapshot, submitted_prompt);
+        assert_eq!(run.prompt_content_hash_snapshot, version.content_hash);
         assert_eq!(run.skill_content_hash_snapshot, snapshot.content_hash);
         assert_eq!(run.skill_name.as_deref(), Some("生成助手"));
         assert_eq!(run.parameters_json, r#"{"ar":"16:9","steps":30}"#);
         assert_eq!(run.input_media_ids, vec![input_media.id.clone()]);
         assert_eq!(run.shot_no, Some(1));
+        let context: serde_json::Value = serde_json::from_str(&run.context_snapshot_json).unwrap();
+        assert_eq!(context["shotId"].as_str(), Some(shot.id.as_str()));
+        assert_eq!(context["episodeId"].as_str(), Some(episode.id.as_str()));
+        assert_eq!(context["characters"].as_array().unwrap().len(), 1);
+        assert_eq!(context["truncated"].as_bool(), Some(false));
+
+        // 空 / 纯空白 / 超长提示词必须明确拒绝，而不是静默写入空记录或截断。
+        for bad_prompt in ["".to_string(), "   \n\t ".to_string()] {
+            assert!(comic_generation_record_create_impl(
+                &db,
+                ComicGenerationRecordInput {
+                    project_id: project.id.clone(),
+                    episode_id: episode.id.clone(),
+                    shot_id: Some(shot.id.clone()),
+                    prompt_version_id: version.id.clone(),
+                    rendered_prompt_snapshot: bad_prompt,
+                    skill_snapshot_id: None,
+                    model_provider: "".into(), model_name: "".into(), model_version: "".into(),
+                    parameters_json: None, seed: "".into(), input_media_ids: None,
+                    external_job_id: "".into(), note: "".into(),
+                },
+            )
+            .is_err(), "空提示词不能登记");
+        }
+        let too_long = "字".repeat(MAX_PROMPT_BODY_CHARS + 1);
+        assert!(comic_generation_record_create_impl(
+            &db,
+            ComicGenerationRecordInput {
+                project_id: project.id.clone(),
+                episode_id: episode.id.clone(),
+                shot_id: Some(shot.id.clone()),
+                prompt_version_id: version.id.clone(),
+                rendered_prompt_snapshot: too_long,
+                skill_snapshot_id: None,
+                model_provider: "".into(), model_name: "".into(), model_version: "".into(),
+                parameters_json: None, seed: "".into(), input_media_ids: None,
+                external_job_id: "".into(), note: "".into(),
+            },
+        )
+        .is_err(), "超长提示词必须拒绝而不是截断");
+
+        // 历史快照不可修改：数据库触发器直接挡住 UPDATE。
+        let tampered = db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE comic_generation_runs SET rendered_prompt_snapshot = '被篡改' WHERE id = ?1",
+                params![run.id],
+            )?;
+            Ok(())
+        });
+        assert!(tampered.is_err(), "生成记录的提示词快照必须不可修改");
+
+        // 修改剧本 / 新建提示词版本都不会污染已有生成记录。
+        comic_episode_save_impl(
+            &db, Some(episode.id.clone()), project.id.clone(), None, "第一集（改稿）".into(),
+            "".into(), "改稿后的剧本".into(), "draft".into(), 0,
+            Some(vec![character.id.clone()]), None,
+        )
+        .unwrap();
+        comic_prompt_version_create_impl(
+            &db, &template.id, "{{characters.block}}\n{{shot.description}}\n新版补充".into(),
+            "[]".into(), "v2".into(),
+        )
+        .unwrap();
+        let stored = comic_generation_record_list_impl(&db, &project.id, None, None)
+            .unwrap()
+            .into_iter()
+            .find(|item| item.id == run.id)
+            .unwrap();
+        assert_eq!(stored.rendered_prompt_snapshot, submitted_prompt);
+        assert_eq!(stored.prompt_content_hash_snapshot, version.content_hash);
 
         // 列表按项目/剧集/镜头过滤。
         let by_project = comic_generation_record_list_impl(&db, &project.id, None, None).unwrap();
@@ -6255,11 +6952,93 @@ mod tests {
         assert_eq!(run_after.len(), 1);
         assert_eq!(run_after[0].rendered_prompt_snapshot, run.rendered_prompt_snapshot);
 
+        // 整集级记录（shot_id 为空）：可关联本集任意镜头的产物，但不能跨集/跨项目。
+        let shot2 = comic_shot_save_impl(
+            &db, None, project.id.clone(), episode.id.clone(), Some(2), "补拍镜头".into(),
+            None, None, "".into(), "".into(), "".into(), None, "todo".into(), None, "".into(), None,
+        )
+        .unwrap();
+        let episode_run = comic_generation_record_create_impl(
+            &db,
+            ComicGenerationRecordInput {
+                project_id: project.id.clone(),
+                episode_id: episode.id.clone(),
+                shot_id: None,
+                prompt_version_id: version.id.clone(),
+                rendered_prompt_snapshot: "整集提示词：全片统一画风".into(),
+                skill_snapshot_id: Some(snapshot.id.clone()),
+                model_provider: "外部工具".into(),
+                model_name: "".into(),
+                model_version: "".into(),
+                parameters_json: None,
+                seed: "".into(),
+                input_media_ids: None,
+                external_job_id: "job-episode".into(),
+                note: "整集级生成".into(),
+            },
+        )
+        .unwrap();
+        assert!(episode_run.shot_id.is_none());
+        assert_eq!(episode_run.shot_no, None);
+        let ep_out_1 = comic_media_import_with_run_impl(
+            &db, None, project.id.clone(), Some(shot.id.clone()), None, None,
+            output_path.to_string_lossy().into(), "image".into(), Some("整集产物 1".into()), None,
+            Some(episode_run.id.clone()),
+        )
+        .unwrap();
+        let ep_out_2 = comic_media_import_with_run_impl(
+            &db, None, project.id.clone(), Some(shot2.id.clone()), None, None,
+            output_path.to_string_lossy().into(), "image".into(), Some("整集产物 2".into()), None,
+            Some(episode_run.id.clone()),
+        )
+        .unwrap();
+        assert_eq!(ep_out_1.generation_run_id, Some(episode_run.id.clone()));
+        assert_eq!(ep_out_2.generation_run_id, Some(episode_run.id.clone()));
+        let episode_run_traced = comic_generation_record_list_impl(&db, &project.id, None, None)
+            .unwrap()
+            .into_iter()
+            .find(|item| item.id == episode_run.id)
+            .unwrap();
+        assert_eq!(
+            episode_run_traced.output_media_ids.len(),
+            2,
+            "一个整集级记录可关联本集多个镜头的产物"
+        );
+        // 镜头级记录不能把产物挂到别的镜头。
+        assert!(comic_media_import_with_run_impl(
+            &db, None, project.id.clone(), Some(shot2.id.clone()), None, None,
+            output_path.to_string_lossy().into(), "image".into(), Some("偷挂".into()), None,
+            Some(run.id.clone()),
+        )
+        .is_err(), "镜头级记录只能关联自己镜头");
+        // 整集级记录不能跨集。
+        let ep2 = comic_episode_save_impl(
+            &db, None, project.id.clone(), Some(2), "第二集".into(), "".into(), "".into(),
+            "draft".into(), 0, None, None,
+        )
+        .unwrap();
+        let ep2_shot = comic_shot_save_impl(
+            &db, None, project.id.clone(), ep2.id.clone(), Some(1), "第二集镜头".into(),
+            None, None, "".into(), "".into(), "".into(), None, "todo".into(), None, "".into(), None,
+        )
+        .unwrap();
+        assert!(comic_media_import_with_run_impl(
+            &db, None, project.id.clone(), Some(ep2_shot.id.clone()), None, None,
+            output_path.to_string_lossy().into(), "image".into(), Some("跨集偷挂".into()), None,
+            Some(episode_run.id.clone()),
+        )
+        .is_err(), "整集级记录不能关联其它剧集的镜头");
+
         // 跨项目/跨剧集/跨项目素材全部拒绝。
         let other = create_comic_project(&db, "另一部漫剧");
         let other_ep = comic_episode_save_impl(
             &db, None, other.id.clone(), None, "他项目集".into(), "".into(), "".into(),
             "draft".into(), 0, None, None,
+        )
+        .unwrap();
+        let other_ep_shot = comic_shot_save_impl(
+            &db, None, other.id.clone(), other_ep.id.clone(), Some(1), "他项目镜头".into(),
+            None, None, "".into(), "".into(), "".into(), None, "todo".into(), None, "".into(), None,
         )
         .unwrap();
         let other_template = comic_prompt_template_save_impl(
@@ -6277,6 +7056,7 @@ mod tests {
                 episode_id: episode.id.clone(),
                 shot_id: Some(shot.id.clone()),
                 prompt_version_id: other_version.id.clone(),
+                rendered_prompt_snapshot: "他项目提示词".into(),
                 skill_snapshot_id: None,
                 model_provider: "".into(), model_name: "".into(), model_version: "".into(),
                 parameters_json: None, seed: "".into(), input_media_ids: None,
@@ -6292,6 +7072,7 @@ mod tests {
                 episode_id: episode.id.clone(),
                 shot_id: Some(shot.id.clone()),
                 prompt_version_id: version.id.clone(),
+                rendered_prompt_snapshot: "【角色】林远\n同一提示词重试".into(),
                 skill_snapshot_id: Some(snapshot.id.clone()),
                 model_provider: "".into(), model_name: "".into(), model_version: "".into(),
                 parameters_json: None, seed: "".into(), input_media_ids: None,
@@ -6306,6 +7087,7 @@ mod tests {
                 episode_id: other_ep.id.clone(),
                 shot_id: Some(shot.id.clone()),
                 prompt_version_id: version.id.clone(),
+                rendered_prompt_snapshot: "跨集提示词".into(),
                 skill_snapshot_id: None,
                 model_provider: "".into(), model_name: "".into(), model_version: "".into(),
                 parameters_json: None, seed: "".into(), input_media_ids: None,
@@ -6320,6 +7102,12 @@ mod tests {
             Some("nonexistent-run".into()),
         )
         .is_err());
+        assert!(comic_media_import_with_run_impl(
+            &db, None, project.id.clone(), Some(other_ep_shot.id.clone()), None, None,
+            output_path.to_string_lossy().into(), "image".into(), Some("跨项目偷挂".into()), None,
+            Some(episode_run.id.clone()),
+        )
+        .is_err(), "整集级记录也不能关联其它项目的镜头");
 
         // 被生成记录引用的提示词版本不能删除（RESTRICT）。
         let delete_result = db.with_conn(|conn| {
@@ -6337,6 +7125,7 @@ mod tests {
                 episode_id: episode.id.clone(),
                 shot_id: Some(shot.id.clone()),
                 prompt_version_id: version.id.clone(),
+                rendered_prompt_snapshot: "归档后不应写入".into(),
                 skill_snapshot_id: None,
                 model_provider: "".into(), model_name: "".into(), model_version: "".into(),
                 parameters_json: None, seed: "".into(), input_media_ids: None,
@@ -6390,6 +7179,7 @@ mod tests {
                 episode_id: episode.id.clone(),
                 shot_id: Some(shot.id.clone()),
                 prompt_version_id: version.id.clone(),
+                rendered_prompt_snapshot: "备份用例提示词：第一行\n第二行（含中文标点）。".into(),
                 skill_snapshot_id: Some(snapshot.id.clone()),
                 model_provider: "外部工具".into(),
                 model_name: "model-x".into(),
@@ -6441,6 +7231,15 @@ mod tests {
             let snapshots = comic_skill_snapshot_list_impl(&dst, &fx.project.id, None).unwrap();
             assert_eq!(snapshots.len(), 1, "{kind:?} 恢复后 Skill 快照丢失");
             assert_eq!(snapshots[0].content_snapshot, "快照正文");
+            assert_eq!(
+                snapshots[0].snapshot_fingerprint, snapshot.snapshot_fingerprint,
+                "{kind:?} 恢复后快照指纹必须一致"
+            );
+            assert_eq!(snapshots[0].declared_version, "3.0.0");
+            assert_eq!(
+                snapshots[0].files_manifest_hash, snapshot.files_manifest_hash,
+                "{kind:?} 恢复后附属文件清单 Hash 必须一致"
+            );
 
             let runs = comic_generation_record_list_impl(&dst, &fx.project.id, None, None).unwrap();
             assert_eq!(runs.len(), 1, "{kind:?} 恢复后生成记录丢失");

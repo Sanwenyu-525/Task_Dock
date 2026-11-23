@@ -219,6 +219,8 @@ export interface ComicPromptContextCharacter {
   costumeDescription: string;
   hairStyleDescription: string;
   stateDescription: string;
+  /** 本集专属视觉提示词补充（v99）：只在渲染本集时进入角色块，不写回全局档案。 */
+  visualPromptOverride: string;
   refImagePath: string;
   usingOverride: boolean;
 }
@@ -266,6 +268,10 @@ export interface ComicSkillSnapshot {
   contentHash: string;
   contentSnapshot: string;
   filesManifestJson: string;
+  /** 附属文件清单的 SHA-256（v99）；历史快照可能为空串（当时未计算，不猜测）。 */
+  filesManifestHash: string;
+  /** 完整快照指纹（v99）：来源 Skill + 内容 Hash + 声明版本 + 附属清单 Hash。 */
+  snapshotFingerprint: string;
   fileCount: number;
   createdAt: string;
 }
@@ -294,10 +300,15 @@ export interface ComicGenerationRun {
   promptVersionId: string;
   promptTemplateName: string;
   promptVersionNo: number;
+  /** 登记当时提示词版本的内容 Hash（v99）。 */
+  promptContentHashSnapshot: string;
   skillSnapshotId: string | null;
   skillName: string | null;
   skillDeclaredVersion: string | null;
+  /** 外部工具实际收到的提示词（用户确认提交，不是登记时重新渲染的结果）。 */
   renderedPromptSnapshot: string;
+  /** 渲染上下文摘要 JSON（角色/场景/镜头/变量名），空串表示未保存。 */
+  contextSnapshotJson: string;
   skillContentHashSnapshot: string;
   modelProvider: string;
   modelName: string;
@@ -317,6 +328,8 @@ export interface ComicGenerationRecordInput {
   episodeId: string;
   shotId?: string | null;
   promptVersionId: string;
+  /** 必填：外部 AI 实际使用的最终提示词（可粘贴/微调，后端不重新渲染覆盖）。 */
+  renderedPromptSnapshot: string;
   skillSnapshotId?: string | null;
   modelProvider: string;
   modelName: string;

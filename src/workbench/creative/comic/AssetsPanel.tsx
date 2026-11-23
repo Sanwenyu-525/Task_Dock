@@ -12,8 +12,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import { Columns2, X } from "lucide-react";
+import { Check, Columns2, Copy, X } from "lucide-react";
 import { Select, type SelectOption } from "../../../components/ui";
+import { copyText } from "../../../lib/clipboard";
 import type { CreativeModuleProps } from "../types";
 import {
   comicCharacterList,
@@ -25,6 +26,7 @@ import {
   comicMediaImport,
   comicMediaList,
   comicMediaSave,
+  comicPromptRender,
   comicPromptTemplateList,
   comicPromptVersionList,
   comicSceneList,
@@ -40,6 +42,7 @@ import {
   type ComicEpisode,
   type ComicGenerationRun,
   type ComicMediaVersion,
+  type ComicPromptPreview,
   type ComicPromptTemplate,
   type ComicPromptVersion,
   type ComicScene,
@@ -140,9 +143,16 @@ export function AssetsPanel({ projectId, archived, onNotice }: CreativeModulePro
   const [generationDraft, setGenerationDraft] = useState<GenerationDraft>(EMPTY_GENERATION);
   const [generationTemplateId, setGenerationTemplateId] = useState("");
   const [generationError, setGenerationError] = useState<string | null>(null);
-  /** 导入素材时可选关联的生成记录（必须同镜头）。 */
+  /** 导入素材时可选关联的生成记录（镜头级同镜头；整集级同剧集）。 */
   const [importRunId, setImportRunId] = useState("");
   const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
+  /** 实际使用提示词：自动渲染只是初始内容，用户可以粘贴外部工具真正收到的文本。 */
+  const [promptPreview, setPromptPreview] = useState<ComicPromptPreview | null>(null);
+  const [promptPreviewError, setPromptPreviewError] = useState<string | null>(null);
+  const [promptPreviewing, setPromptPreviewing] = useState(false);
+  const [actualPrompt, setActualPrompt] = useState("");
+  const [promptCopied, setPromptCopied] = useState(false);
+  const copyTimerRef = useRef<number | null>(null);
 
   const seqRef = useRef(0);
 
@@ -228,10 +238,75 @@ export function AssetsPanel({ projectId, archived, onNotice }: CreativeModulePro
     };
   }, [generationTemplateId]);
 
-  // 关联对象变化后，之前选的生成记录必然失效（必须同镜头）。
+  // 关联对象变化后，之前选的生成记录必然失效（必须同镜头/同剧集）。
   useEffect(() => {
     setImportRunId("");
   }, [targetId, targetKind]);
+
+  /**
+   * 剧集/镜头/版本变化 → 自动渲染提示词。
+   *
+   * 自动渲染只提供**初始内容**：外部 AI 可能根本没收到这份原文（用户可能改了、
+   * 或工具自己加了参数），所以下面允许编辑/粘贴，登记时提交的是用户确认的实际文本。
+   */
+  useEffect(() => {
+    if (!showGeneration) {
+      setPromptPreview(null);
+      setPromptPreviewError(null);
+      return;
+    }
+    const episodeId = generationDraft.episodeId;
+    const versionId = generationDraft.promptVersionId;
+    if (!episodeId || !versionId) {
+      setPromptPreview(null);
+      setActualPrompt("");
+      setPromptPreviewError(
+        episodeId ? "请选择提示词版本后渲染" : "请选择剧集后渲染提示词",
+      );
+      return;
+    }
+    let cancelled = false;
+    setPromptPreviewing(true);
+    setPromptPreviewError(null);
+    comicPromptRender({
+      projectId,
+      promptVersionId: versionId,
+      episodeId,
+      shotId: generationDraft.shotId || null,
+    })
+      .then((result) => {
+        if (cancelled) return;
+        setPromptPreview(result.preview);
+        setActualPrompt(result.preview.rendered);
+        setPromptCopied(false);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setPromptPreview(null);
+        setActualPrompt("");
+        setPromptPreviewError(errorText(error));
+      })
+      .finally(() => {
+        if (!cancelled) setPromptPreviewing(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // 只依赖选择项，不依赖整个草稿对象，避免输入模型名等字段时反复重新渲染。
+  }, [
+    projectId,
+    showGeneration,
+    generationDraft.episodeId,
+    generationDraft.shotId,
+    generationDraft.promptVersionId,
+  ]);
+
+  useEffect(
+    () => () => {
+      if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
+    },
+    [],
+  );
 
   const targetOptions: SelectOption<string>[] = useMemo(
     () =>
@@ -276,12 +351,25 @@ export function AssetsPanel({ projectId, archived, onNotice }: CreativeModulePro
       ),
     [versions, generationShotIds],
   );
-  const importRunOptions = useMemo(
-    () =>
-      targetKind === "shot" && targetId
-        ? runs.filter((run) => run.shotId === targetId)
-        : [],
-    [runs, targetKind, targetId],
+  /**
+   * 可关联的生成记录（v99）：
+   * - 镜头级记录（shotId 有值）：只能关联同一镜头；
+   * - 整集级记录（shotId 为 null）：只能关联本集任意镜头，跨集/跨项目一律不出现。
+   */
+  const importRunOptions = useMemo(() => {
+    if (targetKind !== "shot" || !targetId) return [];
+    const targetShot = shots.find((shot) => shot.id === targetId);
+    if (!targetShot) return [];
+    return runs.filter(
+      (run) =>
+        run.shotId === targetShot.id ||
+        (run.shotId === null && run.episodeId === targetShot.episodeId),
+    );
+  }, [runs, shots, targetKind, targetId]);
+
+  /** 与自动渲染相比是否被修改过（提示用户「外部工具收到的可能不是原文」）。 */
+  const promptDiffers = Boolean(
+    promptPreview && actualPrompt.trim() !== promptPreview.rendered.trim(),
   );
 
   function changeTargetKind(next: TargetKind) {
@@ -388,7 +476,7 @@ export function AssetsPanel({ projectId, archived, onNotice }: CreativeModulePro
     }
   }
 
-  /** 登记一次真实外部生成：后端会用真实上下文重新渲染提示词并保存快照。 */
+  /** 登记一次真实外部生成：提交用户确认的「实际使用提示词」，后端不再重新渲染覆盖。 */
   async function registerGeneration() {
     if (archived || saving) return;
     if (!generationDraft.episodeId) {
@@ -397,6 +485,12 @@ export function AssetsPanel({ projectId, archived, onNotice }: CreativeModulePro
     }
     if (!generationDraft.promptVersionId) {
       setGenerationError("请选择提示词版本（可追溯性要求）");
+      return;
+    }
+    if (!actualPrompt.trim()) {
+      setGenerationError(
+        "请填写外部工具实际收到的提示词：可先渲染预览，再粘贴/粘贴工具里真正使用的文本",
+      );
       return;
     }
     const paramsRaw = generationDraft.parametersJson.trim() || "{}";
@@ -414,6 +508,7 @@ export function AssetsPanel({ projectId, archived, onNotice }: CreativeModulePro
         episodeId: generationDraft.episodeId,
         shotId: generationDraft.shotId || null,
         promptVersionId: generationDraft.promptVersionId,
+        renderedPromptSnapshot: actualPrompt,
         skillSnapshotId: generationDraft.skillSnapshotId || null,
         modelProvider: generationDraft.modelProvider,
         modelName: generationDraft.modelName,
@@ -438,6 +533,8 @@ export function AssetsPanel({ projectId, archived, onNotice }: CreativeModulePro
         externalJobId: "",
         inputMediaIds: [],
       }));
+      setActualPrompt("");
+      setPromptPreview(null);
       await loadAll();
       setExpandedRunId(result.run.id);
     } catch (error) {
@@ -446,6 +543,28 @@ export function AssetsPanel({ projectId, archived, onNotice }: CreativeModulePro
     } finally {
       setSaving(false);
     }
+  }
+
+  /** 复制实际使用提示词：统一走 Task Dock 受控剪贴板（失败如实提示，不回退 Web API）。 */
+  async function copyActualPrompt() {
+    const text = actualPrompt;
+    if (!text.trim()) {
+      setGenerationError("提示词为空，无法复制");
+      return;
+    }
+    setGenerationError(null);
+    const ok = await copyText(text);
+    if (!ok) {
+      onNotice("error", "复制失败：剪贴板被占用或系统拒绝写入");
+      return;
+    }
+    setPromptCopied(true);
+    onNotice("ok", "已复制提示词到剪贴板");
+    if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
+    copyTimerRef.current = window.setTimeout(() => {
+      setPromptCopied(false);
+      copyTimerRef.current = null;
+    }, 2000);
   }
 
   function changeGenerationEpisode(episodeId: string) {
@@ -665,7 +784,11 @@ export function AssetsPanel({ projectId, archived, onNotice }: CreativeModulePro
             {targetKind === "shot" && (
               <Field
                 label="关联生成记录"
-                hint={importRunOptions.length === 0 ? "该镜头暂无生成记录" : "可选"}
+                hint={
+                  importRunOptions.length === 0
+                    ? "该集暂无可用生成记录"
+                    : "可选：镜头级限同镜头 · 整集级限本集"
+                }
               >
                 <Select
                   value={importRunId}
@@ -673,9 +796,9 @@ export function AssetsPanel({ projectId, archived, onNotice }: CreativeModulePro
                     { value: "", label: "不关联生成记录" },
                     ...importRunOptions.map((run) => ({
                       value: run.id,
-                      label: `${run.modelProvider || "外部工具"}${
-                        run.modelName ? ` · ${run.modelName}` : ""
-                      } · 提示词 v${run.promptVersionNo} · ${run.createdAt.slice(0, 10)}`,
+                      label: `${run.shotId ? `镜头 ${run.shotNo ?? "?"}` : "整集级"} · ${
+                        run.modelProvider || "外部工具"
+                      }${run.modelName ? ` · ${run.modelName}` : ""} · 提示词 v${run.promptVersionNo} · ${run.createdAt.slice(0, 10)}`,
                     })),
                   ]}
                   onChange={setImportRunId}
@@ -753,7 +876,7 @@ export function AssetsPanel({ projectId, archived, onNotice }: CreativeModulePro
               />
             </Field>
 
-            <Field label="提示词版本" hint="记录会保存实际渲染内容">
+            <Field label="提示词版本" hint="记录会保存实际使用的提示词">
               <Select
                 value={generationDraft.promptVersionId}
                 options={promptVersions.map((version) => ({
@@ -768,6 +891,69 @@ export function AssetsPanel({ projectId, archived, onNotice }: CreativeModulePro
                 disabled={saving || promptVersions.length === 0}
               />
             </Field>
+
+            <section className="comic-prompt-actual" aria-label="实际使用提示词">
+              <div className="comic-stats-head">
+                <span className="comic-field-label">实际使用提示词</span>
+                <span className="ws-meta">
+                  {promptPreview
+                    ? `v${promptPreview.versionNo} · Hash ${shortHash(promptPreview.contentHash)}`
+                    : "尚未渲染"}
+                </span>
+              </div>
+              <p className="ws-meta">
+                自动渲染只是初始内容；外部 AI 可能收到的是你改过或工具补过的文本，
+                请粘贴/核对后再登记。登记后快照不可再修改。
+              </p>
+              <textarea
+                className="ws-textarea comic-prompt-body"
+                rows={8}
+                aria-label="实际使用提示词"
+                disabled={saving}
+                value={actualPrompt}
+                placeholder="选择剧集与版本后自动填入渲染结果，也可直接粘贴外部工具里的提示词"
+                onChange={(event) => setActualPrompt(event.target.value)}
+              />
+              {promptDiffers && (
+                <p className="ws-notice" data-tone="info" role="status">
+                  <span>已修改：登记将保存当前文本（与自动渲染结果不同）。</span>
+                </p>
+              )}
+              {promptPreviewing && <p className="ws-meta">渲染中…</p>}
+              {promptPreviewError && (
+                <p className="ws-notice" data-tone="error" role="alert">
+                  <span>{promptPreviewError}</span>
+                </p>
+              )}
+              <div className="ws-form-actions">
+                <button
+                  type="button"
+                  className="ws-btn"
+                  disabled={saving || !actualPrompt.trim()}
+                  onClick={() => void copyActualPrompt()}
+                >
+                  {promptCopied ? (
+                    <>
+                      <Check size={13} aria-hidden="true" /> 已复制提示词
+                    </>
+                  ) : (
+                    <>
+                      <Copy size={13} aria-hidden="true" /> 复制提示词
+                    </>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  className="ws-btn"
+                  disabled={saving || !promptPreview}
+                  onClick={() => {
+                    if (promptPreview) setActualPrompt(promptPreview.rendered);
+                  }}
+                >
+                  恢复为自动渲染内容
+                </button>
+              </div>
+            </section>
 
             <Field label="Skill 快照" hint="可选">
               <Select
