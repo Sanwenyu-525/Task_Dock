@@ -48,6 +48,7 @@ pub const SOURCE_PERSONAL_HUB: &str = "personalHub";
 const CATEGORY_PAIRING: &str = "pairing";
 const CATEGORY_AUTH: &str = "auth";
 const CATEGORY_MCP: &str = "mcp";
+const CATEGORY_CLIPBOARD: &str = "clipboard";
 const CATEGORY_DEVICE_REVOKE: &str = "deviceRevoke";
 const CATEGORY_VAULT: &str = "vault";
 /// 分类：Personal Hub（当前主进程未接入，保留给后续管道/状态接线）。
@@ -372,7 +373,7 @@ fn map_security_category(event_type: &str, stored: &str) -> String {
         return CATEGORY_DEVICE_REVOKE.to_string();
     }
     match stored {
-        CATEGORY_PAIRING | CATEGORY_AUTH | CATEGORY_MCP => stored.to_string(),
+        CATEGORY_PAIRING | CATEGORY_AUTH | CATEGORY_MCP | CATEGORY_CLIPBOARD => stored.to_string(),
         _ => CATEGORY_OTHER.to_string(),
     }
 }
@@ -723,6 +724,16 @@ mod tests {
                 items: self.items.clone(),
             })
         }
+    }
+
+    /// 剪贴板审计是独立分类，不能落入 `other`；未知分类仍按 `other` 兜底。
+    #[test]
+    fn clipboard_audit_category_is_passed_through() {
+        assert_eq!(
+            map_security_category("CLIPBOARD_EXPORT_SUCCEEDED", "clipboard"),
+            "clipboard"
+        );
+        assert_eq!(map_security_category("UNKNOWN", "whatever"), CATEGORY_OTHER);
     }
 
     fn mcp_row(

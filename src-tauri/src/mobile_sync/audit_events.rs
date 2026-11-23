@@ -30,6 +30,8 @@ pub const CATEGORY_PAIRING: &str = "pairing";
 pub const CATEGORY_AUTH: &str = "auth";
 /// 事件类别：MCP 工具调用（权限拒绝、高风险工具）。
 pub const CATEGORY_MCP: &str = "mcp";
+/// 剪贴板安全事件：Agent 明文导出、导出目录清理。只记录范围/计数，不含正文、路径。
+pub const CATEGORY_CLIPBOARD: &str = "clipboard";
 
 pub const EVENT_PAIRING_REQUESTED: &str = "PAIRING_REQUESTED";
 pub const EVENT_PAIRING_SUCCEEDED: &str = "PAIRING_SUCCEEDED";
@@ -40,6 +42,10 @@ pub const EVENT_AUTH_FAILED: &str = "AUTH_FAILED";
 pub const EVENT_MCP_TOOL_DENIED: &str = "MCP_TOOL_DENIED";
 /// MCP 高风险工具调用（成功或失败都记，普通成功调用不写）。
 pub const EVENT_MCP_HIGH_RISK_CALL: &str = "MCP_HIGH_RISK_CALL";
+/// 剪贴板导出成功 / 失败 / 过期导出目录清理。
+pub const EVENT_CLIPBOARD_EXPORT_SUCCEEDED: &str = "CLIPBOARD_EXPORT_SUCCEEDED";
+pub const EVENT_CLIPBOARD_EXPORT_FAILED: &str = "CLIPBOARD_EXPORT_FAILED";
+pub const EVENT_CLIPBOARD_EXPORT_PURGED: &str = "CLIPBOARD_EXPORT_PURGED";
 
 pub const RESULT_OK: &str = "ok";
 pub const RESULT_DENIED: &str = "denied";

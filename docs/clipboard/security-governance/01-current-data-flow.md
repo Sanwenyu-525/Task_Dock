@@ -124,10 +124,11 @@
 
 - `export_package` 按条目或分组生成 `clipboard-exports/<uuid>/`：`clipboard.md`（正文/HTML/URL/文件路径/任务描述）、原图 PNG、`manifest.json`。
 - 文案声明「仅保存在本机；不自动上传或发送」；导出目录独占创建，写失败由 `ExportDirGuard` Drop 清理半成品。
-- **现状观察（待实施阶段复核授权点）**：
-  - 能力矩阵区分 `direct_send / file_import / desktop_paste / export` 与证据等级；但导出动作本身未见独立的逐次授权/审计落点（需在 `agent_access` 能力表与审计日志中复核是否已有 `clipboard.export` 类能力）。
+- **现状（批次 5a/5b 更新）**：
+  - 能力矩阵区分 `direct_send / file_import / desktop_paste / export` 与证据等级；导出仍由本机 UI 显式触发，**尚无 `agent_access` 能力白名单/逐次授权**。
+  - 导出成功/失败/手动清理已写 `security_audit_log`（`category=clipboard`），明细不含目录、文件名或正文。
   - 导出包含关联任务的 `title`/`description`（`task_context`），属于跨模块数据带出。
-  - 导出目录长期保留，无自动过期/清理策略（与历史保留期不联动）。
+  - 导出目录仍长期保留明文，现由设置页按保留天数手动清理（默认 7 天，需确认）；无自动过期策略。
 
 ### 7.2 其他可能带出剪贴板数据的路径（实施阶段逐一核对）
 

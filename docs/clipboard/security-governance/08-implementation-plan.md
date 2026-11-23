@@ -286,10 +286,27 @@
 - 本批验证（MSVC）：`cargo test --lib clipboard::` 292 passed / 0 failed / 1 ignored；
   `npm run typecheck` 0；`cargo check --lib` 0。
 
-### 6.10 尚未执行（等待后续批次）
+### 6.10 批次 5b（2026-11-23，已实施）
+
+已落地 Agent 导出的安全审计（授权门槛仍留待后续）：
+
+- `mobile_sync::audit_events` 新增 `category=clipboard` 与
+  `CLIPBOARD_EXPORT_SUCCEEDED`/`CLIPBOARD_EXPORT_FAILED`/`CLIPBOARD_EXPORT_PURGED`；
+  `security_audit` re-export，诊断中心统一视图把 `clipboard` 直通为独立分类。
+- `clipboard_export_for_agent` 在导出成功/失败后写审计，`clipboard_purge_agent_exports`
+  在清理后写审计；`reason_code` 只含 `target=item|group;items=..;images=..`、
+  `retentionDays=..;removed=..;failed=..;skipped=..` 或错误码，
+  **不写目录、文件名、正文**。导出审计按高影响事件处理（写失败 ERROR 告警）。
+- 未实现：Agent 能力白名单/逐次授权、自动清理；导出仍只由本机 UI 显式触发。
+- 测试新增 2 项：成功审计的分类/事件/计数正确且不含路径正文；失败与清理审计只留错误码/计数。
+- 本批验证（MSVC）：`cargo test --lib commands::clipboard` 8 passed / 0 failed；
+  `cargo test --lib security_audit::` 17 passed / 0 failed；`cargo check --lib` 0；
+  `npm run typecheck` 0；诊断中心前端测试 29 passed。
+
+### 6.11 尚未执行（等待后续批次）
 
 - 批次 4c（余项）：旧明文包一次性加密迁移；恢复续跑日志对资产重加密后的版本兼容复核。
 - `preview`/`title`/`source_*`/`file_paths` 加密与“解密后过滤”搜索。
-- Agent 导出授权与审计、自动清理策略与保留期默认值、目录显式 ACL、真机 Dev 验收与性能基准。
+- Agent 导出授权门槛与自动清理策略/保留期默认值、目录显式 ACL、真机 Dev 验收与性能基准。
 - 本批次未执行：数据库 schema 迁移、Dev 真机走查。
 - 残余风险按 ADR §14「实施偏差与影响」如实登记，不得对外宣称剪贴板历史已全面加密。

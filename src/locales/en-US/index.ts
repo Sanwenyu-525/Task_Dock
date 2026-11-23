@@ -2549,6 +2549,7 @@ export const enUS: Record<MessageKey, string> = {
   "diagnosticsCenter.audit.category.auth": "Auth",
   "diagnosticsCenter.audit.category.deviceRevoke": "Device revoke",
   "diagnosticsCenter.audit.category.mcp": "MCP",
+  "diagnosticsCenter.audit.category.clipboard": "Clipboard",
   "diagnosticsCenter.audit.category.vault": "Vault",
   "diagnosticsCenter.audit.category.personalHub": "Personal hub",
   "diagnosticsCenter.audit.category.other": "Other",

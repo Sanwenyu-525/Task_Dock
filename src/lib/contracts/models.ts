@@ -3465,6 +3465,7 @@ export type SecurityAuditCategory =
   | "auth"
   | "deviceRevoke"
   | "mcp"
+  | "clipboard"
   | "vault"
   | "personalHub"
   | "other";

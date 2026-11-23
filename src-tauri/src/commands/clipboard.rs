@@ -20,6 +20,10 @@ use crate::clipboard::{
 };
 use crate::db::Settings;
 use crate::error::{AppError, AppResult};
+use crate::security_audit::{
+    self, AuditEvent, CATEGORY_CLIPBOARD, EVENT_CLIPBOARD_EXPORT_FAILED,
+    EVENT_CLIPBOARD_EXPORT_PURGED, EVENT_CLIPBOARD_EXPORT_SUCCEEDED, RESULT_FAILED, RESULT_OK,
+};
 
 /// 列表/分组压缩：正文与 HTML 不随列表下发，完整内容走 `clipboard_item` 单条取。
 ///
@@ -1194,6 +1198,64 @@ pub async fn clipboard_agent_targets(
     Ok(snapshot)
 }
 
+/// 导出审计：只记目标类型、条目数、图片数与错误码，**绝不写入目录、文件名、正文**。
+/// 审计写失败由 `security_audit::record` 自行上报，不影响导出结果。
+fn audit_export_outcome(db: &crate::db::Db, target_type: &str, outcome: &AppResult<ExportPackage>) {
+    let event = match outcome {
+        Ok(pkg) => {
+            let images = pkg.files.len().saturating_sub(2);
+            let mut event = AuditEvent::new(
+                CATEGORY_CLIPBOARD,
+                EVENT_CLIPBOARD_EXPORT_SUCCEEDED,
+                "export_agent",
+                RESULT_OK,
+            );
+            event.reason_code = Some(format!(
+                "target={target_type};items={};images={images}",
+                pkg.item_count
+            ));
+            event
+        }
+        Err(error) => {
+            let mut event = AuditEvent::new(
+                CATEGORY_CLIPBOARD,
+                EVENT_CLIPBOARD_EXPORT_FAILED,
+                "export_agent",
+                RESULT_FAILED,
+            );
+            event.reason_code = Some(format!("target={target_type};code={}", error.code()));
+            event
+        }
+    };
+    // 明文导出属于高影响动作：审计写失败按 ERROR 告警。
+    security_audit::record(db, event, true);
+}
+
+/// 清理审计：只记保留天数与计数，不写具体导出目录。
+fn audit_purge_outcome(
+    db: &crate::db::Db,
+    older_than_days: i64,
+    outcome: &AppResult<agent_bridge::ExportPurgeReport>,
+) {
+    let mut event = AuditEvent::new(
+        CATEGORY_CLIPBOARD,
+        EVENT_CLIPBOARD_EXPORT_PURGED,
+        "purge_agent_exports",
+        match outcome {
+            Ok(_) => RESULT_OK,
+            Err(_) => RESULT_FAILED,
+        },
+    );
+    event.reason_code = Some(match outcome {
+        Ok(report) => format!(
+            "retentionDays={older_than_days};removed={};failed={};skipped={}",
+            report.removed, report.failed, report.skipped
+        ),
+        Err(error) => format!("retentionDays={older_than_days};code={}", error.code()),
+    });
+    security_audit::record(db, event, false);
+}
+
 /// 导出包需要复制/解码图片并写多个文件；大分组可能耗时，放到后台线程避免冻结主线程。
 /// 只做线程迁移，导出格式与目录策略不变；前端关闭面板不会取消此任务，文件仍会保留。
 #[tauri::command]
@@ -1206,8 +1268,9 @@ pub async fn clipboard_export_for_agent(
 ) -> AppResult<ExportPackage> {
     let rt = runtime(&state).clone();
     let data_dir = crate::app_data_dir(&app);
+    let audit_target = target_type.clone();
     let worker = rt.clone();
-    let pkg = tauri::async_runtime::spawn_blocking(move || {
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
         agent_bridge::export_package(
             &worker.db,
             &worker.root,
@@ -1218,7 +1281,9 @@ pub async fn clipboard_export_for_agent(
         )
     })
     .await
-    .map_err(|e| AppError::Io(std::io::Error::other(format!("导出后台任务异常结束：{e}"))))??;
+    .map_err(|e| AppError::Io(std::io::Error::other(format!("导出后台任务异常结束：{e}"))))?;
+    audit_export_outcome(&rt.db, &audit_target, &outcome);
+    let pkg = outcome?;
     rt.emit_changed("export-agent");
     Ok(pkg)
 }
@@ -1228,13 +1293,18 @@ pub async fn clipboard_export_for_agent(
 #[tauri::command]
 pub async fn clipboard_purge_agent_exports(
     app: AppHandle,
+    state: State<'_, Arc<ClipboardRuntime>>,
     older_than_days: Option<i64>,
 ) -> AppResult<agent_bridge::ExportPurgeReport> {
+    let rt = runtime(&state).clone();
     let data_dir = crate::app_data_dir(&app);
     let days = older_than_days.unwrap_or(7);
-    tauri::async_runtime::spawn_blocking(move || agent_bridge::purge_exports(&data_dir, days))
-        .await
-        .map_err(|e| AppError::Agent(format!("导出清理后台任务异常结束：{e}")))?
+    let outcome =
+        tauri::async_runtime::spawn_blocking(move || agent_bridge::purge_exports(&data_dir, days))
+            .await
+            .map_err(|e| AppError::Agent(format!("导出清理后台任务异常结束：{e}")))?;
+    audit_purge_outcome(&rt.db, days, &outcome);
+    outcome
 }
 
 #[tauri::command]
@@ -1392,6 +1462,89 @@ mod tests {
         assert!(result.is_err(), "线程应因 panic 结束");
         assert_eq!(ACTIVE.load(Ordering::SeqCst), 0, "panic 展开后配额必须归还");
         assert!(QUOTA.acquire().is_ok(), "panic 后必须能重新获取配额");
+    }
+
+    /// 导出成功审计只含目标类型/条目数/图片数，不得写入目录、文件名或正文。
+    #[test]
+    fn export_audit_omits_paths_and_content() {
+        let db = crate::db::Db::open_in_memory().unwrap();
+        let pkg = ExportPackage {
+            dir: r"C:\Users\secret\clipboard-exports\uuid".into(),
+            markdown_path: r"C:\Users\secret\clipboard-exports\uuid\clipboard.md".into(),
+            manifest_path: r"C:\Users\secret\clipboard-exports\uuid\manifest.json".into(),
+            files: vec![
+                r"C:\Users\secret\clipboard-exports\uuid\clipboard.md".into(),
+                r"C:\Users\secret\clipboard-exports\uuid\manifest.json".into(),
+                r"C:\Users\secret\clipboard-exports\uuid\image-01.png".into(),
+            ],
+            item_count: 3,
+            summary: "secret clipboard text".into(),
+            warnings: vec!["secret warning".into()],
+        };
+        audit_export_outcome(&db, "group", &Ok(pkg));
+
+        let page = security_audit::list_page(
+            &db,
+            security_audit::AuditFilter {
+                category: Some(CATEGORY_CLIPBOARD.into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(page.total, 1);
+        let item = &page.items[0];
+        assert_eq!(item.event_type, EVENT_CLIPBOARD_EXPORT_SUCCEEDED);
+        assert_eq!(item.result, RESULT_OK);
+        assert_eq!(item.action, "export_agent");
+        assert_eq!(
+            item.reason_code.as_deref(),
+            Some("target=group;items=3;images=1")
+        );
+        let detail = item.reason_code.as_deref().unwrap_or_default();
+        assert!(
+            !detail.contains("secret") && !detail.contains("clipboard.md"),
+            "审计明细不得包含路径/文件名/正文: {detail}"
+        );
+    }
+
+    /// 失败与清理审计同样只保留错误码/计数，不写具体目录。
+    #[test]
+    fn export_and_purge_failure_audit_omit_paths() {
+        let db = crate::db::Db::open_in_memory().unwrap();
+        let failed: AppResult<ExportPackage> = Err(AppError::Agent(
+            r"write failed: C:\Users\secret\clipboard-exports\uuid".into(),
+        ));
+        audit_export_outcome(&db, "item", &failed);
+        audit_purge_outcome(
+            &db,
+            7,
+            &Ok(agent_bridge::ExportPurgeReport {
+                removed: 2,
+                skipped: 1,
+                failed: 1,
+                bytes: 42,
+            }),
+        );
+
+        let page = security_audit::list_page(
+            &db,
+            security_audit::AuditFilter {
+                category: Some(CATEGORY_CLIPBOARD.into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(page.total, 2);
+        let details: Vec<&str> = page
+            .items
+            .iter()
+            .filter_map(|i| i.reason_code.as_deref())
+            .collect();
+        assert!(details.iter().all(|d| !d.contains("secret")));
+        assert!(details.iter().all(|d| !d.contains("clipboard-exports")));
+        assert!(details
+            .iter()
+            .any(|d| d.starts_with("retentionDays=7;removed=2")));
     }
 
     /// 批量状态语义与 200 条上限：保留输入顺序，存在的报 ok、缺失的报 missing。

@@ -2531,6 +2531,7 @@ export const zhCN = {
   "diagnosticsCenter.audit.category.auth": "认证",
   "diagnosticsCenter.audit.category.deviceRevoke": "设备撤销",
   "diagnosticsCenter.audit.category.mcp": "MCP",
+  "diagnosticsCenter.audit.category.clipboard": "剪贴板",
   "diagnosticsCenter.audit.category.vault": "保险库",
   "diagnosticsCenter.audit.category.personalHub": "个人中枢",
   "diagnosticsCenter.audit.category.other": "其他",

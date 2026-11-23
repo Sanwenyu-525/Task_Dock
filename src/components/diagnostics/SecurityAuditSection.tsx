@@ -67,6 +67,7 @@ const CATEGORY_KEYS: Record<SecurityAuditCategory, MessageKey> = {
   auth: "diagnosticsCenter.audit.category.auth",
   deviceRevoke: "diagnosticsCenter.audit.category.deviceRevoke",
   mcp: "diagnosticsCenter.audit.category.mcp",
+  clipboard: "diagnosticsCenter.audit.category.clipboard",
   vault: "diagnosticsCenter.audit.category.vault",
   personalHub: "diagnosticsCenter.audit.category.personalHub",
   other: "diagnosticsCenter.audit.category.other",
