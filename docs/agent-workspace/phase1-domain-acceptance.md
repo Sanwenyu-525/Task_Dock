@@ -346,3 +346,32 @@ IPC、MCP、REST、CLI、文件导入全部调用同一函数；`comic_media_sav
   本报告描述一致。
 - 未提交 `tmp/`、`target/`、测试证据日志、`db/mod.rs`、`clipboard/*`、`build.rs`、
   `tests/virtual_display_live.rs` 或其他 Agent 的移动端/文件工作区改动。
+
+## 14. 复验记录（2026-11-24）
+
+复验前 HEAD 为 `2e9b098`，本任务 `agent_access`、`mcp/tools.rs`、`commands/project_workspace.rs`
+与 `docs/agent-workspace` 路径均无未提交改动。测试二进制
+`task_dock_lib-3ba143d4234e1361.exe` 生成于 2026-11-24 00:51:58，晚于本轮全部相关源码修改
+（`tests_domain.rs` 00:49:44、`comic.rs` 00:44:31、`comic_workspace.rs` 00:49:40），
+复验运行的是交付提交对应的代码内容。
+
+| 范围 | 过滤名 | 结果 | 退出码 |
+|---|---|---|---|
+| Agent Access 全量 | `agent_access::` | 304 passed / 0 failed，154.47s | 0 |
+| MCP 模块 | `mcp::` | 91 passed / 0 failed，39.10s | 0 |
+| 项目命令层 | `commands::project_workspace::` | 13 passed / 0 failed，6.71s | 0 |
+| Comic 命令层 | `commands::comic_workspace::` | 17 passed / 0 failed，11.68s | 0 |
+| Rust lib 编译 | `cargo check --lib` | 通过，53 warnings | 0 |
+| 前端类型 | `npm run typecheck` | 0 errors | 0 |
+| 架构检查 | `npm run arch:guard` | 报告模式，exit 0；仅既有告警 | 0 |
+| lib + 集成测试编译 | `cargo check --lib --tests` | **未通过** | 101 |
+
+`cargo check --lib --tests` 仍阻塞于其他 Agent 在途的 `tests/virtual_display_live.rs`
+（`vd::vd_start` 参数漂移，10 个 E0061/E0308）；本轮未修改该文件，结论保持
+`ENVIRONMENT BLOCKED`。Rust lib 全量 3128 条本轮未重跑，不能宣称全仓回归通过。
+
+复验日志：`tmp/accept-phase1-agent-access.log`、`tmp/accept-phase1-mcp.log`、
+`tmp/accept-phase1-check-lib.log`、`tmp/accept-phase1-check-lib-tests.log`。
+
+复验结论：Novel + Comic Phase 1 的 Agent Access、MCP 与受影响命令层复跑全部通过；
+Release 与桌面 UI 验收仍未执行，边界与 §11、§12 一致。
