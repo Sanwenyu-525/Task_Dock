@@ -334,3 +334,15 @@ IPC、MCP、REST、CLI、文件导入全部调用同一函数；`comic_media_sav
 - 分页/Schema/路径安全：**通过定向测试**。
 - Novel + Comic Phase 1：**架构验收通过**（Debug 测试二进制 + 定向四入口）。
 - Release：**未验收**；Game/General/Development 未接入，不能宣称五领域完成。
+
+## 13. 交付提交与共享文件竞态
+
+- 主交付提交：`d8039f3 fix(agent-access): 修复 Novel/Comic 领域四入口事务与权限契约`
+  （28 files，+4429/-788），仅包含本任务 Agent Access 代码与文档。
+- `src-tauri/src/commands/comic_workspace.rs` 的本轮改动（校验下沉、UI revision、错误提示）
+  在并行开发中被另一 Agent 的提交 `89b3642 fix(comic): C3-R1 ...` 一并带入。
+  发现时该文件已 clean；按共享工作区纪律**没有 reset/revert/重复提交**，本轮测试运行的是
+  该文件当前内容。这是共享工作区的提交竞态，不是本任务主动代交他人文件；文件最终内容与
+  本报告描述一致。
+- 未提交 `tmp/`、`target/`、测试证据日志、`db/mod.rs`、`clipboard/*`、`build.rs`、
+  `tests/virtual_display_live.rs` 或其他 Agent 的移动端/文件工作区改动。
