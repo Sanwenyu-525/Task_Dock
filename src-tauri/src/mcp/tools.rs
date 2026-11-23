@@ -473,6 +473,13 @@ fn operation_target(tool: &str, args: &Value) -> (String, String, String) {
         // 计划聚合写：资源是计划，项目根只作为归属字段。
         // （resource_kind_for_tool 按名字含 "task" 会把它误判为任务。）
         "plan"
+    } else if tool == "taskdock_novel_update_chapter_content" {
+        "novel.chapter"
+    } else if matches!(
+        tool,
+        "taskdock_comic_save_media_version" | "taskdock_comic_adopt_media_version"
+    ) {
+        "comic.media_version"
     } else {
         crate::agent_access::operations::resource_kind_for_tool(tool)
     }
@@ -486,6 +493,8 @@ fn operation_target(tool: &str, args: &Value) -> (String, String, String) {
         "plan" => pick(&["plan_id"]),
         "note" => pick(&["note_id"]),
         "knowledge" => pick(&["document_id", "doc_id"]),
+        "novel.chapter" => pick(&["chapter_id"]),
+        "comic.media_version" => pick(&["media_id"]),
         _ => String::new(),
     };
     let project = pick(&["project_id"]);
@@ -660,7 +669,10 @@ fn authorize_replay(
             }
             replay.entity_id.clone()
         }
-        "taskdock_update_project" | "taskdock_close_project" | "taskdock_create_plan" | "taskdock_create_feature" | "taskdock_add_progress_note" => {
+        "taskdock_update_project" | "taskdock_close_project" | "taskdock_create_plan" | "taskdock_create_feature" | "taskdock_add_progress_note"
+        | "taskdock_novel_update_chapter_content"
+        | "taskdock_comic_save_media_version"
+        | "taskdock_comic_adopt_media_version" => {
             require_str(args, "project_id")?.to_string()
         }
         "taskdock_update_plan" => require_str(args, "plan_id")?,
@@ -696,7 +708,10 @@ fn authorize_replay(
     let root = ensure_grant(ctx, conn, &project_id)?;
     // update_project / update_plan 会改写项目根元数据或经根镜像同步：
     // 重放同样按当前能力复核 projects.write。
-    if matches!(name, "taskdock_update_project" | "taskdock_close_project" | "taskdock_update_plan" | "taskdock_create_plan" | "taskdock_set_plan_lifecycle" | "taskdock_save_milestone") {
+    if matches!(name, "taskdock_update_project" | "taskdock_close_project" | "taskdock_update_plan" | "taskdock_create_plan" | "taskdock_set_plan_lifecycle" | "taskdock_save_milestone"
+        | "taskdock_novel_update_chapter_content"
+        | "taskdock_comic_save_media_version"
+        | "taskdock_comic_adopt_media_version") {
         ensure_projects_write(ctx, conn, &root)?;
     }
     if name == "taskdock_close_project" {
@@ -1808,6 +1823,23 @@ pub fn run_tool_call(
                     .flatten()
                     .unwrap_or_default();
                 target.2 = root;
+            }
+            // 领域写工具可能传项目根或计划 ID；运行中操作必须记录真实项目根。
+            if matches!(target.0.as_str(), "novel.chapter" | "comic.media_version")
+                && !target.2.is_empty()
+            {
+                let raw = target.2.clone();
+                let root = ctx
+                    .db
+                    .with_read(|conn| {
+                        crate::agent_access::permissions::resolve_project_root(conn, &raw)
+                    })
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default();
+                if !root.is_empty() {
+                    target.2 = root;
+                }
             }
             operations::try_start(
                 &ctx.db,

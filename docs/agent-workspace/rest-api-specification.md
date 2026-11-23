@@ -147,3 +147,28 @@ Content-Type: application/json
 - 响应 201：`{ created, project, activePlan, workspace, provisioningStatus }`；
 - 幂等：`Idempotency-Key` 走既有缓存；`clientRequestId` 与 UI/MCP/CLI 共用同一摘要；
 - 仍只监听 loopback，未新增任何公网暴露面。
+
+## 专业领域端点（2026-11-23，Phase 1）
+
+| 方法 | 路径 | 能力 | 说明 |
+|---|---|---|---|
+| GET | `/api/v1/projects/{projectId}/domain-manifest` | `projects.read` + 项目 grant | 授权 Manifest；`project.kind` 为真实类型 |
+| GET | `/api/v1/projects/{projectId}/novel/chapters` | `projects.read` | 分页；不含正文 |
+| GET | `/api/v1/projects/{projectId}/novel/chapters/{chapterId}` | `projects.read` | 元信息 + `revision`/`updatedAt` |
+| GET | `/api/v1/projects/{projectId}/novel/chapters/{chapterId}/content` | `projects.read` | 正文 + `revision`/`updatedAt` |
+| PUT | `/api/v1/projects/{projectId}/novel/chapters/{chapterId}/content` | `projects.write` | body `{content, expected_revision}` |
+| GET | `/api/v1/projects/{projectId}/novel/{characters\|worldview\|refs}` | `projects.read` | 分页 |
+| GET | `/api/v1/projects/{projectId}/comic/{episodes\|shots\|media-versions\|characters\|scenes}` | `projects.read` | 分页；剧集不含 script |
+| GET | `/api/v1/projects/{projectId}/comic/media-versions/{mediaId}` | `projects.read` | 素材详情 + revision + 安全文件引用 |
+| PUT | `/api/v1/projects/{projectId}/comic/media-versions/{mediaId}` | `projects.write` | body `{version_label, status?, review_note?, expected_revision}` |
+| POST | `/api/v1/projects/{projectId}/comic/media-versions/{mediaId}/adopt` | `projects.write` | body `{expected_revision}` |
+
+约定：
+
+- 领域请求体与既有 REST 一致使用 **snake_case**（`expected_revision`）。
+- **PUT 支持 `Idempotency-Key`**（与 POST 相同：同 Key 同 body 重放原结果；同 Key 不同 body 409）。
+  PATCH/GET 不支持幂等键。`traceRequestId`（`X-Request-Id`）只用于追踪，不能替代幂等键。
+- 一次 PUT/POST 只产生一条 `agent_operations`，`resource_id` 为章节/素材 ID，`project_id` 为项目根。
+- 业务提交后响应缓存前崩溃：重试按 operation 指针恢复 `novel.chapter` / `comic.media_version`，
+  不重新执行业务，也不推进 revision。
+- 分页字段沿用 `limit` / `offset` / `total` / `has_more` / `next_offset`；默认 50、最大 200。

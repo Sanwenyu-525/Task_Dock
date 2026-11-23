@@ -36,12 +36,35 @@ pub fn read_revision_snapshot(
     let (counter, counter_at, _hash) = read_revision(conn, resource_kind, resource_id)?;
     Ok(RevisionSnapshot {
         revision: effective_revision(counter, &counter_at, business_updated_at),
-        updated_at: if counter_at.is_empty() {
-            business_updated_at.to_string()
-        } else {
-            counter_at
-        },
+        // `updatedAt` 必须反映业务行的真实更新时间：计数器时间是「上次版本推进时
+        // 认为的业务时间」，UI 外部修改后会落后于业务行，不能拿来冒充更新时间。
+        updated_at: business_updated_at.to_string(),
     })
+}
+
+/// UI 直接写业务行时推进版本（无需 Agent 身份）。
+///
+/// UI 写入与 Agent 写入共用同一业务行；如果 UI 不推进版本，Agent 首次读取时
+/// 没有计数器基线，无法判断业务行已被改过。该函数只在 UI 的命令层同步事务内调用，
+/// 与业务写入同提交；Actor 标记为 `ui`，不产生 AgentOperation/审计。
+pub fn note_ui_write(
+    conn: &Connection,
+    resource_kind: &str,
+    resource_id: &str,
+    business_at_before: &str,
+    new_updated_at: &str,
+) -> AppResult<i64> {
+    let principal = Principal::local(crate::agent_access::Source::Ui);
+    bump_revision_from(
+        conn,
+        resource_kind,
+        resource_id,
+        None,
+        &principal,
+        business_at_before,
+        new_updated_at,
+        "",
+    )
 }
 
 /// 首次读取时建立稳定版本基线（文档 §7.3 第 1 点）。

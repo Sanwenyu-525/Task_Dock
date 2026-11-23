@@ -386,3 +386,95 @@ Dev 端到端复验 64/64，exit 0。用真实 Tauri 命令创建身份、授予
   覆盖空项目 ID、未授权项目、计划 ID 归一、跨入口关联与解绑、权限撤销、
   CLI 同步权限和监听端口释放。证据：`tmp/acceptance/external-agent-project-tasks/report.md`。
 - 本轮后端验收使用无窗口测试进程，桌面界面和正式安装包未纳入范围。
+
+## 18. 专业领域 Phase 1（Novel + Comic，2026-11-23）
+
+本轮在并行开发共享工作区执行：未使用 `git reset` / `git clean` / `git stash` / `git checkout`，
+未批量格式化，只修改本任务文件；测试数据库全部为 `Db::open_in_memory()` 或每个用例独立临时目录。
+
+### 18.1 实际命令与结果
+
+Windows 测试二进制本轮通过 `cargo test --lib --no-run`（exit 0，54 warnings）生成。因另一并行任务正在
+改 `build.rs` 的 test manifest，直接在 `target/debug/deps` 运行会报 `0xc0000139`；本轮把同一二进制复制到
+`C:\Windows\Temp\td2\td2.exe`（含同名 manifest）执行，未修改 `build.rs`，也未把该临时目录计入交付物。
+以下结果均为本轮实际运行，不是历史结果：
+
+| 范围 | 实际命令（过滤名） | 结果 | 退出码 |
+|---|---|---|---|
+| 领域应用服务 / 四入口 / 权限 / revision / 分页 / 路径 | `agent_access::tests_domain` | 18 passed / 0 failed | 0 |
+| domains 模块（manifest/policy/novel/comic/revision/idempotency） | `agent_access::domains` | 33 passed / 0 failed | 0 |
+| 文件导入 | `agent_access::domain_import::tests` | 10 passed / 0 failed | 0 |
+| MCP 参数 Schema | `agent_access::domain_mcp::tests` | 4 passed / 0 failed | 0 |
+| 领域幂等 | `agent_access::domains::idempotency::tests` | 2 passed / 0 failed | 0 |
+| CLI 写操作 | `agent_access::cli::create_gate_tests` | 6 passed / 0 failed | 0 |
+| CLI 资源分类 | `agent_access::cli::operation_tests` | 3 passed / 0 failed | 0 |
+| REST PUT/重放/恢复/Comic | `agent_access::tests_v82_rest::rest_put_*` + `rest_comic_*` | 3 passed / 0 failed | 0 |
+| 受影响命令层 | `commands::project_workspace::` + `commands::comic_workspace::` | 13 + 17 passed / 0 failed | 0 |
+| MCP 模块 | `mcp::` | 91 passed / 0 failed（29.00s） | 0 |
+| Agent Access 全量 | `agent_access::` | 304 passed / 0 failed（135.53s） | 0 |
+| Rust lib 全量 | 全部 lib 用例 | 未完成（见 18.4） | - |
+| 前端类型 | `npm run typecheck` | 0 errors | 0 |
+| 架构检查 | `npm run arch:guard` | 报告模式 exit 0；存在既有 DUP-001 平行源码树告警，不是本轮新增 | 0 |
+
+### 18.2 需求覆盖
+
+| 需求 | 覆盖用例 |
+|---|---|
+| MCP 写操作不死锁 | `mcp_domain_write_does_not_deadlock_with_outer_transaction`（外层事务内真实写，超时判失败） |
+| MCP 一次写只有一条 Operation | `mcp_write_has_one_operation_with_true_resource_and_project` |
+| MCP requestId 重放不二次写 | `mcp_same_request_id_replays_without_second_operation_or_write` |
+| 旧 revision 不覆盖新数据且无部分写 | `mcp_stale_revision_fails_without_partial_write` |
+| 两个 Agent 并发同一 revision 只提交一个 | `two_agents_concurrent_same_revision_only_one_commits` |
+| REST 同 Key 重放原结果 | `rest_put_novel_content_replays_conflicts_and_has_one_operation` |
+| REST 同 Key 不同内容 409 | 同上（second body 不同，断言 CONFLICT） |
+| 业务提交后响应丢失可恢复 | `rest_put_novel_recovers_committed_business_without_response`；Comic 版本 `rest_comic_update_and_adopt_record_true_resources_and_recover` |
+| REST 资源/项目正确 | `rest_put_novel_content_replays_conflicts_and_has_one_operation`、`rest_comic_update_and_adopt_record_true_resources_and_recover` |
+| CLI 真实资源 ID / project_id / 单 Operation | `cli_novel_write_has_one_operation_with_real_project_and_resource`、`domain_writes_use_flag_resource_ids_not_action_names` |
+| Manifest 无 grant / 他项目 / readonly / disabled / revoked | `manifest_*`、`readonly_and_disabled_revoked_scope_rules_hold_for_manifest` |
+| Manifest 不泄露项目类型 | `manifest_does_not_leak_kind_before_project_authorization` |
+| 五种 kind 与 comic/ai_comic 区分 | `manifest_maps_five_kinds_and_separates_comic_kind_from_domain` |
+| Comic 元信息校验 / adopted 绕过 | `mcp_comic_update_rejects_oversized_metadata_and_adopted_bypass`、`domains::comic::tests` |
+| UI 写入后 Agent 读版本 | `ui_command_write_advances_revision_without_agent_baseline`、`comic_ui_save_advances_revision_and_agent_reads_it` |
+| Agent 写入推进 / UI 外部修改可见 | `agent_reads_ui_writes_and_agent_writes_revisions`、`domains::novel::tests::ui_edit_is_visible_to_agent_revision` |
+| Comic 采用后新旧版本推进 | `mcp_comic_adopt_advances_old_and_new_versions` |
+| 章节详情不含正文 / 剧集列表不含 script | `agent_reads_ui_writes_and_agent_writes_revisions`、`comic_episode_list_hides_script_and_media_list_hides_absolute_paths` |
+| 路径不泄露本机绝对目录 | `comic_episode_list_hides_script_and_media_list_hides_absolute_paths`、`domains::comic::tests::media_paths_are_relativized...` |
+| 分页默认 50 / 最大 200 | `mcp_lists_apply_default_and_capped_pagination`、`domains::novel::tests::pagination_reports_total_and_next_offset` |
+| Schema 必填、类型、enum、长度、未知字段 | `domain_mcp::tests::*` |
+| 文件导入与 MCP 共用校验、review_note 4000 | `domain_import::tests::*` |
+
+### 18.3 本轮失败与修复记录
+
+- 首轮 `agent_access::tests_domain` 8/7：失败均为测试断言口径（Manifest 错误类型、错误文本含项目 ID、
+  MCP Operation `action` 实为工具名、UI 修改前无 revision 基线）以及 MCP 重放授权未识别领域工具。
+  修复：`mcp::tools::authorize_replay` 增加三个领域写工具分支与 `projects.write` 复核；测试改用工具名/
+  先建立基线/不再比较整段含项目 ID 的文案。
+- 首轮 `agent_access::domains` 26/7：`comic_episodes.status='todo'`、`comic_media_versions.source='import'`
+  触发数据库 CHECK；属于测试 fixture 非法数据，改为 `draft` / `imported`。
+- `agent_access::` 全量首轮 301/2：`comic.media.update` 的 Manifest 未声明 `File` 接口；
+  `media_update_cannot_set_adopted` 期望错误包含 `comic.media.adopt`。修复：领域操作注册加
+  `Interface::File`；`validate_media_meta` 对 `adopted` 返回专门的可执行提示（仍拒绝写入）。
+- 并发用例首轮断言读错外层 MCP 结果形状（`message` 在嵌套 JSON 文本中），改为解析 `content[0].text`；
+  产品逻辑本身一成一冲突。
+
+### 18.4 最终回归
+
+- `agent_access::`（含本轮 18 条领域用例）304 passed / 0 failed，135.53s，exit 0；
+  `mcp::` 91 passed / 0 failed，29.00s，exit 0；
+  `commands::project_workspace::` 13 passed / 0 failed，exit 0；
+  `commands::comic_workspace::` 17 passed / 0 failed，exit 0。
+- `cargo test --lib --no-run` 生成同一测试二进制，exit 0。完整 3128 条 lib 用例的全量运行
+  在 4 线程与默认线程下均因测试运行时长超出本轮窗口而未完成；`--skip agent_access::`
+  的剩余用例运行同样未跑完。**不把定向运行冒充全量通过**；受影响面的
+  `agent_access`、`mcp`、`project_workspace`、`comic_workspace` 已分别全量执行。
+- 日志：`tmp/phase1-domain-tests-final2.log`、`tmp/phase1-agent-access-full-final.log`、
+  `tmp/phase1-mcp-tests.log`、`tmp/phase1-project-workspace-tests.log`、
+  `tmp/phase1-comic-workspace-tests.log`、`tmp/phase1-lib-full*.log`。
+
+### 18.5 未覆盖
+
+- 未构建正式安装包，未执行 Release 安装/升级/卸载验收；结论只到 Debug 测试二进制。
+- 未执行桌面 UI 视觉走查（320/400 窄窗、DPI、主题）；UI 写入通过命令层真实函数验证，未驱动 Tauri IPC 事件循环。
+- 未做多进程真实并发压测；并发语义由单进程多线程 + SQLite 唯一写连接验证。
+- `cargo check --lib --tests` 本轮被其他 Agent 在途的集成测试 `tests/virtual_display_live.rs`
+  编译错误阻塞（`vd_start` 参数漂移），只报告 `ENVIRONMENT BLOCKED`，不把它算成本任务失败，也不修改该文件。

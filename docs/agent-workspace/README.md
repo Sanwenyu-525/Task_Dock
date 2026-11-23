@@ -23,6 +23,7 @@ Agent 通过 CLI / MCP / REST / 受控文件目录访问**同一套数据**。
 | [development-progress.md](development-progress.md) | 分阶段进度（未实现/部分实现/已完成/已验收） |
 | [test-plan.md](test-plan.md) | 测试项、命令、数据规模与证据要求 |
 | [acceptance-report.md](acceptance-report.md) | 端到端验收记录与结论 |
+| [phase1-domain-acceptance.md](phase1-domain-acceptance.md) | Novel + Comic Phase 1 架构修复验收报告 |
 
 ## 一句话设计
 

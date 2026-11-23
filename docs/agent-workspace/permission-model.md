@@ -245,3 +245,52 @@ OS 用户或沙箱中；本模块只保证「不因目录可写而越权修改 T
   `payload.principal.principalId` 记真实主体行 ID；
 - **审计**：`taskdock_update_plan` 与 `taskdock_update_project` 同列 `HIGH_RISK_ACTIONS`
   （项目级状态迁移写）。
+
+## 专业领域 Phase 1 权限（2026-11-23）
+
+### 判定顺序（固定）
+
+```text
+解析项目根（项目 ID / 计划 ID 兼容）
+        │
+        ▼
+身份 → scope → 能力（ProjectsRead/Write）→ 项目根 grant
+        │
+        ▼
+项目类型（DomainKind::Parse，未知类型拒绝，不回退 general）
+        │
+        ▼
+项目状态（写要求 active；读允许 archived）
+        │
+        ▼
+资源归属（数据库真实 project_id == 授权项目根）
+        │
+        ▼
+业务读取 / 业务写入
+```
+
+唯一实现：`agent_access::domains::policy::resolve_authorized_project`
+（读）与领域写核心内的同一调用 + `ensure_domain_write`。**不得**先
+`ensure_domain` 再查 `ProjectsRead`——未授权 Agent 会从「项目类型不匹配」
+推断项目类型。`policy` 单测覆盖跨项目资源统一错误 `资源不可访问`，不泄露存在性。
+
+### Manifest
+
+- `manifest::build_for_principal(db, principal, project_ref)` 是 MCP/REST/CLI 唯一入口；
+  先解析项目根并通过 `projects.read`（含 grant，readonly 按全局只读规则），再读
+  kind/status 并解析领域。
+- 未授权时只返回统一 `FORBIDDEN`；不得返回项目 `kind`、`status`、`operations`。
+- `project.kind` 是真实数据库类型：漫剧为 `ai_comic`；`domain` 为领域名 `comic`。
+  两者混用会让 Agent 以 `comic` 去匹配 `workspace_projects.kind`，必须显式区分。
+
+### 真实 RegisteredAgent 测试矩阵（本轮）
+
+| 场景 | 期望 |
+|---|---|
+| 无项目 grant（`project_rw`） | `FORBIDDEN`，错误与项目类型无关 |
+| 只有其他项目 grant | 目标项目 `FORBIDDEN` |
+| `readonly` | Manifest 可读（全局只读，不要求逐项目 grant） |
+| `disabled` | `FORBIDDEN`（身份层拒绝） |
+| `revoked` | `FORBIDDEN`（每次请求重读 `revoked_at`） |
+| 项目类型不匹配 | 授权通过后 `VALIDATION`（领域类型错误），不泄露给未授权者 |
+| 跨项目资源 ID | `FORBIDDEN 资源不可访问`（统一错误，不泄露存在性） |

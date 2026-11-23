@@ -103,3 +103,43 @@
 | 计划 PATCH 边界（第五轮） | 已实现 | 计划更新只接受执行状态/排序；name/description/targetDate 属项目根，REST schema 不接收、MCP 明确拒绝；没有跨聚合写入路径 |
 | 版本令牌必填（第五轮） | 已实现 | REST/MCP/CLI/IPC 通用更新入口缺 revision → Validation；空 PATCH → Validation 且 revision 不变 |
 | MCP 计划资源身份（第五轮） | 已实现 | `taskdock_update_plan` 审计/操作记录 `resource_kind=plan`、`resource_id=PlanId`、`project_id=根`；`planning-changed` 带 `kind:plan` + `planId` |
+
+## 专业领域 Phase 1（Novel + Comic，2026-11-23）
+
+状态口径：**已实现** = 四入口代码 + 本轮测试；**未开放** = 未注册操作，Manifest 不展示。
+Game / General / Development 保持 `planned`，没有空壳 available 操作。
+
+### Novel（7 个操作）
+
+| 操作 | 类型 | MCP 工具 | REST | CLI | 文件导入 |
+|---|---|---|---|---|---|
+| `novel.chapter.list` | 读（分页） | `taskdock_novel_list_chapters` | `GET .../novel/chapters` | `novel chapter list` | 不适用 |
+| `novel.chapter.get` | 读（仅元信息） | `taskdock_novel_get_chapter` | `GET .../novel/chapters/{id}` | `novel chapter get` | 不适用 |
+| `novel.chapter.content.read` | 读（正文） | `taskdock_novel_get_chapter_content` | `GET .../novel/chapters/{id}/content` | `novel chapter content` | 不适用 |
+| `novel.chapter.content.update` | 写（expectedRevision） | `taskdock_novel_update_chapter_content` | `PUT .../novel/chapters/{id}/content` | `novel chapter update-content` | 支持 |
+| `novel.character.list` | 读（分页） | `taskdock_novel_list_characters` | `GET .../novel/characters` | `novel character list` | 不适用 |
+| `novel.worldview.list` | 读（分页） | `taskdock_novel_list_worldview` | `GET .../novel/worldview` | `novel worldview list` | 不适用 |
+| `novel.ref.list` | 读（分页） | `taskdock_novel_list_entity_refs` | `GET .../novel/refs` | `novel ref list` | 不适用 |
+
+### Comic（8 个操作）
+
+| 操作 | 类型 | MCP 工具 | REST | CLI | 文件导入 |
+|---|---|---|---|---|---|
+| `comic.episode.list` | 读（分页，不含 script） | `taskdock_comic_list_episodes` | `GET .../comic/episodes` | `comic episode list` | 不适用 |
+| `comic.shot.list` | 读（分页） | `taskdock_comic_list_shots` | `GET .../comic/shots` | `comic shot list` | 不适用 |
+| `comic.media.list` | 读（分页） | `taskdock_comic_list_media_versions` | `GET .../comic/media-versions` | `comic media list` | 不适用 |
+| `comic.media.get` | 读（详情 + revision） | `taskdock_comic_get_media_version` | `GET .../comic/media-versions/{id}` | `comic media get` | 不适用 |
+| `comic.character.list` | 读（分页） | `taskdock_comic_list_characters` | `GET .../comic/characters` | `comic character list` | 不适用 |
+| `comic.scene.list` | 读（分页） | `taskdock_comic_list_scenes` | `GET .../comic/scenes` | `comic scene list` | 不适用 |
+| `comic.media.update` | 写（expectedRevision） | `taskdock_comic_save_media_version` | `PUT .../comic/media-versions/{id}` | `comic media update` | 支持 |
+| `comic.media.adopt` | 写（expectedRevision） | `taskdock_comic_adopt_media_version` | `POST .../comic/media-versions/{id}/adopt` | `comic media adopt` | 支持 |
+
+### 明确未开放
+
+| 能力 | 状态 | 说明 |
+|---|---|---|
+| 领域删除/批量写入 | 未开放 | 破坏性能力不在 Phase 1 |
+| 小说卷/章创建、角色/世界观写入 | 未开放 | 当前只读 + 正文更新；写入仍走 UI |
+| 漫剧剧集/镜头/角色/场景编辑 | 未开放 | 当前只读 + 素材元信息/采用 |
+| 漫剧完整剧本读取 | 未开放 | 列表只返回摘要，剧本需后续独立接口 |
+| Game / General / Development | planned | 无操作注册，Manifest 不展示 |

@@ -1230,22 +1230,53 @@ pub fn novel_volume_delete_impl(db: &Db, id: &str) -> AppResult<()> {
     })
 }
 
+/// 章节列表的防御性上限：Agent 入口另有 50/200 的分页窗口，这里只是避免
+/// 桌面端在异常数据下一次性装载无限行（正常项目远低于该值）。
+const MAX_NOVEL_CHAPTER_ROWS: i64 = 5000;
+
 pub fn novel_chapter_list_impl(db: &Db, project_id: &str) -> AppResult<Vec<NovelChapterSummary>> {
     db.with_read(|conn| {
-        ensure_novel_project(conn, project_id, false)?;
-        let mut stmt = conn.prepare(
-            "SELECT id, project_id, volume_id, title, word_count, sort_order,
-                    created_at, updated_at
-             FROM novel_chapters WHERE project_id = ?1
-             ORDER BY sort_order, created_at, id",
+        let (rows, _total) = novel_chapter_list_page_in_conn(
+            conn,
+            project_id,
+            MAX_NOVEL_CHAPTER_ROWS as u32,
+            0,
         )?;
-        let rows = stmt.query_map(params![project_id], row_to_chapter_summary)?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row.map_err(AppError::from)?);
-        }
-        Ok(out)
+        Ok(rows)
     })
+}
+
+/// 章节分页读取（Agent 领域入口共用；调用方持有读连接，禁止再开 `db.with_read`）。
+///
+/// 返回 `(当前页, 真实总数)`；列表项仍不含正文。
+pub(crate) fn novel_chapter_list_page_in_conn(
+    conn: &Connection,
+    project_id: &str,
+    limit: u32,
+    offset: u32,
+) -> AppResult<(Vec<NovelChapterSummary>, u32)> {
+    ensure_novel_project(conn, project_id, false)?;
+    let total: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM novel_chapters WHERE project_id = ?1",
+        params![project_id],
+        |r| r.get(0),
+    )?;
+    let mut stmt = conn.prepare(
+        "SELECT id, project_id, volume_id, title, word_count, sort_order,
+                created_at, updated_at
+         FROM novel_chapters WHERE project_id = ?1
+         ORDER BY sort_order, created_at, id
+         LIMIT ?2 OFFSET ?3",
+    )?;
+    let rows = stmt.query_map(
+        params![project_id, limit as i64, offset as i64],
+        row_to_chapter_summary,
+    )?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(AppError::from)?);
+    }
+    Ok((out, total.max(0) as u32))
 }
 
 pub fn novel_chapter_get_impl(db: &Db, id: &str) -> AppResult<NovelChapter> {
@@ -1275,7 +1306,7 @@ pub fn novel_chapter_save_impl(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
 
-    let saved_id = db.with_conn(|conn| {
+    let saved_id = db.with_transaction(|conn| {
         ensure_novel_project(conn, &project_id, true)?;
         ensure_volume_belongs(conn, &project_id, volume_id.as_deref())?;
         let now = now_iso();
@@ -1296,14 +1327,14 @@ pub fn novel_chapter_save_impl(
                 Ok::<String, AppError>(id)
             }
             Some(id) => {
-                let existing: Option<(String, i64)> = conn
+                let existing: Option<(String, i64, String)> = conn
                     .query_row(
-                        "SELECT project_id, sort_order FROM novel_chapters WHERE id = ?1",
+                        "SELECT project_id, sort_order, updated_at FROM novel_chapters WHERE id = ?1",
                         params![id],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                     )
                     .optional()?;
-                let Some((owner, current_order)) = existing else {
+                let Some((owner, current_order, previous_at)) = existing else {
                     return Err(AppError::NotFound("章节不存在或已被删除".into()));
                 };
                 if owner != project_id {
@@ -1319,6 +1350,15 @@ pub fn novel_chapter_save_impl(
                      WHERE id = ?1 AND project_id = ?6",
                     params![id, volume_id, title, order, now, project_id],
                 )?;
+                // UI 写业务行时同步推进版本，Agent 之后能读到真实变化，
+                // 不会把「无计数器基线」误当成 revision 0。
+                crate::agent_access::domains::revision::note_ui_write(
+                    conn,
+                    "novel.chapter",
+                    &id,
+                    &previous_at,
+                    &now,
+                )?;
                 Ok::<String, AppError>(id)
             }
         }
@@ -1332,7 +1372,24 @@ pub fn novel_chapter_save_content_impl(
     id: &str,
     content: String,
 ) -> AppResult<NovelChapterSummary> {
-    db.with_transaction(|conn| novel_chapter_save_content_in_conn(conn, id, content))?;
+    db.with_transaction(|conn| {
+        let previous_at: String = conn.query_row(
+            "SELECT updated_at FROM novel_chapters WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )?;
+        let (_project_id, saved_at) =
+            novel_chapter_save_content_in_conn(conn, id, content)?;
+        // UI 自动保存正文同样推进版本；Agent 领域核心走 `_in_conn`，不会重复推进。
+        crate::agent_access::domains::revision::note_ui_write(
+            conn,
+            "novel.chapter",
+            id,
+            &previous_at,
+            &saved_at,
+        )?;
+        Ok(())
+    })?;
     db.with_read(|conn| read_chapter_summary(conn, id))
 }
 

@@ -39,6 +39,8 @@ mod tests_v82_handoff;
 mod tests_v82_import;
 #[cfg(test)]
 mod tests_v82_rest;
+#[cfg(test)]
+mod tests_domain;
 pub mod watch;
 pub mod workspace;
 
@@ -291,6 +293,8 @@ pub struct Page {
     pub offset: u32,
     pub total: u32,
     pub has_more: bool,
+    /// 下一页起点；`has_more=false` 时为 `None`。
+    pub next_offset: Option<u32>,
 }
 
 impl Page {
@@ -301,6 +305,7 @@ impl Page {
             offset,
             total,
             has_more,
+            next_offset: has_more.then_some(offset.saturating_add(limit)),
         }
     }
 }

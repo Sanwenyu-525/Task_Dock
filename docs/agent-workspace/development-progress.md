@@ -395,3 +395,60 @@ P2：
 `commands::planning::tests` 13/0、`agent_access::` 231/0、`project_creation_identity` 18/0、
 `mcp_e2e` 3/0、`project_lifecycle` 26/0、`npm run typecheck` 0 错误、
 前端 5 个定向文件 113/0。详见 [project-hub/06](../project-hub/06-验收标准.md) 第五轮章节。
+
+## 2026-11-23 专业领域 Phase 1（Novel + Comic）架构修复
+
+状态：**架构修复与定向验收通过**；正式安装包/桌面视觉验收未执行，不标记为 Release 已验收。
+
+### 根因与修复
+
+1. **MCP 写死锁（P0）**：`mcp::tools::run_tool_call` 已在 `Db::with_transaction` 内并持有
+   `writer: Mutex<Connection>`；`domain_mcp::call` 忽略传入的 `_write_conn`，调用领域公开包装，
+   后者进入 `idempotency::execute` → `store::cache_claim` → `Db::with_conn`，形成自锁等待。
+   修复：MCP 写操作强制使用外层 `write_conn`，直接调用 `*_in_conn` 业务核心并传 `NoGuard`；
+   缺少连接返回 `Unavailable`，不再 panic。MCP 外层 audit、Operation、事务提交、
+   `PlanningChanged` 广播保持完整。
+2. **四入口生命周期（P0）**：`idempotency::execute` 不再创建 Operation、不再自开事务，只把
+   cache 占位叠加到入口守卫（`StackedGuard`）；REST `domain_rest::handle` 接收外层
+   `RequestCacheGuard + OperationGuard`，写操作走 `*_with_guard`，PUT 支持 `Idempotency-Key`；
+   CLI `domain_cli::execute` 接收 `execute_with_request` 的 `OperationGuard` 与外层 requestId；
+   文件导入使用 `ImportLeaseGuard + *_in_conn`。`CacheClaim::Committed` 通过 operation 指针
+   `recover` 恢复响应，不重新执行业务。
+3. **授权与 Manifest（P1）**：`manifest::build_for_principal` 成为 MCP/REST/CLI 唯一入口；
+   `policy::resolve_authorized_project` 固定「项目读取授权 → 领域类型 → 状态 → 资源归属」顺序；
+   `project.kind` 使用真实数据库类型（`ai_comic`），`domain` 独立为 `comic`。
+4. **Comic 校验（P1）**：`validate_media_meta` 成为唯一规则（trim、控字符、240/4000 字符、
+   candidate/rejected），IPC / MCP / REST / CLI / 文件导入共用；文件导入不再放宽 review_note。
+5. **revision/DTO（P1）**：`updatedAt` 恒取业务行；UI 命令层
+   （`novel_chapter_save_impl`、`novel_chapter_save_content_impl`、`comic_media_save_impl`、
+   `comic_media_adopt_impl`）通过 `revision::note_ui_write` 与业务写入同事务推进版本；
+   Novel 元信息/正文分离；Comic 增加 `comic.media.get`；素材 DTO 不含绝对路径。
+6. **分页/Schema（P2）**：领域列表默认 50、最大 200，返回 `has_more`/`next_offset`；
+   Novel 章节列表补 COUNT + LIMIT/OFFSET；MCP 每个操作独立精确 Schema，必填字段与
+   `requestId` 统一 camelCase。
+
+### 文件范围
+
+`src-tauri/src/agent_access/{mod,service,cli,rest,operations,domain_cli,domain_import,domain_mcp,domain_rest}.rs`、
+`agent_access/domains/{manifest,policy,idempotency,novel,comic,revision}.rs`、
+`agent_access/tests_domain.rs`（新增）、`agent_access/tests_v82_rest.rs`、
+`src-tauri/src/mcp/tools.rs`、`src-tauri/src/commands/{project_workspace,comic_workspace}.rs`；
+文档 `architecture.md`、`feature-matrix.md`、`permission-model.md`、`synchronization.md`、
+`rest-api-specification.md`、`test-plan.md`。未新增数据库迁移；沿用
+`agent_resource_revisions` / `agent_operations` / 既有幂等缓存。
+
+### 验证
+
+- `agent_access::tests_domain` 18/0、`agent_access::domains` 33/0、
+  `agent_access::domain_import::tests` 10/0、MCP Schema 4/0、幂等 2/0。
+- CLI 真实写 1/0（资源、项目、单 Operation）；CLI 资源分类 3/0。
+- REST 真实 HTTP：PUT 重放/冲突/单 Operation、committed 后响应丢失恢复、Comic update/adopt 3/0。
+- `agent_access::` 全量与 `cargo test --lib` 结果见 `docs/agent-workspace/phase1-domain-acceptance.md`。
+- `npm run typecheck` exit 0；`npm run arch:guard` exit 0（既有 DUP-001 平行源码树告警）。
+- `cargo check --lib --tests` 被并行任务的集成测试编译错误阻塞（`tests/virtual_display_live.rs`），
+  本轮不改其文件，标记 `ENVIRONMENT BLOCKED`。
+
+### 未覆盖
+
+正式安装包/升级/卸载、桌面 UI 视觉走查、多进程并发压测，以及 Game/General/Development 的接入。
+后三个领域保持 `planned`，未注册空实现。

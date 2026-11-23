@@ -1933,3 +1933,278 @@ fn rest_validation_error_marks_operation_failed() {
     assert!(active.iter().all(|item| item.id != op.id));
     let _ = rest::stop();
 }
+
+// ── 领域四入口（REST）：PUT 幂等、冲突、提交后响应丢失恢复 ─────────
+
+fn put(
+    port: u16,
+    path: &str,
+    token: &str,
+    body: &[u8],
+    idem: Option<&str>,
+) -> (u16, HashMap<String, String>, String) {
+    let mut extra: Vec<(String, String)> = vec![("Content-Length".into(), body.len().to_string())];
+    if let Some(key) = idem {
+        extra.push(("Idempotency-Key".into(), key.to_string()));
+    }
+    let extra_refs: Vec<(&str, &str)> = extra
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    let mut stream = connect(port);
+    let head = request_head(&format!("PUT {path}"), token, &extra_refs);
+    stream.write_all(head.as_bytes()).unwrap();
+    stream.write_all(body).unwrap();
+    read_http(&mut stream)
+}
+
+fn seed_domain_project(db: &Db, kind: &str) -> String {
+    let id = format!("p-rest-domain-{}", uuid::Uuid::new_v4());
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO workspace_projects
+               (id,name,kind,status,root_path,dev_project_id,note,created_at,updated_at)
+             VALUES (?1,'REST 领域测试',?2,'active','',NULL,'','2026-01-01','2026-01-01')",
+            rusqlite::params![id, kind],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    id
+}
+
+fn seed_rest_chapter(db: &Db, project: &str, id: &str, content: &str) {
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO novel_chapters
+               (id, project_id, volume_id, title, content, word_count, sort_order, created_at, updated_at)
+             VALUES (?1, ?2, NULL, '第01章', ?3, 0, 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            rusqlite::params![id, project, content],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+}
+
+fn seed_rest_comic(db: &Db, project: &str, media: &str) {
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO comic_episodes
+               (id, project_id, episode_no, title, synopsis, script, status, progress,
+                character_ids_json, sort_order, created_at, updated_at)
+             VALUES ('ep-rest', ?1, 1, '第1集', '', 'SECRET', 'draft', 0, '[]', 0,
+                '2026-01-01','2026-01-01')",
+            [project],
+        )?;
+        conn.execute(
+            "INSERT INTO comic_shots
+               (id, project_id, episode_id, shot_no, description, character_ids_json,
+                scene_id, dialogue, shot_size, camera_move, duration_sec, status,
+                asset_refs_json, note, sort_order, created_at, updated_at)
+             VALUES ('shot-rest', ?1, 'ep-rest', 1, '', '[]', NULL, '', '', '', 0, 'todo',
+                '[]', '', 0, '2026-01-01', '2026-01-01')",
+            [project],
+        )?;
+        conn.execute(
+            "INSERT INTO comic_media_versions
+               (id, project_id, shot_id, character_id, scene_id, file_path, media_kind,
+                version_label, status, review_note, source, created_at, updated_at)
+             VALUES (?1, ?2, 'shot-rest', NULL, NULL, '', 'image', 'v1', 'candidate', '',
+                'imported', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            rusqlite::params![media, project],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+}
+
+fn domain_agent(db: &Db, suffix: &str, project: &str) -> String {
+    let (row, _, token) = writable_agent(db, suffix);
+    mcp_perm::grant(db, &row, "projects.read", "").unwrap();
+    mcp_perm::grant(db, &row, "projects.write", "").unwrap();
+    mcp_auth::grant_project(db, &row, project).unwrap();
+    token
+}
+
+fn domain_operations(db: &Db, action: &str) -> Vec<(String, String, String, String)> {
+    db.with_read(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT resource_kind, resource_id, project_id, status
+             FROM agent_operations WHERE action = ?1 ORDER BY started_at, id",
+        )?;
+        let rows = stmt.query_map([action], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    })
+    .unwrap()
+}
+
+fn chapter_content(db: &Db, id: &str) -> String {
+    db.with_read(|conn| {
+        Ok(conn.query_row(
+            "SELECT content FROM novel_chapters WHERE id=?1",
+            [id],
+            |r| r.get(0),
+        )?)
+    })
+    .unwrap()
+}
+
+#[test]
+fn rest_put_novel_content_replays_conflicts_and_has_one_operation() {
+    let _serial = serial();
+    let _ = rest::stop();
+    let db = Arc::new(db());
+    let project = seed_domain_project(&db, "novel");
+    seed_rest_chapter(&db, &project, "ch-rest", "初始");
+    let token = domain_agent(&db, "rest-novel", &project);
+    let port = start_rest(&db);
+
+    let path = format!("/api/v1/projects/{project}/novel/chapters/ch-rest/content");
+    let body = br#"{"content":"rest-write","expected_revision":0}"#;
+    let (first_status, _, first_text) = put(port, &path, &token, body, Some("rest-novel-1"));
+    assert_eq!(first_status, 200, "PUT 领域写应 200: {first_text}");
+    let first: Value = serde_json::from_str(&first_text).unwrap();
+    assert_eq!(first["data"]["revision"], 1);
+    assert_eq!(chapter_content(&db, "ch-rest"), "rest-write");
+
+    let (replay_status, _, replay_text) = put(port, &path, &token, body, Some("rest-novel-1"));
+    assert_eq!(replay_status, 200);
+    let replay: Value = serde_json::from_str(&replay_text).unwrap();
+    assert_eq!(replay["meta"]["replayed"], json!(true));
+    assert_eq!(replay["data"], first["data"], "重放必须返回原结果");
+    assert_eq!(chapter_content(&db, "ch-rest"), "rest-write");
+    let ops = domain_operations(&db, "novel.chapter.content.update");
+    assert_eq!(ops.len(), 1, "同一 Idempotency-Key 重放不得产生第二条 Operation");
+    assert_eq!(ops[0].0, "novel.chapter");
+    assert_eq!(ops[0].1, "ch-rest", "resource_id 必须是章节 ID");
+    assert_eq!(ops[0].2, project, "project_id 必须是项目根");
+    assert_eq!(ops[0].3, "committed");
+
+    let conflict_body = br#"{"content":"different","expected_revision":1}"#;
+    let (conflict_status, _, conflict_text) =
+        put(port, &path, &token, conflict_body, Some("rest-novel-1"));
+    assert_eq!(conflict_status, 409, "同 Key 不同内容必须冲突: {conflict_text}");
+    assert_eq!(chapter_content(&db, "ch-rest"), "rest-write");
+    let _ = rest::stop();
+}
+
+#[test]
+fn rest_put_novel_recovers_committed_business_without_response() {
+    let _serial = serial();
+    let _ = rest::stop();
+    let db = Arc::new(db());
+    let project = seed_domain_project(&db, "novel");
+    seed_rest_chapter(&db, &project, "ch-recover", "初始");
+    let token = domain_agent(&db, "rest-recover", &project);
+    let port = start_rest(&db);
+    let path = format!("/api/v1/projects/{project}/novel/chapters/ch-recover/content");
+    let body = br#"{"content":"lost-response","expected_revision":0}"#;
+    let (status, _, text) = put(port, &path, &token, body, Some("rest-recover-1"));
+    assert_eq!(status, 200, "{text}");
+    let first: Value = serde_json::from_str(&text).unwrap();
+
+    // 模拟「业务提交 + committed 占位已写，但响应缓存尚未写回」时进程退出。
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE agent_request_cache
+             SET state='committed', response_json='', committed_at='2026-01-01T00:00:00Z'
+             WHERE idempotency_key='rest-recover-1'",
+            [],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+
+    let (status, _, text) = put(port, &path, &token, body, Some("rest-recover-1"));
+    assert_eq!(status, 200, "恢复必须返回成功: {text}");
+    let recovered: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(recovered["meta"]["replayed"], json!(true));
+    assert_eq!(recovered["data"], first["data"], "必须从资源指针恢复原结果");
+    assert_eq!(chapter_content(&db, "ch-recover"), "lost-response");
+    assert_eq!(
+        domain_operations(&db, "novel.chapter.content.update").len(),
+        1,
+        "恢复不得重新执行或新增 Operation"
+    );
+    let revision: i64 = db
+        .with_read(|conn| {
+            Ok(conn.query_row(
+                "SELECT revision FROM agent_resource_revisions
+                 WHERE resource_kind='novel.chapter' AND resource_id='ch-recover'",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(revision, 1, "恢复不得推进 revision");
+    let _ = rest::stop();
+}
+
+#[test]
+fn rest_comic_update_and_adopt_record_true_resources_and_recover() {
+    let _serial = serial();
+    let _ = rest::stop();
+    let db = Arc::new(db());
+    let project = seed_domain_project(&db, "ai_comic");
+    seed_rest_comic(&db, &project, "m-rest");
+    let token = domain_agent(&db, "rest-comic", &project);
+    let port = start_rest(&db);
+
+    let path = format!("/api/v1/projects/{project}/comic/media-versions/m-rest");
+    let body = br#"{"version_label":"v2","status":"candidate","review_note":"candidate-note","expected_revision":0}"#;
+    let (status, _, text) = put(port, &path, &token, body, Some("rest-comic-1"));
+    assert_eq!(status, 200, "{text}");
+    let first: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(first["data"]["revision"], 1);
+
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE agent_request_cache
+             SET state='committed', response_json='', committed_at='2026-01-01T00:00:00Z'
+             WHERE idempotency_key='rest-comic-1'",
+            [],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let (status, _, text) = put(port, &path, &token, body, Some("rest-comic-1"));
+    assert_eq!(status, 200, "{text}");
+    let recovered: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(recovered["data"], first["data"], "comic.media_version 必须可恢复");
+
+    let adopt_path = format!("/api/v1/projects/{project}/comic/media-versions/m-rest/adopt");
+    let adopt_body = br#"{"expected_revision":1}"#;
+    let (status, _, text) = post(port, &adopt_path, &token, adopt_body, Some("rest-comic-adopt"));
+    assert_eq!(status, 201, "{text}");
+    let adopted: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(adopted["data"]["media"]["status"], "adopted");
+    assert_eq!(adopted["data"]["revision"], 2);
+
+    let update_ops = domain_operations(&db, "comic.media.update");
+    assert_eq!(update_ops.len(), 1, "PUT 重放/恢复不得新增 Operation");
+    assert_eq!(update_ops[0].1, "m-rest");
+    assert_eq!(update_ops[0].2, project);
+    let adopt_ops = domain_operations(&db, "comic.media.adopt");
+    assert_eq!(adopt_ops.len(), 1);
+    assert_eq!(adopt_ops[0].1, "m-rest");
+    assert_eq!(adopt_ops[0].2, project);
+    assert_eq!(adopt_ops[0].3, "committed");
+
+    let (detail_status, _, detail_text) = get(
+        port,
+        &format!("/api/v1/projects/{project}/comic/media-versions/m-rest"),
+        Some(&token),
+        &[],
+    );
+    assert_eq!(detail_status, 200, "{detail_text}");
+    let detail: Value = serde_json::from_str(&detail_text).unwrap();
+    assert_eq!(detail["data"]["status"], "adopted");
+    assert_eq!(detail["data"]["revision"], 2, "素材详情必须带当前 revision");
+    let _ = rest::stop();
+}

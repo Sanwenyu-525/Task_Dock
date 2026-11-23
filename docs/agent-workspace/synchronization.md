@@ -133,3 +133,16 @@ scan() 逐文件：
 - 能力映射为 `projects.write`；`trusted` 目录仍要校验导入授权能力集合与真实资源归属，绑定 Agent 时再以其真实授权为准。
 - Markdown：`novel.chapter.content.update` 取 front matter 之后的正文作为 `content`；`comic.media.update` 的正文作为 `review_note`。
 - 单文件仍受 256KiB 上限约束；领域正文/备注不额外放大。
+
+#### 8.5.1 与四入口共用同一业务校验（2026-11-23）
+
+领域导入的信封校验不再维护第二套规则，直接调用
+`commands::comic_workspace::validate_media_meta`（IPC / MCP / REST / CLI / 文件共用）：
+
+- `version_label` ≤ 240 字符；
+- `review_note` ≤ 4000 字符（**不再**沿用 256KiB 的宽松上限）；
+- `status` 仅 `candidate | rejected`；`adopted` 只能通过独立 `comic.media.adopt`；
+- 首尾空白规范化，拒绝控制字符。
+
+导入事务使用 `ImportLeaseGuard` + 领域 `*_in_conn`，与 MCP/CLI/REST 相同业务核心；
+冲突恢复用的 `base_revision` 取**有效 revision**（把 UI 外部修改计入），不拿旧计数器继续冲突。

@@ -42,8 +42,8 @@ use crate::mcp::auth::{self, McpAgentRow};
 use crate::mcp::permissions::Capability;
 
 use super::{
-    context, error_code, handoff, http_status, operations, permissions as perms, service, store,
-    sync as file_sync, workspace, Envelope, Identity, Meta, Page, Principal, Source,
+    context, domains::{comic, novel}, error_code, handoff, http_status, operations, permissions as perms,
+    service, store, sync as file_sync, workspace, Envelope, Identity, Meta, Page, Principal, Source,
 };
 
 pub const MAX_BODY: usize = 1024 * 1024;
@@ -804,7 +804,9 @@ pub(crate) fn idempotency_scope(
     method: &hyper::Method,
     raw_key: Option<&str>,
 ) -> Option<(String, String)> {
-    if method != hyper::Method::POST {
+    // PUT 语义是「带 expectedRevision 的幂等更新」，网络重试可能已经提交成功，
+    // 必须支持 Idempotency-Key 才能避免误报冲突；PATCH/GET 仍不支持。
+    if method != &hyper::Method::POST && method != &hyper::Method::PUT {
         return None;
     }
     let key = raw_key
@@ -869,6 +871,13 @@ fn begin_rest_operation(
 ) -> Option<operations::AgentOperation> {
     let (action, kind) = operations::describe_rest_write(method.as_str(), path)?;
     let target_id = operations::rest_target_id(path);
+    let project_id = operations::rest_project_ref(path)
+        .and_then(|raw| {
+            db.with_read(|conn| perms::resolve_project_root(conn, &raw))
+                .ok()
+                .flatten()
+        })
+        .unwrap_or_default();
     operations::try_start(
         db,
         principal,
@@ -876,7 +885,7 @@ fn begin_rest_operation(
             action,
             resource_kind: kind,
             resource_id: &target_id,
-            project_id: "",
+            project_id: &project_id,
             request_id,
             detail: "",
         },
@@ -924,7 +933,7 @@ async fn run_claim_execution(
     let guarded = operations::CompositeGuard::new(&claim_guard, &operation_guard);
     let outcome = tokio::time::timeout_at(
         grace_deadline.into(),
-        dispatch(&state, &principal, &method, &path, &query, &body, &request_id, &guarded),
+        dispatch(&state, &principal, &method, &path, &query, &body, &guarded),
     )
     .await;
     match outcome {
@@ -1096,6 +1105,8 @@ fn rebuild_committed_response(
             principal,
             operation_id,
         )?)?),
+        "novel.chapter" => novel::rebuild_committed(db, principal, operation_id),
+        "comic.media_version" => comic::rebuild_committed(db, principal, operation_id),
         other => Err(AppError::Conflict(format!(
             "operation_kind={other} 不是可恢复的创建类操作，禁止重新执行"
         ))),
@@ -1237,7 +1248,7 @@ async fn handle(req: Request<Incoming>, state: Arc<RestState>) -> Response<Full<
         );
     }
 
-    // 幂等：仅 POST + Idempotency-Key + 已注册 Agent（本地人/系统身份没有 agent_row_id）。
+    // 幂等：POST/PUT + Idempotency-Key + 已注册 Agent（本地人/系统身份没有 agent_row_id）。
     // Key 先取出成独立字符串：`read_body_limited` 会拿走整个 `req`。
     let raw_idem_key: Option<String> = req
         .headers()
@@ -1319,7 +1330,11 @@ async fn handle(req: Request<Incoming>, state: Arc<RestState>) -> Response<Full<
                         meta.replayed = true;
                         let value = serde_json::to_value(Envelope::ok(data, meta))
                             .unwrap_or(Value::Null);
-                        let status = StatusCode::CREATED;
+                        let status = if method == hyper::Method::PUT {
+                            StatusCode::OK
+                        } else {
+                            StatusCode::CREATED
+                        };
                         let text = serde_json::to_string(&value).unwrap_or_default();
                         // committed → done：补写响应供后续重试直接重放（不触发业务写入）。
                         match store::cache_complete(
@@ -1459,7 +1474,6 @@ async fn handle(req: Request<Incoming>, state: Arc<RestState>) -> Response<Full<
                     &path,
                     &query,
                     &body,
-                    &request_id,
                     &guarded,
                 ),
             )
@@ -1825,7 +1839,6 @@ async fn dispatch<G>(
     path: &str,
     query: &HashMap<String, String>,
     body: &[u8],
-    request_id: &str,
     guard: &G,
 ) -> AppResult<(Value, Option<Page>)>
 where
@@ -1855,9 +1868,9 @@ where
     }
     let seg = |i: usize| rest.get(i).copied().unwrap_or("");
     if let Some(result) = super::domain_rest::handle(
-        db, principal, m, rest, query, body, request_id,
+        db, principal, m, rest, query, body, guard,
     ) {
-        return result.map(|value| (value, None));
+        return result;
     }
     match (m, rest) {
         ("GET", ["status"]) => Ok((service::status_snapshot(db, principal)?, None)),
@@ -2443,7 +2456,6 @@ mod project_patch_tests {
             path,
             &HashMap::new(),
             serde_json::to_vec(body).expect("序列化").as_slice(),
-            "test-request",
             &store::NoGuard,
         )
         .await?;

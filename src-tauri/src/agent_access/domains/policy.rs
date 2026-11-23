@@ -19,6 +19,42 @@ pub fn resource_access_error() -> AppError {
     AppError::Forbidden("资源不可访问".into())
 }
 
+/// 领域统一分页窗口：默认 50，最大 200；offset 负数归零。
+pub fn page_window(limit: Option<i64>, offset: Option<i64>) -> (u32, u32) {
+    let limit = limit.unwrap_or(50).clamp(1, 200) as u32;
+    let offset = offset.unwrap_or(0).max(0) as u32;
+    (limit, offset)
+}
+
+/// 项目级领域门禁的**唯一入口**：项目读取/写入授权 → 领域类型/状态。
+///
+/// 顺序固定为「解析项目根 → 身份/scope/能力/项目 grant → 项目 kind/status」，
+/// 未授权主体在类型检查之前就被拒绝，无法用错误信息推断项目类型。
+///
+/// 入参可以是项目根或计划 ID；返回 canonical 项目根，供后续资源归属校验使用。
+pub fn resolve_authorized_project(
+    conn: &Connection,
+    principal: &Principal,
+    project_ref: &str,
+    expected: DomainKind,
+    write: bool,
+) -> AppResult<String> {
+    let raw = project_ref.trim();
+    if raw.is_empty() {
+        return Err(AppError::Validation("项目 ID 不能为空".into()));
+    }
+    let root = permissions::resolve_project_root(conn, raw)?
+        .ok_or_else(|| AppError::NotFound("项目不存在".into()))?;
+    let capability = if write {
+        Capability::ProjectsWrite
+    } else {
+        Capability::ProjectsRead
+    };
+    permissions::require_in_conn(conn, principal, capability, &root)?;
+    ensure_domain(conn, &root, expected, write)?;
+    Ok(root)
+}
+
 /// 领域项目门禁：解析真实项目 kind 与 status，校验是否匹配期望领域。
 ///
 /// - `write=true` 要求 status=active；读取允许 archived（文档 §6.2）。

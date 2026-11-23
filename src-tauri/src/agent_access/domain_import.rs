@@ -15,7 +15,9 @@ use serde_json::Value;
 
 use crate::agent_access::store::{self, WriteGuard};
 use crate::agent_access::{forbidden, permissions as perms, validation, Principal};
-use crate::commands::comic_workspace::{owner_project_id, read_media};
+use crate::commands::comic_workspace::{
+    owner_project_id, read_media, validate_media_meta,
+};
 use crate::commands::project_workspace::novel_chapter_updated_at;
 use crate::db::Db;
 use crate::error::{AppError, AppResult};
@@ -31,12 +33,8 @@ pub const KINDS: &[&str] = &[
     "comic.media.adopt",
 ];
 
-/// 正文/备注上限：与单文件导入上限一致，不再额外放大。
+/// 正文上限：与单文件导入上限一致，不再额外放大。
 const MAX_TEXT_BYTES: usize = super::MAX_IMPORT_BYTES as usize;
-
-/// 文件通道可写入的素材状态：`adopted` 必须走 `comic.media.adopt`，
-/// 否则会绕过「同镜头唯一采用 + 被替换版本 revision 推进」的业务语义。
-const MEDIA_IMPORT_STATUSES: &[&str] = &["candidate", "rejected"];
 
 pub fn is_domain_kind(kind: &str) -> bool {
     KINDS.contains(&kind)
@@ -77,28 +75,28 @@ pub fn validate_envelope(envelope: &ImportEnvelope) -> AppResult<()> {
         }
         "comic.media.update" => {
             require_text(payload, "media_id")?;
-            require_text(payload, "version_label")?;
-            if let Some(status) = payload.get("status").filter(|v| !v.is_null()) {
-                let status = status
+            let version_label = payload
+                .get("version_label")
+                .and_then(Value::as_str)
+                .ok_or_else(|| validation("payload 缺少字符串字段 version_label"))?;
+            let status = match payload.get("status").filter(|v| !v.is_null()) {
+                None => None,
+                Some(value) => Some(
+                    value
+                        .as_str()
+                        .ok_or_else(|| validation("字段 status 必须是字符串"))?,
+                ),
+            };
+            let review_note = match payload.get("review_note").filter(|v| !v.is_null()) {
+                None => "",
+                Some(value) => value
                     .as_str()
-                    .ok_or_else(|| validation("字段 status 必须是字符串"))?;
-                if !MEDIA_IMPORT_STATUSES.contains(&status) {
-                    return Err(validation(format!(
-                        "文件导入只能把素材状态改为 {}；采用版本请使用 comic.media.adopt",
-                        MEDIA_IMPORT_STATUSES.join("|")
-                    )));
-                }
-            }
-            if let Some(note) = payload.get("review_note").filter(|v| !v.is_null()) {
-                let note = note
-                    .as_str()
-                    .ok_or_else(|| validation("字段 review_note 必须是字符串"))?;
-                if note.len() > MAX_TEXT_BYTES {
-                    return Err(validation(format!(
-                        "review_note 超过 {MAX_TEXT_BYTES} 字节上限"
-                    )));
-                }
-            }
+                    .ok_or_else(|| validation("字段 review_note 必须是字符串"))?,
+            };
+            // 文件导入与 IPC / Agent 领域共用同一套业务校验：
+            // version_label 240 字符、review_note 4000 字符、status 只允许
+            // candidate/rejected，且拒绝控制字符。不得把备注放宽到 256KiB。
+            validate_media_meta(version_label, status, review_note)?;
         }
         "comic.media.adopt" => {
             require_text(payload, "media_id")?;
@@ -231,7 +229,7 @@ pub fn import_document_guarded(
                 guard.complete(conn)?;
                 Ok(out)
             })?;
-            if summary.project_id != project_id {
+            if summary.chapter.project_id != project_id {
                 // 归属校验已在事务内完成；这里只做一次防御性断言，避免响应误导。
                 return Err(super::domains::resource_access_error());
             }

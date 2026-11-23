@@ -1408,12 +1408,7 @@ pub fn search_knowledge(
                 if ids.is_empty() {
                     return Ok((
                         Vec::new(),
-                        Page {
-                            limit,
-                            offset,
-                            total: 0,
-                            has_more: false,
-                        },
+                        Page::new(limit, offset, 0),
                     ));
                 }
                 ids.clone()
@@ -1461,12 +1456,7 @@ pub fn search_knowledge(
         .collect();
     Ok((
         hits,
-        Page {
-            limit,
-            offset,
-            total: page.total.max(0) as u32,
-            has_more: page.has_more,
-        },
+        Page::new(limit, offset, page.total.max(0) as u32),
     ))
 }
 

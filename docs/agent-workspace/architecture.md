@@ -240,3 +240,59 @@ Agent 侧所有「项目」引用统一解析到 `workspace_projects.id`：
 - **全局 ID 契约**：`resolve_project_ref` / `resolve_project_root` 是唯一解析入口；
   `context.rs::project_name` 已从「先查计划再查根」改为归一根（字符串猜测消除）；
   collab 表 `project_id` 是 FK→planning_projects（类型化计划 ID，合法 Plan 聚合归属）。
+
+## 专业领域接入 Phase 1（Novel + Comic，2026-11-23）
+
+目标不是增加操作数量，而是先把**事务、幂等、权限、版本、数据安全**收敛到同一套领域
+应用服务；Game / General / Development 保持 `planned`，不注册任何可执行操作。
+
+### 12.1 Domain Application Service 职责
+
+`src-tauri/src/agent_access/domains/{novel,comic}.rs` 是领域应用服务，负责：
+
+1. 编排权限、项目类型/状态、资源归属（调用 `domains::policy`，不复制权限判定）；
+2. 调用既有业务写核心（`novel_chapter_save_content_in_conn` /
+   `comic_media_save_in_conn` / `comic_media_adopt_in_conn`），不复制 SQL；
+3. 在**调用方传入的 Connection** 上读取 revision、推进 revision、登记操作；
+4. 组装 Agent 专用 DTO（最小化字段、相对路径、revision/updatedAt）。
+
+领域层提供三种显式入口，禁止入口层再包一层事务：
+
+| 入口 | 领域包装 | 事务所有权 | 守卫 |
+|---|---|---|---|
+| MCP | `*_in_conn` | `mcp::tools::run_tool_call` | `NoGuard`（MCP 外层幂等/操作已持锁） |
+| REST | `*_with_guard` | 领域包装内开启唯一业务事务（HTTP 层不持 Db 锁） | `RequestCacheGuard + OperationGuard` |
+| CLI | `*_with_request` | `domains::idempotency::execute` 内单事务 | 外层 `OperationGuard` + cache 占位 |
+| 文件 | `*_in_conn` | `domain_import` 的导入租约事务 | `ImportLeaseGuard` |
+
+`domains::idempotency::execute` 不再创建 `AgentOperation`、不再自开写事务；它只把
+cache 占位叠加到入口守卫（`StackedGuard`）。事务内核心**不得**调用
+`db.with_conn` / `db.with_read` / `db.with_transaction`——`Db::writer` 是
+`Mutex<Connection>`，外层事务已持锁，嵌套必然自锁。
+
+### 12.2 一次外部写请求的唯一性
+
+- 一条权威 Operation（MCP 由 `run_tool_call`，REST 由 `begin_rest_operation`，
+  CLI 由 `operations::try_start`，文件导入由导入租约记录）；
+- 一个权威幂等身份（MCP `requestId`、REST `Idempotency-Key` + 指纹、CLI 外层 requestId）；
+- 一个业务写事务（业务行、操作终态、幂等占位同事务）；
+- 一份成功审计（MCP 外层审计；REST/CLI 走各自活动记录，不重复写）；
+- 一份真实 revision（`bump_revision_from` 基于 effective revision）。
+
+### 12.3 Manifest 授权
+
+`domains::manifest::build_for_principal(db, principal, project_ref)` 是唯一入口：
+解析项目根 → `projects.read`（身份/scope/能力/项目 grant）→ 读 kind/status →
+`DomainKind::parse`。Manifest 不是授权凭证，但也不是免授权接口；MCP/REST/CLI
+三入口全部走该服务。响应中的 `project.kind` 是真实数据库类型（漫剧为
+`ai_comic`），`domain` 才是领域名（`comic`），二者不得混用。
+
+### 12.4 revision 契约
+
+Agent DTO 统一携带 `revision` 与业务行真实 `updatedAt`。`updatedAt` 只来自业务表
+`updated_at`，不得用 revision 计数器的 `counter_at` 冒充；`read_revision_snapshot`
+用 `effective_revision` 把 UI 直接改业务行计入版本，Agent 写入后在同事务推进。
+UI 命令层（`novel_chapter_save_impl`、`novel_chapter_save_content_impl`、
+`comic_media_save_impl`、`comic_media_adopt_impl`）通过 `revision::note_ui_write`
+在**同一业务事务**推进版本；因此即使 Agent 从未建立基线，首次 UI 修改后读取也是
+revision=1，而不是无基线 0。Agent 领域核心只调用 `_in_conn`，不会重复推进。

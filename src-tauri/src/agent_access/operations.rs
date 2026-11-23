@@ -1524,6 +1524,29 @@ pub fn describe_rest_write(method: &str, path: &str) -> Option<(&'static str, &'
     let tail = &rest[2..];
     let collection = tail.first().copied().unwrap_or("");
     let sub_action = tail.get(2).copied().unwrap_or("");
+    // 领域写路由（v100）：PUT 章节正文 / PUT 素材版本 / POST 采用素材。
+    if collection == "projects" {
+        if method == "PUT"
+            && tail.get(2) == Some(&"novel")
+            && tail.get(3) == Some(&"chapters")
+            && tail.get(5) == Some(&"content")
+        {
+            return Some(("novel.chapter.content.update", "novel.chapter"));
+        }
+        if method == "PUT"
+            && tail.get(2) == Some(&"comic")
+            && tail.get(3) == Some(&"media-versions")
+        {
+            return Some(("comic.media.update", "comic.media_version"));
+        }
+        if method == "POST"
+            && tail.get(2) == Some(&"comic")
+            && tail.get(3) == Some(&"media-versions")
+            && tail.get(5) == Some(&"adopt")
+        {
+            return Some(("comic.media.adopt", "comic.media_version"));
+        }
+    }
     let action = match (method, collection) {
         // `/tasks/:id/complete` 是完成语义，不能记成创建。
         ("POST", "tasks") if sub_action == "complete" => ("task.complete", "task"),
@@ -1571,6 +1594,16 @@ pub fn rest_target_id(path: &str) -> String {
     if rest.len() < 4 || rest[0] != "api" || rest[1] != "v1" {
         return String::new();
     }
+    // 领域路由：/projects/<p>/novel/chapters/<id>[/content]
+    //           /projects/<p>/comic/media-versions/<id>[/adopt]
+    if rest.get(2) == Some(&"projects") {
+        if rest.get(4) == Some(&"novel") && rest.get(5) == Some(&"chapters") {
+            return rest.get(6).cloned().unwrap_or_default().to_string();
+        }
+        if rest.get(4) == Some(&"comic") && rest.get(5) == Some(&"media-versions") {
+            return rest.get(6).cloned().unwrap_or_default().to_string();
+        }
+    }
     const COLLECTIONS: &[&str] = &[
         "tasks", "features", "milestones", "notes", "knowledge", "decisions", "agents",
         "handoffs", "reports", "imports", "sync", "plans", "projects",
@@ -1593,6 +1626,20 @@ pub fn rest_target_id(path: &str) -> String {
         return String::new();
     }
     last.to_string()
+}
+
+/// REST 路径中的项目引用（项目根或计划 ID），用于 Operation 的 project_id 归属。
+/// 集合端点（如 `POST /projects`）没有项目引用，返回 None。
+pub fn rest_project_ref(path: &str) -> Option<String> {
+    let rest = path.trim_matches('/').split('/').collect::<Vec<_>>();
+    if rest.len() < 4 || rest[0] != "api" || rest[1] != "v1" || rest[2] != "projects" {
+        return None;
+    }
+    let candidate = rest[3];
+    if candidate.is_empty() || candidate == "domain-manifest" {
+        return None;
+    }
+    Some(candidate.to_string())
 }
 
 #[cfg(test)]

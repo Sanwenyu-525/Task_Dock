@@ -82,7 +82,7 @@ pub const USAGE: &str = r#"Task Dock Agent CLI
   taskdock novel ref list --project-id ID [--entity-type TYPE] [--entity-id ID]
   taskdock comic episode list --project-id ID
   taskdock comic shot list --project-id ID [--episode-id ID]
-  taskdock comic media list|update|adopt --project-id ID [--shot-id ID] [--media-id ID] [--version-label ...] [--status ...] [--review-note ...] [--expected-revision N]
+  taskdock comic media list|get|update|adopt --project-id ID [--shot-id ID] [--media-id ID] [--version-label ...] [--status ...] [--review-note ...] [--expected-revision N]
   taskdock comic character list --project-id ID
   taskdock comic scene list --project-id ID
 
@@ -234,6 +234,14 @@ fn resolve_principal(db: &Db) -> AppResult<Principal> {
 ///
 /// 只有真正的写命令才创建操作：读命令不产生「正在修改」状态。
 /// 同一次 CLI 调用只对应一条记录（内部无论调用多少服务函数，都不再新建）。
+fn flag_value(args: &[String], flag: &str) -> Option<String> {
+    args.iter()
+        .position(|a| a == flag)
+        .and_then(|i| args.get(i + 1))
+        .filter(|v| !v.starts_with("--"))
+        .cloned()
+}
+
 fn classify_cli_write(args: &[String]) -> Option<(&'static str, &'static str, String)> {
     let group = args.first()?.as_str();
     let has_subcommand = matches!(
@@ -278,17 +286,24 @@ fn classify_cli_write(args: &[String]) -> Option<(&'static str, &'static str, St
         ("comic", "media", Some("adopt")) => ("comic.media.adopt", "comic.media_version"),
         _ => return None,
     };
-    // 失败也要能落到具体资源上：非创建类命令的位置参数就是目标 ID。
-    let id_index = if group == "agent" { 3 } else { 2 };
-    let target = if action.ends_with(".create")
-        || matches!((group, sub), ("sync", "init") | ("sync", "export") | ("sync", "scan"))
-    {
-        String::new()
+    // 失败也要能落到具体资源上：领域写入的 ID 来自显式 flag，
+    // 其他非创建类命令的位置参数才是目标 ID（不能把动作名当资源 ID）。
+    let target = if action == "novel.chapter.content.update" {
+        flag_value(args, "--chapter-id").unwrap_or_default()
+    } else if action.starts_with("comic.media.") {
+        flag_value(args, "--media-id").unwrap_or_default()
     } else {
-        args.get(id_index)
-            .filter(|a| !a.starts_with("--"))
-            .cloned()
-            .unwrap_or_default()
+        let id_index = if group == "agent" { 3 } else { 2 };
+        if action.ends_with(".create")
+            || matches!((group, sub), ("sync", "init") | ("sync", "export") | ("sync", "scan"))
+        {
+            String::new()
+        } else {
+            args.get(id_index)
+                .filter(|a| !a.starts_with("--"))
+                .cloned()
+                .unwrap_or_default()
+        }
     };
     Some((action, kind, target))
 }
@@ -405,7 +420,7 @@ pub fn main_entry(args: Vec<String>) -> i32 {
     let write_project_hint = write_action.as_ref().and_then(|(action, kind, _)| {
         let raw = argv
             .iter()
-            .position(|a| a == "--project")
+            .position(|a| a == "--project" || a == "--project-id")
             .and_then(|i| argv.get(i + 1))
             .cloned()
             .or_else(|| {
@@ -607,11 +622,21 @@ fn execute_inner(
         "list".to_string()
     };
     if matches!(group.as_str(), "domain" | "novel" | "comic") {
-        let data = domain_cli::execute(db, principal, &group, &sub, args, request_id)?;
+        let (data, page) = domain_cli::execute(
+            db,
+            principal,
+            &group,
+            &sub,
+            args,
+            request_id,
+            Some(cli.limit as i64),
+            Some(cli.offset as i64),
+            guard,
+        )?;
         return Ok(Outcome {
             human: serde_json::to_string_pretty(&data)?,
             data,
-            page: None,
+            page,
         });
     }
     match group.as_str() {
@@ -1659,6 +1684,70 @@ mod operation_tests {
     }
 
     #[test]
+    fn domain_writes_use_flag_resource_ids_not_action_names() {
+        // 旧实现把第二个非 flag 参数（update-content / update）当作资源 ID。
+        assert_eq!(
+            classify_cli_write(&args(&[
+                "novel",
+                "chapter",
+                "update-content",
+                "--project-id",
+                "p1",
+                "--chapter-id",
+                "ch1",
+                "--content",
+                "x",
+            ])),
+            Some((
+                "novel.chapter.content.update",
+                "novel.chapter",
+                "ch1".to_string()
+            ))
+        );
+        assert_eq!(
+            classify_cli_write(&args(&[
+                "comic",
+                "media",
+                "update",
+                "--project-id",
+                "p1",
+                "--media-id",
+                "m1",
+            ])),
+            Some(("comic.media.update", "comic.media_version", "m1".to_string()))
+        );
+        assert_eq!(
+            classify_cli_write(&args(&[
+                "comic",
+                "media",
+                "adopt",
+                "--project-id",
+                "p1",
+                "--media-id",
+                "m2",
+            ])),
+            Some((
+                "comic.media.adopt",
+                "comic.media_version",
+                "m2".to_string()
+            ))
+        );
+        // 缺失显式 flag 时保持空目标，不猜动作名。
+        assert_eq!(
+            classify_cli_write(&args(&["novel", "chapter", "update-content", "--project-id", "p1"])),
+            Some((
+                "novel.chapter.content.update",
+                "novel.chapter",
+                String::new()
+            ))
+        );
+        assert_eq!(
+            classify_cli_write(&args(&["novel", "chapter", "list", "--project-id", "p1"])),
+            None
+        );
+    }
+
+    #[test]
     fn operation_result_uses_only_returned_fields() {
         // 决策/任务：顶层 id + 顶层 revision（kind 来自写命令注册表）。
         let decision = serde_json::json!({ "id": "d1", "project_id": "p1", "revision": 3 });
@@ -1734,6 +1823,102 @@ mod create_gate_tests {
             ),
             created.info.id,
         )
+    }
+
+    #[test]
+    fn cli_novel_write_has_one_operation_with_real_project_and_resource() {
+        let db = Db::open_in_memory().expect("内存库");
+        let project = format!("p-cli-{}", uuid::Uuid::new_v4());
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO workspace_projects
+                   (id,name,kind,status,root_path,dev_project_id,note,created_at,updated_at)
+                 VALUES (?1,'CLI 领域测试','novel','active','',NULL,'','2026-01-01','2026-01-01')",
+                [&project],
+            )?;
+            conn.execute(
+                "INSERT INTO novel_chapters
+                   (id, project_id, volume_id, title, content, word_count, sort_order, created_at, updated_at)
+                 VALUES ('ch-cli', ?1, NULL, '第01章', '初始', 0, 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                [&project],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        let args = args(&[
+            "novel",
+            "chapter",
+            "update-content",
+            "--project-id",
+            project.as_str(),
+            "--chapter-id",
+            "ch-cli",
+            "--content",
+            "CLI 写入正文",
+            "--expected-revision",
+            "0",
+        ]);
+        let (action, kind, target) = classify_cli_write(&args).expect("写命令");
+        let principal = Principal::local(Source::Cli);
+        let operation = operations::try_start(
+            &db,
+            &principal,
+            &operations::OperationInput {
+                action,
+                resource_kind: kind,
+                resource_id: &target,
+                project_id: &project,
+                request_id: "cli-novel-1",
+                detail: "",
+            },
+        )
+        .expect("开始操作");
+        let guard = operations::OperationGuard::new(operation.id.clone());
+        let outcome = execute_with_request(
+            &db,
+            &principal,
+            &cli(),
+            args,
+            "cli-novel-1",
+            &guard,
+        )
+        .expect("CLI 领域写成功");
+        assert_eq!(outcome.data["revision"], 1);
+        assert_eq!(
+            db.with_read(|conn| {
+                Ok(conn.query_row(
+                    "SELECT content FROM novel_chapters WHERE id='ch-cli'",
+                    [],
+                    |r| r.get::<_, String>(0),
+                )?)
+            })
+            .unwrap(),
+            "CLI 写入正文"
+        );
+
+        let ops: Vec<(String, String, String, String)> = db
+            .with_read(|conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT resource_kind, resource_id, project_id, status
+                     FROM agent_operations WHERE action='novel.chapter.content.update'",
+                )?;
+                let rows = stmt.query_map([], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                })?;
+                let mut out = Vec::new();
+                for row in rows {
+                    out.push(row?);
+                }
+                Ok(out)
+            })
+            .unwrap();
+        assert_eq!(ops.len(), 1, "一次 CLI 写入只能产生一条 Operation");
+        assert_eq!(ops[0].0, "novel.chapter");
+        assert_eq!(ops[0].1, "ch-cli", "resource_id 不得是 update-content");
+        assert_eq!(ops[0].2, project);
+        assert_eq!(ops[0].3, "committed");
+        assert_eq!(guard.operation_id(), operation.id.as_str());
     }
 
     #[test]
