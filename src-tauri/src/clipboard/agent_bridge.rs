@@ -262,6 +262,23 @@ pub struct ExportPackage {
     pub warnings: Vec<String>,
 }
 
+/// 导出前只读统计；不包含正文/HTML，任务上下文只报告是否存在。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExportPreview {
+    pub items: i64,
+    pub images: i64,
+    pub bytes: i64,
+    pub kinds: Vec<String>,
+    pub includes_task_context: bool,
+}
+
+/// 预览快照：`signature` 只留在后端，用于把确认 token 绑定到用户看到的内容。
+#[derive(Debug, Clone)]
+pub struct PreviewSnapshot {
+    pub preview: ExportPreview,
+    pub signature: String,
+}
+
 fn task_context(db: &Db, task_id: &str) -> AppResult<Option<(String, String)>> {
     db.with_conn(|conn| {
         use rusqlite::OptionalExtension;
@@ -655,21 +672,38 @@ pub fn export_package(
     })
 }
 
-/// 供前端在导出前确认统计（不读取正文）。
-pub fn export_preview(db: &Db, target_type: &str, target_id: &str) -> AppResult<serde_json::Value> {
+/// 供前端在导出前确认统计（响应不含正文/HTML）；返回内容指纹供确认 token 绑定。
+pub fn preview_snapshot(
+    db: &Db,
+    target_type: &str,
+    target_id: &str,
+    task_id: Option<&str>,
+) -> AppResult<PreviewSnapshot> {
     let items: Vec<ClipboardItem> = match target_type {
         "item" => vec![store::get_item(db, target_id)?],
-        "group" => store::get_group(db, target_id)?.items,
+        "group" => {
+            let group = store::get_group(db, target_id)?;
+            if group.items.is_empty() {
+                return Err(AppError::Validation("分组为空，无法导出".into()));
+            }
+            group.items
+        }
         _ => return Err(AppError::Validation("未知导出类型".into())),
     };
-    let images = items.iter().filter(|i| i.kind == KIND_IMAGE).count();
-    Ok(serde_json::json!({
-        "items": items.len(),
-        "images": images,
-        "bytes": items.iter().map(|i| i.byte_size).sum::<i64>(),
-        "kinds": items.iter().map(|i| i.kind.clone()).collect::<Vec<_>>(),
-        "note": "导出仅写本地文件，不自动上传",
-    }))
+    let includes_task_context = match task_id {
+        Some(id) => task_context(db, id)?.is_some(),
+        None => false,
+    };
+    Ok(PreviewSnapshot {
+        preview: ExportPreview {
+            items: items.len() as i64,
+            images: items.iter().filter(|i| i.kind == KIND_IMAGE).count() as i64,
+            bytes: items.iter().map(|i| i.byte_size).sum(),
+            kinds: items.iter().map(|i| i.kind.clone()).collect(),
+            includes_task_context,
+        },
+        signature: super::export_gate::signature(&items),
+    })
 }
 
 #[cfg(test)]
@@ -777,6 +811,42 @@ mod tests {
         assert!(pkg.summary.contains("未发送"));
         let empty = store::list_items(&db, &ClipboardFilter::default()).unwrap();
         assert_eq!(empty.len(), 2);
+    }
+
+    #[test]
+    fn preview_snapshot_counts_and_context_without_body() {
+        let db = Db::open_in_memory().unwrap();
+        let root = Temp::new();
+        let s = crate::db::Settings {
+            clipboard_auto_group: false,
+            ..Default::default()
+        };
+        let a = store::record_capture(&db, &root.0, &text("预览正文哨兵"), &s).unwrap();
+        let b = store::record_capture(&db, &root.0, &image(), &s).unwrap();
+        let g = store::create_manual_group(&db, "资料", &[a.item.id.clone(), b.item.id.clone()])
+            .unwrap();
+        db.with_conn(|c| {
+            c.execute(
+                "INSERT INTO tasks (id, title, description, created_at, updated_at)
+                 VALUES ('t1', '周会', '讨论发布计划', 'now', 'now')",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        let snapshot = preview_snapshot(&db, "group", &g.id, Some("t1")).unwrap();
+        assert_eq!(snapshot.preview.items, 2);
+        assert_eq!(snapshot.preview.images, 1);
+        assert!(snapshot.preview.bytes > 0);
+        assert!(snapshot.preview.kinds.contains(&KIND_IMAGE.to_string()));
+        assert!(snapshot.preview.includes_task_context);
+        assert_eq!(snapshot.signature.len(), 64);
+        assert!(!snapshot.signature.contains("预览正文哨兵"), "指纹不得包含正文");
+        assert!(!preview_snapshot(&db, "group", &g.id, Some("missing"))
+            .unwrap()
+            .preview
+            .includes_task_context);
     }
 
     #[test]

@@ -408,6 +408,10 @@ pub fn reset_cache() {
     }
 }
 
+/// 测试共用锁：CEK 进程缓存是全局的，`secure`/`store`/迁移用例并行跑会互相清空密钥。
+#[cfg(test)]
+pub(crate) static TEST_LOCK: Mutex<()> = Mutex::new(());
+
 /// 读取进程内已加载的 CEK（不解封装、不创建信封）。
 fn cached_cek() -> Option<Zeroizing<[u8; 32]>> {
     cache()
@@ -641,6 +645,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn envelope_is_created_once_and_reused() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = TempRoot::new();
         let db = Db::open(&tmp.0.join("app.db")).unwrap();
         let first = ensure_envelope(&db).unwrap();
@@ -656,6 +661,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn cek_is_stable_and_cached() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = TempRoot::new();
         let db = Db::open(&tmp.0.join("app.db")).unwrap();
         let a = cek(&db).unwrap();
@@ -669,6 +675,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn ciphertext_never_embeds_plaintext_sentinel() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = TempRoot::new();
         let db = Db::open(&tmp.0.join("app.db")).unwrap();
         let key = cek(&db).unwrap();
@@ -683,6 +690,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn corrupted_envelope_is_refused_without_silent_rebuild() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = TempRoot::new();
         let db = Db::open(&tmp.0.join("app.db")).unwrap();
         ensure_envelope(&db).unwrap();

@@ -6,10 +6,12 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+use serde::Serialize;
 use tauri::{AppHandle, State};
 
 use crate::clipboard::agent_bridge::{self, AgentTargetsSnapshot, ExportPackage};
 use crate::clipboard::export;
+use crate::clipboard::export_gate;
 use crate::clipboard::paste::{self, PasteStartReport};
 use crate::clipboard::platform::{self, ClipboardPayload, TargetWindow};
 use crate::clipboard::store::{self, ClipboardFilter, ClipboardTaskLink, PasteItemRow, PasteJob};
@@ -1211,7 +1213,7 @@ fn audit_export_outcome(db: &crate::db::Db, target_type: &str, outcome: &AppResu
                 RESULT_OK,
             );
             event.reason_code = Some(format!(
-                "target={target_type};items={};images={images}",
+                "target={target_type};items={};images={images};confirmed=1",
                 pkg.item_count
             ));
             event
@@ -1228,6 +1230,21 @@ fn audit_export_outcome(db: &crate::db::Db, target_type: &str, outcome: &AppResu
         }
     };
     // 明文导出属于高影响动作：审计写失败按 ERROR 告警。
+    security_audit::record(db, event, true);
+}
+
+/// 拒绝导出审计：只记目标类型、拒绝来源与错误码，不写 token、目标 ID、路径或正文。
+fn audit_export_denied(db: &crate::db::Db, target_type: &str, error: &AppError) {
+    let mut event = AuditEvent::new(
+        CATEGORY_CLIPBOARD,
+        EVENT_CLIPBOARD_EXPORT_FAILED,
+        "export_agent",
+        RESULT_FAILED,
+    );
+    event.reason_code = Some(format!(
+        "target={target_type};gate=denied;code={}",
+        error.code()
+    ));
     security_audit::record(db, event, true);
 }
 
@@ -1256,8 +1273,24 @@ fn audit_purge_outcome(
     security_audit::record(db, event, false);
 }
 
+/// 导出预览返回给前端的确认信息；token 单次、120 秒有效。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClipboardExportPreview {
+    pub items: i64,
+    pub images: i64,
+    pub bytes: i64,
+    pub kinds: Vec<String>,
+    pub includes_task_context: bool,
+    pub confirmation_token: String,
+    pub expires_in_seconds: u64,
+}
+
 /// 导出包需要复制/解码图片并写多个文件；大分组可能耗时，放到后台线程避免冻结主线程。
 /// 只做线程迁移，导出格式与目录策略不变；前端关闭面板不会取消此任务，文件仍会保留。
+///
+/// 授权门槛：必须先经 `clipboard_export_preview` 预览并由用户确认；命令层消费一次性
+/// token，并重新校验目标/任务/内容指纹，避免隐式直接导出或确认后内容悄悄变化。
 #[tauri::command]
 pub async fn clipboard_export_for_agent(
     app: AppHandle,
@@ -1265,8 +1298,21 @@ pub async fn clipboard_export_for_agent(
     target_type: String,
     target_id: String,
     task_id: Option<String>,
+    confirmation_token: String,
 ) -> AppResult<ExportPackage> {
     let rt = runtime(&state).clone();
+    let snapshot =
+        agent_bridge::preview_snapshot(&rt.db, &target_type, &target_id, task_id.as_deref())?;
+    if let Err(error) = export_gate::consume(
+        &confirmation_token,
+        &target_type,
+        &target_id,
+        task_id.as_deref(),
+        &snapshot.signature,
+    ) {
+        audit_export_denied(&rt.db, &target_type, &error);
+        return Err(error);
+    }
     let data_dir = crate::app_data_dir(&app);
     let audit_target = target_type.clone();
     let worker = rt.clone();
@@ -1312,8 +1358,26 @@ pub fn clipboard_export_preview(
     state: State<'_, Arc<ClipboardRuntime>>,
     target_type: String,
     target_id: String,
-) -> AppResult<serde_json::Value> {
-    agent_bridge::export_preview(&runtime(&state).db, &target_type, &target_id)
+    task_id: Option<String>,
+) -> AppResult<ClipboardExportPreview> {
+    let rt = runtime(&state);
+    let snapshot =
+        agent_bridge::preview_snapshot(&rt.db, &target_type, &target_id, task_id.as_deref())?;
+    let (confirmation_token, expires_in_seconds) = export_gate::issue(
+        &target_type,
+        &target_id,
+        task_id.as_deref(),
+        &snapshot.signature,
+    )?;
+    Ok(ClipboardExportPreview {
+        items: snapshot.preview.items,
+        images: snapshot.preview.images,
+        bytes: snapshot.preview.bytes,
+        kinds: snapshot.preview.kinds,
+        includes_task_context: snapshot.preview.includes_task_context,
+        confirmation_token,
+        expires_in_seconds,
+    })
 }
 
 /// 剪贴板保护自检：读取当前内容并返回格式类型（不返回正文），
@@ -1498,13 +1562,40 @@ mod tests {
         assert_eq!(item.action, "export_agent");
         assert_eq!(
             item.reason_code.as_deref(),
-            Some("target=group;items=3;images=1")
+            Some("target=group;items=3;images=1;confirmed=1")
         );
         let detail = item.reason_code.as_deref().unwrap_or_default();
         assert!(
             !detail.contains("secret") && !detail.contains("clipboard.md"),
             "审计明细不得包含路径/文件名/正文: {detail}"
         );
+    }
+
+    /// 拒绝导出也必须审计，但不得记录 token、目标 ID、路径或正文。
+    #[test]
+    fn denied_export_is_audited_without_token_or_target_id() {
+        let db = crate::db::Db::open_in_memory().unwrap();
+        audit_export_denied(
+            &db,
+            "group",
+            &AppError::Validation("缺少有效的导出确认，请先预览再导出".into()),
+        );
+        let page = security_audit::list_page(
+            &db,
+            security_audit::AuditFilter {
+                category: Some(CATEGORY_CLIPBOARD.into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(page.total, 1);
+        let item = &page.items[0];
+        assert_eq!(item.event_type, EVENT_CLIPBOARD_EXPORT_FAILED);
+        assert_eq!(item.result, RESULT_FAILED);
+        let detail = item.reason_code.as_deref().unwrap_or_default();
+        assert_eq!(detail, "target=group;gate=denied;code=VALIDATION_ERROR");
+        assert!(!detail.contains("token"), "不得记录确认 token");
+        assert!(!detail.contains("g1"), "不得记录目标 ID");
     }
 
     /// 失败与清理审计同样只保留错误码/计数，不写具体目录。

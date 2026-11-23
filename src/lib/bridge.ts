@@ -53,6 +53,7 @@ import type {
   ClipboardProbe,
   AgentTargetsSnapshot,
   ExportPackage,
+  ClipboardExportPreview,
   ExportPurgeReport,
   PhraseResolution,
   NotificationPage,
@@ -999,10 +1000,26 @@ export const clipboardAgentTargets = (refresh = false) =>
 export const clipboardExportForAgent = (
   targetType: "item" | "group",
   targetId: string,
+  taskId: string | null,
+  confirmationToken: string,
+) =>
+  invoke<ExportPackage>("clipboard_export_for_agent", {
+    targetType,
+    targetId,
+    taskId,
+    confirmationToken,
+  });
+/** 导出前只读预估；返回的 token 单次有效，必须经用户确认后才可交给导出命令。 */
+export const clipboardExportPreview = (
+  targetType: "item" | "group",
+  targetId: string,
   taskId?: string | null,
-) => invoke<ExportPackage>("clipboard_export_for_agent", { targetType, targetId, taskId });
-export const clipboardExportPreview = (targetType: "item" | "group", targetId: string) =>
-  invoke<Record<string, unknown>>("clipboard_export_preview", { targetType, targetId });
+) =>
+  invoke<ClipboardExportPreview>("clipboard_export_preview", {
+    targetType,
+    targetId,
+    taskId: taskId ?? null,
+  });
 /** 手动清理过期导出目录；默认保留 7 天，只删 `clipboard-exports/<uuid>/` 子目录。 */
 export const clipboardPurgeAgentExports = (olderThanDays = 7) =>
   invoke<ExportPurgeReport>("clipboard_purge_agent_exports", {

@@ -929,6 +929,17 @@ export interface ExportPackage {
   warnings: string[];
 }
 
+/** 导出前确认：只读统计 + 单次有效的确认 token；不含正文。 */
+export interface ClipboardExportPreview {
+  items: number;
+  images: number;
+  bytes: number;
+  kinds: string[];
+  includesTaskContext: boolean;
+  confirmationToken: string;
+  expiresInSeconds: number;
+}
+
 /** Agent 导出目录清理结果：只含计数，不回传具体路径。 */
 export interface ExportPurgeReport {
   removed: number;

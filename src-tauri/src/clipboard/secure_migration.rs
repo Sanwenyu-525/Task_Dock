@@ -508,7 +508,7 @@ mod tests {
         }
     }
 
-    static MIG_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// 迁移会清空/加载全局 CEK 缓存，必须与 store/secure 加密用例共用同一把测试锁。
 
     fn text(text: &str) -> CapturedContent {
         CapturedContent {
@@ -581,7 +581,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn refuses_when_switch_is_off() {
-        let _guard = MIG_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = secure::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         secure::reset_cache();
         let tmp = TempRoot::new();
         let db = Db::open(&tmp.0.join("app.db")).unwrap();
@@ -592,7 +592,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn migrates_plaintext_rows_and_is_idempotent() {
-        let _guard = MIG_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = secure::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         secure::reset_cache();
         let tmp = TempRoot::new();
         let db = Db::open(&tmp.0.join("app.db")).unwrap();
@@ -642,7 +642,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn partial_upgrade_preserves_already_encrypted_fields() {
-        let _guard = MIG_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = secure::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         secure::reset_cache();
         let tmp = TempRoot::new();
         let db = Db::open(&tmp.0.join("app.db")).unwrap();
@@ -690,7 +690,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn backup_protected_migration_encrypts_text_and_images() {
-        let _guard = MIG_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = secure::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         secure::reset_cache();
         let tmp = TempRoot::new();
         let db = Db::open(&tmp.0.join("app.db")).unwrap();
@@ -743,7 +743,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn migration_aborts_before_writes_when_backup_cannot_be_created() {
-        let _guard = MIG_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = secure::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         secure::reset_cache();
         let tmp = TempRoot::new();
         let db = Db::open(&tmp.0.join("app.db")).unwrap();
@@ -767,7 +767,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn plaintext_scan_and_wal_contain_no_sentinel_after_migration() {
-        let _guard = MIG_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = secure::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         secure::reset_cache();
         let tmp = TempRoot::new();
         let db_path = tmp.0.join("app.db");

@@ -15,6 +15,7 @@ pub mod agent_bridge;
 pub mod backup_crypto;
 pub mod engine;
 pub mod export;
+pub mod export_gate;
 pub mod image;
 pub mod ocr;
 pub mod paste;

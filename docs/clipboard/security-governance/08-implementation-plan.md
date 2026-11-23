@@ -297,7 +297,7 @@
   在清理后写审计；`reason_code` 只含 `target=item|group;items=..;images=..`、
   `retentionDays=..;removed=..;failed=..;skipped=..` 或错误码，
   **不写目录、文件名、正文**。导出审计按高影响事件处理（写失败 ERROR 告警）。
-- 未实现：Agent 能力白名单/逐次授权、自动清理；导出仍只由本机 UI 显式触发。
+- 本批未实现：导出前确认与自动清理；导出仍只由本机 UI 显式触发。导出前确认已在批次 7 补齐；导出未暴露给 Agent API/MCP，能力白名单当前无接入点。
 - 测试新增 2 项：成功审计的分类/事件/计数正确且不含路径正文；失败与清理审计只留错误码/计数。
 - 本批验证（MSVC）：`cargo test --lib commands::clipboard` 8 passed / 0 failed；
   `cargo test --lib security_audit::` 17 passed / 0 failed；`cargo check --lib` 0；
@@ -329,9 +329,21 @@
   33；`commands::data::tests::` 19；`npm run typecheck` 0。
 - 未实现/边界：搜索最多覆盖排序前 5000 条；全局搜索不搜长正文；性能基准与真机走查待后续。
 
-### 6.12 尚未执行（等待后续批次）
+### 6.12 批次 7（2026-11-23，已实施）
+
+已落地 Agent 导出前预览与一次性确认：
+
+- `clipboard/export_gate.rs`：进程内、容量 64 的待确认 token 表；token 120 秒过期、单次使用，绑定目标类型/ID、任务 ID 与内容指纹；过期/不匹配/重复使用均拒绝。指纹由条目 ID、顺序、标题、预览、来源、路径、时间等组成，不读取正文/HTML。
+- `agent_bridge::preview_snapshot`：只读统计条目/图片/字节/类型，响应不含正文/HTML，任务上下文只报告是否存在；空分组直接拒绝。`clipboard_export_preview` 返回统计 + `confirmationToken` + 有效期。
+- `commands::clipboard::clipboard_export_for_agent` 新增必填 `confirmationToken`；导出前重新取快照、复算指纹并消费 token，再进 `spawn_blocking` 写文件。成功审计明细增加 `confirmed=1`。
+- `AgentExportPanel`：首次点击只预览，弹出危险确认框列出范围与任务上下文、明文留存风险；取消不写文件；确认后才携带 token 导出。内容变化/过期失败后关闭确认框并要求重新预览。
+- 未接入 Agent 能力白名单：导出未暴露给 Agent API/MCP，当前不存在可被 Agent 直接调用的导出口；门槛只防误触和确认后内容漂移，不防被攻陷的渲染进程。
+- 本批验证（MSVC）：`cargo test --lib clipboard::` 301 passed / 0 failed / 1 ignored；其中 `export_gate::` 4、`preview_snapshot_counts_and_context_without_body` 1、`export_audit_omits_paths_and_content` 1、`denied_export_is_audited_without_token_or_target_id` 1；`npx vitest run src/components/clipboard` 18 files / 322 tests passed；`npm run typecheck` 0。
+- 测试隔离：统一 `secure::TEST_LOCK`，避免 `secure`/`store`/迁移用例并行清空全局 CEK 缓存造成偶发失败。
+
+### 6.13 尚未执行（等待后续批次）
 
 - 批次 4c（余项）：旧明文包一次性加密迁移；恢复续跑日志对资产重加密后的版本兼容复核。
-- Agent 导出授权门槛与自动清理策略/保留期默认值、目录显式 ACL、真机 Dev 验收与性能基准。
-- 本批次未执行：数据库 schema 迁移、Dev 真机走查。
+- Agent 导出自动清理策略/保留期默认值、目录显式 ACL、真机 Dev 验收与性能基准。
+- 本批次未执行：数据库 schema 迁移、Agent 能力白名单、Dev 真机走查。
 - 残余风险按 ADR §14「实施偏差与影响」如实登记，不得对外宣称剪贴板历史已全面加密。

@@ -4,10 +4,19 @@
 //! Agent 导出面板：默认轻量、导出不依赖探测、能力语义可核验、异步结果不串会话。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 
 const bridge = vi.hoisted(() => ({
   clipboardAgentTargets: vi.fn(),
+  clipboardExportPreview: vi.fn(),
   clipboardExportForAgent: vi.fn(),
 }));
 vi.mock("../../lib/bridge", async (importOriginal) => {
@@ -25,6 +34,7 @@ import AgentExportPanel from "./AgentExportPanel";
 import type {
   AgentClipboardTarget,
   AgentTargetsSnapshot,
+  ClipboardExportPreview,
   ExportPackage,
 } from "../../lib/bridge";
 import { useUiStore } from "../../store/useUiStore";
@@ -61,6 +71,16 @@ const PKG: ExportPackage = {
   warnings: [],
 };
 
+const PREVIEW: ClipboardExportPreview = {
+  items: 3,
+  images: 1,
+  bytes: 2048,
+  kinds: ["text", "image", "files"],
+  includesTaskContext: false,
+  confirmationToken: "token-1",
+  expiresInSeconds: 120,
+};
+
 let toastSpy: ReturnType<typeof vi.fn>;
 
 /** 后端探测快照：默认「刚扫描过」，可显式构造缓存命中与旧时间。 */
@@ -93,9 +113,20 @@ function openCompat() {
   fireEvent.click(screen.getByRole("button", { name: /Agent 兼容信息/ }));
 }
 
+async function confirmPendingExport() {
+  const dialog = await screen.findByRole("dialog");
+  fireEvent.click(within(dialog).getByRole("button", { name: /仍要导出/ }));
+}
+
+async function startExport() {
+  fireEvent.click(screen.getByRole("button", { name: /导出本地文件包/ }));
+  await confirmPendingExport();
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   bridge.clipboardAgentTargets.mockResolvedValue(snapshot());
+  bridge.clipboardExportPreview.mockResolvedValue(PREVIEW);
   bridge.clipboardExportForAgent.mockResolvedValue(PKG);
   clipboard.copyText.mockResolvedValue(true);
   toastSpy = vi.fn();
@@ -129,7 +160,7 @@ describe("AgentExportPanel 信息架构", () => {
     render(<AgentExportPanel targetType="group" targetId="g1" taskId="task-9" />);
     openPanel();
 
-    expect(screen.getByText(/包含关联任务上下文/)).toBeTruthy();
+    expect(screen.getByText(/关联任务存在.*标题与描述/)).toBeTruthy();
   });
 
   it("导出说明默认收起，展开后列出技术边界", () => {
@@ -143,6 +174,66 @@ describe("AgentExportPanel 信息架构", () => {
   });
 });
 
+describe("AgentExportPanel 导出确认", () => {
+  it("先预览范围，取消确认不生成文件", async () => {
+    render(<AgentExportPanel targetType="group" targetId="g1" />);
+    openPanel();
+
+    fireEvent.click(screen.getByRole("button", { name: /导出本地文件包/ }));
+    const dialog = await screen.findByRole("dialog");
+    expect(bridge.clipboardExportPreview).toHaveBeenCalledWith("group", "g1", null);
+    expect(within(dialog).getByText(/将导出 3 项/)).toBeTruthy();
+    expect(within(dialog).getByText(/1 文字、1 图片、1 文件/)).toBeTruthy();
+    expect(within(dialog).getByText(/明文写入本机目录/)).toBeTruthy();
+    expect(bridge.clipboardExportForAgent).not.toHaveBeenCalled();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: /取消/ }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(bridge.clipboardExportForAgent).not.toHaveBeenCalled();
+  });
+
+  it("确认后把一次性 token 交给导出命令", async () => {
+    render(<AgentExportPanel targetType="group" targetId="g1" />);
+    openPanel();
+    await startExport();
+
+    await waitFor(() =>
+      expect(bridge.clipboardExportForAgent).toHaveBeenCalledWith(
+        "group",
+        "g1",
+        null,
+        "token-1",
+      ),
+    );
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("任务上下文由预览结果决定，预览失败不打开确认框", async () => {
+    bridge.clipboardExportPreview.mockResolvedValueOnce({
+      ...PREVIEW,
+      includesTaskContext: true,
+    });
+    const { rerender } = render(
+      <AgentExportPanel targetType="group" targetId="g1" taskId="task-9" />,
+    );
+    openPanel();
+    fireEvent.click(screen.getByRole("button", { name: /导出本地文件包/ }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(/包含关联任务的标题与描述/)).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: /取消/ }));
+
+    bridge.clipboardExportPreview.mockRejectedValueOnce(new Error("预览失败"));
+    rerender(<AgentExportPanel targetType="group" targetId="g2" />);
+    openPanel();
+    fireEvent.click(screen.getByRole("button", { name: /导出本地文件包/ }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain("预览失败");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(bridge.clipboardExportForAgent).not.toHaveBeenCalled();
+  });
+});
+
 describe("AgentExportPanel 导出可靠性", () => {
   it("没有 Agent 时仍可导出", async () => {
     bridge.clipboardAgentTargets.mockResolvedValueOnce(snapshot([]));
@@ -151,10 +242,15 @@ describe("AgentExportPanel 导出可靠性", () => {
     openCompat();
 
     expect(await screen.findByText(/未发现已注册的 Agent/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: /导出本地文件包/ }));
+    await startExport();
 
     await waitFor(() =>
-      expect(bridge.clipboardExportForAgent).toHaveBeenCalledWith("group", "g1", null),
+      expect(bridge.clipboardExportForAgent).toHaveBeenCalledWith(
+        "group",
+        "g1",
+        null,
+        "token-1",
+      ),
     );
     expect(await screen.findByText(PKG.dir)).toBeTruthy();
   });
@@ -166,7 +262,7 @@ describe("AgentExportPanel 导出可靠性", () => {
     openCompat();
 
     expect(await screen.findByText(/读取 Agent 列表失败：探测超时/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: /导出本地文件包/ }));
+    await startExport();
 
     await waitFor(() => expect(bridge.clipboardExportForAgent).toHaveBeenCalled());
     expect(await screen.findByText(PKG.dir)).toBeTruthy();
@@ -176,9 +272,14 @@ describe("AgentExportPanel 导出可靠性", () => {
     render(<AgentExportPanel targetType="group" targetId="g1" taskId="task-9" />);
     openPanel();
 
-    fireEvent.click(screen.getByRole("button", { name: /导出本地文件包/ }));
+    await startExport();
     await waitFor(() =>
-      expect(bridge.clipboardExportForAgent).toHaveBeenCalledWith("group", "g1", "task-9"),
+      expect(bridge.clipboardExportForAgent).toHaveBeenCalledWith(
+        "group",
+        "g1",
+        "task-9",
+        "token-1",
+      ),
     );
 
     expect(await screen.findByText(PKG.dir)).toBeTruthy();
@@ -197,7 +298,7 @@ describe("AgentExportPanel 导出可靠性", () => {
     render(<AgentExportPanel targetType="item" targetId="i1" />);
     openPanel();
 
-    fireEvent.click(screen.getByRole("button", { name: /导出本地文件包/ }));
+    await startExport();
 
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("导出失败：磁盘空间不足");
@@ -208,7 +309,7 @@ describe("AgentExportPanel 导出可靠性", () => {
   it("路径复制调用受控写入并反馈", async () => {
     render(<AgentExportPanel targetType="group" targetId="g1" />);
     openPanel();
-    fireEvent.click(screen.getByRole("button", { name: /导出本地文件包/ }));
+    await startExport();
 
     fireEvent.click(await screen.findByRole("button", { name: "复制导出目录" }));
     await waitFor(() => expect(clipboard.copyText).toHaveBeenCalledWith(PKG.dir));
@@ -220,7 +321,7 @@ describe("AgentExportPanel 导出可靠性", () => {
   it("重开面板不显示上一次的导出成功状态", async () => {
     render(<AgentExportPanel targetType="group" targetId="g1" />);
     openPanel();
-    fireEvent.click(screen.getByRole("button", { name: /导出本地文件包/ }));
+    await startExport();
     expect(await screen.findByText(PKG.dir)).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: /导出给 Agent/ }));
@@ -236,7 +337,7 @@ describe("AgentExportPanel 导出可靠性", () => {
     bridge.clipboardExportForAgent.mockReturnValueOnce(d.promise);
     const { unmount } = render(<AgentExportPanel targetType="group" targetId="g1" />);
     openPanel();
-    fireEvent.click(screen.getByRole("button", { name: /导出本地文件包/ }));
+    await startExport();
 
     unmount();
     d.resolve(PKG);
@@ -381,8 +482,8 @@ describe("AgentExportPanel 请求身份与生命周期", () => {
   const PKG_A: ExportPackage = { ...PKG, dir: "C:\\exports\\pkg-a" };
   const PKG_B: ExportPackage = { ...PKG, dir: "C:\\exports\\pkg-b" };
 
-  function clickExport() {
-    fireEvent.click(screen.getByRole("button", { name: /导出本地文件包/ }));
+  async function clickExport() {
+    await startExport();
   }
 
   function closePanel() {
@@ -394,7 +495,7 @@ describe("AgentExportPanel 请求身份与生命周期", () => {
     bridge.clipboardExportForAgent.mockReturnValueOnce(dA.promise);
     const { rerender } = render(<AgentExportPanel targetType="group" targetId="g1" />);
     openPanel();
-    clickExport();
+    await clickExport();
 
     rerender(<AgentExportPanel targetType="group" targetId="g2" />);
     openPanel();
@@ -415,11 +516,11 @@ describe("AgentExportPanel 请求身份与生命周期", () => {
       .mockReturnValueOnce(dB.promise);
     const { rerender } = render(<AgentExportPanel targetType="group" targetId="g1" />);
     openPanel();
-    clickExport();
+    await clickExport();
 
     rerender(<AgentExportPanel targetType="group" targetId="g2" />);
     openPanel();
-    clickExport();
+    await clickExport();
 
     // A 的迟到结果返回时 B 仍在进行：不能覆盖 B，也不能把 B 的 loading 清掉。
     dA.resolve(PKG_A);
@@ -441,7 +542,7 @@ describe("AgentExportPanel 请求身份与生命周期", () => {
     bridge.clipboardExportForAgent.mockReturnValueOnce(d.promise);
     render(<AgentExportPanel targetType="group" targetId="g1" />);
     openPanel();
-    clickExport();
+    await clickExport();
 
     closePanel();
     d.resolve(PKG_A);
@@ -458,7 +559,7 @@ describe("AgentExportPanel 请求身份与生命周期", () => {
     bridge.clipboardExportForAgent.mockReturnValueOnce(d.promise);
     render(<AgentExportPanel targetType="group" targetId="g1" />);
     openPanel();
-    clickExport();
+    await clickExport();
 
     closePanel();
     openPanel();
@@ -477,10 +578,10 @@ describe("AgentExportPanel 请求身份与生命周期", () => {
     render(<AgentExportPanel targetType="group" targetId="g1" />);
     openPanel();
 
-    clickExport();
+    await clickExport();
     expect((await screen.findByRole("alert")).textContent).toContain("导出失败：磁盘已满");
 
-    clickExport();
+    await clickExport();
     expect(await screen.findByText(PKG.dir)).toBeTruthy();
     expect(screen.queryByRole("alert")).toBeNull();
   });
@@ -491,8 +592,8 @@ describe("AgentExportPanel 请求身份与生命周期", () => {
     render(<AgentExportPanel targetType="group" targetId="g1" />);
     openPanel();
 
-    clickExport();
-    clickExport();
+    await clickExport();
+    await clickExport();
     await waitFor(() => expect(bridge.clipboardExportForAgent).toHaveBeenCalledTimes(1));
 
     d.resolve(PKG);
@@ -541,7 +642,7 @@ describe("AgentExportPanel 请求身份与生命周期", () => {
     bridge.clipboardExportForAgent.mockReturnValueOnce(dA.promise);
     const { rerender } = render(<AgentExportPanel targetType="group" targetId="g1" />);
     openPanel();
-    clickExport();
+    await clickExport();
 
     rerender(<AgentExportPanel targetType="item" targetId="i1" />);
     openPanel();
@@ -625,7 +726,7 @@ describe("AgentExportPanel 请求身份与生命周期", () => {
     clipboard.copyText.mockReturnValueOnce(d.promise);
     const { rerender } = render(<AgentExportPanel targetType="group" targetId="g1" />);
     openPanel();
-    clickExport();
+    await clickExport();
     await screen.findByText(PKG.dir);
 
     fireEvent.click(screen.getByRole("button", { name: "复制导出目录" }));
@@ -644,7 +745,7 @@ describe("AgentExportPanel 请求身份与生命周期", () => {
       <AgentExportPanel targetType="group" targetId="g1" taskId="task-1" />,
     );
     openPanel();
-    clickExport();
+    await clickExport();
 
     rerender(<AgentExportPanel targetType="group" targetId="g1" taskId="task-2" />);
     openPanel();

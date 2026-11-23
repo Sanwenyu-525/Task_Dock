@@ -3886,8 +3886,7 @@ mod tests {
         }
     }
 
-    /// 加密用例共用一把锁：CEK 进程缓存是全局的，并行跑会让不同临时库的密钥互相覆盖。
-    static ENC_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// 加密用例共用 `secure::TEST_LOCK`：CEK 进程缓存是全局的，跨模块并行会互相覆盖。
 
     fn raw_item_text(db: &Db, id: &str) -> String {
         raw_item_field(db, id, "text")
@@ -3906,7 +3905,7 @@ mod tests {
 
     #[test]
     fn encrypt_history_off_keeps_plaintext_body() {
-        let _guard = ENC_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = secure::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         secure::reset_cache();
         let tmp = TempRoot::new();
         let db = Db::open(&tmp.0.join("app.db")).unwrap();
@@ -3921,7 +3920,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn encrypt_history_on_writes_ciphertext_and_reads_plaintext() {
-        let _guard = ENC_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = secure::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         secure::reset_cache();
         let tmp = TempRoot::new();
         let db = Db::open(&tmp.0.join("app.db")).unwrap();
@@ -4017,7 +4016,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn encrypted_history_reads_back_after_restart_with_empty_cache() {
-        let _guard = ENC_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = secure::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         secure::reset_cache();
         let tmp = TempRoot::new();
         let db_path = tmp.0.join("app.db");
@@ -4039,7 +4038,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn encrypted_history_fails_closed_when_envelope_is_gone() {
-        let _guard = ENC_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = secure::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         secure::reset_cache();
         let tmp = TempRoot::new();
         let db = Db::open(&tmp.0.join("app.db")).unwrap();
@@ -4064,7 +4063,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn encrypt_history_on_encrypts_image_assets_and_reads_them_back() {
-        let _guard = ENC_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = secure::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         secure::reset_cache();
         let tmp = TempRoot::new();
         let db = Db::open(&tmp.0.join("app.db")).unwrap();
@@ -4116,7 +4115,7 @@ mod tests {
 
     #[test]
     fn legacy_plaintext_image_assets_stay_plaintext_and_path_is_original() {
-        let _guard = ENC_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = secure::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         secure::reset_cache();
         let tmp = TempRoot::new();
         let db = Db::open(&tmp.0.join("app.db")).unwrap();
@@ -4134,7 +4133,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn preview_cache_is_encrypted_and_reused() {
-        let _guard = ENC_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = secure::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         secure::reset_cache();
         let tmp = TempRoot::new();
         let db = Db::open(&tmp.0.join("app.db")).unwrap();

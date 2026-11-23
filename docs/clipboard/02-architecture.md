@@ -417,6 +417,15 @@ failed/cancelled/confirmed`，其中 `confirmed` 仅在存在独立接收信号�
   全局搜索对剪贴板同样解密最近 5000 条页字段，不读大正文。
 - 暂存架快照读取正文/路径时解密，图片改走 `image_png`（避免把 `TDCLB1` 容器密文当 PNG）。
 
+### 5.5 Agent 导出确认门槛（ADR-0012，批次 7）
+
+- `clipboard_export_preview` 只读统计条目/图片/字节/类型与是否含任务上下文，签发 120 秒、
+  单次使用的 token；token 绑定目标类型/ID、任务 ID 与内容指纹，不包含正文。
+- `clipboard_export_for_agent` 强制携带 token；命令层重新取快照、复算指纹并消费 token，
+  再进入 `spawn_blocking` 写文件。目标/任务/内容变化、过期或重复使用均拒绝。
+- 导出未暴露给 Agent API/MCP；门槛用于防误触和确认后内容漂移，不构成对已攻陷渲染进程的
+  授权边界，也不改变导出包仍为明文的事实。
+
 ## 六、降级与边界
 
 - 监听启动失败：`ClipboardRuntime::start` 记录警告，运行时继续工作；

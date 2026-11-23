@@ -124,9 +124,10 @@
 
 - `export_package` 按条目或分组生成 `clipboard-exports/<uuid>/`：`clipboard.md`（正文/HTML/URL/文件路径/任务描述）、原图 PNG、`manifest.json`。
 - 文案声明「仅保存在本机；不自动上传或发送」；导出目录独占创建，写失败由 `ExportDirGuard` Drop 清理半成品。
-- **现状（批次 5a/5b 更新）**：
-  - 能力矩阵区分 `direct_send / file_import / desktop_paste / export` 与证据等级；导出仍由本机 UI 显式触发，**尚无 `agent_access` 能力白名单/逐次授权**。
-  - 导出成功/失败/手动清理已写 `security_audit_log`（`category=clipboard`），明细不含目录、文件名或正文。
+- **现状（批次 5a/5b/7 更新）**：
+  - 能力矩阵区分 `direct_send / file_import / desktop_paste / export` 与证据等级；导出未暴露给 Agent API/MCP，`agent_access` 无需新增能力；本机 UI 导出前必须先预览并使用 120 秒单次 token 确认，命令层复算目标/任务/内容指纹。
+  - 导出成功/失败/手动清理已写 `security_audit_log`（`category=clipboard`），明细不含目录、文件名或正文；成功事件带 `confirmed=1`。
+  - 预览只统计条目/图片/类型/字节与“是否包含任务上下文”，不返回任务标题/描述；确认框在包含时明示。
   - 导出包含关联任务的 `title`/`description`（`task_context`），属于跨模块数据带出。
   - 导出目录仍长期保留明文，现由设置页按保留天数手动清理（默认 7 天，需确认）；无自动过期策略。
 
@@ -152,7 +153,9 @@
 - 系统/应用隐私标记：`ExcludeClipboardContentFromMonitorProcessing`、`Clipboard Viewer Ignore`、`CanIncludeInClipboardHistory=0`。
 - **明确局限（现状文档已声明）**：固定模式不可能识别全部密码、验证码、银行卡号、自定义令牌；图片内容无识别；排除名单只覆盖可推断来源的应用。方案中隐私文案必须延续这一口径，不得宣传为绝对安全。
 
-## 10. 现状缺口小结（供后续方案引用）
+## 10. 治理前缺口小结（基线，部分已修复）
+
+> 本清单保留 2026-11-23 调查时的基线，用于追溯；批次 1–7 已修复正文/元数据/图片静态明文、备份明文与导出无确认等问题。仍存在：Agent 导出包明文与无自动清理、目录显式 ACL、WAL 物理残留、真机与性能验证。
 
 1. 库内正文/HTML/预览、图片原图/缩略图/预览缓存均为静态明文。
 2. WAL 未做面向隐私的 checkpoint/擦除策略；删除条目后明文可能滞留 WAL。

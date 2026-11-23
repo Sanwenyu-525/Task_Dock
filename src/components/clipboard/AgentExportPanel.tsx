@@ -17,16 +17,20 @@ import {
 } from "lucide-react";
 import AgentIcon from "../ui/AgentIcon";
 import CollapsibleSection from "../ui/CollapsibleSection";
+import { ConfirmDialog } from "../ui/Dialog";
 import StatusBadge, { type StatusTone } from "../ui/StatusBadge";
 import {
   clipboardAgentTargets,
   clipboardExportForAgent,
+  clipboardExportPreview,
   type AgentCapability,
   type AgentClipboardTarget,
+  type ClipboardExportPreview,
   type ExportPackage,
 } from "../../lib/bridge";
 import { copyText } from "../../lib/clipboard";
 import { errorMessage } from "../../lib/errors";
+import { formatBytes, kindLabel } from "../../lib/clipboardUi";
 import { useUiStore } from "../../store/useUiStore";
 
 const EVIDENCE_LABELS: Record<string, string> = {
@@ -41,6 +45,25 @@ const EVIDENCE_LABELS: Record<string, string> = {
 
 function evidenceLabel(evidence: string) {
   return EVIDENCE_LABELS[evidence] ?? evidence;
+}
+
+function exportKindSummary(kinds: string[]): string {
+  const counts = new Map<string, number>();
+  for (const kind of kinds) counts.set(kind, (counts.get(kind) ?? 0) + 1);
+  return Array.from(counts)
+    .map(([kind, count]) => `${count} ${kindLabel(kind)}`)
+    .join("、");
+}
+
+function confirmDetail(preview: ClipboardExportPreview): string {
+  return [
+    `将导出 ${preview.items} 项（${exportKindSummary(preview.kinds) || "无内容"}），约 ${formatBytes(preview.bytes)}。`,
+    preview.includesTaskContext ? "包含关联任务的标题与描述。" : "",
+    "导出包以明文写入本机目录，不会自动发送；同 Windows 用户下的其他进程可读取，生成后请及时清理。",
+    `确认 ${Math.round(preview.expiresInSeconds / 60)} 分钟内有效；内容变化后需重新确认。`,
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 function primaryState(t: AgentClipboardTarget): {
@@ -187,6 +210,8 @@ export default function AgentExportPanel({
   const [probing, setProbing] = useState(false);
   const [pkg, setPkg] = useState<ExportPackage | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
+  const [preview, setPreview] = useState<ClipboardExportPreview | null>(null);
+  const [previewing, setPreviewing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [probedAt, setProbedAt] = useState<number | null>(null);
   const [probedCached, setProbedCached] = useState(false);
@@ -195,7 +220,8 @@ export default function AgentExportPanel({
   // 当前上下文的代际：切换条目/分组或关闭面板时递增。
   // 异步回调用发起时捕获的代际比对，只有代际未变才允许写回界面。
   const contextVersionRef = useRef(0);
-  // 当前代际内已发起的导出（同上下文连点只允许一个在途请求）。
+  // 当前代际内已发起的预览/导出（同上下文连点只允许一个在途请求）。
+  const pendingPreviewRef = useRef<number | null>(null);
   const pendingExportRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -205,9 +231,10 @@ export default function AgentExportPanel({
     };
   }, []);
 
-  // 切换条目/分组后不能沿用上一次的导出结果与展开状态。
+  // 切换条目/分组后不能沿用上一次的导出结果、确认框与展开状态。
   useEffect(() => {
     contextVersionRef.current += 1;
+    pendingPreviewRef.current = null;
     pendingExportRef.current = null;
     setOpen(false);
     setNoteOpen(false);
@@ -215,16 +242,21 @@ export default function AgentExportPanel({
     setExpandedAgent(null);
     setPkg(null);
     setExportError(null);
+    setPreview(null);
+    setPreviewing(false);
     setBusy(false);
   }, [targetType, targetId, taskId]);
 
   function handlePanelToggle(next: boolean) {
-    // 关闭即视为当前上下文作废：在途导出/复制回调的结果都会被丢弃。
+    // 关闭即视为当前上下文作废：在途预览/导出/复制回调的结果都会被丢弃。
     // 注意这只丢弃前端结果，不会取消后端已开始的导出，也不会删除已生成的文件。
     contextVersionRef.current += 1;
+    pendingPreviewRef.current = null;
     pendingExportRef.current = null;
     setOpen(next);
+    setPreviewing(false);
     setBusy(false);
+    setPreview(null);
     if (!next) {
       // 重开面板时不展示旧的导出成功状态，技术说明与兼容详情也回到默认收起。
       setPkg(null);
@@ -272,25 +304,61 @@ export default function AgentExportPanel({
 
   async function onExport() {
     const version = contextVersionRef.current;
-    // 同一上下文连点只发一次；切到别的条目/分组后各自独立，结果按代际归属。
+    // 同一上下文连点只发一次预览；确认框已打开时不再重复请求。
+    if (pendingPreviewRef.current === version || preview !== null || busy) return;
+    pendingPreviewRef.current = version;
+    setPreviewing(true);
+    setExportError(null);
+    setPkg(null);
+    try {
+      const result = await clipboardExportPreview(targetType, targetId, taskId ?? null);
+      // 只丢弃过期响应：预览不创建文件，也不会改变后端状态。
+      if (!aliveRef.current || version !== contextVersionRef.current) return;
+      setPreview(result);
+    } catch (e) {
+      if (!aliveRef.current || version !== contextVersionRef.current) return;
+      setExportError(errorMessage(e));
+    } finally {
+      if (pendingPreviewRef.current === version) pendingPreviewRef.current = null;
+      if (aliveRef.current && version === contextVersionRef.current) setPreviewing(false);
+    }
+  }
+
+  function cancelExport() {
+    if (busy) return;
+    setPreview(null);
+    setExportError(null);
+  }
+
+  async function confirmExport() {
+    const pending = preview;
+    if (!pending || busy) return;
+    const version = contextVersionRef.current;
     if (pendingExportRef.current === version) return;
     pendingExportRef.current = version;
     setBusy(true);
     setExportError(null);
     setPkg(null);
     try {
-      const result = await clipboardExportForAgent(targetType, targetId, taskId ?? null);
+      const result = await clipboardExportForAgent(
+        targetType,
+        targetId,
+        taskId ?? null,
+        pending.confirmationToken,
+      );
       // 这里只是「忽略异步结果」：后端导出任务已在独立线程完成并留下文件，不会中断或删除。
       // 只有代际仍属于当前上下文时才写回；否则旧结果不得覆盖新目标，也不得弹提示。
       if (!aliveRef.current || version !== contextVersionRef.current) return;
       setPkg(result);
+      setPreview(null);
       showToast(`已导出 ${result.item_count} 项到本地文件（未发送）`, { kind: "success" });
     } catch (e) {
       if (!aliveRef.current || version !== contextVersionRef.current) return;
+      // token 已消费或已过期，失败后必须重新预览并确认。
+      setPreview(null);
       setExportError(errorMessage(e));
     } finally {
       if (pendingExportRef.current === version) pendingExportRef.current = null;
-      // 代际已变时不要清掉新上下文正在进行的导出 loading。
       if (aliveRef.current && version === contextVersionRef.current) setBusy(false);
     }
   }
@@ -304,7 +372,7 @@ export default function AgentExportPanel({
   }
 
   const description = taskId
-    ? "将当前内容整理为本地文件包，供 Agent 手动导入，不会自动发送。包含关联任务上下文。"
+    ? "将当前内容整理为本地文件包，供 Agent 手动导入，不会自动发送。若关联任务存在，将包含其标题与描述。"
     : "将当前内容整理为本地文件包，供 Agent 手动导入，不会自动发送。";
 
   return (
@@ -335,18 +403,18 @@ export default function AgentExportPanel({
         <div className="clip-agent-actions">
           <button
             className="btn sm primary"
-            onClick={onExport}
-            disabled={busy}
-            aria-busy={busy}
+            onClick={() => void onExport()}
+            disabled={previewing || busy}
+            aria-busy={previewing || busy}
           >
-            {busy ? (
+            {previewing || busy ? (
               <RefreshCw size={12} className="spin" aria-hidden="true" />
             ) : (
               <FolderOutput size={12} aria-hidden="true" />
             )}{" "}
-            导出本地文件包
+            {previewing ? "正在准备确认…" : "导出本地文件包"}
           </button>
-          <span className="clip-agent-actions-hint">只写本地文件，不自动发送</span>
+          <span className="clip-agent-actions-hint">先预览，确认后才写本地文件</span>
         </div>
 
         {exportError && (
@@ -494,6 +562,16 @@ export default function AgentExportPanel({
           )}
         </CollapsibleSection>
       </div>
+      <ConfirmDialog
+        open={preview !== null}
+        danger
+        title="确认导出给 Agent？"
+        confirmLabel="仍要导出"
+        busy={busy}
+        detail={preview ? confirmDetail(preview) : ""}
+        onConfirm={() => void confirmExport()}
+        onCancel={cancelExport}
+      />
     </CollapsibleSection>
   );
 }
