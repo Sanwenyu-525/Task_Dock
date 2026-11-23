@@ -179,9 +179,26 @@ mod imp {
             }
         }
 
-        fn walk(&mut self, path: &Path, directory: bool) {
-            self.apply(path, directory);
-            if !directory {
+        fn walk(&mut self, path: &Path) {
+            let metadata = match std::fs::symlink_metadata(path) {
+                Ok(metadata) => metadata,
+                Err(err) => {
+                    self.report.failed += 1;
+                    let message = format!(
+                        "读取文件属性失败，IO 错误 {}",
+                        err.raw_os_error().unwrap_or_default()
+                    );
+                    self.report.first_error.get_or_insert(message);
+                    return;
+                }
+            };
+            // 不跟随符号链接与 junction：目标可能在其它用户目录/项目之外。
+            if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                self.report.skipped += 1;
+                return;
+            }
+            self.apply(path, metadata.is_dir());
+            if !metadata.is_dir() {
                 return;
             }
             let entries = match std::fs::read_dir(path) {
@@ -209,36 +226,26 @@ mod imp {
                         continue;
                     }
                 };
-                let path = entry.path();
-                let metadata = match std::fs::symlink_metadata(&path) {
-                    Ok(metadata) => metadata,
-                    Err(err) => {
-                        self.report.failed += 1;
-                        let message = format!(
-                            "读取文件属性失败，IO 错误 {}",
-                            err.raw_os_error().unwrap_or_default()
-                        );
-                        self.report.first_error.get_or_insert(message);
-                        continue;
-                    }
-                };
-                // 不跟随符号链接与 junction：目标可能在其它用户目录/项目之外。
-                if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-                    self.report.skipped += 1;
-                    continue;
-                }
-                self.walk(&path, metadata.is_dir());
+                self.walk(&entry.path());
             }
         }
     }
 
     pub(super) fn harden(data_dir: &Path) -> AclReport {
-        if !data_dir.is_dir() {
-            return AclReport {
-                failed: 1,
-                first_error: Some("数据目录不存在或不是目录".into()),
-                ..AclReport::default()
-            };
+        let root = match std::fs::symlink_metadata(data_dir) {
+            Ok(metadata) => metadata,
+            Err(err) => {
+                return failed_report(format!(
+                    "读取数据目录属性失败，IO 错误 {}",
+                    err.raw_os_error().unwrap_or_default()
+                ))
+            }
+        };
+        if root.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return failed_report("数据目录是重解析点，已跳过".into());
+        }
+        if !root.is_dir() {
+            return failed_report("数据目录不存在或不是目录".into());
         }
         let user = match current_user_sid_bytes() {
             Ok(sid) => sid,
@@ -271,7 +278,7 @@ mod imp {
         for name in PRIVATE_SUBDIRS {
             let path = data_dir.join(name);
             if path.is_dir() {
-                applier.walk(&path, true);
+                applier.walk(&path);
             } else {
                 applier.report.skipped += 1;
             }
@@ -279,7 +286,7 @@ mod imp {
         for name in PRIVATE_FILES {
             let path = data_dir.join(name);
             if path.is_file() {
-                applier.walk(&path, false);
+                applier.walk(&path);
             } else {
                 applier.report.skipped += 1;
             }
