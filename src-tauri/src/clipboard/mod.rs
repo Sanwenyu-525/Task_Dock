@@ -18,6 +18,8 @@ pub mod image;
 pub mod ocr;
 pub mod paste;
 pub mod platform;
+pub mod secure;
+pub mod secure_migration;
 pub mod store;
 
 use std::path::PathBuf;

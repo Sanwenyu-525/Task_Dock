@@ -2993,6 +2993,11 @@ pub struct Settings {
     /// 高置信敏感内容过滤（如 PEM 私钥）；不宣称能识别全部密码/令牌
     #[serde(default = "default_true")]
     pub clipboard_sensitive_filter: bool,
+    /// 历史静态加密（ADR-0012）：开启后新采集的正文/HTML 落库前经剪贴板 CEK 加密。
+    /// 默认关闭：升级用户保持现状，必须由用户显式开启并配合迁移工具批量加密旧记录；
+    /// 未开启时读取路径仍兼容已加密记录（密文前缀驱动，不依赖本开关）。
+    #[serde(default)]
+    pub clipboard_encrypt_history: bool,
     /// 自动识别图片文字（默认关闭；第一阶段仅保存设置，不接入采集热路径）
     #[serde(default)]
     pub clipboard_ocr_auto: bool,
@@ -3304,6 +3309,7 @@ pub const CLIPBOARD_SETTING_KEYS: &[&str] = &[
     "clipboard_paste_interval_html_ms",
     "clipboard_paste_interval_files_ms",
     "clipboard_sensitive_filter",
+    "clipboard_encrypt_history",
     "clipboard_ocr_auto",
 ];
 
@@ -3452,6 +3458,7 @@ fn clipboard_value_valid(key: &str, value: &serde_json::Value) -> bool {
             | "clipboard_capture_html"
             | "clipboard_auto_group"
             | "clipboard_sensitive_filter"
+            | "clipboard_encrypt_history"
             | "clipboard_ocr_auto"
     );
     if boolean {
@@ -3637,6 +3644,7 @@ impl Settings {
         boolean!(clipboard_capture_html, "clipboard_capture_html");
         boolean!(clipboard_auto_group, "clipboard_auto_group");
         boolean!(clipboard_sensitive_filter, "clipboard_sensitive_filter");
+        boolean!(clipboard_encrypt_history, "clipboard_encrypt_history");
         boolean!(clipboard_ocr_auto, "clipboard_ocr_auto");
         ranged!(
             clipboard_group_window_secs,
@@ -3793,6 +3801,7 @@ impl Settings {
                 serde_json::json!(d.clipboard_paste_interval_files_ms)
             }
             "clipboard_sensitive_filter" => serde_json::json!(d.clipboard_sensitive_filter),
+            "clipboard_encrypt_history" => serde_json::json!(d.clipboard_encrypt_history),
             "clipboard_ocr_auto" => serde_json::json!(d.clipboard_ocr_auto),
             _ => return None,
         })

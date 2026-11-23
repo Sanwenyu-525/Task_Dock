@@ -724,6 +724,13 @@ pub fn run() {
             commands::projection_window::init(&handle);
 
             let db = Arc::new(Db::open(&data_dir.join("task-dock.db")).expect("数据库打开失败"));
+            // 剪贴板静态加密（ADR-0012）：启动即把已落库的 CEK 信封加载进进程缓存，
+            // 否则重启后读不到已加密的正文。信封不存在时保持为空（不凭空创建密钥）；
+            // 失败只告警，读取加密记录时由各调用点 fail-closed 报告。
+            match clipboard::secure::prime_cache(&db) {
+                Ok(()) => {}
+                Err(err) => tracing::warn!("剪贴板加密密钥加载失败（已加密历史可能不可读）: {err}"),
+            }
             // Agent 共享工作空间：按设置恢复文件监听与本地 REST（默认都关闭）。
             match db::Settings::load(&db) {
                 Ok(settings) => {

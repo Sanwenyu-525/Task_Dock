@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use super::engine::{self, CollectFamily, GroupAction, GroupCandidate, GroupSession};
 use super::image;
+use super::secure;
 use super::{
     CaptureOutcome, CapturedContent, CleanupReport, ClearReport, ClipboardGroup,
     ClipboardGroupItemPosition, ClipboardGroupPage, ClipboardItem, ClipboardStats, ClipboardView,
@@ -49,13 +50,31 @@ const GROUP_FIELDS: &str = "g.id, g.name, g.mode, g.status, g.favorite, g.pinned
  COALESCE((SELECT i.preview FROM clipboard_group_items gi JOIN clipboard_items i ON i.id = gi.item_id
    WHERE gi.group_id = g.id ORDER BY gi.position LIMIT 1), '') AS preview";
 
+/// 行映射内的字段解密：失败转换成 rusqlite 错误，让查询整体 fail-closed，
+/// 绝不把密文当正文返回给界面。AAD 绑定条目 UUID 与字段名。
+fn decrypt_item_field(item_id: &str, field: &str, raw: String) -> rusqlite::Result<String> {
+    secure::decrypt_if_encrypted(&secure::item_field_aad(item_id, field), &raw).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            Box::new(e),
+        )
+    })
+}
+
 fn map_item(row: &Row<'_>) -> rusqlite::Result<ClipboardItem> {
+    let id: String = row.get(0)?;
+    // 正文与 HTML 可能是密文（ADR-0012）：按条目 UUID 绑定的 AAD 解密；
+    // 迁移前的明文没有前缀，原样返回。`preview` 本批仍为明文，作为列表与
+    // 搜索的可见面（残余风险已在 ADR 登记）。
+    let text = decrypt_item_field(&id, "text", row.get::<_, String>(2)?)?;
+    let html = decrypt_item_field(&id, "html", row.get::<_, String>(3)?)?;
     let raw_paths: String = row.get(12)?;
     Ok(ClipboardItem {
-        id: row.get(0)?,
+        id,
         kind: row.get(1)?,
-        text: row.get(2)?,
-        html: row.get(3)?,
+        text,
+        html,
         preview: row.get(4)?,
         title: row.get(5)?,
         title_source: row.get(6)?,
@@ -1320,6 +1339,21 @@ pub fn record_capture(
         p.image.as_ref().map(|i| i.height),
     );
 
+    // 正文入库前加密（ADR-0012）：开关开启时缺信封会创建 CEK，失败直接返回错误，
+    // 绝不降级为明文落库。`preview`/`title` 保持明文作为列表与搜索可见面。
+    let stored_text = secure::encrypt_for_write(
+        db,
+        settings.clipboard_encrypt_history,
+        &secure::item_field_aad(&item_id, "text"),
+        &p.text,
+    )?;
+    let stored_html = secure::encrypt_for_write(
+        db,
+        settings.clipboard_encrypt_history,
+        &secure::item_field_aad(&item_id, "html"),
+        &p.html,
+    )?;
+
     let result = db.with_conn(|conn| {
         let tx = conn.unchecked_transaction()?;
         // 文件已落盘；若此处唯一约束冲突（极端并发），回滚后按重复处理
@@ -1331,8 +1365,8 @@ pub fn record_capture(
             params![
                 item_id,
                 p.kind,
-                p.text,
-                p.html,
+                stored_text,
+                stored_html,
                 p.preview,
                 title,
                 hash,
@@ -3492,6 +3526,118 @@ mod tests {
             source_kind: "owner".into(),
             byte_size: 0,
         }
+    }
+
+    /// 加密用例共用一把锁：CEK 进程缓存是全局的，并行跑会让不同临时库的密钥互相覆盖。
+    static ENC_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn raw_item_text(db: &Db, id: &str) -> String {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT text FROM clipboard_items WHERE id = ?1",
+                params![id],
+                |r| r.get::<_, String>(0),
+            )?)
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn encrypt_history_off_keeps_plaintext_body() {
+        let _guard = ENC_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        secure::reset_cache();
+        let tmp = TempRoot::new();
+        let db = Db::open(&tmp.0.join("app.db")).unwrap();
+        let root = tmp.0.join("clipboard");
+        let s = settings();
+        assert!(!s.clipboard_encrypt_history, "默认必须保持迁移前明文行为");
+        let out = record_capture(&db, &root, &text_payload("默认明文正文"), &s).unwrap();
+        assert_eq!(raw_item_text(&db, &out.item.id), "默认明文正文");
+        assert_eq!(get_item(&db, &out.item.id).unwrap().text, "默认明文正文");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn encrypt_history_on_writes_ciphertext_and_reads_plaintext() {
+        let _guard = ENC_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        secure::reset_cache();
+        let tmp = TempRoot::new();
+        let db = Db::open(&tmp.0.join("app.db")).unwrap();
+        let root = tmp.0.join("clipboard");
+        let mut s = settings();
+        s.clipboard_encrypt_history = true;
+        let sentinel = "TDCLIP-STORE-SENTINEL-7c1d";
+        let mut payload = text_payload(sentinel);
+        payload.html = format!("<p>{sentinel}</p>");
+        let out = record_capture(&db, &root, &payload, &s).unwrap();
+
+        let raw = raw_item_text(&db, &out.item.id);
+        assert!(raw.starts_with("tdcl1:"), "落库必须是密文前缀");
+        assert!(!raw.contains(sentinel), "库内不得出现明文哨兵");
+        assert_eq!(out.item.text, sentinel, "返回给上层的条目必须已解密");
+        assert_eq!(get_item(&db, &out.item.id).unwrap().html, payload.html);
+        // 列表只暴露 preview（本批保持明文），搜索仍可命中，且不泄露整段密文。
+        let page = list_items(
+            &db,
+            &ClipboardFilter {
+                search: Some("TDCLIP-STORE".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(page.iter().any(|i| i.id == out.item.id), "搜索必须仍能命中");
+        assert!(page.iter().all(|i| !i.text.starts_with("tdcl1:")));
+        // 去重依赖明文哈希：同一内容再次采集仍是同一行。
+        let again = record_capture(&db, &root, &payload, &s).unwrap();
+        assert!(!again.created);
+        assert_eq!(again.item.id, out.item.id);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn encrypted_history_reads_back_after_restart_with_empty_cache() {
+        let _guard = ENC_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        secure::reset_cache();
+        let tmp = TempRoot::new();
+        let db_path = tmp.0.join("app.db");
+        let root = tmp.0.join("clipboard");
+        let mut s = settings();
+        s.clipboard_encrypt_history = true;
+        let id = {
+            let db = Db::open(&db_path).unwrap();
+            let out = record_capture(&db, &root, &text_payload("重启后仍可读"), &s).unwrap();
+            out.item.id
+        };
+        // 模拟进程重启：清空内存缓存后重新打开库，必须能按信封重新解封装。
+        secure::reset_cache();
+        let db = Db::open(&db_path).unwrap();
+        secure::prime_cache(&db).unwrap();
+        assert_eq!(get_item(&db, &id).unwrap().text, "重启后仍可读");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn encrypted_history_fails_closed_when_envelope_is_gone() {
+        let _guard = ENC_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        secure::reset_cache();
+        let tmp = TempRoot::new();
+        let db = Db::open(&tmp.0.join("app.db")).unwrap();
+        let root = tmp.0.join("clipboard");
+        let mut s = settings();
+        s.clipboard_encrypt_history = true;
+        let out = record_capture(&db, &root, &text_payload("密钥丢失场景"), &s).unwrap();
+        // 信封被删（用户配置损坏/误删）：不得把密文当正文返回。
+        db.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM application_settings WHERE key = ?1",
+                params![secure::ENVELOPE_SETTING_KEY],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        secure::reset_cache();
+        let err = get_item(&db, &out.item.id).unwrap_err();
+        assert!(matches!(err, AppError::Db(_)), "读取必须整体失败: {err}");
     }
 
     fn url_payload(url: &str) -> CapturedContent {

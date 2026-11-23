@@ -451,6 +451,12 @@ export interface Settings {
   clipboard_paste_interval_files_ms: number;
   clipboard_sensitive_filter: boolean;
   /**
+   * 剪贴板历史静态加密（ADR-0012）：默认 false，旧库保持明文行为；
+   * 开启后新采集的正文/HTML 以 CEK 密文落库，旧记录需迁移后才变密文。
+   * 读取路径兼容两种格式（密文前缀驱动），不依赖本开关。
+   */
+  clipboard_encrypt_history?: boolean;
+  /**
    * 自动识别图片文字（v0.13）：默认 false。第一阶段只保存设置，
    * 不接入采集热路径；手动「提取文字」始终可用。
    */

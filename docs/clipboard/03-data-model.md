@@ -110,8 +110,23 @@
 素材删除后由应用侧解除关联。对应命令 `clipboard_link_snapshot` /
 `clipboard_unlink_snapshot` / `clipboard_snapshot_links`，当前 UI 未接入。
 
-## 二、迁移
+## 二、静态加密格式（ADR-0012，2026-11-23 批次 1）
 
+开启 `clipboard_encrypt_history`（默认关闭，旧库保持明文）后：
+
+- `text` / `html`：`tdcl1:<b64 nonce>:<b64 ciphertext>`，AES-256-GCM；
+  AAD = `tdclip|field|<text|html>|<item_id>|v1`，禁止跨条目/跨字段搬运密文。
+- 无 `tdcl1:` 前缀视为迁移前明文，读取原样返回（双读兼容）；未知前缀（如 `tdcl2:`）报错，
+  **绝不把密文当正文展示**。
+- 密钥信封存 `application_settings` 键 `clipboard_crypto_envelope`：格式标识、版本、CEK 代数、
+  `kek=dpapi-user`、entropy 标识、DPAPI 密文、创建时间；不含明文 CEK。
+- `preview` / `title` / `source_app` / `source_title` / `file_paths` 本批仍为明文（列表与搜索可见面）。
+- 图片资产容器格式已定义（`TDCLB1\0 + nonce + ct`，AAD `tdclip|asset|<role>|<item_id>|v1`），
+  但**尚未接入**写入/读取（批次 2）。
+- 历史迁移：`clipboard/secure_migration.rs` 按批加密现有明文行（幂等、批内往返校验、
+  完成后 `wal_checkpoint(TRUNCATE)`），不碰 `preview` 与关联表。
+
+## 三、迁移
 - 机制：`MIGRATIONS` 数组按 `PRAGMA user_version` 顺序执行，每步 SQL 与版本号
   在同一事务中提交；失败整体回滚，可重试。
 - 剪贴板相关：
