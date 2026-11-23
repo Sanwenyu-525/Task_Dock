@@ -1461,6 +1461,14 @@ export interface BackupMeta {
   config_included?: boolean;
   /** 剪贴板段是否已加密：true 时恢复必须提供备份口令。 */
   clipboard_sealed?: boolean;
+  /** 信封是否带恢复密钥槽位：口令丢失时可用一次性恢复密钥恢复。 */
+  clipboard_recovery_slot?: boolean;
+}
+
+/** 加密备份结果：`recovery_code` 只在本次返回中出现一次，需用户自行保管。 */
+export interface EncryptedBackupResult {
+  path: string;
+  recovery_code?: string | null;
 }
 
 /** 备份内的单个微件偏好（与 src/lib/widgets/model.ts 的 WidgetItem 同形）。 */

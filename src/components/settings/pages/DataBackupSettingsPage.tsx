@@ -6,9 +6,9 @@
 //! - 指标改用 `.settings-kv-*`（不再借用备份列表类名），值可换行。
 
 import { useEffect, useState } from "react";
-import { AlertTriangle, Database, RefreshCw } from "lucide-react";
+import { AlertTriangle, Copy, Database, KeyRound, RefreshCw } from "lucide-react";
 import { save, open as openDialog } from "@tauri-apps/plugin-dialog";
-import { EmptyState, NumberInput, Switch } from "../../ui";
+import { Checkbox, EmptyState, NumberInput, Switch } from "../../ui";
 import { ConfirmDialog } from "../../ui/Dialog";
 import SettingsPageLayout from "../SettingsPageLayout";
 import SettingsGroup from "../SettingsGroup";
@@ -16,6 +16,7 @@ import ContextHelpButton from "../../help/ContextHelpButton";
 import {
   auditTestData,
   backupNow,
+  backupNowEncrypted,
   exportData,
   importData,
   inspectBackup,
@@ -65,6 +66,12 @@ export default function DataBackupSettingsPage() {
   const [dangerBusy, setDangerBusy] = useState(false);
   /** 备份口令：填入后备份的剪贴板段加密；恢复加密备份时必须填同一个口令。 */
   const [passphrase, setPassphrase] = useState("");
+  /** 同时生成一次性恢复密钥（口令丢失时用密钥恢复）。 */
+  const [withRecovery, setWithRecovery] = useState(false);
+  /** 恢复加密备份时可用恢复密钥替代口令。 */
+  const [recoveryInput, setRecoveryInput] = useState("");
+  /** 最近一次备份生成、仅展示一次的恢复密钥。 */
+  const [issuedRecovery, setIssuedRecovery] = useState<string | null>(null);
   /** 备份列表读取失败：显示真实错误与重试，不伪装成空数据。 */
   const [dataLoadError, setDataLoadError] = useState<string | null>(null);
 
@@ -107,8 +114,31 @@ export default function DataBackupSettingsPage() {
     return value;
   }
 
-  async function onExport() {
-    await withBusy("export", async () => {
+  /** 立即备份：填写口令时走加密备份，并可选生成一次性恢复密钥。 */
+  async function runBackup(full: boolean, key: string) {
+    await withBusy(key, async () => {
+      const typed = passphrase.trim();
+      const secret = backupPassphrase();
+      if (typed && !secret) return;
+      let path: string;
+      let recovery: string | null = null;
+      if (secret) {
+        const result = await backupNowEncrypted(full, secret, withRecovery);
+        path = result.path;
+        recovery = result.recovery_code ?? null;
+      } else {
+        path = await backupNow(full);
+      }
+      setIssuedRecovery(recovery);
+      setBackups(await listBackups());
+      showToast(
+        t(full ? "settings.data.fullBackupDone" : "settings.data.quickBackupDone", { path }),
+        { kind: "success" },
+      );
+    });
+  }
+
+  async function onExport() {    await withBusy("export", async () => {
       const path = await save({
         defaultPath: `task-dock-export-${new Date().toISOString().slice(0, 10)}.json`,
         filters: [{ name: "JSON", extensions: ["json"] }],
@@ -129,8 +159,9 @@ export default function DataBackupSettingsPage() {
       const meta = await inspectBackup(path);
       const sealed = meta.clipboard_sealed === true;
       const typed = passphrase.trim();
-      if (sealed && typed.length < 8) {
-        // 加密备份必须先拿到口令，否则恢复一定失败；这里提前拦截，不让用户白等一次完整恢复流程。
+      const recovery = recoveryInput.trim();
+      if (sealed && typed.length < 8 && !recovery) {
+        // 加密备份必须先拿到口令或恢复密钥，否则恢复一定失败；这里提前拦截，不让用户白等一次完整恢复流程。
         showToast(t("settings.data.sealedNeedsPassphrase"), { kind: "error" });
         return;
       }
@@ -150,6 +181,9 @@ export default function DataBackupSettingsPage() {
           ? t("settings.data.importConfigIncluded")
           : t("settings.data.importConfigAbsent"),
         sealed ? t("settings.data.importSealed") : "",
+        sealed && !(typed.length >= 8) && recovery
+          ? t("settings.data.importSealedByRecovery")
+          : "",
         t("settings.data.importRollback"),
         t("settings.data.importContinue"),
       ].filter(Boolean);
@@ -169,10 +203,13 @@ export default function DataBackupSettingsPage() {
     if (pendingDanger?.type !== "import" || dangerBusy) return;
     setDangerBusy(true);
     try {
+      const typed = passphrase.trim();
+      const recovery = recoveryInput.trim();
       const outcome = await importData(
         pendingDanger.path,
         pendingDanger.partial,
-        pendingDanger.sealed ? passphrase.trim() : undefined,
+        pendingDanger.sealed && typed.length >= 8 ? typed : undefined,
+        pendingDanger.sealed && typed.length < 8 && recovery ? recovery : undefined,
       );
       setBackups(await listBackups());
       // 配置恢复是非致命环节：数据已恢复时，冲突/降级必须持续可见，不能只闪一条 Toast。
@@ -306,16 +343,52 @@ export default function DataBackupSettingsPage() {
           autoComplete="new-password"
           spellCheck={false}
         />
+        <input
+          type="text"
+          className="settings-passphrase-input"
+          value={recoveryInput}
+          onChange={(e) => setRecoveryInput(e.target.value)}
+          placeholder={t("settings.data.recoveryPlaceholder")}
+          aria-label={t("settings.data.recoveryLabel")}
+          spellCheck={false}
+        />
+        <div className="settings-actions-row">
+          <Checkbox
+            checked={withRecovery}
+            onChange={setWithRecovery}
+            label={t("settings.data.withRecovery")}
+            ariaLabel={t("settings.data.withRecovery")}
+          />
+        </div>
         <div className="setting-note">{t("settings.data.passphraseNote")}</div>
+        {issuedRecovery && (
+          <div className="setting-note" role="status">
+            <strong>
+              <KeyRound size={12} aria-hidden="true" /> {t("settings.data.recoveryIssued")}
+            </strong>
+            <div className="recovery-code-row">
+              <code className="recovery-code">{issuedRecovery}</code>
+              <button
+                type="button"
+                className="btn sm"
+                onClick={() => {
+                  void navigator.clipboard
+                    .writeText(issuedRecovery)
+                    .then(() => showToast(t("settings.data.recoveryCopied"), { kind: "success" }))
+                    .catch((e) => showToast(String(e), { kind: "error" }));
+                }}
+              >
+                <Copy size={11} aria-hidden="true" /> {t("settings.data.copyRecovery")}
+              </button>
+            </div>
+            <div>{t("settings.data.recoveryOnce")}</div>
+          </div>
+        )}
         <div className="settings-actions-row">
           <button
             className="btn sm"
             disabled={busyKey === "backup"}
-            onClick={() => withBusy("backup", async () => {
-              const p = await backupNow(false, backupPassphrase());
-              setBackups(await listBackups());
-              showToast(t("settings.data.quickBackupDone", { path: p }), { kind: "success" });
-            })}
+            onClick={() => void runBackup(false, "backup")}
           >
             {busyKey === "backup" ? <RefreshCw size={12} className="spin" /> : null}{" "}
             {t("settings.data.quickBackup")}
@@ -323,11 +396,7 @@ export default function DataBackupSettingsPage() {
           <button
             className="btn sm"
             disabled={busyKey === "backup-full"}
-            onClick={() => withBusy("backup-full", async () => {
-              const p = await backupNow(true, backupPassphrase());
-              setBackups(await listBackups());
-              showToast(t("settings.data.fullBackupDone", { path: p }), { kind: "success" });
-            })}
+            onClick={() => void runBackup(true, "backup-full")}
           >
             {busyKey === "backup-full" ? <RefreshCw size={12} className="spin" /> : null}{" "}
             {t("settings.data.fullBackup")}

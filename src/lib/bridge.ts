@@ -83,6 +83,7 @@ import type {
   SnapStateExtra,
   BackupEntry,
   BackupMeta,
+  EncryptedBackupResult,
   UserWidgetPreference,
   UserPreferencesView,
   RestoreOutcome,
@@ -603,16 +604,34 @@ export const getSnapState = () =>
 
 
 export const exportData = (path: string) => invoke<string>("export_data", { path });
-/** `passphrase`：填入时对备份的剪贴板段加密（≥8 字符），恢复需同一口令；留空保持原明文格式。 */
-export const importData = (path: string, allowPartial = false, passphrase?: string) =>
+/** `passphrase`：填入时对备份的剪贴板段加密（≥8 字符），恢复需同一口令；留空保持原明文格式。
+ *  `recoveryCode`：口令不可用时改用创建备份时展示的一次性恢复密钥。 */
+export const importData = (
+  path: string,
+  allowPartial = false,
+  passphrase?: string,
+  recoveryCode?: string,
+) =>
   invoke<RestoreOutcome>("import_data", {
     path,
     allowPartial,
     passphrase: passphrase ?? null,
+    recoveryCode: recoveryCode ?? null,
   });
 export const inspectBackup = (path: string) => invoke<BackupMeta>("inspect_backup", { path });
 export const backupNow = (full = false, passphrase?: string) =>
   invoke<string>("backup_now", { full, passphrase: passphrase ?? null });
+/** 口令加密剪贴板段备份；`withRecovery` 为真时返回一次性恢复密钥。 */
+export const backupNowEncrypted = (
+  full: boolean,
+  passphrase: string,
+  withRecovery: boolean,
+) =>
+  invoke<EncryptedBackupResult>("backup_now_encrypted", {
+    full,
+    passphrase,
+    withRecovery,
+  });
 export const listBackups = () => invoke<BackupEntry[]>("list_backups");
 
 // ── 用户偏好镜像（语言 / 桌面微件布局）──

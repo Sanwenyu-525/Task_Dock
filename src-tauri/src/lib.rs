@@ -1539,6 +1539,7 @@ pub fn run() {
             commands::data::import_data,
             commands::data::inspect_backup,
             commands::data::backup_now,
+            commands::data::backup_now_encrypted,
             commands::data::list_backups,
             commands::data::auto_backup_if_needed,
             // 系统
@@ -1756,9 +1757,9 @@ pub fn run() {
             commands::clipboard::clipboard_group_page,
             commands::clipboard::clipboard_group_item_position,
             commands::clipboard::clipboard_stats,
+            commands::clipboard::clipboard_encrypt_history_migrate,
             commands::clipboard::clipboard_sources,
             commands::clipboard::clipboard_thumb,
-            commands::clipboard::clipboard_encrypt_history_migrate,
             commands::clipboard::clipboard_preview,
             commands::clipboard::clipboard_image,
             commands::clipboard::clipboard_copy_item,

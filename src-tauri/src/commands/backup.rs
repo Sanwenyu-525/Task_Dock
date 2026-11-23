@@ -2316,7 +2316,7 @@ pub fn write_bundle(
     kind: BackupKind,
 ) -> AppResult<BackupWriteResult> {
     let _gate = crate::audio::voice_packs::asset_gate_read();
-    write_bundle_inner(db, sources, target, kind, None)
+    Ok(write_bundle_inner(db, sources, target, kind, None, false)?.0)
 }
 
 /// 写带口令加密剪贴板段的备份：剪贴板类表合并为单条 `clipboard_sealed` 记录，
@@ -2329,7 +2329,19 @@ pub fn write_bundle_sealed(
     passphrase: &str,
 ) -> AppResult<BackupWriteResult> {
     let _gate = crate::audio::voice_packs::asset_gate_read();
-    write_bundle_inner(db, sources, target, kind, Some(passphrase))
+    Ok(write_bundle_inner(db, sources, target, kind, Some(passphrase), false)?.0)
+}
+
+/// 同上，并额外生成一次性恢复密钥（返回文本仅此一次可见，用于口令丢失后的恢复）。
+pub fn write_bundle_sealed_with_recovery(
+    db: &Db,
+    sources: BackupSources<'_>,
+    target: &Path,
+    kind: BackupKind,
+    passphrase: &str,
+) -> AppResult<(BackupWriteResult, Option<String>)> {
+    let _gate = crate::audio::voice_packs::asset_gate_read();
+    write_bundle_inner(db, sources, target, kind, Some(passphrase), true)
 }
 
 /// 恢复流程已持有语音资产写门禁时使用，避免恢复点备份再次获取读锁而死锁。
@@ -2339,7 +2351,7 @@ pub(crate) fn write_bundle_without_voice_gate(
     target: &Path,
     kind: BackupKind,
 ) -> AppResult<BackupWriteResult> {
-    write_bundle_inner(db, sources, target, kind, None)
+    Ok(write_bundle_inner(db, sources, target, kind, None, false)?.0)
 }
 
 fn write_bundle_inner(
@@ -2348,7 +2360,8 @@ fn write_bundle_inner(
     target: &Path,
     kind: BackupKind,
     clipboard_passphrase: Option<&str>,
-) -> AppResult<BackupWriteResult> {
+    with_recovery: bool,
+) -> AppResult<(BackupWriteResult, Option<String>)> {
     let voice_pack_dir = sources
         .data_dir
         .map(|data_dir| data_dir.join("audio").join("voice-packs"));
@@ -2377,7 +2390,7 @@ fn write_bundle_inner(
     let config_warnings = collected.warnings;
     // 信封在进入读事务前创建：Argon2id 派生不必占着数据库读锁。
     let sealed_clipboard = match clipboard_passphrase {
-        Some(pass) => Some(backup_crypto::create(Some(pass), false)?),
+        Some(pass) => Some(backup_crypto::create(Some(pass), with_recovery)?),
         None => None,
     };
     let result = db.with_read(|conn| {
@@ -2442,6 +2455,11 @@ fn write_bundle_inner(
                 "config_included": config_included,
                 // true 表示剪贴板段已加密：恢复必须提供备份口令。
                 "clipboard_sealed": sealed_clipboard.is_some(),
+                // true 表示信封同时带恢复密钥槽位（口令丢失时可用密钥恢复）。
+                "clipboard_recovery_slot": sealed_clipboard
+                    .as_ref()
+                    .map(|created| created.envelope.has_recovery())
+                    .unwrap_or(false),
             });
             if let Some(config) = config_value.clone() {
                 if let Some(obj) = header.as_object_mut() {
@@ -2787,16 +2805,19 @@ fn write_bundle_inner(
         let _ = std::fs::remove_file(&tmp);
         return Err(e);
     }
-    Ok(BackupWriteResult {
-        path: target.to_path_buf(),
-        kind: kind.as_str(),
-        partial,
-        bytes,
-        sha256,
-        counts,
-        config_included,
-        warnings: config_warnings,
-    })
+    Ok((
+        BackupWriteResult {
+            path: target.to_path_buf(),
+            kind: kind.as_str(),
+            partial,
+            bytes,
+            sha256,
+            counts,
+            config_included,
+            warnings: config_warnings,
+        },
+        sealed_clipboard.and_then(|created| created.recovery_code),
+    ))
 }
 
 // ── 读取 / 校验 ────────────────────────────────────────────
@@ -2893,7 +2914,7 @@ impl AssetSink {
 /// 读取并校验备份；归档与剪贴板资产写入 `staging_dir`（只有对应记录时才创建），
 /// 业务表行按表写入 `staging_dir/rows/`（JSONL），内存中只保留元信息与设置。
 pub fn read_bundle(path: &Path, staging_dir: &Path) -> AppResult<ReadBackup> {
-    read_bundle_impl(path, staging_dir, &staging_dir.join("rows"), true, None)
+    read_bundle_impl(path, staging_dir, &staging_dir.join("rows"), true, None, None)
 }
 
 /// 带备份口令读取：备份含加密剪贴板段时必须使用；未加密的旧备份传 `None` 即可。
@@ -2902,13 +2923,37 @@ pub fn read_bundle_with_secret(
     staging_dir: &Path,
     secret: Option<&str>,
 ) -> AppResult<ReadBackup> {
-    read_bundle_impl(path, staging_dir, &staging_dir.join("rows"), true, secret)
+    read_bundle_impl(
+        path,
+        staging_dir,
+        &staging_dir.join("rows"),
+        true,
+        secret,
+        None,
+    )
+}
+
+/// 口令或恢复密钥二选一读取：`recovery` 为创建备份时展示的一次性恢复密钥文本。
+pub fn read_bundle_with_secrets(
+    path: &Path,
+    staging_dir: &Path,
+    secret: Option<&str>,
+    recovery: Option<&str>,
+) -> AppResult<ReadBackup> {
+    read_bundle_impl(
+        path,
+        staging_dir,
+        &staging_dir.join("rows"),
+        true,
+        secret,
+        recovery,
+    )
 }
 
 /// 只校验与解析，不把归档/资产落盘（回滚数据库时使用，避免磁盘被二次复制打满）；
 /// 表行仍落到 `rows_dir`（由调用方指定并在会话清理时删除）。
 pub(crate) fn read_bundle_data_only(path: &Path, rows_dir: &Path) -> AppResult<ReadBackup> {
-    read_bundle_impl(path, Path::new(""), rows_dir, false, None)
+    read_bundle_impl(path, Path::new(""), rows_dir, false, None, None)
 }
 
 /// 按行读取但先检查长度上限：超长行在分配前就被拒绝，避免恶意/损坏备份撑爆内存。
@@ -3060,6 +3105,7 @@ fn read_bundle_impl(
     rows_dir: &Path,
     materialize: bool,
     secret: Option<&str>,
+    recovery: Option<&str>,
 ) -> AppResult<ReadBackup> {
     // 重试用同一行目录时必须先清空：残留的旧表文件会被误读成这次备份的行。
     if rows_dir.exists() {
@@ -3401,12 +3447,19 @@ fn read_bundle_impl(
                     AppError::Validation(format!("剪贴板加密记录损坏: {}", e))
                 })?;
                 sealed_in.envelope.validate()?;
-                let secret = secret.ok_or_else(|| {
-                    AppError::PermissionRequired(
-                        "该备份的剪贴板段已加密，需要输入备份口令后才能恢复".into(),
-                    )
-                })?;
-                let bek = backup_crypto::unwrap_with_password(&sealed_in.envelope, secret)?;
+                let bek = match (secret, recovery) {
+                    (Some(password), _) => {
+                        backup_crypto::unwrap_with_password(&sealed_in.envelope, password)?
+                    }
+                    (None, Some(code)) => {
+                        backup_crypto::unwrap_with_recovery(&sealed_in.envelope, code)?
+                    }
+                    (None, None) => {
+                        return Err(AppError::PermissionRequired(
+                            "该备份的剪贴板段已加密，需要输入备份口令或恢复密钥后才能恢复".into(),
+                        ))
+                    }
+                };
                 let aad = backup_crypto::section_aad(
                     &sealed_in.envelope.backup_id,
                     backup_crypto::SECTION_CLIPBOARD,
@@ -3875,6 +3928,7 @@ pub fn bundle_meta(path: &Path) -> Option<serde_json::Value> {
         "config_included": value.get("config_included").cloned().unwrap_or(serde_json::Value::Bool(false)),
         // 剪贴板段是否加密：true 时恢复必须输入备份口令。
         "clipboard_sealed": value.get("clipboard_sealed").cloned().unwrap_or(serde_json::Value::Bool(false)),
+        "clipboard_recovery_slot": value.get("clipboard_recovery_slot").cloned().unwrap_or(serde_json::Value::Bool(false)),
         "exported_at": value.get("exported_at").cloned().unwrap_or(serde_json::Value::Null),
     }))
 }
@@ -5426,6 +5480,101 @@ mod tests {
         .unwrap();
         assert_eq!(bundle_meta(&plain).unwrap()["clipboard_sealed"], false);
         assert!(read_bundle(&plain, &dir.join("plain-read")).is_ok());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn sealed_clipboard_bundle_recovery_slot_unlocks_without_passphrase() {
+        let dir = temp_dir("sealed-recovery");
+        let root = dir.join("clipboard");
+        let db = memdb();
+        seed_clipboard(&db, &root);
+        let now = now_iso();
+        db.with_conn(|c| {
+            c.execute(
+                "INSERT INTO clipboard_items (id,kind,text,html,preview,content_hash,byte_size,source_app,source_title,image_width,image_height,file_paths,favorite,pinned,copy_count,created_at,last_seen_at)
+                 VALUES ('i2','text','RECOVERY-BODY','','RECOVERY-PREVIEW','hash-2',16,'','',0,0,'[]',0,0,1,?1,?1)",
+                rusqlite::params![now],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let target = dir.join("with-recovery.json");
+        let (_written, recovery) = write_bundle_sealed_with_recovery(
+            &db,
+            BackupSources {
+                archive_dir: None,
+                clipboard_dir: Some(&root),
+                shelf_dir: None,
+                data_dir: None,
+            },
+            &target,
+            BackupKind::Full,
+            "correct horse battery",
+        )
+        .unwrap();
+        let recovery = recovery.expect("with_recovery 必须返回恢复密钥");
+        assert!(!recovery.trim().is_empty());
+
+        // 恢复密钥只存在于返回值，不写入备份文件
+        let raw = std::fs::read_to_string(&target).unwrap();
+        assert!(!raw.contains(&recovery), "恢复密钥不应落盘");
+        assert!(!raw.contains("RECOVERY-BODY"), "剪贴板正文不应明文落盘");
+        let meta = bundle_meta(&target).unwrap();
+        assert_eq!(meta["clipboard_sealed"], true);
+        assert_eq!(meta["clipboard_recovery_slot"], true);
+
+        // 缺口令与密钥 → 明确要求二者之一
+        let err = read_bundle_with_secrets(&target, &dir.join("none"), None, None).unwrap_err();
+        assert!(matches!(err, AppError::PermissionRequired(_)));
+
+        // 只有恢复密钥可用；错误密钥失败
+        assert!(read_bundle_with_secrets(&target, &dir.join("wrong"), None, Some("BAD-KEY"))
+            .is_err());
+        let read =
+            read_bundle_with_secrets(&target, &dir.join("recovered"), None, Some(&recovery))
+                .unwrap();
+        let rows = spilled_rows(&read, "clipboard_items");
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().any(|r| r["text"] == "RECOVERY-BODY"));
+        let dst = memdb();
+        import_read(&dst, &read).unwrap();
+        let count: i64 = dst
+            .with_conn(|c| {
+                c.query_row("SELECT COUNT(*) FROM clipboard_items", [], |r| r.get(0))
+                    .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(count, 2);
+
+        // 口令通道同一备份仍然可用
+        let read_pw = read_bundle_with_secrets(
+            &target,
+            &dir.join("by-pass"),
+            Some("correct horse battery"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(spilled_rows(&read_pw, "clipboard_items").len(), 2);
+
+        // 未请求恢复密钥的 sealed 备份不产出 slot，且不能靠恢复密钥解锁
+        let plain_sealed = dir.join("plain-sealed.json");
+        write_bundle_sealed(
+            &db,
+            BackupSources {
+                archive_dir: None,
+                clipboard_dir: Some(&root),
+                shelf_dir: None,
+                data_dir: None,
+            },
+            &plain_sealed,
+            BackupKind::Full,
+            "correct horse battery",
+        )
+        .unwrap();
+        assert_eq!(bundle_meta(&plain_sealed).unwrap()["clipboard_recovery_slot"], false);
+        assert!(read_bundle_with_secrets(&plain_sealed, &dir.join("no-rc"), None, Some(&recovery))
+            .is_err());
         std::fs::remove_dir_all(dir).ok();
     }
 

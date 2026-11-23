@@ -712,7 +712,8 @@ fn backup_to_dir(
     db: &Db,
     kind: BackupKind,
     passphrase: Option<&str>,
-) -> AppResult<(String, crate::commands::backup::BackupWriteResult)> {
+    with_recovery: bool,
+) -> AppResult<(String, crate::commands::backup::BackupWriteResult, Option<String>)> {
     use crate::commands::backup::BackupSources;
     std::fs::create_dir_all(dir)?;
     let path = backup_file_path(dir, kind);
@@ -729,13 +730,20 @@ fn backup_to_dir(
         shelf_dir: Some(shelf.as_path()),
         data_dir: Some(data_dir),
     };
-    let result = match passphrase {
-        Some(secret) => {
-            crate::commands::backup::write_bundle_sealed(db, sources, &path, kind, secret)?
+    let (result, recovery_code) = match passphrase {
+        Some(secret) if with_recovery => {
+            let (result, code) = crate::commands::backup::write_bundle_sealed_with_recovery(
+                db, sources, &path, kind, secret,
+            )?;
+            (result, code)
         }
-        None => crate::commands::backup::write_bundle(db, sources, &path, kind)?,
+        Some(secret) => (
+            crate::commands::backup::write_bundle_sealed(db, sources, &path, kind, secret)?,
+            None,
+        ),
+        None => (crate::commands::backup::write_bundle(db, sources, &path, kind)?, None),
     };
-    Ok((path.to_string_lossy().to_string(), result))
+    Ok((path.to_string_lossy().to_string(), result, recovery_code))
 }
 
 fn backup_now_inner(
@@ -746,7 +754,7 @@ fn backup_now_inner(
 ) -> AppResult<String> {
     let data_dir = app_data(app)?;
     let dir = backup_dir(app)?;
-    let (path, result) = backup_to_dir(&data_dir, &dir, db, kind, passphrase)?;
+    let (path, result, _) = backup_to_dir(&data_dir, &dir, db, kind, passphrase, false)?;
     prune_backups(app, db)?;
     tracing::info!(
         "本地备份完成: {}（{}，部分={}，{} 字节，SHA-256 {}）",
@@ -777,6 +785,47 @@ pub async fn backup_now(
     })
         .await
         .map_err(|e| AppError::Agent(format!("备份任务中断: {}", e)))?
+}
+
+/// 加密备份返回：`recoveryCode` 只在本次返回中出现一次，界面需提示用户自行保管。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EncryptedBackupResult {
+    pub path: String,
+    pub recovery_code: Option<String>,
+}
+
+/// 口令加密剪贴板段并备份；`with_recovery=true` 时同时生成一次性恢复密钥。
+#[tauri::command]
+pub async fn backup_now_encrypted(
+    app: tauri::AppHandle,
+    db: State<'_, Arc<Db>>,
+    full: Option<bool>,
+    passphrase: String,
+    with_recovery: Option<bool>,
+) -> AppResult<EncryptedBackupResult> {
+    let db = db.inner().clone();
+    let kind = BackupKind::from_full_flag(full);
+    let with_recovery = with_recovery.unwrap_or(false);
+    tauri::async_runtime::spawn_blocking(move || {
+        let data_dir = app_data(&app)?;
+        let dir = backup_dir(&app)?;
+        let (path, _result, recovery_code) = backup_to_dir(
+            &data_dir,
+            &dir,
+            &db,
+            kind,
+            Some(&passphrase),
+            with_recovery,
+        )?;
+        prune_backups(&app, &db)?;
+        Ok(EncryptedBackupResult {
+            path,
+            recovery_code,
+        })
+    })
+    .await
+    .map_err(|e| AppError::Agent(format!("备份任务中断: {}", e)))?
 }
 
 #[tauri::command]
@@ -1994,6 +2043,7 @@ fn import_data_inner(
     path: &str,
     allow_partial: bool,
     passphrase: Option<&str>,
+    recovery: Option<&str>,
 ) -> AppResult<crate::commands::restore::RestoreOutcome> {
     let data_dir = app_data(app)?;
     let source = Path::new(path);
@@ -2005,6 +2055,7 @@ fn import_data_inner(
             &crate::commands::restore::RestoreOptions {
                 allow_partial,
                 clipboard_secret: passphrase.map(|s| s.to_string()),
+                clipboard_recovery: recovery.map(|s| s.to_string()),
                 ..Default::default()
             },
         )?;
@@ -2053,6 +2104,7 @@ fn import_bundle_from(data_dir: &Path, db: &Db, source: &Path) -> AppResult<()> 
 /// 校验/备份/单事务导入全部在阻塞线程池执行，避免大文件卡住 UI 主线程。
 /// `allow_partial`：分块备份若为快速（部分）备份，必须由用户显式确认后才允许恢复。
 /// `passphrase`：备份含加密剪贴板段时必填，用于解出该段的备份口令。
+/// `recovery_code`：口令不可用时改用创建备份时展示的一次性恢复密钥。
 #[tauri::command]
 pub async fn import_data(
     app: tauri::AppHandle,
@@ -2060,11 +2112,19 @@ pub async fn import_data(
     path: String,
     allow_partial: Option<bool>,
     passphrase: Option<String>,
+    recovery_code: Option<String>,
 ) -> AppResult<serde_json::Value> {
     let db = db.inner().clone();
     let allow_partial = allow_partial.unwrap_or(false);
     tauri::async_runtime::spawn_blocking(move || {
-        let outcome = import_data_inner(&app, &db, &path, allow_partial, passphrase.as_deref())?;
+        let outcome = import_data_inner(
+            &app,
+            &db,
+            &path,
+            allow_partial,
+            passphrase.as_deref(),
+            recovery_code.as_deref(),
+        )?;
         serde_json::to_value(outcome).map_err(AppError::from)
     })
     .await

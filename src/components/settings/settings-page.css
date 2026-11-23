@@ -726,6 +726,26 @@
   border-color: var(--field-border-focus);
 }
 
+/* 恢复密钥展示：等宽便于抄写，整段可一次选中。 */
+.settings-panel .recovery-code-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.settings-panel .recovery-code {
+  padding: 4px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--surface-base);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  letter-spacing: 0.06em;
+  user-select: all;
+  word-break: break-all;
+}
+
 /* 状态条：带语义圆点的只读状态（MCP 运行状态等）。 */
 .settings-panel .settings-status {
   display: flex;

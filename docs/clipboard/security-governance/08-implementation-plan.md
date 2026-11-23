@@ -200,11 +200,34 @@
   未加密备份行为不变。
 
 未落地：图片资产字节仍未纳入口令加密（加密开关开启时随 CEK 密文、关闭时为明文 PNG）；
-恢复密钥 slot 无导出 UI；跨设备恢复剪贴板仍需后续 4c。
+恢复密钥 slot 导出 UI 已在 4c-1 补齐（见 §6.6）；跨设备恢复剪贴板正文仍受图片资产与检索限制。
 
-### 6.6 尚未执行（等待后续批次）
+### 6.6 批次 4c-1（2026-11-23，已实施）
 
-- 批次 4c：图片资产随口令加密、恢复密钥导出、旧明文包一次性加密迁移。
+已落地（恢复密钥通道真正可用，不改变未加密备份行为）：
+
+- `backup::write_bundle_sealed_with_recovery` / `write_bundle_inner(..., with_recovery)`：
+  sealed 备份可同时写入恢复密钥 slot；header 增 `clipboard_recovery_slot`，`bundle_meta` 透出。
+- 读取侧 `read_bundle_with_secrets(path, staging, secret, recovery)`：口令优先，其次恢复密钥；
+  两者皆缺报 `PermissionRequired("…备份口令或恢复密钥…")`；错口令/错密钥按解密失败拒绝。
+- 命令 `backup_now_encrypted(full, passphrase, with_recovery?) -> {path, recoveryCode}`：
+  仅在填写口令时使用；返回的一次性恢复密钥不落盘。`import_data(..., recovery_code?)` 与
+  `RestoreOptions.clipboard_recovery` 透传到恢复链路。
+- 设置页「数据与备份」：恢复密钥输入框、`withRecovery` 勾选、备份后一次性密钥展示与复制
+  （`navigator.clipboard`），恢复时「口令 ≥8 优先，否则用恢复密钥」；确认框标注恢复方式。
+- 测试新增 1 项：恢复密钥不落盘、header 标记、缺口令且缺密钥拒绝、错密钥拒绝、正确密钥往返导入、
+  口令通道同一备份仍可用、无 slot 的 sealed 备份不能用恢复密钥。
+- 本批验证：`cargo test --lib commands::backup` 31 passed / 1 failed（既有
+  `quick_and_full_bundles_include_all_voice_tables_and_assets` 计数口径缺陷，非本批引入）；
+  `npm run typecheck` 0；`cargo check` 0。
+
+未落地：图片资产字节仍未纳入口令加密；恢复后的正文未按本机开关重新加密；旧明文包一次性加密
+迁移未做。
+
+### 6.7 尚未执行（等待后续批次）
+
+- 批次 4c（余项）：图片资产随口令加密、正文跨机可移植（恢复后按本机开关重加密）、
+  旧明文包一次性加密迁移。
 - `preview`/`title`/`source_*`/`file_paths` 加密与“解密后过滤”搜索。
 - Agent 导出授权与审计、目录显式 ACL、真机 Dev 验收与性能基准。
 - 本批次未执行：数据库 schema 迁移、Dev 真机走查。
