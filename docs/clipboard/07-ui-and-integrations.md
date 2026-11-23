@@ -193,7 +193,8 @@ portal 到 body，注册弹层栈 modal 层：Escape 只关灯箱，z 序在抽�
 ## 三、状态与数据流
 
 - `useClipboardStore`：筛选（kind/search/favorite）、分页 80、静默刷新、
-  多选；刷新后自动剔除已删除的选中 id。
+  多选；刷新后自动剔除已删除的选中 id。搜索保留 260ms 防抖；后端在加密开启时
+  改为解密后过滤（最多 5000 条），前端无需感知密文，也拿不到超过该范围的旧记录。
 - 复制成功后只调用 `bumpItemCopy(id)` 就地累加使用次数，不重新请求列表：
   后端 `bump_copy` 也不再更新 `last_seen_at`，列表顺序与已加载分页保持稳定。
 - 标题编辑成功后同样就地更新（`renameItem(id, title, titleSource)`，模式同

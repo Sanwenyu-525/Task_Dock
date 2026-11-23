@@ -2,7 +2,7 @@
 
 | 项目 | 内容 |
 |---|---|
-| 状态 | 方案设计（待审核授权后实施） |
+| 状态 | 已实施（clipboard_items 与资产；粘贴作业文本列仍待复核） |
 | 日期 | 2026-11-23 |
 | 约束 | 兼容已有明文历史；原子性、可恢复、不覆盖原始数据直到验证完成；中断可继续或回滚；哨兵确认无明文残留；明确 WAL checkpoint 与旧文件策略；未备份验证不删旧数据 |
 | 红线 | 遵循 ADR-0004：只在 `MIGRATIONS` 末尾追加迁移，不改已发布迁移；不动主键/外键/关联语义 |
@@ -11,8 +11,10 @@
 
 ### 1.1 数据库
 
-- 表：`clipboard_items`（敏感字段）；`clipboard_paste_jobs` / `clipboard_paste_items` 中可能含文本的列先逐列复核，纳入或显式排除并记录理由。
-- 不迁移：分组、组内顺序、任务链接、快照链接、计数、收藏置顶、时间戳、哈希、尺寸元数据。
+- 表：`clipboard_items` 的 `text`、`html`、`preview`、`title`、`source_app`、`source_title`、
+  `file_paths`（批次 6 起全部纳入；空字符串保持为空，非空且无 `tdcl1:` 前缀即视为待迁移）。
+- `clipboard_paste_jobs` / `clipboard_paste_items` 中可能含文本的列先逐列复核，纳入或显式排除并记录理由。
+- 不迁移：分组、组内顺序、任务链接、快照链接、计数、收藏置顶、时间戳、哈希、尺寸、`source_kind`/`title_source` 枚举。
 
 ### 1.2 文件资产
 

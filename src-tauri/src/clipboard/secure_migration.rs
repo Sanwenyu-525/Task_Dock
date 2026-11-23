@@ -1,14 +1,15 @@
 //! 剪贴板历史明文 → 密文迁移（Phase 3 核心，供命令层与测试复用）。
 //!
 //! 设计约束（`docs/clipboard/security-governance/05-migration-plan.md`）：
-//! - 只处理**未加密**的 `text`/`html`；已带 `tdcl1:` 前缀的行跳过，重复执行幂等；
+//! - 只处理**未加密**的 `text`/`html`/`preview`/`title`/`source_*`/`file_paths`；
+//!   已带 `tdcl1:` 前缀的字段跳过，重复执行幂等；
 //! - 每批一个事务，批内“加密 → 解密往返 → 比对原文”，不一致立即回滚该批并返回错误；
 //! - 中断续跑：混合状态可读（双读兼容），重跑只补齐剩余明文行；
 //! - 完成或失败后都执行 `wal_checkpoint(TRUNCATE)`，减少旧明文页滞留 WAL；
 //! - 不覆盖原始备份：本函数不删除任何备份或旧文件，备份/观察期由调用方负责；
-//! - 不触碰 `preview`/`title`/关联表：本批只加密正文字段（见 ADR 实施分批说明）。
+//! - 不触碰关联表/缓存：本批只加密条目自身可检索元数据（见 ADR 实施分批说明）。
 
-use rusqlite::params;
+use rusqlite::{params, params_from_iter, types::Value};
 
 use crate::db::{Db, Settings};
 use crate::error::{AppError, AppResult};
@@ -17,6 +18,16 @@ use super::secure;
 
 /// 每批行数：与备份分块口径接近，控制单事务时长与内存占用。
 const BATCH_ROWS: i64 = 200;
+/// 随正文一起迁移的条目字段；`preview/title/source_*/file_paths` 与正文共用 AAD 前缀。
+const MIGRATED_FIELDS: [&str; 7] = [
+    "text",
+    "html",
+    "preview",
+    "title",
+    "source_app",
+    "source_title",
+    "file_paths",
+];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MigrationReport {
@@ -83,7 +94,12 @@ impl MigrationSummary {
 
 fn pending_where() -> &'static str {
     "(text <> '' AND substr(text, 1, 6) <> 'tdcl1:')
-     OR (html <> '' AND substr(html, 1, 6) <> 'tdcl1:')"
+     OR (html <> '' AND substr(html, 1, 6) <> 'tdcl1:')
+     OR (preview <> '' AND substr(preview, 1, 6) <> 'tdcl1:')
+     OR (title <> '' AND substr(title, 1, 6) <> 'tdcl1:')
+     OR (source_app <> '' AND substr(source_app, 1, 6) <> 'tdcl1:')
+     OR (source_title <> '' AND substr(source_title, 1, 6) <> 'tdcl1:')
+     OR (file_paths <> '' AND substr(file_paths, 1, 6) <> 'tdcl1:')"
 }
 
 fn count_pending(db: &Db) -> AppResult<i64> {
@@ -116,18 +132,18 @@ pub fn encrypt_existing_history(db: &Db) -> AppResult<MigrationReport> {
 
     loop {
         // 每轮只取当前仍为明文的行：批内更新后自然减少，重跑也只会补齐剩余。
-        let batch: Vec<(String, String, String)> = db.with_conn(|conn| {
+        let batch: Vec<Vec<String>> = db.with_conn(|conn| {
             let mut stmt = conn.prepare(&format!(
-                "SELECT id, text, html FROM clipboard_items
-                 WHERE {} ORDER BY rowid LIMIT ?1",
+                "SELECT id, text, html, preview, title, source_app, source_title, file_paths
+                 FROM clipboard_items WHERE {} ORDER BY rowid LIMIT ?1",
                 pending_where()
             ))?;
             let rows = stmt.query_map(params![BATCH_ROWS], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                ))
+                let mut out = Vec::with_capacity(8);
+                for idx in 0..8 {
+                    out.push(r.get::<_, String>(idx)?);
+                }
+                Ok(out)
             })?;
             let mut out = Vec::new();
             for row in rows {
@@ -142,46 +158,40 @@ pub fn encrypt_existing_history(db: &Db) -> AppResult<MigrationReport> {
         let tx_result = db.with_conn(|conn| {
             let tx = conn.unchecked_transaction()?;
             let mut verified = 0i64;
-            for (id, text, html) in &batch {
-                let stored_text = if text.is_empty() {
-                    String::new()
-                } else {
-                    secure::encrypt_field(&key, &secure::item_field_aad(id, "text"), text)?
-                };
-                let stored_html = if html.is_empty() {
-                    String::new()
-                } else {
-                    secure::encrypt_field(&key, &secure::item_field_aad(id, "html"), html)?
-                };
-                // 批内往返校验：写入前先证明密钥/AAD 能解回原文，避免把不可解内容写入。
-                if !text.is_empty() {
-                    let back = secure::decrypt_field(
-                        &key,
-                        &secure::item_field_aad(id, "text"),
-                        &stored_text,
-                    )?;
-                    if &back != text {
-                        return Err(AppError::Validation(
-                            "剪贴板迁移往返校验失败（正文不一致）".into(),
-                        ));
+            for row in &batch {
+                let id = &row[0];
+                let mut values: Vec<Value> = Vec::with_capacity(MIGRATED_FIELDS.len());
+                for (idx, field) in MIGRATED_FIELDS.iter().enumerate() {
+                    let plain = &row[idx + 1];
+                    // 部分升级时同一行可能已有早期批次加密的字段；必须原样保留，
+                    // 否则会把 `tdcl1:` 密文再套一层，读路径只能解出密文。
+                    if plain.is_empty() || secure::is_encrypted_field(plain) {
+                        values.push(Value::Text(plain.clone()));
+                        continue;
                     }
-                }
-                if !html.is_empty() {
-                    let back = secure::decrypt_field(
-                        &key,
-                        &secure::item_field_aad(id, "html"),
-                        &stored_html,
-                    )?;
-                    if &back != html {
-                        return Err(AppError::Validation(
-                            "剪贴板迁移往返校验失败（HTML 不一致）".into(),
-                        ));
+                    let aad = secure::item_field_aad(id, field);
+                    let stored = secure::encrypt_field(&key, &aad, plain)?;
+                    // 批内往返校验：写入前先证明密钥/AAD 能解回原文，避免把不可解内容写入。
+                    let back = secure::decrypt_field(&key, &aad, &stored)?;
+                    if &back != plain {
+                        return Err(AppError::Validation(format!(
+                            "剪贴板迁移往返校验失败（{field} 不一致）"
+                        )));
                     }
+                    values.push(Value::Text(stored));
                 }
-                tx.execute(
-                    "UPDATE clipboard_items SET text = ?1, html = ?2 WHERE id = ?3",
-                    params![stored_text, stored_html, id],
-                )?;
+                let assignments: Vec<String> = MIGRATED_FIELDS
+                    .iter()
+                    .enumerate()
+                    .map(|(i, field)| format!("{field} = ?{}", i + 1))
+                    .collect();
+                let sql = format!(
+                    "UPDATE clipboard_items SET {} WHERE id = ?{}",
+                    assignments.join(", "),
+                    MIGRATED_FIELDS.len() + 1
+                );
+                values.push(Value::Text(id.clone()));
+                tx.execute(&sql, params_from_iter(values))?;
                 verified += 1;
             }
             tx.commit()?;
@@ -446,6 +456,9 @@ pub fn scan_plaintext_needles(db: &Db, needles: &[&str]) -> AppResult<Vec<(Strin
         ("clipboard_items", "html"),
         ("clipboard_items", "preview"),
         ("clipboard_items", "title"),
+        ("clipboard_items", "source_app"),
+        ("clipboard_items", "source_title"),
+        ("clipboard_items", "file_paths"),
     ] {
         let mut count = 0i64;
         for needle in needles {
@@ -544,6 +557,17 @@ mod tests {
         .unwrap()
     }
 
+    fn raw_field(db: &Db, id: &str, field: &str) -> String {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                &format!("SELECT {field} FROM clipboard_items WHERE id = ?1"),
+                params![id],
+                |r| r.get::<_, String>(0),
+            )?)
+        })
+        .unwrap()
+    }
+
     fn enable(db: &Db, on: bool) {
         let mut s = Settings::default();
         s.clipboard_encrypt_history = on;
@@ -587,9 +611,10 @@ mod tests {
 
         enable(&db, true);
         let report = encrypt_existing_history(&db).unwrap();
-        assert_eq!(report.pending_before, 3);
-        assert_eq!(report.encrypted_items, 3);
-        assert_eq!(report.verified_items, 3);
+        // 图片条目虽无正文，但 preview/title/source_* 也属迁移字段。
+        assert_eq!(report.pending_before, 4);
+        assert_eq!(report.encrypted_items, 4);
+        assert_eq!(report.verified_items, 4);
         assert_eq!(report.leftovers, 0);
         assert!(report.wal_checkpointed);
 
@@ -598,13 +623,68 @@ mod tests {
             let item = store::get_item(&db, id).unwrap();
             assert!(item.text.starts_with(sentinel), "读路径必须解密");
         }
-        // 图片条目没有正文，不应被误改。
+        // 图片条目没有正文，正文仍为空；但其来源元数据已随本批加密。
         assert_eq!(raw_text(&db, &img), "");
+        let raw_source = raw_field(&db, &img, "source_app");
+        assert!(raw_source.starts_with("tdcl1:"), "来源字段应加密");
+        assert_eq!(
+            store::get_item(&db, &img).unwrap().source_app,
+            "snippingtool.exe",
+            "来源字段读路径必须解密"
+        );
 
         // 幂等：再次执行不再加密任何行。
         let again = encrypt_existing_history(&db).unwrap();
         assert_eq!(again.pending_before, 0);
         assert_eq!(again.encrypted_items, 0);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn partial_upgrade_preserves_already_encrypted_fields() {
+        let _guard = MIG_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        secure::reset_cache();
+        let tmp = TempRoot::new();
+        let db = Db::open(&tmp.0.join("app.db")).unwrap();
+        let root = tmp.0.join("clipboard");
+        let mut s = Settings::default();
+        s.clipboard_encrypt_history = true;
+        let sentinel = "TDCLIP-PARTIAL-SENTINEL-7c2a";
+        let id = store::record_capture(&db, &root, &text(sentinel), &s)
+            .unwrap()
+            .item
+            .id;
+        let encrypted_text = raw_text(&db, &id);
+        assert!(encrypted_text.starts_with("tdcl1:"));
+        enable(&db, true);
+
+        // 模拟早期批次只加密正文、元数据仍为明文的半迁移状态。
+        db.with_conn(|c| {
+            c.execute(
+                "UPDATE clipboard_items SET preview='partial-preview', title='partial-title', \
+                 source_app='partial-app', source_title='partial-window', file_paths='[\"C:/p.txt\"]' \
+                 WHERE id=?1",
+                rusqlite::params![id],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+
+        let report = encrypt_existing_history(&db).unwrap();
+        assert_eq!(report.pending_before, 1);
+        assert_eq!(report.leftovers, 0);
+        assert_eq!(
+            raw_text(&db, &id),
+            encrypted_text,
+            "已加密正文不得被再次套壳"
+        );
+        let item = store::get_item(&db, &id).unwrap();
+        assert_eq!(item.text, sentinel);
+        assert_eq!(item.preview, "partial-preview");
+        assert_eq!(item.title, "partial-title");
+        assert_eq!(item.source_app, "partial-app");
+        assert_eq!(item.source_title, "partial-window");
+        assert_eq!(item.file_paths, vec!["C:/p.txt".to_string()]);
     }
 
     #[cfg(windows)]
@@ -633,7 +713,7 @@ mod tests {
 
         enable(&db, true);
         let outcome = encrypt_existing_history_with_backup(&db, &root).unwrap();
-        assert_eq!(outcome.report.encryptedItems, 1);
+        assert_eq!(outcome.report.encryptedItems, 2);
         assert_eq!(outcome.report.leftovers, 0);
         assert_eq!(outcome.assets_encrypted, 2, "原图与缩略图都应加密");
         // 备份必须先存在且可核对：数据库快照 + 图片副本 + 哈希。
@@ -686,7 +766,8 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn plaintext_scan_and_wal_contain_no_sentinel_after_migration() {        let _guard = MIG_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    fn plaintext_scan_and_wal_contain_no_sentinel_after_migration() {
+        let _guard = MIG_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         secure::reset_cache();
         let tmp = TempRoot::new();
         let db_path = tmp.0.join("app.db");
@@ -704,7 +785,7 @@ mod tests {
         let report = encrypt_existing_history(&db).unwrap();
         assert!(report.wal_checkpointed);
 
-        // 数据库层面：正文不再命中哨兵（preview 本批仍为明文，单独断言不被扫成正文列）。
+        // 数据库层面：正文不再命中哨兵（同一哨兵也出现在 preview/title 等已加密列）。
         let hits = scan_plaintext_needles(&db, &[sentinel]).unwrap();
         assert!(
             !hits.iter().any(|(col, _)| col == "clipboard_items.text"),

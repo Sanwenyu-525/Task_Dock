@@ -2688,6 +2688,24 @@ pub(crate) fn snapshot_clipboard_item(
             )
             .map_err(|_| AppError::NotFound(format!("剪贴板条目不存在: {clipboard_item_id}")))
         })?;
+    // 正文与 file_paths 已静态加密（ADR-0012）：解密失败必须整体失败，
+    // 不能把密文当文本/路径写进暂存架快照。
+    let text = text
+        .map(|raw| {
+            crate::clipboard::secure::decrypt_if_encrypted(
+                &crate::clipboard::secure::item_field_aad(clipboard_item_id, "text"),
+                &raw,
+            )
+        })
+        .transpose()?;
+    let file_paths_json = file_paths_json
+        .map(|raw| {
+            crate::clipboard::secure::decrypt_if_encrypted(
+                &crate::clipboard::secure::item_field_aad(clipboard_item_id, "file_paths"),
+                &raw,
+            )
+        })
+        .transpose()?;
     match kind.as_str() {
         "url" => Ok(ClipboardSnapshot::Url {
             url: text.unwrap_or_default(),
@@ -2699,27 +2717,12 @@ pub(crate) fn snapshot_clipboard_item(
             text: text.unwrap_or_default(),
         }),
         "image" => {
-            let rel: Option<String> = db.with_read(|conn| {
-                conn.query_row(
-                    "SELECT path FROM clipboard_assets WHERE item_id = ?1 AND role = 'image'",
-                    params![clipboard_item_id],
-                    |r| r.get(0),
-                )
-                .optional()
-                .map_err(AppError::from)
-            })?;
-            let Some(rel) = rel else {
+            let Some(png) = crate::clipboard::store::image_png(db, clipboard_root, clipboard_item_id)
+            else {
                 return Ok(ClipboardSnapshot::Unsupported {
-                    reason: "该图片条目缺少资产文件".into(),
+                    reason: "剪贴板图片文件已被清理或无法解密".into(),
                 });
             };
-            let abs = crate::clipboard::store::asset_abs(clipboard_root, &rel)?;
-            if !abs.exists() {
-                return Ok(ClipboardSnapshot::Unsupported {
-                    reason: "剪贴板图片文件已被清理".into(),
-                });
-            }
-            let png = std::fs::read(&abs)?;
             Ok(ClipboardSnapshot::ImagePng { png })
         }
         "files" => {

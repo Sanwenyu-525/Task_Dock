@@ -303,10 +303,35 @@
   `cargo test --lib security_audit::` 17 passed / 0 failed；`cargo check --lib` 0；
   `npm run typecheck` 0；诊断中心前端测试 29 passed。
 
-### 6.11 尚未执行（等待后续批次）
+### 6.11 批次 6（2026-11-23，已实施）
+
+已落地剪贴板可检索元数据加密与解密后过滤搜索：
+
+- `store.rs`：`preview`/`title`/`source_app`/`source_title`/`file_paths` 使用同一 CEK、
+  同一开关与条目 AAD 入库加密；行映射/分页映射/分组封面/任务与快照关联标签/自动分组候选/
+  来源聚合全部透明解密，`file_paths` 解密后才解析 JSON。
+- 搜索与来源筛选：移除对密文的 SQL `LIKE`/等值匹配；`scan_filtered_items` 先按既有非敏感筛选
+  与排序取页字段，再在 Rust 内解密比较，`POST_FILTER_SCAN_LIMIT=5000`；`view` 一次扫描同时
+  供条目分页、总数和分组成员匹配，避免重复解密。
+- 全局搜索：剪贴板分类改为只读连接内取最近 5000 条页字段、按 AAD 解密后匹配标题/预览/来源/路径；
+  不加载 `text/html`，覆盖面如实写入 ADR。
+- 暂存架快照：`shelf::snapshot_clipboard_item` 解密正文与 `file_paths`；图片改走
+  `store::image_png`，修复此前直接读资产容器可能把密文当 PNG 的缺陷。
+- 迁移：`secure_migration` 的待迁移条件与批量更新扩展到 7 个字段，逐字段往返校验；
+  `scan_plaintext_needles` 增加来源与路径列。
+- 备份：`plaintext_item_fields` 与 `normalize_clipboard_for_restore` 覆盖全部 7 个字段，
+  密封备份跨机恢复后元数据一并按目标机开关重加密。
+- 测试更新/新增：加密写入后 5 个元数据列均为 `tdcl1:` 且无明文哨兵；解密列表/搜索/分组封面/
+  来源筛选/来源聚合一并断言；迁移计数从 3/1 修正为 4/2（图片行的来源元数据也需迁移）。
+- 本批验证（MSVC，`+stable-x86_64-pc-windows-msvc`）：`cargo test --lib clipboard::`
+  295 passed / 0 failed / 1 ignored（含半迁移保留已加密字段）；`global_search::` 19；`shelf::` 173；
+  `commands::backup::tests::` 34（含密封备份恢复后 7 字段重加密断言）；`commands::restore::tests::`
+  33；`commands::data::tests::` 19；`npm run typecheck` 0。
+- 未实现/边界：搜索最多覆盖排序前 5000 条；全局搜索不搜长正文；性能基准与真机走查待后续。
+
+### 6.12 尚未执行（等待后续批次）
 
 - 批次 4c（余项）：旧明文包一次性加密迁移；恢复续跑日志对资产重加密后的版本兼容复核。
-- `preview`/`title`/`source_*`/`file_paths` 加密与“解密后过滤”搜索。
 - Agent 导出授权门槛与自动清理策略/保留期默认值、目录显式 ACL、真机 Dev 验收与性能基准。
 - 本批次未执行：数据库 schema 迁移、Dev 真机走查。
 - 残余风险按 ADR §14「实施偏差与影响」如实登记，不得对外宣称剪贴板历史已全面加密。

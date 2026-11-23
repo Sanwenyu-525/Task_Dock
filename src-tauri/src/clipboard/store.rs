@@ -52,12 +52,14 @@ const GROUP_FIELDS: &str = "g.id, g.name, g.mode, g.status, g.favorite, g.pinned
  (SELECT COUNT(*) FROM clipboard_group_items gi JOIN clipboard_items i ON i.id = gi.item_id
    WHERE gi.group_id = g.id AND i.kind = 'image') AS image_count,
  COALESCE((SELECT i.preview FROM clipboard_group_items gi JOIN clipboard_items i ON i.id = gi.item_id
-   WHERE gi.group_id = g.id ORDER BY gi.position LIMIT 1), '') AS preview";
+   WHERE gi.group_id = g.id ORDER BY gi.position LIMIT 1), '') AS preview,
+ COALESCE((SELECT i.id FROM clipboard_group_items gi JOIN clipboard_items i ON i.id = gi.item_id
+   WHERE gi.group_id = g.id ORDER BY gi.position LIMIT 1), '') AS preview_item_id";
 
 /// 行映射内的字段解密：失败转换成 rusqlite 错误，让查询整体 fail-closed，
 /// 绝不把密文当正文返回给界面。AAD 绑定条目 UUID 与字段名。
 fn decrypt_item_field(item_id: &str, field: &str, raw: String) -> rusqlite::Result<String> {
-    secure::decrypt_if_encrypted(&secure::item_field_aad(item_id, field), &raw).map_err(|e| {
+    decrypt_item_field_app(item_id, field, raw).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(
             0,
             rusqlite::types::Type::Text,
@@ -66,25 +68,29 @@ fn decrypt_item_field(item_id: &str, field: &str, raw: String) -> rusqlite::Resu
     })
 }
 
+/// 非行映射路径（自动分组、来源聚合、关联标签）使用的同源解密。
+fn decrypt_item_field_app(item_id: &str, field: &str, raw: String) -> AppResult<String> {
+    secure::decrypt_if_encrypted(&secure::item_field_aad(item_id, field), &raw)
+}
+
 fn map_item(row: &Row<'_>) -> rusqlite::Result<ClipboardItem> {
     let id: String = row.get(0)?;
-    // 正文与 HTML 可能是密文（ADR-0012）：按条目 UUID 绑定的 AAD 解密；
-    // 迁移前的明文没有前缀，原样返回。`preview` 本批仍为明文，作为列表与
-    // 搜索的可见面（残余风险已在 ADR 登记）。
+    // 正文、HTML 与可检索元数据可能是密文（ADR-0012）：按条目 UUID 绑定的 AAD 解密；
+    // 迁移前的明文没有前缀，原样返回。`preview` 已随本批加密，列表与搜索都走解密结果。
     let text = decrypt_item_field(&id, "text", row.get::<_, String>(2)?)?;
     let html = decrypt_item_field(&id, "html", row.get::<_, String>(3)?)?;
-    let raw_paths: String = row.get(12)?;
+    let raw_paths: String = decrypt_item_field(&id, "file_paths", row.get(12)?)?;
     Ok(ClipboardItem {
-        id,
+        id: id.clone(),
         kind: row.get(1)?,
         text,
         html,
-        preview: row.get(4)?,
-        title: row.get(5)?,
+        preview: decrypt_item_field(&id, "preview", row.get(4)?)?,
+        title: decrypt_item_field(&id, "title", row.get(5)?)?,
         title_source: row.get(6)?,
         byte_size: row.get(7)?,
-        source_app: row.get(8)?,
-        source_title: row.get(9)?,
+        source_app: decrypt_item_field(&id, "source_app", row.get(8)?)?,
+        source_title: decrypt_item_field(&id, "source_title", row.get(9)?)?,
         image_width: row.get::<_, Option<i64>>(10)?.map(|v| v.max(0) as u32),
         image_height: row.get::<_, Option<i64>>(11)?.map(|v| v.max(0) as u32),
         file_paths: serde_json::from_str(&raw_paths).unwrap_or_default(),
@@ -105,9 +111,10 @@ fn map_page_item(row: &Row<'_>) -> rusqlite::Result<ClipboardItem> {
 
 /// `offset` 用于在查询前额外选择分组 id 等列（封面查询）。
 fn map_page_item_at(row: &Row<'_>, offset: usize) -> rusqlite::Result<ClipboardItem> {
+    let id: String = row.get(offset)?;
     let kind: String = row.get(offset + 1)?;
-    let preview: String = row.get(offset + 2)?;
-    let raw_paths: String = row.get(offset + 10)?;
+    let preview: String = decrypt_item_field(&id, "preview", row.get(offset + 2)?)?;
+    let raw_paths: String = decrypt_item_field(&id, "file_paths", row.get(offset + 10)?)?;
     // 分页不读正文：文本类回填 preview（与列表接口同一压缩协议）；
     // 图片的 preview 只是尺寸描述（「图片 1476×1198」），不是文字正文，
     // 写进 text 会凭空造出一条假正文。分页路径没有正文可回填，图片保持空串。
@@ -117,16 +124,16 @@ fn map_page_item_at(row: &Row<'_>, offset: usize) -> rusqlite::Result<ClipboardI
         preview.clone()
     };
     Ok(ClipboardItem {
-        id: row.get(offset)?,
+        id: id.clone(),
         kind,
         text,
         html: String::new(),
         preview,
-        title: row.get(offset + 3)?,
+        title: decrypt_item_field(&id, "title", row.get(offset + 3)?)?,
         title_source: row.get(offset + 4)?,
         byte_size: row.get(offset + 5)?,
-        source_app: row.get(offset + 6)?,
-        source_title: row.get(offset + 7)?,
+        source_app: decrypt_item_field(&id, "source_app", row.get(offset + 6)?)?,
+        source_title: decrypt_item_field(&id, "source_title", row.get(offset + 7)?)?,
         image_width: row
             .get::<_, Option<i64>>(offset + 8)?
             .map(|v| v.max(0) as u32),
@@ -146,6 +153,13 @@ fn map_page_item_at(row: &Row<'_>, offset: usize) -> rusqlite::Result<ClipboardI
 }
 
 fn map_group(row: &Row<'_>) -> rusqlite::Result<ClipboardGroup> {
+    let preview_item_id: String = row.get(12)?;
+    let raw_preview: String = row.get(11)?;
+    let preview = if preview_item_id.is_empty() {
+        raw_preview
+    } else {
+        decrypt_item_field(&preview_item_id, "preview", raw_preview)?
+    };
     Ok(ClipboardGroup {
         id: row.get(0)?,
         name: row.get(1)?,
@@ -158,7 +172,7 @@ fn map_group(row: &Row<'_>) -> rusqlite::Result<ClipboardGroup> {
         closed_at: row.get(8)?,
         item_count: row.get(9)?,
         image_count: row.get(10)?,
-        preview: row.get(11)?,
+        preview,
         kind_counts: GroupKindCounts::default(),
         cover_items: Vec::new(),
         items: Vec::new(),
@@ -256,30 +270,9 @@ pub struct ClipboardFilter {
     pub offset: Option<i64>,
 }
 
-fn like_pattern(q: &str) -> String {
-    format!(
-        "%{}%",
-        q.replace('\\', "\\\\")
-            .replace('%', "\\%")
-            .replace('_', "\\_")
-    )
-}
-
-fn push_search(sql: &mut String, args: &mut Vec<Value>, q: &str) {
-    let pat = like_pattern(q);
-    sql.push_str(
-        " AND (i.text LIKE ? ESCAPE '\\' OR i.preview LIKE ? ESCAPE '\\' OR i.title LIKE ? ESCAPE '\\'
-          OR i.source_app LIKE ? ESCAPE '\\' OR i.source_title LIKE ? ESCAPE '\\' OR i.file_paths LIKE ? ESCAPE '\\')",
-    );
-    for _ in 0..6 {
-        args.push(Value::Text(pat.clone()));
-    }
-}
-
 fn item_filters(filter: &ClipboardFilter) -> (String, Vec<Value>) {
     let mut sql = String::from(" WHERE 1=1");
-    let mut args: Vec<Value> = Vec::new();
-    if let Some(kind) = filter
+    let mut args: Vec<Value> = Vec::new();    if let Some(kind) = filter
         .kind
         .as_deref()
         .filter(|k| !k.is_empty() && *k != "all")
@@ -290,29 +283,12 @@ fn item_filters(filter: &ClipboardFilter) -> (String, Vec<Value>) {
     if filter.favorite {
         sql.push_str(" AND i.favorite = 1");
     }
-    if let Some(source) = filter
-        .source_app
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        sql.push_str(" AND i.source_app = ? COLLATE NOCASE");
-        args.push(Value::Text(source.into()));
-    }
     if let Some(days) = filter.recent_days.filter(|d| *d > 0) {
         // `last_seen_at` 统一为 RFC3339；边界用与写入相同的时间格式，
         // 避免 SQLite 的 `datetime('now')`（空格分隔）与存储格式不可比。
         let cutoff = (Utc::now() - Duration::days(days.min(3650))).to_rfc3339();
         sql.push_str(" AND i.last_seen_at >= ?");
         args.push(Value::Text(cutoff));
-    }
-    if let Some(q) = filter
-        .search
-        .as_deref()
-        .map(str::trim)
-        .filter(|q| !q.is_empty())
-    {
-        push_search(&mut sql, &mut args, q);
     }
     if let Some(group) = filter.group_id.as_deref().filter(|g| !g.is_empty()) {
         sql.push_str(" AND EXISTS(SELECT 1 FROM clipboard_group_items gi WHERE gi.group_id = ? AND gi.item_id = i.id)");
@@ -330,16 +306,102 @@ fn item_filters(filter: &ClipboardFilter) -> (String, Vec<Value>) {
     (sql, args)
 }
 
-pub fn list_items(db: &Db, filter: &ClipboardFilter) -> AppResult<Vec<ClipboardItem>> {
-    let (where_sql, mut args) = item_filters(filter);
-    let order = if filter.sort.as_deref() == Some("most_used") {
+/// 搜索/来源筛选在 SQL 侧失效（字段已加密）后，最多一次扫描的条目上限。
+/// 固定 5000 条（按当前排序取最新/最常用），兼顾 50k 上限配置下的交互延迟；
+/// 超出部分不参与解密搜索，该边界在 ADR §14 明确登记。
+const POST_FILTER_SCAN_LIMIT: i64 = 5000;
+/// 分组搜索时参与筛选的组上限（分组数量远小于条目上限）。
+const GROUP_SEARCH_SCAN_LIMIT: i64 = 500;
+
+/// 搜索与来源筛选都需要解密后才能比较；其余筛选仍由 SQL 先缩小范围。
+fn has_post_filter(filter: &ClipboardFilter) -> bool {
+    filter
+        .search
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|q| !q.is_empty())
+        || filter
+            .source_app
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|s| !s.is_empty())
+}
+
+fn item_order(filter: &ClipboardFilter) -> &'static str {
+    if filter.sort.as_deref() == Some("most_used") {
         // 置顶永远优先；其余按使用次数，同次数再用最近记录稳定排序。
         "i.pinned DESC, i.copy_count DESC, i.last_seen_at DESC"
     } else {
         "i.pinned DESC, i.last_seen_at DESC"
-    };
+    }
+}
+
+/// 解密后比较：只读取分页字段（preview/title/source_*/file_paths），不加载大正文。
+fn item_matches_search(item: &ClipboardItem, needle: &str) -> bool {
+    let lower = needle.to_lowercase();
+    item.preview.to_lowercase().contains(&lower)
+        || item.title.to_lowercase().contains(&lower)
+        || item.source_app.to_lowercase().contains(&lower)
+        || item.source_title.to_lowercase().contains(&lower)
+        || item
+            .file_paths
+            .iter()
+            .any(|path| path.to_lowercase().contains(&lower))
+}
+
+/// 按 SQL 的既有排序读取候选页字段，再在 Rust 内解密过滤来源与搜索词。
+fn scan_filtered_items(db: &Db, filter: &ClipboardFilter) -> AppResult<Vec<ClipboardItem>> {
+    let mut base = filter.clone();
+    base.search = None;
+    base.source_app = None;
+    let (where_sql, args) = item_filters(&base);
     let sql = format!(
-        "SELECT {ITEM_FIELDS} FROM clipboard_items i{where_sql} ORDER BY {order} LIMIT ? OFFSET ?"
+        "SELECT {PAGE_ITEM_FIELDS} FROM clipboard_items i{where_sql}
+         ORDER BY {} LIMIT {POST_FILTER_SCAN_LIMIT}",
+        item_order(filter)
+    );
+    let mut items = db.with_conn(|conn| {
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(args.iter()), map_page_item)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    })?;
+    if let Some(source) = filter
+        .source_app
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        items.retain(|item| item.source_app.eq_ignore_ascii_case(source));
+    }
+    if let Some(q) = filter
+        .search
+        .as_deref()
+        .map(str::trim)
+        .filter(|q| !q.is_empty())
+    {
+        items.retain(|item| item_matches_search(item, q));
+    }
+    Ok(items)
+}
+
+fn paginate_items(items: Vec<ClipboardItem>, filter: &ClipboardFilter) -> Vec<ClipboardItem> {
+    let offset = filter.offset.unwrap_or(0).max(0) as usize;
+    let limit = filter.limit.unwrap_or(80).clamp(1, 200) as usize;
+    items.into_iter().skip(offset).take(limit).collect()
+}
+
+pub fn list_items(db: &Db, filter: &ClipboardFilter) -> AppResult<Vec<ClipboardItem>> {
+    if has_post_filter(filter) {
+        return Ok(paginate_items(scan_filtered_items(db, filter)?, filter));
+    }
+    let (where_sql, mut args) = item_filters(filter);
+    let sql = format!(
+        "SELECT {ITEM_FIELDS} FROM clipboard_items i{where_sql} ORDER BY {} LIMIT ? OFFSET ?",
+        item_order(filter)
     );
     args.push(Value::Integer(filter.limit.unwrap_or(80).clamp(1, 200)));
     args.push(Value::Integer(filter.offset.unwrap_or(0).max(0)));
@@ -355,6 +417,9 @@ pub fn list_items(db: &Db, filter: &ClipboardFilter) -> AppResult<Vec<ClipboardI
 }
 
 pub fn count_items(db: &Db, filter: &ClipboardFilter) -> AppResult<i64> {
+    if has_post_filter(filter) {
+        return Ok(scan_filtered_items(db, filter)?.len() as i64);
+    }
     let (where_sql, args) = item_filters(filter);
     let sql = format!("SELECT COUNT(*) FROM clipboard_items i{where_sql}");
     db.with_conn(|conn| {
@@ -379,45 +444,68 @@ pub struct ClipboardSourceOption {
 
 pub fn list_source_apps(db: &Db, limit: i64) -> AppResult<Vec<ClipboardSourceOption>> {
     let limit = limit.clamp(1, 50);
-    db.with_conn(|conn| {
+    // source_app 已加密，无法 SQL GROUP BY：读取 id+app 后按 AAD 解密再聚合。
+    // 上限与历史总量一致；空来源在解密后排除。
+    let rows: Vec<(String, String)> = db.with_conn(|conn| {
         let mut stmt = conn.prepare(
-            "SELECT MIN(TRIM(i.source_app)) AS app, COUNT(*) AS n FROM clipboard_items i
-             WHERE TRIM(i.source_app) <> ''
-             GROUP BY LOWER(TRIM(i.source_app)) ORDER BY n DESC, app ASC LIMIT ?1",
+            "SELECT id, source_app FROM clipboard_items
+             ORDER BY last_seen_at DESC LIMIT 5000",
         )?;
-        let rows = stmt.query_map(params![limit], |r| {
-            Ok(ClipboardSourceOption {
-                app: r.get(0)?,
-                count: r.get(1)?,
-            })
-        })?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
         let mut out = Vec::new();
-        for row in rows {
-            out.push(row?);
+        for r in rows {
+            out.push(r?);
         }
         Ok(out)
-    })
+    })?;
+    let mut grouped: std::collections::HashMap<String, (String, i64)> = Default::default();
+    for (id, raw) in rows {
+        let app = decrypt_item_field_app(&id, "source_app", raw)?;
+        let app = app.trim();
+        if app.is_empty() {
+            continue;
+        }
+        let key = app.to_lowercase();
+        grouped
+            .entry(key)
+            .and_modify(|(_, n)| *n += 1)
+            .or_insert_with(|| (app.to_string(), 1));
+    }
+    let mut out: Vec<ClipboardSourceOption> = grouped
+        .into_values()
+        .map(|(app, count)| ClipboardSourceOption { app, count })
+        .collect();
+    out.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.app.cmp(&b.app)));
+    out.truncate(limit as usize);
+    Ok(out)
 }
 
 pub fn list_groups(db: &Db, filter: &ClipboardFilter) -> AppResult<Vec<ClipboardGroup>> {
+    list_groups_with_scan(db, filter, None)
+}
+
+/// 分组列表；搜索时名称在 Rust 内匹配，成员条目使用已解密扫描结果，
+/// 避免对密文 `preview`/`text` 执行必然失败的 SQL LIKE。
+fn list_groups_with_scan(
+    db: &Db,
+    filter: &ClipboardFilter,
+    scanned: Option<&[ClipboardItem]>,
+) -> AppResult<Vec<ClipboardGroup>> {
+    let search = filter
+        .search
+        .as_deref()
+        .map(str::trim)
+        .filter(|q| !q.is_empty());
+    let owned_scan = if search.is_some() && scanned.is_none() {
+        Some(scan_filtered_items(db, filter)?)
+    } else {
+        None
+    };
+    let matched = scanned.or(owned_scan.as_deref());
     let mut sql = format!("SELECT {GROUP_FIELDS} FROM clipboard_groups g WHERE 1=1");
     let mut args: Vec<Value> = Vec::new();
     if filter.favorite {
         sql.push_str(" AND g.favorite = 1");
-    }
-    if let Some(q) = filter
-        .search
-        .as_deref()
-        .map(str::trim)
-        .filter(|q| !q.is_empty())
-    {
-        let pat = like_pattern(q);
-        sql.push_str(
-            " AND (g.name LIKE ? ESCAPE '\\' OR EXISTS(SELECT 1 FROM clipboard_group_items gi JOIN clipboard_items i ON i.id = gi.item_id WHERE gi.group_id = g.id AND (i.text LIKE ? ESCAPE '\\' OR i.preview LIKE ? ESCAPE '\\')))",
-        );
-        for _ in 0..3 {
-            args.push(Value::Text(pat.clone()));
-        }
     }
     if let Some(task) = filter.task_id.as_deref().filter(|t| !t.is_empty()) {
         sql.push_str(" AND EXISTS(SELECT 1 FROM clipboard_task_links lt WHERE lt.task_id = ? AND lt.target_type = 'group' AND lt.target_id = g.id)");
@@ -428,13 +516,35 @@ pub fn list_groups(db: &Db, filter: &ClipboardFilter) -> AppResult<Vec<Clipboard
         args.push(Value::Text(group.into()));
     }
     sql.push_str(" ORDER BY g.pinned DESC, g.updated_at DESC LIMIT ?");
-    args.push(Value::Integer(filter.limit.unwrap_or(100).clamp(1, 200)));
+    args.push(Value::Integer(if search.is_some() {
+        GROUP_SEARCH_SCAN_LIMIT
+    } else {
+        filter.limit.unwrap_or(100).clamp(1, 200)
+    }));
     db.with_conn(|conn| {
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(params_from_iter(args.iter()), map_group)?;
         let mut out = Vec::new();
         for r in rows {
             out.push(r?);
+        }
+        if let (Some(q), Some(items)) = (search, matched) {
+            let needle = q.to_lowercase();
+            let ids: HashSet<&str> = items.iter().map(|i| i.id.as_str()).collect();
+            let mut member_of_match: HashSet<String> = HashSet::new();
+            let mut stmt =
+                conn.prepare("SELECT group_id, item_id FROM clipboard_group_items")?;
+            let rows = stmt.query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?;
+            for row in rows {
+                let (group_id, item_id) = row?;
+                if ids.contains(item_id.as_str()) {
+                    member_of_match.insert(group_id);
+                }
+            }
+            out.retain(|g| g.name.to_lowercase().contains(&needle) || member_of_match.contains(&g.id));
+            out.truncate(filter.limit.unwrap_or(100).clamp(1, 200) as usize);
         }
         enrich_groups(conn, &mut out)?;
         Ok(out)
@@ -677,11 +787,27 @@ pub fn stats(db: &Db, settings: &Settings) -> AppResult<ClipboardStats> {
 }
 
 pub fn view(db: &Db, filter: &ClipboardFilter, settings: &Settings) -> AppResult<ClipboardView> {
+    // 搜索/来源筛选只能解密后比较：一次扫描同时供条目分页、总数与分组搜索，
+    // 避免同一请求重复扫描、重复解密。
+    let scanned = if has_post_filter(filter) {
+        Some(scan_filtered_items(db, filter)?)
+    } else {
+        None
+    };
+    let total_items = match &scanned {
+        Some(items) => items.len() as i64,
+        None => count_items(db, filter)?,
+    };
+    let groups = list_groups_with_scan(db, filter, scanned.as_deref())?;
+    let items = match scanned {
+        Some(items) => paginate_items(items, filter),
+        None => list_items(db, filter)?,
+    };
     Ok(ClipboardView {
-        items: list_items(db, filter)?,
-        groups: list_groups(db, filter)?,
+        items,
+        groups,
         stats: stats(db, settings)?,
-        total_items: count_items(db, filter)?,
+        total_items,
     })
 }
 
@@ -897,7 +1023,19 @@ struct OpenGroup {
 
 /// 当前收集中的自动分组：家族、最后一条内容（任意类型）时间与来源、组内条数。
 fn open_group(conn: &Connection) -> AppResult<Option<OpenGroup>> {
-    let row: Option<(String, Option<String>, Option<String>, Option<String>, i64, Option<String>, Option<String>, Option<String>, String)> = conn
+    let row: Option<(
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        i64,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        String,
+    )> = conn
         .query_row(
             "SELECT g.id,
                 (SELECT i.created_at FROM clipboard_group_items gi JOIN clipboard_items i ON i.id = gi.item_id
@@ -906,9 +1044,13 @@ fn open_group(conn: &Connection) -> AppResult<Option<OpenGroup>> {
                  WHERE gi.group_id = g.id ORDER BY gi.position DESC LIMIT 1) AS last_kind,
                 (SELECT i.source_app FROM clipboard_group_items gi JOIN clipboard_items i ON i.id = gi.item_id
                  WHERE gi.group_id = g.id ORDER BY gi.position DESC LIMIT 1) AS last_source,
+                (SELECT i.id FROM clipboard_group_items gi JOIN clipboard_items i ON i.id = gi.item_id
+                 WHERE gi.group_id = g.id ORDER BY gi.position DESC LIMIT 1) AS last_source_id,
                 (SELECT COUNT(*) FROM clipboard_group_items gi WHERE gi.group_id = g.id) AS cnt,
                 (SELECT i.source_app FROM clipboard_group_items gi JOIN clipboard_items i ON i.id = gi.item_id
                  WHERE gi.group_id = g.id AND i.kind = 'image' ORDER BY gi.position DESC LIMIT 1) AS image_source,
+                (SELECT i.id FROM clipboard_group_items gi JOIN clipboard_items i ON i.id = gi.item_id
+                 WHERE gi.group_id = g.id AND i.kind = 'image' ORDER BY gi.position DESC LIMIT 1) AS image_source_id,
                 (SELECT i.source_kind FROM clipboard_group_items gi JOIN clipboard_items i ON i.id = gi.item_id
                  WHERE gi.group_id = g.id ORDER BY gi.position DESC LIMIT 1) AS last_source_kind,
                 (SELECT i.source_kind FROM clipboard_group_items gi JOIN clipboard_items i ON i.id = gi.item_id
@@ -928,6 +1070,8 @@ fn open_group(conn: &Connection) -> AppResult<Option<OpenGroup>> {
                     r.get(6)?,
                     r.get(7)?,
                     r.get(8)?,
+                    r.get(9)?,
+                    r.get(10)?,
                 ))
             },
         )
@@ -937,14 +1081,28 @@ fn open_group(conn: &Connection) -> AppResult<Option<OpenGroup>> {
         last_at,
         last_kind,
         last_source,
+        last_source_id,
         cnt,
         image_source,
+        image_source_id,
         last_source_kind,
         image_source_kind,
         name_source,
     )) = row
     else {
         return Ok(None);
+    };
+    let last_source = match (last_source_id.as_deref(), last_source) {
+        (Some(item_id), Some(raw)) => {
+            Some(decrypt_item_field_app(item_id, "source_app", raw)?)
+        }
+        _ => None,
+    };
+    let image_source = match (image_source_id.as_deref(), image_source) {
+        (Some(item_id), Some(raw)) => {
+            Some(decrypt_item_field_app(item_id, "source_app", raw)?)
+        }
+        _ => None,
     };
     let last_family = last_kind
         .as_deref()
@@ -1194,13 +1352,19 @@ fn candidate_topic(conn: &Connection, item_id: &str) -> AppResult<Option<String>
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()?;
-    Ok(row.and_then(|(title, source_title, preview)| {
-        // 逐项过滤不可辨识来源：自动图片标题（截图 855×399）会被跳过，
-        // 继续尝试来源窗口标题，最后才由调用方用时间兜底。
-        [title, source_title, preview]
-            .into_iter()
-            .find_map(|s| engine::group_topic(&s))
-    }))
+    let Some((title, source_title, preview)) = row else {
+        return Ok(None);
+    };
+    // 三个字段都按条目 AAD 解密；任一解不开即失败，不能静默用兜底标题掩盖密钥问题。
+    let decoded = [
+        (title, "title"),
+        (source_title, "source_title"),
+        (preview, "preview"),
+    ]
+    .into_iter()
+    .map(|(value, field)| secure::decrypt_if_encrypted(&secure::item_field_aad(item_id, field), &value))
+    .collect::<AppResult<Vec<_>>>()?;
+    Ok(decoded.into_iter().find_map(|s| engine::group_topic(&s)))
 }
 
 /// 两个内容家族合成一个组时的命名家族：图片优先，其次文件、链接、文本。
@@ -1311,6 +1475,18 @@ pub fn record_capture(
             ),
             (&p.source_app, &p.source_title, &p.source_kind),
         );
+        let stored_source_app = secure::encrypt_for_write(
+            db,
+            settings.clipboard_encrypt_history,
+            &secure::item_field_aad(&existing.id, "source_app"),
+            &source_app,
+        )?;
+        let stored_source_title = secure::encrypt_for_write(
+            db,
+            settings.clipboard_encrypt_history,
+            &secure::item_field_aad(&existing.id, "source_title"),
+            &source_title,
+        )?;
         db.with_conn(|conn| {
             conn.execute(
                 "UPDATE clipboard_items SET copy_count = copy_count + 1, last_seen_at = ?1,
@@ -1318,8 +1494,8 @@ pub fn record_capture(
                  WHERE id = ?5",
                 params![
                     crate::agents::now_iso(),
-                    source_app,
-                    source_title,
+                    stored_source_app,
+                    stored_source_title,
                     source_kind,
                     existing.id
                 ],
@@ -1368,7 +1544,8 @@ pub fn record_capture(
     );
 
     // 正文入库前加密（ADR-0012）：开关开启时缺信封会创建 CEK，失败直接返回错误，
-    // 绝不降级为明文落库。`preview`/`title` 保持明文作为列表与搜索可见面。
+    // 绝不降级为明文落库。`preview`/`title`/`source_*`/`file_paths` 使用同一开关与 CEK，
+    // 搜索改为解密后过滤，不再依赖 SQL LIKE 命中密文。
     let stored_text = secure::encrypt_for_write(
         db,
         settings.clipboard_encrypt_history,
@@ -1380,6 +1557,37 @@ pub fn record_capture(
         settings.clipboard_encrypt_history,
         &secure::item_field_aad(&item_id, "html"),
         &p.html,
+    )?;
+    // 元数据与正文共用同一开关与 CEK：preview/title/source_*/file_paths 全量加密。
+    let stored_preview = secure::encrypt_for_write(
+        db,
+        settings.clipboard_encrypt_history,
+        &secure::item_field_aad(&item_id, "preview"),
+        &p.preview,
+    )?;
+    let stored_title = secure::encrypt_for_write(
+        db,
+        settings.clipboard_encrypt_history,
+        &secure::item_field_aad(&item_id, "title"),
+        &title,
+    )?;
+    let stored_source_app = secure::encrypt_for_write(
+        db,
+        settings.clipboard_encrypt_history,
+        &secure::item_field_aad(&item_id, "source_app"),
+        &p.source_app,
+    )?;
+    let stored_source_title = secure::encrypt_for_write(
+        db,
+        settings.clipboard_encrypt_history,
+        &secure::item_field_aad(&item_id, "source_title"),
+        &p.source_title,
+    )?;
+    let stored_paths = secure::encrypt_for_write(
+        db,
+        settings.clipboard_encrypt_history,
+        &secure::item_field_aad(&item_id, "file_paths"),
+        &file_paths_json,
     )?;
 
     let result = db.with_conn(|conn| {
@@ -1395,15 +1603,15 @@ pub fn record_capture(
                 p.kind,
                 stored_text,
                 stored_html,
-                p.preview,
-                title,
+                stored_preview,
+                stored_title,
                 hash,
                 p.byte_size,
-                p.source_app,
-                p.source_title,
+                stored_source_app,
+                stored_source_title,
                 p.image.as_ref().map(|i| i.width as i64),
                 p.image.as_ref().map(|i| i.height as i64),
-                file_paths_json,
+                stored_paths,
                 now_iso,
                 p.source_kind
             ],
@@ -1618,10 +1826,16 @@ pub fn rename_item(db: &Db, item_id: &str, title: &str) -> AppResult<ClipboardIt
     } else {
         (engine::truncate_chars(trimmed, 80), "manual")
     };
+    let stored_title = secure::encrypt_for_write(
+        db,
+        Settings::load_clipboard(db).settings.clipboard_encrypt_history,
+        &secure::item_field_aad(item_id, "title"),
+        &new_title,
+    )?;
     let n = db.with_conn(|conn| {
         Ok(conn.execute(
             "UPDATE clipboard_items SET title = ?1, title_source = ?2 WHERE id = ?3",
-            params![new_title, source, item_id],
+            params![stored_title, source, item_id],
         )?)
     })?;
     if n == 0 {
@@ -2281,13 +2495,21 @@ pub fn task_links(db: &Db, task_id: &str) -> AppResult<Vec<ClipboardTaskLink>> {
              FROM clipboard_task_links l WHERE l.task_id = ?1 ORDER BY l.created_at",
         )?;
         let rows = stmt.query_map(params![task_id], |r| {
+            let target_type: String = r.get(2)?;
+            let target_id: String = r.get(3)?;
+            let label: String = r.get(5)?;
+            let label = if target_type == "item" {
+                decrypt_item_field(&target_id, "preview", label)?
+            } else {
+                label
+            };
             Ok(ClipboardTaskLink {
                 id: r.get(0)?,
                 task_id: r.get(1)?,
-                target_type: r.get(2)?,
-                target_id: r.get(3)?,
+                target_type,
+                target_id,
                 created_at: r.get(4)?,
-                label: r.get(5)?,
+                label,
                 kind: r.get(6)?,
             })
         })?;
@@ -2399,13 +2621,21 @@ pub fn snapshot_links(db: &Db, snapshot_id: &str) -> AppResult<Vec<ClipboardSnap
              FROM clipboard_snapshot_links l WHERE l.snapshot_id = ?1 ORDER BY l.created_at",
         )?;
         let rows = stmt.query_map(params![snapshot_id], |r| {
+            let target_type: String = r.get(2)?;
+            let target_id: String = r.get(3)?;
+            let label: String = r.get(5)?;
+            let label = if target_type == "item" {
+                decrypt_item_field(&target_id, "preview", label)?
+            } else {
+                label
+            };
             Ok(ClipboardSnapshotLink {
                 id: r.get(0)?,
                 snapshot_id: r.get(1)?,
-                target_type: r.get(2)?,
-                target_id: r.get(3)?,
+                target_type,
+                target_id,
                 created_at: r.get(4)?,
-                label: r.get(5)?,
+                label,
                 kind: r.get(6)?,
             })
         })?;
@@ -3660,9 +3890,13 @@ mod tests {
     static ENC_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn raw_item_text(db: &Db, id: &str) -> String {
+        raw_item_field(db, id, "text")
+    }
+
+    fn raw_item_field(db: &Db, id: &str, field: &str) -> String {
         db.with_conn(|conn| {
             Ok(conn.query_row(
-                "SELECT text FROM clipboard_items WHERE id = ?1",
+                &format!("SELECT {field} FROM clipboard_items WHERE id = ?1"),
                 params![id],
                 |r| r.get::<_, String>(0),
             )?)
@@ -3702,9 +3936,27 @@ mod tests {
         let raw = raw_item_text(&db, &out.item.id);
         assert!(raw.starts_with("tdcl1:"), "落库必须是密文前缀");
         assert!(!raw.contains(sentinel), "库内不得出现明文哨兵");
+        // 元数据与正文同批加密：preview/title/source_*/file_paths 不得留下明文。
+        for field in [
+            "preview",
+            "title",
+            "source_app",
+            "source_title",
+            "file_paths",
+        ] {
+            let raw = raw_item_field(&db, &out.item.id, field);
+            assert!(
+                raw.starts_with("tdcl1:"),
+                "{field} 落库必须加密，实际: {raw}"
+            );
+            assert!(!raw.contains(sentinel), "{field} 不得出现明文哨兵");
+        }
         assert_eq!(out.item.text, sentinel, "返回给上层的条目必须已解密");
         assert_eq!(get_item(&db, &out.item.id).unwrap().html, payload.html);
-        // 列表只暴露 preview（本批保持明文），搜索仍可命中，且不泄露整段密文。
+        let item = get_item(&db, &out.item.id).unwrap();
+        assert_eq!(item.preview, out.item.preview, "preview 读取必须解密");
+        assert_eq!(item.source_app, out.item.source_app, "来源读取必须解密");
+        // 搜索改为“解密后过滤”：preview 已加密也能命中，且不泄露整段密文。
         let page = list_items(
             &db,
             &ClipboardFilter {
@@ -3715,6 +3967,47 @@ mod tests {
         .unwrap();
         assert!(page.iter().any(|i| i.id == out.item.id), "搜索必须仍能命中");
         assert!(page.iter().all(|i| !i.text.starts_with("tdcl1:")));
+        assert!(page
+            .iter()
+            .all(|i| !i.preview.starts_with("tdcl1:") && !i.title.starts_with("tdcl1:")));
+
+        // 来源筛选与来源聚合也必须先解密：不能拿密文做 SQL 等值/分组。
+        let by_source = ClipboardFilter {
+            source_app: Some(out.item.source_app.clone()),
+            ..Default::default()
+        };
+        let source_hits = list_items(&db, &by_source).unwrap();
+        assert!(source_hits.iter().any(|i| i.id == out.item.id));
+        assert_eq!(count_items(&db, &by_source).unwrap(), 1);
+        let sources = list_source_apps(&db, 8).unwrap();
+        assert!(
+            sources.iter().all(|s| !s.app.starts_with("tdcl1:")),
+            "来源聚合不得返回密文"
+        );
+        assert!(sources
+            .iter()
+            .any(|s| s.app == out.item.source_app && s.count == 1));
+
+        // 分组封面 preview 来自成员条目，也必须解密；分组搜索依赖成员解密结果。
+        let group = create_manual_group(&db, "加密分组", &[out.item.id.clone()]).unwrap();
+        let group = get_group(&db, &group.id).unwrap();
+        assert!(
+            !group.preview.starts_with("tdcl1:"),
+            "分组预览不得是密文: {}",
+            group.preview
+        );
+        let groups = list_groups(
+            &db,
+            &ClipboardFilter {
+                search: Some("TDCLIP-STORE".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            groups.iter().any(|g| g.id == group.id),
+            "成员条目命中时分组也必须命中"
+        );
         // 去重依赖明文哈希：同一内容再次采集仍是同一行。
         let again = record_capture(&db, &root, &payload, &s).unwrap();
         assert!(!again.created);
@@ -3805,6 +4098,13 @@ mod tests {
         assert_eq!(&bytes[..4], b"\x89PNG");
         assert!(purge_transient_assets(&root) >= 1);
         assert!(!path.exists(), "启动/清空后不得残留明文副本");
+        // 暂存架快照不能把资产容器密文当 PNG：必须走解密后的字节。
+        match crate::shelf::snapshot_clipboard_item(&db, &root, &id).unwrap() {
+            crate::shelf::ClipboardSnapshot::ImagePng { png } => {
+                assert_eq!(&png[..4], b"\x89PNG", "快照必须是可解码 PNG")
+            }
+            _ => panic!("图片快照类型不符，未返回解密 PNG"),
+        }
         // 删除条目时同样清理。
         let _ = image_abs_path(&db, &root, &id);
         delete_items(&db, &root, &[id.clone()]).unwrap();

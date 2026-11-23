@@ -4,8 +4,9 @@
 //! - 单一命令 `global_search`：一次请求在**同一个只读连接**（`Db::with_read`，PRAGMA
 //!   query_only）内完成全部已选分类的查询，天然一致快照，不为分类建独立线程。
 //! - 只读：不写任何业务表；命中只返回元数据与短摘要，不读图片/HTML/大正文二进制。
-//! - SQL 全部参数绑定；LIKE 模式统一转义 `\ % _` + `ESCAPE '\'`（对齐
-//!   `clipboard::store::like_pattern` 的规范实现）。
+//! - SQL 全部参数绑定；LIKE 模式统一转义 `\ % _` + `ESCAPE '\'`（其余分类对齐
+//!   `clipboard::store` 的规范实现）。剪贴板字段已静态加密，改为只读连接内
+//!   取最近 5000 条页字段、按 AAD 解密后过滤，不再对密文做 LIKE。
 //! - Agent 隔离：只搜 `agent_*.origin = 'real'` 且来源 `hidden = 0` 的会话/轮次
 //!   （对齐 `agents::snapshot_query` 的可见性规则），不返回对话内容/payload/meta。
 //! - 排序确定性：匹配等级（精确 > 标题前缀 > 标题包含 > 正文/元数据命中）稳定排序，
@@ -269,64 +270,79 @@ fn search_tasks(conn: &Connection, q: &str, pat: &str, limit: i64) -> AppResult<
 fn search_clipboard(
     conn: &Connection,
     q: &str,
-    pat: &str,
+    _pat: &str,
     limit: i64,
 ) -> AppResult<Vec<Candidate>> {
+    // preview/title/source_*/file_paths 已静态加密（ADR-0012），不能再由 SQL LIKE 命中。
+    // 只读连接内取最近 5000 条的页字段，按条目 AAD 解密后匹配；大正文 text/html 不加载，
+    // 因此全局搜索对剪贴板只覆盖标题/预览/来源/路径，不覆盖整段正文（与剪贴板页一致）。
     let mut stmt = conn.prepare(
-        "SELECT i.id, i.kind, i.title, i.preview, i.source_app, i.source_title, \
+        "SELECT i.id, i.kind, i.title, i.preview, i.source_app, i.source_title, i.file_paths, \
                 i.favorite, i.pinned, i.last_seen_at, i.byte_size \
          FROM clipboard_items i \
-         WHERE i.text LIKE ?1 ESCAPE '\\' OR i.preview LIKE ?1 ESCAPE '\\' \
-            OR i.title LIKE ?1 ESCAPE '\\' OR i.source_app LIKE ?1 ESCAPE '\\' \
-            OR i.source_title LIKE ?1 ESCAPE '\\' OR i.file_paths LIKE ?1 ESCAPE '\\' \
          ORDER BY i.pinned DESC, i.favorite DESC, i.last_seen_at DESC, i.id DESC \
-         LIMIT ?2",
+         LIMIT 5000",
     )?;
-    let rows = stmt.query_map(params![pat, limit], |r| {
-        let id: String = r.get(0)?;
-        let kind: String = r.get(1)?;
-        let title: Option<String> = r.get(2)?;
-        let preview: Option<String> = r.get(3)?;
-        let source_app: Option<String> = r.get(4)?;
-        let source_title: Option<String> = r.get(5)?;
-        let favorite: i64 = r.get(6)?;
-        let pinned: i64 = r.get(7)?;
-        let last_seen_at: String = r.get(8)?;
-        let byte_size: i64 = r.get(9)?;
+    let rows = stmt.query_map([], |r| {
         Ok((
-            id,
-            kind,
-            title,
-            preview,
-            source_app,
-            source_title,
-            favorite,
-            pinned,
-            last_seen_at,
-            byte_size,
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, String>(3)?,
+            r.get::<_, String>(4)?,
+            r.get::<_, String>(5)?,
+            r.get::<_, String>(6)?,
+            r.get::<_, i64>(7)?,
+            r.get::<_, i64>(8)?,
+            r.get::<_, String>(9)?,
+            r.get::<_, i64>(10)?,
         ))
     })?;
+    let needle = q.to_lowercase();
     let mut out = Vec::new();
     for row in rows {
         let (
             id,
             kind,
-            title,
-            preview,
-            source_app,
-            source_title,
+            raw_title,
+            raw_preview,
+            raw_source_app,
+            raw_source_title,
+            raw_paths,
             favorite,
             pinned,
             last_seen_at,
             _byte_size,
         ) = row?;
+        let decrypt = |field: &str, raw: &str| {
+            crate::clipboard::secure::decrypt_if_encrypted(
+                &crate::clipboard::secure::item_field_aad(&id, field),
+                raw,
+            )
+        };
+        let title = decrypt("title", &raw_title)?;
+        let preview = decrypt("preview", &raw_preview)?;
+        let source_app = decrypt("source_app", &raw_source_app)?;
+        let source_title = decrypt("source_title", &raw_source_title)?;
+        let file_paths = decrypt("file_paths", &raw_paths)?;
+        let file_paths: Vec<String> = serde_json::from_str(&file_paths).unwrap_or_default();
+        let hit = [&title, &preview, &source_app, &source_title]
+            .into_iter()
+            .any(|v| v.to_lowercase().contains(&needle))
+            || file_paths
+                .iter()
+                .any(|p| p.to_lowercase().contains(&needle));
+        if !hit {
+            continue;
+        }
         // 展示标题：title 优先，其次 preview 首行；正文 text / html 不返回。
-        let preview = preview.unwrap_or_default();
-        let title = title
-            .filter(|t| !t.trim().is_empty())
-            .unwrap_or_else(|| first_line(&preview).to_string());
+        let title = if title.trim().is_empty() {
+            first_line(&preview).to_string()
+        } else {
+            title
+        };
         let rank = rank_match(q, &title, &preview);
-        let mut subtitle = source_app.unwrap_or_default();
+        let mut subtitle = source_app;
         if favorite != 0 {
             if !subtitle.is_empty() {
                 subtitle.push_str(" · ");
@@ -357,6 +373,7 @@ fn search_clipboard(
             },
         ));
     }
+    out.truncate(limit.max(0) as usize);
     Ok(out)
 }
 
@@ -1440,6 +1457,50 @@ mod tests {
         assert_eq!(rank_match("登录", "任务", "关于登录的描述"), 3);
         assert_eq!(rank_match("登录", "任务", "标签命中"), 4);
     }
+
+    #[cfg(windows)]
+    #[test]
+    fn clipboard_encrypted_metadata_is_searchable_without_ciphertext() {
+        use crate::clipboard::store;
+        use crate::clipboard::CapturedContent;
+        use crate::db::Settings;
+        let (dir, db) = temp_db("clip-enc");
+        let root = dir.join("clipboard");
+        let mut settings = Settings::default();
+        settings.clipboard_encrypt_history = true;
+        let payload = CapturedContent {
+            kind: "text".into(),
+            text: "加密后的检索目标文本".into(),
+            html: String::new(),
+            preview: "加密后的检索目标文本".into(),
+            file_paths: vec![],
+            image: None,
+            source_app: "secret-app.exe".into(),
+            source_title: "机密窗口标题".into(),
+            source_kind: "owner".into(),
+            byte_size: 16,
+        };
+        let item = store::record_capture(&db, &root, &payload, &settings)
+            .unwrap()
+            .item;
+
+        // 正文/预览/来源均已加密，全局搜索必须解密后命中且不回传密文。
+        let rs = run_search(&db, "检索目标", &[], 0).unwrap();
+        assert!(hit(&rs, "clipboard", &item.id), "加密元数据应能命中");
+        let rs_source = run_search(&db, "secret-app.exe", &["clipboard".to_string()], 0).unwrap();
+        assert!(hit(&rs_source, "clipboard", &item.id), "加密来源应能命中");
+        for result in rs
+            .groups
+            .iter()
+            .flat_map(|g| g.items.iter())
+            .filter(|i| i.id == item.id)
+        {
+            assert!(
+                !result.title.starts_with("tdcl1:") && !result.snippet.starts_with("tdcl1:"),
+                "搜索结果不得泄露密文"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);    }
 
     #[test]
     fn search_hits_all_categories() {

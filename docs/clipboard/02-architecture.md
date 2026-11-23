@@ -405,6 +405,18 @@ UI 选择目标窗口 → clipboard_paste_precheck（存在/非自身/UIPI）
 failed/cancelled/confirmed`，其中 `confirmed` 仅在存在独立接收信号时使用（Windows
 通用窗口没有该信号，正常路径止于 `unverified`）。
 
+### 5.4 静态加密与检索（ADR-0012，批次 6）
+
+- 开关 `clipboard_encrypt_history` 开启时，`text/html/preview/title/source_app/source_title/
+  file_paths` 统一以 `tdcl1:<nonce>:<ct>` 落库，AAD 绑定条目 UUID 与字段名；CEK 由 DPAPI
+  当前用户封装，进程内缓存。
+- 读取侧（行映射、分页、分组封面、任务/快照关联标签、自动分组候选、来源聚合）统一调用
+  `store::decrypt_item_field`，任一字段解不开即整体失败，不把密文当明文返回。
+- 检索：SQL 只负责非敏感筛选与排序，`list_items/count_items/view/list_groups` 在需要搜索或
+  来源筛选时转为 Rust 解密过滤，最多扫描 5000 条；`file_paths` 解密后才解析 JSON。
+  全局搜索对剪贴板同样解密最近 5000 条页字段，不读大正文。
+- 暂存架快照读取正文/路径时解密，图片改走 `image_png`（避免把 `TDCLB1` 容器密文当 PNG）。
+
 ## 六、降级与边界
 
 - 监听启动失败：`ClipboardRuntime::start` 记录警告，运行时继续工作；

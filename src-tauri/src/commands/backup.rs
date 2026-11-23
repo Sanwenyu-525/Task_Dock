@@ -206,7 +206,14 @@ pub const EXTENDED_TABLES: &[&str] = &[
     "comic_episodes",
     "comic_characters",
     "comic_scenes",
+    // 漫剧第三阶段（v96）：每集形象覆盖依赖剧集 + 角色，必须在两者之后。
+    "comic_episode_character_overrides",
+    // 提示词模板 → 版本（版本依赖模板）；Skill 快照与生成记录按外键依赖顺序排在镜头之后。
+    "comic_prompt_templates",
+    "comic_prompt_versions",
+    "comic_skill_snapshots",
     "comic_shots",
+    "comic_generation_runs",
     "comic_media_versions",
     // 通用 U1（v62）：里程碑、项目资料关联。
     "general_milestones",
@@ -866,7 +873,55 @@ pub const BACKUP_TABLES: &[BackupTableRule] = &[
         "core",
         "all",
         660,
-        &["comic_shots", "comic_characters", "comic_scenes"],
+        &["comic_shots", "comic_characters", "comic_scenes", "comic_generation_runs"],
+        true
+    ),
+    // 漫剧第三阶段（v96）：每集形象覆盖、提示词版本、Skill 快照、外部生成记录。
+    // 顺序满足外键依赖：模板 → 版本；剧集/角色 → 覆盖；镜头/版本/快照 → 生成记录 → 素材。
+    rule!(
+        "comic_episode_character_overrides",
+        "core",
+        "all",
+        655,
+        &["comic_episodes", "comic_characters"],
+        true
+    ),
+    rule!(
+        "comic_prompt_templates",
+        "core",
+        "all",
+        642,
+        &["workspace_projects"],
+        true
+    ),
+    rule!(
+        "comic_prompt_versions",
+        "core",
+        "all",
+        644,
+        &["comic_prompt_templates"],
+        true
+    ),
+    rule!(
+        "comic_skill_snapshots",
+        "core",
+        "all",
+        646,
+        &["workspace_projects"],
+        true
+    ),
+    rule!(
+        "comic_generation_runs",
+        "core",
+        "all",
+        659,
+        &[
+            "workspace_projects",
+            "comic_episodes",
+            "comic_shots",
+            "comic_prompt_versions",
+            "comic_skill_snapshots"
+        ],
         true
     ),
     rule!(
@@ -2228,7 +2283,15 @@ fn plaintext_item_fields(row: &mut serde_json::Value) -> AppResult<()> {
         .and_then(|v| v.as_str())
         .unwrap_or_default()
         .to_string();
-    for field in ["text", "html"] {
+    for field in [
+        "text",
+        "html",
+        "preview",
+        "title",
+        "source_app",
+        "source_title",
+        "file_paths",
+    ] {
         let stored = row
             .get(field)
             .and_then(|v| v.as_str())
@@ -4262,7 +4325,15 @@ pub fn normalize_clipboard_for_restore(db: &Db, read: &mut ReadBackup) -> AppRes
                     .and_then(|v| v.as_str())
                     .unwrap_or_default()
                     .to_string();
-                for field in ["text", "html"] {
+                for field in [
+                    "text",
+                    "html",
+                    "preview",
+                    "title",
+                    "source_app",
+                    "source_title",
+                    "file_paths",
+                ] {
                     let stored = row
                         .get(field)
                         .and_then(|v| v.as_str())
@@ -6033,7 +6104,9 @@ mod tests {
         seed_clipboard(&db, &root);
         db.with_conn(|c| {
             c.execute(
-                "UPDATE clipboard_items SET text='PLAIN-RESTORE' WHERE id='i1'",
+                "UPDATE clipboard_items SET text='PLAIN-RESTORE', preview='preview-restore', \
+                 title='title-restore', source_app='app-restore', source_title='window-restore', \
+                 file_paths='[\"C:/a.txt\"]' WHERE id='i1'",
                 [],
             )?;
             Ok::<_, AppError>(())
@@ -6077,6 +6150,23 @@ mod tests {
             .unwrap(),
             "PLAIN-RESTORE"
         );
+        for (field, plain) in [
+            ("preview", "preview-restore"),
+            ("title", "title-restore"),
+            ("source_app", "app-restore"),
+            ("source_title", "window-restore"),
+            ("file_paths", "[\"C:/a.txt\"]"),
+        ] {
+            let stored = rows[0][field].as_str().unwrap();
+            assert!(
+                secure::is_encrypted_field(stored),
+                "恢复暂存行的 {field} 必须已加密"
+            );
+            assert_eq!(
+                secure::decrypt_if_encrypted(&secure::item_field_aad("i1", field), stored).unwrap(),
+                plain
+            );
+        }
         // 2) 暂存图片已重写为目标机容器，字节可解密回原图
         let image = read
             .assets
@@ -6094,17 +6184,30 @@ mod tests {
 
         // 3) 导入目标库后字段保持密文，读取侧可解
         import_read(&dest, &read).unwrap();
-        let text: String = dest
-            .with_conn(|c| {
-                c.query_row("SELECT text FROM clipboard_items WHERE id='i1'", [], |r| r.get(0))
+        for (field, plain) in [
+            ("text", "PLAIN-RESTORE"),
+            ("preview", "preview-restore"),
+            ("title", "title-restore"),
+            ("source_app", "app-restore"),
+            ("source_title", "window-restore"),
+            ("file_paths", "[\"C:/a.txt\"]"),
+        ] {
+            let stored: String = dest
+                .with_conn(|c| {
+                    c.query_row(
+                        &format!("SELECT {field} FROM clipboard_items WHERE id='i1'"),
+                        [],
+                        |r| r.get(0),
+                    )
                     .map_err(AppError::from)
-            })
-            .unwrap();
-        assert!(secure::is_encrypted_field(&text));
-        assert_eq!(
-            secure::decrypt_if_encrypted(&secure::item_field_aad("i1", "text"), &text).unwrap(),
-            "PLAIN-RESTORE"
-        );
+                })
+                .unwrap();
+            assert!(secure::is_encrypted_field(&stored), "{field} 导入后必须保持密文");
+            assert_eq!(
+                secure::decrypt_if_encrypted(&secure::item_field_aad("i1", field), &stored).unwrap(),
+                plain
+            );
+        }
         let restored_root = dir.join("clipboard-restored");
         assert_eq!(commit_assets(&read.assets, &restored_root).unwrap(), 2);
         let restored = std::fs::read(restored_root.join("images/i1.png")).unwrap();
