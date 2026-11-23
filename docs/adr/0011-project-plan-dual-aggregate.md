@@ -53,24 +53,45 @@ ADR-0008 之后，项目根（`workspace_projects`）与计划容器（`planning
 | 资源 | 语义 | revision | 服务 |
 |---|---|---|---|
 | `GET/PATCH /api/v1/projects/{projectId}` | 项目根 | 根 revision（v93） | ProjectService |
-| `GET/PATCH /api/v1/plans/{planId}` | 计划 | 计划 revision（v37） | PlanningService |
+| `GET/PATCH /api/v1/plans/{planId}` | 计划（**严格 PlanId**） | 计划 revision（v37） | PlanningService |
+| `GET /api/v1/plans/current` | 当前活动计划 | — | PlanningService |
 
 - Project PATCH 可改：name / kind / description / goal / targetDate / lifecycleStatus。
-- Plan PATCH 可改：name / description / status（执行状态）/ targetDate / sortOrder。
+- **Plan PATCH 只能改**：execution status（`planning_projects.status`）/ sortOrder。
+  名称、描述、目标日期是项目根的事实字段，`PATCH /plans/{planId}` 不提供这些写入能力
+  （请求体里出现会被忽略 schema，服务层不接受；MCP 工具会明确拒绝并指路）。
 - `PATCH /plans/{planId}` 需 `projects.write` 能力 + 计划所属项目根的 grant
   （授权始终锚定项目根）。
-- 旧入口继续接受计划 ID 作为入参（兼容适配器），内部先解析为根再走根服务；
-  业务服务内部禁止按字符串猜测实体类型。
+- 同一路径的 GET 与 PATCH 必须同义：`/plans/{id}` 的 id 始终是 PlanId。
+  项目根 ID → Validation，不再「GET 静默取 active 计划、PATCH 却要求 PlanId」。
+  项目根到活动计划的快捷查询用 `GET /api/v1/plans/current` 或
+  `GET /api/v1/projects/{projectId}`（返回 activePlanId）。
+- 旧入口 `/projects/{planId}` 继续接受计划 ID 作为入参（兼容适配器），内部先解析为根
+  再走根服务；业务服务内部禁止按字符串猜测实体类型。
+
+### 3.2.1 版本令牌必须显式
+
+- REST / MCP / CLI / 桌面 IPC 的**通用更新入口**都必须携带对应聚合的 revision：
+  - 项目根：`expectedRevision` / `expected_project_revision`（REST/MCP/CLI/IPC）；
+  - 计划：`expectedRevision` / `expected_plan_revision`。
+- 缺失令牌直接 `Validation`，不允许「Option 为 None 就跳过检查」。
+- 唯一例外是**明确区分的内部/领域方法**：项目归档/恢复（`set_project_status`）、
+  工作空间编辑器的根路径保存、旧计划补链后的首次写入。它们不暴露为普通业务更新入口，
+  但仍照常推进所属聚合 revision。
+- 空补丁（只有令牌、没有任何字段）→ `Validation("没有可更新的字段")`；
+  revision 不变、`updated_at` 不变、不产生业务事件、不写成功审计、不产生 committed 操作。
 
 ### 3.3 项目根 revision（v93）
 
 - 生成：插入根时默认 1；`update_project_fields_tx` 在同一事务内
-  「读 → 比对 expectedRevision → `revision + 1`」，不匹配返回 Conflict。
+  「读 → 比对 expectedRevision → `revision + 1`」，不匹配返回 Conflict；
+  缺 `expected_project_revision` 直接 Validation。
 - 读取：`project_hub::service::ProjectSummary.revision` 与 REST
-  `agent_access::service::project_summary` 同源（列值），GET 与 PATCH 使用同一事实源。
-- 独立性：改项目根只动根 revision；改计划执行状态只动计划 revision；
-  计划更新携带 name/description/targetDate 时会写根镜像字段，根 revision 相应递增
-  （两个计数器各自跟踪各自表的写入）。
+  `agent_access::service::project_summary` 同源（列值），GET 与 PATCH 使用同一事实源；
+  计划读模型额外返回 `project_revision`，桌面编辑器用它作为根写入的令牌。
+- **两个 revision 完全独立**：改项目根只动根 revision；改计划执行状态只动计划 revision。
+  根字段更新同步 `planning_projects.name/description/target_date` 镜像列时**不推进**
+  计划 revision；计划更新也**不推进**根 revision。
 - 校验实现：`project_hub::service::check_expected_revision_tx` 是唯一实现，
   计划行与根行共用。
 
@@ -81,9 +102,27 @@ ADR-0008 之后，项目根（`workspace_projects`）与计划容器（`planning
 - `taskdock_update_project`：只更新根字段（name/kind/description/goal/targetDate/
   lifecycleStatus），expectedRevision 对根 revision；`project_id` 参数接受旧计划 ID
   入参并解析为根，schema/description 明确语义。
-- 新增 `taskdock_update_plan` / 计划读路径：计划字段走计划 revision。
+- `taskdock_update_plan`：**只**更新计划自身字段（execution status / sortOrder），
+  expectedRevision 对计划 revision。schema 不再声明 name/description/target_date；
+  旧客户端仍传这些字段 → Validation 指路 `taskdock_update_project`。
+- 计划聚合写工具的审计与操作资源身份：
+  `resource_kind = plan`、`resource_id = PlanId`、`project_id = 所属项目根`、
+  `revision = 计划 revision`。绝不把 PlanId 放进 project 资源类型。
+- `planning-changed` 事件：
+  - 根更新 → `{ kind: "project", projectId: 根, revision: 根 revision }`；
+  - 计划更新 → `{ kind: "plan", projectId: 根, planId: 计划, revision: 计划 revision }`。
+  前端按 `kind`/`planId` 判断是否刷新当前工作区，不用 projectId 冒充计划 ID。
 - 旧工具不删除：参数名兼容 + 语义显式化，破坏性变化在工具描述中写明
   （旧客户端把执行状态传给 update_project 会得到明确的 Validation 提示，改用计划工具）。
+
+### 3.4.1 桌面端编辑器（ProjectEditorView）
+
+- 名称/描述/目标日期 → 项目根服务；执行状态 → 计划服务。两边分别携带**打开编辑器时**
+  读取到的 revision（快照，不随 store 刷新漂移）。
+- 一次改两个聚合时走 `UpdateProjectAndPlanUseCase`（`planning_update_project_and_plan`）：
+  同一事务内校验两个 revision → 改根 → 同步镜像 → 改计划字段 → 两个 revision 各自 +1；
+  任一冲突整体回滚，不出现「名称已改、状态未改」。
+- 冲突提示明确、保留用户输入、不自动用本地值覆盖服务端新数据；保存中禁止重复提交。
 
 ### 3.5 创建授权事务（CreateProjectForAgentUseCase）
 
@@ -95,16 +134,25 @@ Agent 创建（MCP / CLI / REST 三入口共用）：
       → scope 校验（project_rw）
       → projects.create 全局能力
       → create_with_conn（幂等归属 + 项目根 + 初始计划 + 事件，同事务）
-      → grant_created_project_in_conn（只授项目根）
+      → created.created == true ?
+           是 → grant_created_project_in_conn（只授项目根）
+           否 → 直接返回历史结果，不写任何授权
       → commit
 ```
 
-- 事务边界不一致消除：授权失败 = 整体回滚，不存在「半条授权」或「无权成功」。
+- **授权只在首次创建时发生**。幂等重放（`created.created == false`）不得补写授权：
+  人类撤销的授权不可被 Agent 用原 `clientRequestId` 重放恢复。
+- 事务边界不一致消除：授权失败 = 整体回滚，不存在「半条授权」或「无权成功」，
+  也不残留幂等归属行（否则同请求 ID 永远无法重试）。
 - `AgentAccessPolicy::CreatorProject` 是唯一自动授权语义；`CreatorProjectAndPlan`
   保留为兼容别名（行为一致：只授项目根；v91 起外键已禁止计划级授权行）。
 - 人类 UI 创建继续走 `creation::create()`（目录初始化与补偿在事务外）。
 - 幂等 fail-closed：`Prepared` 携带独立 `principal`；缺行 ID 的 RegisteredAgent 直接
   拒绝；Agent 请求永不进入人类历史事件兜底；actor 与 payload.principal 按真实主体记录。
+- 重放仍然**每次都重新检查** scope 与 `projects.create`：撤权/降 scope 后重放立即失败。
+  显式重新授权（人类 `grant_project`）后，Agent 才能恢复访问。
+- MCP 工具层 requestId 的重放测试不能替代 CreationUseCase 的直接测试：两层幂等机制
+  独立，本 ADR 的规则由 `agent_access::project_creation::tests` 直接覆盖。
 
 ## 4. 备选方案与不采用原因
 
@@ -124,10 +172,16 @@ Agent 创建（MCP / CLI / REST 三入口共用）：
 
 ## 6. 迁移与兼容
 
-- v93 纯加列（`workspace_projects.revision DEFAULT 1`），不改已发布迁移，旧行为
-  （不传 expectedRevision）完全不变。
-- 旧客户端传计划 ID 给 Project 接口：边界解析为根后按根语义处理；计划专属字段
-  （执行状态）改走 Plan 接口，返回明确错误而非静默写错聚合。
+- v93 纯加列（`workspace_projects.revision DEFAULT 1`），不改已发布迁移。
+- **版本令牌从可选改为必填**（第五轮，2026-11-23）：REST/MCP/CLI/IPC 的通用更新入口
+  缺 revision 返回 Validation。这是有意的破坏性收紧：旧行为「不传即跳过检查」正是
+  「旧版本请求覆盖新数据」的根因。调用方需先 GET 再带着 revision 提交；
+  CLI 的 `project update` 因此要求 `--base-revision`。
+- 计划 PATCH 移除 name/description/targetDate 写入能力：旧客户端改这些字段会得到
+  Validation（REST）或明确指路（MCP/CLI）。改为 `PATCH /projects/{projectId}`。
+- `GET /plans/{projectRootId}` 由「返回 active 计划」改为 Validation：改用
+  `GET /plans/current` 或 `GET /projects/{projectId}`。
+- 旧客户端传计划 ID 给 Project 接口：边界解析为根后按根语义处理；返回体是 ProjectSummary。
 - 历史数据不迁移不删除；计划行的镜像列继续由根变更同步。
 
 ## 7. 测试要求
@@ -136,6 +190,15 @@ ProjectId/PlanId 区分、根/计划 revision 独立递增、过期 revision 分
 GET→PATCH→GET 全链路、三入口创建结果一致、授权失败无半条数据、同主体重放不重复创建、
 跨 Agent 幂等隔离、计划更新不改根生命周期、根更新不改计划执行状态、
 镜像名称同步、MCP 旧参数兼容。
+
+第五轮补充（必须全部覆盖）：
+
+- 撤权后重放：项目不重建、授权行不存在、读取 FORBIDDEN；显式重新授权才恢复；
+- 连续重放不新增数据、不推进 revision；首次授权失败整体回滚（含幂等归属）；
+- 组合更新原子性：任一 revision 冲突整体回滚；
+- 空 PATCH 不推进 revision、不产生事件/成功审计/committed 操作；
+- MCP 计划操作记录 `resource_kind=plan`、`resource_id=PlanId`、`project_id=根`；
+- `planning-changed` 的 project/plan 事件分别携带正确的 revision 与 planId。
 
 ## 8. 回滚条件
 
@@ -156,3 +219,37 @@ v93 加列导致存量库升级失败，或双聚合拆分造成既有 UI/Agent 
 已验证的契约细节：`taskdock_update_project` 用根 revision 而非计划 revision（mcp_e2e 夹具
 计划 revision=3、根 DEFAULT 1）；项目删除级联清理 grant 与幂等归属行；
 `PATCH /plans/{rootId}` → Validation（计划域不伪造计划行）。
+
+## 10. 第五轮修订（2026-11-23）
+
+第四轮验收证明 §3.2/§3.3/§3.5 仍有实现偏差，本轮按「代码即事实」修订：
+
+| 旧契约（已废止） | 新契约 |
+|---|---|
+| `planning::ProjectPatch` 同时承载根字段与计划字段 | `ProjectRootPatch`（根）与 `PlanPatch`（计划）分离；旧类型与 `planning_update_project` 删除 |
+| Plan PATCH 可改 name/description/targetDate | 禁止：这些是项目根事实字段，只能经 `update_project_fields_tx` 写根并同步镜像 |
+| `expected_revision` 可选，缺省跳过检查 | 通用更新入口必填；缺失 Validation；唯一例外是明确区分的领域/补链首次写入 |
+| 空 PATCH 仍 `revision + 1` | 空 PATCH Validation；revision/updated_at 不变、无事件、无成功审计、无 committed 操作 |
+| `GET /plans/{id}` 接受项目根并回落 active 计划 | 严格 PlanId；根 ID → Validation；`/plans/current` 与 `/projects/{id}` 承担快捷查询 |
+| `taskdock_update_plan` 记 `resource_kind=project` + PlanId | `resource_kind=plan`、`resource_id=PlanId`、`project_id=根`、`revision=计划 revision` |
+| `planning-changed` 只有 projectId（实际放计划 ID） | `kind=project|plan` + `projectId`（根）+ `planId`（计划）+ 对应 revision |
+| 创建自动授权无条件执行（重放也授权） | 仅 `created.created == true` 授权；重放不恢复已撤销权限；授权失败整体回滚 |
+
+### 验证（本轮实际执行，2026-11-23）
+
+| 命令 | 结果 |
+|---|---|
+| `cargo test --lib agent_access::project_creation::tests` | 11 passed / 0 failed |
+| `cargo test --lib mcp::tests` | 64 passed / 0 failed |
+| `cargo test --lib commands::planning::tests` | 13 passed / 0 failed |
+| `cargo test --lib agent_access::` | 231 passed / 0 failed |
+| `cargo test --test project_creation_identity` | 18 passed / 0 failed |
+| `cargo test --test mcp_e2e` | 3 passed / 0 failed |
+| `cargo test --test project_lifecycle` | 26 passed / 0 failed |
+| `npm run typecheck` | 0 错误 |
+| `npx vitest run`（5 个定向文件） | 113 passed / 0 failed |
+
+未验证项（如实记录）：没有可用的真实 MCP 客户端做「撤权 → 重放」的端到端演练，
+该场景由 `project_creation` 直接用例与 `mcp::tests` 的鉴权/操作记录用例覆盖；
+`cargo test --lib` 全量（非过滤）在本轮未执行，原因是共享工作树中存在其他任务的
+并行改动，只运行与本任务相关的过滤组。

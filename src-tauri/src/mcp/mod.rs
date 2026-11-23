@@ -58,13 +58,21 @@ pub const AGENT_TOKEN_ENV: &str = "TASKDOCK_MCP_TOKEN";
 pub const PLANNING_CHANGED_EVENT: &str = "planning-changed";
 
 /// `planning-changed` 事件载荷（camelCase，与前端 bridge.ts 契约一致）。
+///
+/// 资源身份必须与真实聚合一致：
+/// - 项目根更新：`kind=project`、`projectId=项目根`、revision=项目根 revision；
+/// - 计划更新：`kind=plan`、`planId=计划`、`projectId=所属项目根`、revision=计划 revision。
+/// 绝不把 PlanId 放进 `project_id` 冒充项目根。
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanningChanged {
-    /// project | feature | step | milestone | activity
+    /// project | plan | feature | step | milestone | activity | task | note
     pub kind: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
+    /// 计划聚合事件（kind=plan）的计划 ID；其他类型为空。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub feature_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

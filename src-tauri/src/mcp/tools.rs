@@ -28,7 +28,7 @@ use serde_json::{json, Value};
 
 use crate::commands::planning::{
     list_features_impl, list_milestones_impl, load_feature_tx, load_project_tx,
-    FeatureInput, FeaturePatch, ProjectPatch, StepPatch,
+    FeatureInput, FeaturePatch, StepPatch,
 };
 use crate::db::Db;
 use crate::error::{AppError, AppResult};
@@ -226,17 +226,14 @@ pub fn tool_defs() -> &'static [ToolDef] {
         },
         ToolDef {
             name: "taskdock_update_plan",
-            description: "更新计划（名称/描述/执行状态 planning|in_progress|paused|completed/目标日期/排序）。身份约定：planId=计划 planning_projects.id；projectId=项目根 workspace_projects.id。expected_revision 是计划 revision（不是项目根 revision）。项目根生命周期与根字段请用 taskdock_update_project。",
+            description: "更新计划聚合（只含计划自身字段：执行状态 planning|in_progress|paused|completed、排序）。身份约定：planId=计划 planning_projects.id（不接受项目根 ID）；projectId=所属项目根 workspace_projects.id。expected_revision 是计划 revision（不是项目根 revision）。名称/描述/目标日期属于项目根，请用 taskdock_update_project。",
             input_schema: schema(
                 json!({
                     "plan_id": { "type": "string", "description": "计划 planning_projects.id（不接受项目根 ID）" },
                     "expected_revision": { "type": "integer", "description":
                         "必须：计划乐观并发版本。传入读取结果中的计划 revision；不匹配返回冲突与当前 revision" },
-                    "name": { "type": "string", "maxLength": 100 },
-                    "description": { "type": "string", "maxLength": 2000 },
                     "status": { "type": "string", "enum": ["planning", "in_progress", "paused", "completed"],
                         "description": "计划执行状态；项目生命周期（active|archived）请用 taskdock_update_project" },
-                    "target_date": { "type": ["string", "null"], "description": DATE_DESC },
                     "sort_order": { "type": "integer" },
                     "requestId": request_id_prop(),
                 }),
@@ -425,8 +422,9 @@ fn operation_target(tool: &str, args: &Value) -> (String, String, String) {
             .to_string()
     };
     let kind = if tool == "taskdock_update_plan" {
-        // 计划聚合写归属 planning 域；resource_kind_for_tool 对该名会误判为 task。
-        "project"
+        // 计划聚合写：资源是计划，项目根只作为归属字段。
+        // （resource_kind_for_tool 按名字含 "task" 会把它误判为任务。）
+        "plan"
     } else {
         crate::agent_access::operations::resource_kind_for_tool(tool)
     }
@@ -437,6 +435,7 @@ fn operation_target(tool: &str, args: &Value) -> (String, String, String) {
         "step" => pick(&["step_id"]),
         "milestone" => pick(&["milestone_id"]),
         "project" => pick(&["project_id", "plan_id"]),
+        "plan" => pick(&["plan_id"]),
         "note" => pick(&["note_id"]),
         "knowledge" => pick(&["document_id", "doc_id"]),
         _ => String::new(),
@@ -1101,6 +1100,7 @@ fn call(
                 Some(PlanningChanged {
                     kind: "project",
                     project_id: Some(created.project.id),
+                    plan_id: None,
                     feature_id: None,
                     revision: Some(revision),
                 }),
@@ -1152,16 +1152,16 @@ fn call(
             crate::project_hub::service::update_project_fields_tx(
                 conn,
                 &root,
-                crate::project_hub::service::ProjectPatch {
+                crate::project_hub::service::ProjectRootPatch {
                     name: arg_str(args, "name").map(str::to_string),
                     kind: arg_str(args, "kind").map(str::to_string),
                     description: arg_str(args, "description").map(str::to_string),
                     goal: arg_str(args, "goal").map(str::to_string),
-                    status: lifecycle_status,
+                    lifecycle_status,
                     target_date: args
                         .get("target_date")
                         .map(|v| v.as_str().map(str::to_string)),
-                    expected_revision: Some(expected),
+                    expected_project_revision: Some(expected),
                 },
             )?;
             let summary = crate::project_hub::service::load_summary(conn, &root)?;
@@ -1176,6 +1176,7 @@ fn call(
                 Some(PlanningChanged {
                     kind: "project",
                     project_id: Some(root),
+                    plan_id: None,
                     feature_id: None,
                     revision: Some(revision),
                 }),
@@ -1192,6 +1193,15 @@ fn call(
                 &["planning", "in_progress", "paused", "completed"],
                 "计划执行状态",
             )?;
+            // 计划聚合不再接受根字段：名称/描述/目标日期是项目根镜像，
+            // 静默忽略会让调用方以为写成功，必须明确指路。
+            for mirror in ["name", "description", "target_date"] {
+                if args.get(mirror).map(|v| !v.is_null()).unwrap_or(false) {
+                    return Err(ToolError::Failed(AppError::Validation(format!(
+                        "taskdock_update_plan 不接受 {mirror}（项目根字段）；请使用 taskdock_update_project"
+                    ))));
+                }
+            }
             let root = match crate::project_hub::service::resolve_project_ref(conn, &plan_id)? {
                 // 身份防混用：项目根 ID 不是计划（传根 ID 会误伤根聚合语义）。
                 Some(crate::project_hub::service::ProjectRef::Project(_)) => {
@@ -1211,28 +1221,25 @@ fn call(
             // 授权键是项目根；计划聚合写按当前能力复核 projects.write（与重放一致）。
             let root = ensure_grant(ctx, conn, &root)?;
             ensure_projects_write(ctx, conn, &root)?;
-            // 计划聚合写（计划 revision）：名称/描述/日期是根字段镜像，
-            // 计划服务会在同一事务里经 update_project_fields_tx 写根。
-            let patch = ProjectPatch {
-                name: arg_str(args, "name").map(str::to_string),
-                description: arg_str(args, "description").map(str::to_string),
-                status: arg_str(args, "status").map(str::to_string),
-                target_date: args
-                    .get("target_date")
-                    .map(|v| v.as_str().map(str::to_string)),
+            // 计划聚合写：只改执行状态/排序，只推进计划 revision。
+            let patch = crate::commands::planning::PlanPatch {
+                execution_status: arg_str(args, "status").map(str::to_string),
                 sort_order: args.get("sort_order").and_then(|v| v.as_i64()),
-                expected_revision: Some(expected),
+                expected_plan_revision: Some(expected),
             };
-            let plan = crate::commands::planning::update_project_tx(conn, plan_id.clone(), patch)?;
+            let plan = crate::commands::planning::update_plan_tx(conn, &plan_id, patch)?;
             let revision = plan.revision;
             let value = serde_json::to_value(&plan).map_err(AppError::from)?;
+            // 资源身份必须是计划：resource_kind=plan、resource_id=PlanId、
+            // project_id=所属项目根、revision=计划 revision。
             Ok(outcome(
                 value,
-                "project",
+                "plan",
                 plan_id.clone(),
                 Some(PlanningChanged {
-                    kind: "project",
+                    kind: "plan",
                     project_id: Some(root),
+                    plan_id: Some(plan_id),
                     feature_id: None,
                     revision: Some(revision),
                 }),
@@ -1271,6 +1278,7 @@ fn call(
                 Some(PlanningChanged {
                     kind: "feature",
                     project_id: Some(project_id),
+                    plan_id: None,
                     feature_id: Some(id),
                     revision: Some(revision),
                 }),
@@ -1314,6 +1322,7 @@ fn call(
                 Some(PlanningChanged {
                     kind: "feature",
                     project_id: Some(project_id),
+                    plan_id: None,
                     feature_id: Some(feature_id),
                     revision: Some(revision),
                 }),
@@ -1341,6 +1350,7 @@ fn call(
                 Some(PlanningChanged {
                     kind: "step",
                     project_id: Some(project_id),
+                    plan_id: None,
                     feature_id: Some(fid),
                     revision: Some(revision),
                 }),
@@ -1368,6 +1378,7 @@ fn call(
                 Some(PlanningChanged {
                     kind: "step",
                     project_id: Some(project_id),
+                    plan_id: None,
                     feature_id: Some(fid),
                     revision: Some(revision),
                 }),
@@ -1394,6 +1405,7 @@ fn call(
                 Some(PlanningChanged {
                     kind: "activity",
                     project_id: Some(project_id),
+                    plan_id: None,
                     feature_id,
                     revision: None,
                 }),
@@ -1456,6 +1468,7 @@ fn call(
                 Some(PlanningChanged {
                     kind: "feature",
                     project_id: Some(project_id),
+                    plan_id: None,
                     feature_id: Some(feature_id),
                     revision: None,
                 }),
@@ -1483,6 +1496,7 @@ fn call(
                 Some(PlanningChanged {
                     kind: "feature",
                     project_id: Some(project_id),
+                    plan_id: None,
                     feature_id: Some(fid),
                     revision: Some(revision),
                 }),
@@ -1584,7 +1598,22 @@ pub fn run_tool_call(
         let operation = if is_replay {
             None
         } else {
-            let target = operation_target(name, args);
+            let mut target = operation_target(name, args);
+            // 计划写工具只带 plan_id：启动时先解析所属项目根，让「运行中」的操作记录
+            // 也带正确 project_id（冲突/失败时前端能定位到项目）。解析失败留空，
+            // 成功提交时由 OperationResult 再绑定。
+            if target.0 == "plan" && target.2.is_empty() && !target.1.is_empty() {
+                let plan_id = target.1.clone();
+                let root = ctx
+                    .db
+                    .with_read(|conn| {
+                        crate::project_hub::service::resolve_project_root(conn, &plan_id)
+                    })
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default();
+                target.2 = root;
+            }
             operations::try_start(
                 &ctx.db,
                 &Principal::agent(

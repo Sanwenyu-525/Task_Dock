@@ -335,6 +335,92 @@ fn update_project_targets_root_and_update_plan_targets_plan() {
     assert!(err.to_string().contains("同时提供"), "{err}");
 }
 
+/// 计划写工具的资源身份：`resource_kind=plan`、`resource_id=PlanId`、
+/// `project_id=项目根`、`revision=计划 revision`；事件 `kind=plan` 且带 planId。
+#[test]
+fn plan_update_records_plan_resource_identity_and_event() {
+    use crate::agent_access::operations::{OperationQuery, OperationStatus};
+
+    let db = memdb();
+    let (root, plan, plan_revision) = make_rooted_project(&db, "计划资源身份");
+    let (agent, _) = make_agent(&db, "plan-res", "project_rw");
+    grant_project_capabilities(&db, &agent.row_id);
+    auth::grant_project(&db, &agent.row_id, &root).unwrap();
+    let (emit, log) = collector();
+    let ctx = ToolCtx {
+        db: db.clone(),
+        agent: agent.clone(),
+        emit,
+    };
+
+    let updated = call_ok(
+        &ctx,
+        "taskdock_update_plan",
+        json!({
+            "plan_id": plan,
+            "expected_revision": plan_revision,
+            "status": "in_progress",
+        }),
+    );
+    assert_eq!(updated["revision"], plan_revision + 1);
+
+    let query = OperationQuery {
+        agent_id: Some("plan-res".into()),
+        resource_kind: Some("plan".into()),
+        ..Default::default()
+    };
+    let (ops, page) = crate::agent_access::operations::list(&db, &query).unwrap();
+    assert_eq!(page.total, 1, "计划写只产生一条 plan 操作: {ops:?}");
+    let op = &ops[0];
+    assert_eq!(op.status, OperationStatus::Committed);
+    assert_eq!(op.action, "taskdock_update_plan");
+    assert_eq!(op.resource_id, plan, "resource_id 必须是 PlanId");
+    assert_eq!(op.project_id, root, "计划操作必须同时记录所属项目根");
+    assert_eq!(
+        op.revision,
+        Some(plan_revision + 1),
+        "revision 是计划 revision，不是根 revision"
+    );
+    assert_ne!(op.resource_id, op.project_id, "不能把 PlanId 伪装成 ProjectId");
+
+    let events = log.lock().unwrap();
+    let event = events
+        .iter()
+        .find(|e| e.kind == "plan")
+        .expect("计划更新必须发 plan 事件");
+    assert_eq!(event.plan_id.as_deref(), Some(plan.as_str()));
+    assert_eq!(event.project_id.as_deref(), Some(root.as_str()));
+    assert_eq!(event.revision, Some(plan_revision + 1));
+}
+
+/// 计划工具拒绝项目根字段：不能让调用方以为写成功。
+#[test]
+fn plan_update_rejects_project_root_fields() {
+    let db = memdb();
+    let (root, plan, plan_revision) = make_rooted_project(&db, "计划拒绝根字段");
+    let (agent, _) = make_agent(&db, "plan-mirror", "project_rw");
+    grant_project_capabilities(&db, &agent.row_id);
+    auth::grant_project(&db, &agent.row_id, &root).unwrap();
+    let ctx = ctx_for(&db, &agent);
+
+    for field in ["name", "description", "target_date"] {
+        let mut args = serde_json::Map::new();
+        args.insert("plan_id".into(), json!(plan));
+        args.insert("expected_revision".into(), json!(plan_revision));
+        args.insert(field.into(), json!("值"));
+        let err = tool_err(&ctx, "taskdock_update_plan", Value::Object(args));
+        let message = err.to_string();
+        assert!(message.contains(field), "{field} 必须被明确拒绝: {message}");
+        assert!(
+            message.contains("taskdock_update_project"),
+            "{field} 拒绝时必须指路项目根工具: {message}"
+        );
+    }
+    // 拒绝路径不得推进计划 revision。
+    let plan_after = call_ok(&ctx, "taskdock_get_plan", json!({ "plan_id": plan }));
+    assert_eq!(plan_after["revision"], plan_revision);
+}
+
 /// 根与计划是两个独立聚合：expected_revision 各自过期各自冲突。
 #[test]
 fn expected_revision_conflicts_are_per_aggregate() {

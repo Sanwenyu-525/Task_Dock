@@ -221,9 +221,16 @@ OS 用户或沙箱中；本模块只保证「不因目录可写而越权修改 T
   同样要求 `projects.write` + 计划所属项目根 grant——计划不是独立授权对象；
   计划工具传根 ID → Validation 指路（身份防混用），项目聚合传计划 ID → 边界归一根；
 - **创建单事务**（`CreateProjectForAgentUseCase`）：`create_for_agent(_in_conn)` 把
-  scope 重读（撤销即时生效）→ `projects.create` → 创建 → 项目根自动授权收进同一事务；
-  授权失败 = 整体回滚，不存在「半条授权」或「无权成功」；MCP/CLI/REST 三入口共用；
+  scope 重读（撤销即时生效）→ `projects.create` → 创建 → **仅首次创建**（`created=true`）
+  自动授权项目根，收进同一事务；授权失败 = 整体回滚（项目/初始计划/幂等归属/事件），
+  不存在「半条授权」或「无权成功」；MCP/CLI/REST 三入口共用；
   `CreatorProjectAndPlan` 降级为兼容别名（行为 = 只授项目根）；
+- **撤销不可被重放恢复（第五轮）**：幂等重放（`created=false`）不写任何授权行。
+  人类 `revoke_project` 后，Agent 用原 `clientRequestId` 重放只得到历史结果，
+  读取仍 `FORBIDDEN`；只有人类再次 `grant_project` 才恢复访问。
+  重放每次仍重新检查 scope 与 `projects.create`（Agent 被撤销/降 scope 后重放立即失败）；
+- **写入口版本令牌必填（第五轮）**：项目根 / 计划更新缺 `expectedRevision` 直接 Validation；
+  空补丁 Validation 且不推进 revision。撤销与并发保护必须同时成立，不能用一个换另一个；
 - **幂等 fail-closed**：缺行 ID 的 RegisteredAgent 创建直接 Validation 拒绝（不再静默当作
   人类）；历史事件兜底按主体类别判定，Agent 任何情况不进入；事件 actor 与
   `payload.principal.principalId` 记真实主体行 ID；

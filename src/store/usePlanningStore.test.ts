@@ -25,7 +25,9 @@ const bridge = vi.hoisted(() => {
     }),
   planningListProjects: vi.fn(),
   planningCreateProject: vi.fn(),
-  planningUpdateProject: vi.fn(),
+  planningUpdateProjectRoot: vi.fn(),
+  planningUpdatePlan: vi.fn(),
+  planningUpdateProjectAndPlan: vi.fn(),
   planningArchiveProject: vi.fn(),
   planningDeleteProject: vi.fn(),
   planningReorderProjects: vi.fn(),
@@ -738,6 +740,27 @@ describe("planning-changed 同步", () => {
     await vi.advanceTimersByTimeAsync(300);
     // 三条事件合并为一次刷新
     expect(bridge.planningListFeatures.mock.calls.length).toBe(callsBefore + 1);
+  });
+
+  it("plan 事件按 planId 精确匹配当前计划；其他计划只刷新列表", async () => {
+    vi.useFakeTimers();
+    bridge.planningListProjects.mockResolvedValue([proj("P1", "甲"), proj("P9", "乙")]);
+    bridge.planningListFeatures.mockResolvedValue([]);
+    bridge.planningListMilestones.mockResolvedValue([]);
+    await usePlanningStore.getState().selectPlan("P1");
+    const featCalls = bridge.planningListFeatures.mock.calls.length;
+    const projCalls = bridge.planningListProjects.mock.calls.length;
+
+    // 别的计划：只刷新计划列表，不动当前工作区。
+    emitPlanningChanged({ kind: "plan", planId: "P9", projectId: "ROOT-9", revision: 2 });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(bridge.planningListFeatures.mock.calls.length).toBe(featCalls);
+    expect(bridge.planningListProjects.mock.calls.length).toBe(projCalls + 1);
+
+    // 当前计划：按 planId 命中，刷新工作区。
+    emitPlanningChanged({ kind: "plan", planId: "P1", projectId: "ROOT-1", revision: 5 });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(bridge.planningListFeatures.mock.calls.length).toBe(featCalls + 1);
   });
 
   it("非当前计划的事件不触发当前计划刷新；project 事件刷新计划列表", async () => {

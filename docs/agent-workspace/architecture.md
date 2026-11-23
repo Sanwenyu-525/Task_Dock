@@ -221,13 +221,20 @@ Agent 侧所有「项目」引用统一解析到 `workspace_projects.id`：
   note 列，与 PATCH 写入不对称）。
 - **资源边界**：`GET/PATCH /api/v1/projects/{projectId}` 与 `taskdock_get_project` /
   `taskdock_update_project` = 项目根聚合（lifecycleStatus=active|archived、根 revision）；
-  `PATCH /api/v1/plans/{planId}`（新增）与 `taskdock_get_plan` / `taskdock_update_plan`
-  （新增）= 计划聚合（执行状态、计划 revision）。计划工具传根 ID → Validation 指路；
-  项目聚合传计划 ID 仍兼容（边界归一根）。
+  `GET/PATCH /api/v1/plans/{planId}` 与 `taskdock_get_plan` / `taskdock_update_plan`
+  = 计划聚合（执行状态、计划 revision）。**第五轮收紧**：`/plans/{id}` 读写都只接受
+  PlanId（根 ID → Validation），计划 PATCH 不再接受 name/description/targetDate；
+  计划工具传根 ID → Validation 指路；项目聚合传计划 ID 仍兼容（边界归一根）。
+  项目根 → 活动计划用 `GET /api/v1/plans/current` 或 `GET /api/v1/projects/{id}`。
+- **写入口必须带版本令牌**：REST/MCP/CLI/IPC 的通用更新入口缺 `expectedRevision`
+  （根或计划）直接 Validation；空补丁同样 Validation，不推进 revision、不发事件、
+  不产生成功审计/committed 操作。唯一例外是明确区分的领域方法（归档/恢复、工作空间
+  编辑器、补链后首次写入）。
 - **创建事务统一**：`agent_access::project_creation::create_for_agent(_in_conn)`——
   行 ID fail-closed → 拒 `create_new` → scope 重读（撤销即时生效）→ `projects.create`
-  → 创建 → 项目根自动授权，单事务原子提交；CLI/MCP/REST 三入口共用，
-  「创建已提交、事务外授权失败」窗口消除。人类 UI 保持 `creation::create()`。
+  → 创建 → **仅 created=true 时**项目根自动授权，单事务原子提交；CLI/MCP/REST 三入口共用，
+  「创建已提交、事务外授权失败」窗口消除。幂等重放（created=false）不写授权：
+  人类撤销的权限不能被原 requestId 重放恢复。人类 UI 保持 `creation::create()`。
 - **幂等 fail-closed**：`Prepared` 携带独立 `principal`；缺行 ID 的 Agent 直接拒绝；
   历史兜底按主体类别判定（Agent 永不进人类事件兜底）；actor/`payload.principal` 记真实主体。
 - **全局 ID 契约**：`resolve_project_ref` / `resolve_project_root` 是唯一解析入口；

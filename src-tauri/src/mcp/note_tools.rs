@@ -300,6 +300,7 @@ pub(crate) fn call(
                 Some(PlanningChanged {
                     kind: "note",
                     project_id: None,
+                    plan_id: None,
                     feature_id: None,
                     revision: Some(note.revision),
                 }),
@@ -334,6 +335,7 @@ pub(crate) fn call(
                 Some(PlanningChanged {
                     kind: "note",
                     project_id: None,
+                    plan_id: None,
                     feature_id: None,
                     revision: Some(note.revision),
                 }),
@@ -362,6 +364,7 @@ pub(crate) fn call(
                 Some(PlanningChanged {
                     kind: "note",
                     project_id: None,
+                    plan_id: None,
                     feature_id: None,
                     revision: Some(note.revision),
                 }),
@@ -398,6 +401,7 @@ pub(crate) fn call(
                 Some(PlanningChanged {
                     kind: "note",
                     project_id: None,
+                    plan_id: None,
                     feature_id: None,
                     revision: Some(note.revision),
                 }),

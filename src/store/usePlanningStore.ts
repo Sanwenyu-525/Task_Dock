@@ -43,7 +43,9 @@ import {
   planningReorderSteps,
   planningUpdateFeature,
   planningUpdateMilestone,
-  planningUpdateProject,
+  planningUpdatePlan,
+  planningUpdateProjectAndPlan,
+  planningUpdateProjectRoot,
   planningUpdateStep,
   type PlanningActivity,
   type PlanningFeature,
@@ -57,6 +59,8 @@ import {
   type PlanningPlanPatch,
   type PlanningChangedEvent,
   type PlanningPlanStats,
+  type ProjectAndPlanOutcome,
+  type ProjectRootPatch,
   type PlanningStepPatch,
   onPlanningChanged,
 } from "../lib/bridge";
@@ -92,7 +96,16 @@ interface PlanningState {
   loadPlans: () => Promise<void>;
   /** 创建「计划」实际走 ADR-0008 统一创建事务：同时生成项目根 + 初始计划。 */
   createPlan: (input: PlanningPlanInput) => Promise<PlanningPlan>;
+  /** 计划聚合：只改执行状态/排序，携带计划 revision（expected_revision）。 */
   updatePlan: (id: string, patch: PlanningPlanPatch) => Promise<PlanningPlan>;
+  /** 项目根聚合：名称/描述/目标日期/生命周期，携带项目根 revision。 */
+  updateProjectRoot: (id: string, patch: ProjectRootPatch) => Promise<ProjectAndPlanOutcome>;
+  /** 两个聚合同一事务写：任一 revision 冲突整体回滚。 */
+  updateProjectAndPlan: (
+    id: string,
+    project: ProjectRootPatch,
+    plan: PlanningPlanPatch,
+  ) => Promise<ProjectAndPlanOutcome>;
   archivePlan: (id: string, archived: boolean) => Promise<PlanningPlan>;
   /** 删除计划（不删项目根）；最后一个计划的保护由后端 ADR-0008 规则保证。 */
   deletePlan: (id: string) => Promise<void>;
@@ -235,6 +248,30 @@ function syncDerivedLists(
   return { plans, milestones };
 }
 
+/**
+ * 项目根写成功后同步 store：
+ * - 目标计划整条替换（revision / 镜像 / 统计都是服务端返回值）；
+ * - 同一项目下其它计划的镜像列（name/description/target_date）由后端同步，
+ *   这里一并更新，**不**改动它们的 revision（计划自己的令牌没变）。
+ */
+function applyProjectRootOutcome(
+  plans: PlanningPlan[],
+  outcome: ProjectAndPlanOutcome,
+): PlanningPlan[] {
+  const rootId = outcome.project.id;
+  return plans.map((plan) => {
+    if (plan.id === outcome.plan.id) return outcome.plan;
+    if (!plan.workspace_project_id || plan.workspace_project_id !== rootId) return plan;
+    return {
+      ...plan,
+      name: outcome.project.name,
+      description: outcome.project.description,
+      target_date: outcome.project.targetDate,
+      updated_at: outcome.project.updatedAt,
+    };
+  });
+}
+
 export const usePlanningStore = create<PlanningState>((set, get) => ({
   plans: [],
   plansLoading: false,
@@ -277,9 +314,21 @@ export const usePlanningStore = create<PlanningState>((set, get) => ({
   },
 
   updatePlan: async (id, patch) => {
-    const p = await planningUpdateProject(id, patch);
+    const p = await planningUpdatePlan(id, patch);
     set((s) => ({ plans: s.plans.map((x) => (x.id === id ? p : x)) }));
     return p;
+  },
+
+  updateProjectRoot: async (id, patch) => {
+    const outcome = await planningUpdateProjectRoot(id, patch);
+    set((s) => ({ plans: applyProjectRootOutcome(s.plans, outcome) }));
+    return outcome;
+  },
+
+  updateProjectAndPlan: async (id, project, plan) => {
+    const outcome = await planningUpdateProjectAndPlan(id, project, plan);
+    set((s) => ({ plans: applyProjectRootOutcome(s.plans, outcome) }));
+    return outcome;
   },
 
   archivePlan: async (id, archived) => {
@@ -674,12 +723,28 @@ function flushPlanningSync(): void {
   const events = pendingSyncEvents.splice(0, pendingSyncEvents.length);
   if (events.length === 0) return;
   // 计划级变化（新建/改名/归档/统计）刷新计划列表
-  if (events.some((e) => e.kind === "project")) {
+  if (events.some((e) => e.kind === "project" || e.kind === "plan")) {
     void usePlanningStore.getState().loadPlans();
   }
-  // 事件命中当前计划时局部刷新功能/里程碑/历史
-  const active = usePlanningStore.getState().activePlanId;
-  if (active && events.some((e) => e.projectId === active)) {
+  // 事件命中当前计划时局部刷新功能/里程碑/历史。
+  // 计划事件用 planId 精确匹配；项目根事件用 projectId（根 ID）匹配当前计划的
+  // workspace_project_id；`projectId === active` 仅兼容把计划 ID 放进 projectId 的旧事件。
+  const state = usePlanningStore.getState();
+  const active = state.activePlanId;
+  const activeRoot =
+    state.plans.find((p) => p.id === active)?.workspace_project_id ?? null;
+  const hitsActive = Boolean(
+    active &&
+      events.some((e) =>
+        e.kind === "plan"
+          ? e.planId === active
+          : Boolean(
+              e.projectId &&
+                (e.projectId === active || e.projectId === activeRoot),
+            ),
+      ),
+  );
+  if (hitsActive) {
     void refreshActivePlan();
   }
   // 任务/笔记的 MCP 写入走同一广播：按领域刷新对应 store（去抖后每批一次），

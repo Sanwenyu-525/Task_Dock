@@ -1640,7 +1640,9 @@ pub fn run() {
             // 规划中心（v0.7）：用户自建项目的功能规划、步骤、里程碑与进度历史
             commands::planning::planning_list_projects,
             commands::planning::planning_create_project,
-            commands::planning::planning_update_project,
+            commands::planning::planning_update_project_root,
+            commands::planning::planning_update_plan,
+            commands::planning::planning_update_project_and_plan,
             commands::planning::planning_archive_project,
             commands::planning::planning_delete_project,
             commands::planning::planning_reorder_projects,

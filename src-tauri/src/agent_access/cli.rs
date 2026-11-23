@@ -32,9 +32,9 @@ pub const USAGE: &str = r#"Task Dock Agent CLI
   taskdock project create --name ... [--kind general] [--goal ...] [--template ID]
                           [--root <绝对目录>] [--dir-mode metadata_only|attach_existing|create_new]
                           [--request-id ID]
-  taskdock project update <project_id|plan_id> [--name ...] [--description ...]
+  taskdock project update <project_id|plan_id> --base-revision N
+                          [--name ...] [--description ...]
                           [--status active|archived] [--target-date YYYY-MM-DD]
-                          [--base-revision N]
   taskdock task list [--status pending|completed|all] [--search KW] [--limit N]
   taskdock task get <task_id>
   taskdock task create --title <标题> [--description ...] [--priority 0-3] [--due ISO] [--tag x]
@@ -43,7 +43,7 @@ pub const USAGE: &str = r#"Task Dock Agent CLI
   taskdock task search <关键词>
   taskdock plan list [--project ID] [--limit N]
   taskdock plan current
-  taskdock plan get <project_id>
+  taskdock plan get <plan_id>
   taskdock knowledge bases
   taskdock knowledge search <关键词> [--kb ID] [--limit N]
   taskdock knowledge get <document_id>
@@ -735,11 +735,11 @@ fn execute_inner(
                 let root = db
                     .with_read(|conn| perms::resolve_project_root(conn, id.trim()))?
                     .ok_or_else(|| AppError::NotFound(format!("项目不存在: {id}")))?;
-                let patch = crate::project_hub::service::ProjectPatch {
+                let patch = crate::project_hub::service::ProjectRootPatch {
                     name: take_flag(args, "--name"),
                     description: take_flag(args, "--description"),
                     // 项目根生命周期状态只允许 active | archived（服务层同域校验）。
-                    status: match take_flag(args, "--status") {
+                    lifecycle_status: match take_flag(args, "--status") {
                         Some(raw) => {
                             let status = raw.trim().to_string();
                             if status != "active" && status != "archived" {
@@ -751,8 +751,8 @@ fn execute_inner(
                     },
                     // 传了 = 设置（空串按服务层语义清除）；不传 = 保持。
                     target_date: take_flag(args, "--target-date").map(Some),
-                    // 传了才做乐观并发校验；不传不假设当前值。
-                    expected_revision: match take_flag(args, "--base-revision") {
+                    // 外部写入口必须携带版本令牌：不提供直接拒绝，不允许「不传即跳过检查」。
+                    expected_project_revision: match take_flag(args, "--base-revision") {
                         Some(raw) => Some(
                             raw.trim()
                                 .parse::<i64>()
@@ -762,8 +762,19 @@ fn execute_inner(
                     },
                     ..Default::default()
                 };
-                // 项目根元数据写：统一授权（身份 → scope → 能力 → grant）。
+                // 项目根元数据写：先做统一授权（身份 → scope → 能力 → grant）。
+                // 授权必须在参数完整性之前：无 grant 的主体应得到 FORBIDDEN，
+                // 而不是被用法错误掩盖成「参数不全」。
                 perms::require(db, principal, Capability::ProjectsWrite, &root)?;
+                // 外部写入口必须携带版本令牌，且至少一个可写字段。
+                if patch.is_empty() {
+                    return Err(usage_err("project update 需要至少一个字段（--name/--description/--status/--target-date）"));
+                }
+                if patch.expected_project_revision.is_none() {
+                    return Err(usage_err(
+                        "project update 需要 --base-revision（项目根 revision，从 project get 读取）",
+                    ));
+                }
                 // 统一服务内核（update_project_fields_tx 单事务读→比对→递增），
                 // 不自行写 UPDATE SQL。
                 let summary = db.with_transaction(|conn| {
@@ -1874,7 +1885,7 @@ mod project_update_tests {
             &db,
             &Principal::local(Source::Cli),
             &cli(),
-            args(&["project", "update", &root, "--name", "更新后"]),
+            args(&["project", "update", &root, "--name", "更新后", "--base-revision", "1"]),
             &store::NoGuard,
         )
         .expect("本机用户更新项目");
@@ -1943,7 +1954,15 @@ mod project_update_tests {
             &db,
             &Principal::local(Source::Cli),
             &cli(),
-            args(&["project", "update", &plan, "--name", "归一根后"]),
+            args(&[
+                "project",
+                "update",
+                &plan,
+                "--name",
+                "归一根后",
+                "--base-revision",
+                "1",
+            ]),
             &store::NoGuard,
         )
         .expect("计划 ID 入参必须归一到项目根");
@@ -1992,7 +2011,15 @@ mod project_update_tests {
             &db,
             &principal,
             &cli(),
-            args(&["project", "update", &plan, "--name", "操作记录后"]),
+            args(&[
+                "project",
+                "update",
+                &plan,
+                "--name",
+                "操作记录后",
+                "--base-revision",
+                "1",
+            ]),
             &store::NoGuard,
         )
         .expect("更新成功");

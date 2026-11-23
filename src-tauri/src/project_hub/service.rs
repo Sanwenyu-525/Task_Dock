@@ -330,18 +330,38 @@ pub struct CreateProjectRootInput {
     pub plan_sort_order: Option<i64>,
 }
 
-/// 项目根字段补丁：全部为 None 表示不修改。`target_date` 为三态：
-/// `None` = 保持；`Some(None)` = 清空；`Some(Some(v))` = 设置。
-#[derive(Clone, Debug, Default)]
-pub struct ProjectPatch {
+/// 项目根字段补丁（**只属于项目根聚合**）。
+///
+/// 计划容器字段（执行状态 `planning_projects.status`、`sort_order`）不在这里，
+/// 必须走 `commands::planning::PlanPatch` / `update_plan_tx`；否则一个 PATCH 会
+/// 同时写两个聚合，旧版本请求可以覆盖别人刚提交的数据。
+///
+/// `target_date` 为三态：`None` = 保持；`Some(None)` = 清空；`Some(Some(v))` = 设置。
+/// `expected_project_revision` 是项目根 revision（`workspace_projects.revision`），
+/// 不是计划 revision；通用更新入口必须携带它。
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+pub struct ProjectRootPatch {
     pub name: Option<String>,
     pub kind: Option<String>,
     pub description: Option<String>,
     pub goal: Option<String>,
-    pub status: Option<String>,
+    /// 生命周期状态（`workspace_projects.status`，只允许 active | archived）。
+    pub lifecycle_status: Option<String>,
     pub target_date: Option<Option<String>>,
-    /// 乐观并发（v93）：Some 时与当前项目根 revision 比对，不匹配返回 Conflict。
-    pub expected_revision: Option<i64>,
+    /// 乐观并发（v93）：与当前项目根 revision 比对，不匹配返回 Conflict。
+    pub expected_project_revision: Option<i64>,
+}
+
+impl ProjectRootPatch {
+    /// 是否提供了任何可写字段（版本令牌不算字段）。
+    pub fn is_empty(&self) -> bool {
+        self.name.is_none()
+            && self.kind.is_none()
+            && self.description.is_none()
+            && self.goal.is_none()
+            && self.lifecycle_status.is_none()
+            && self.target_date.is_none()
+    }
 }
 
 /// 计划容器写入输入（同一项目可有多个计划，只有一个 active）。
@@ -1401,12 +1421,38 @@ pub(crate) fn check_expected_revision_tx(
 
 /// 修改项目根字段（名称/类型/描述/目标/日期/生命周期），并把兼容镜像列
 /// （`planning_projects.name/description/target_date`）同步到该项目下的全部计划。
+///
+/// **只写项目根**：不同步写计划的执行状态/排序，也不推进计划 revision——
+/// 两个聚合的版本令牌彼此独立（ADR-0011）。
+///
+/// 通用更新入口（REST / MCP / CLI / IPC / 组合用例）必须走本函数：
+/// 没有 `expected_project_revision` 直接 `Validation`，不允许「不传就跳过检查」。
 /// 调用方必须已处于事务中。
 pub(crate) fn update_project_fields_tx(
     conn: &Connection,
     project_id: &str,
-    patch: ProjectPatch,
+    patch: ProjectRootPatch,
 ) -> AppResult<()> {
+    let Some(expected) = patch.expected_project_revision else {
+        return Err(AppError::Validation(
+            "缺少 expectedProjectRevision：项目根更新必须携带读取时获得的 revision".into(),
+        ));
+    };
+    apply_project_root_fields_tx(conn, project_id, patch, Some(expected))
+}
+
+/// 内部实现：`expected` 为 None 只允许**明确区分的内部/领域方法**使用
+/// （项目状态切换、工作空间编辑器的根路径保存、旧计划补链后的首次写入）。
+/// 普通业务更新一律经 [`update_project_fields_tx`] 强制携带版本令牌。
+pub(crate) fn apply_project_root_fields_tx(
+    conn: &Connection,
+    project_id: &str,
+    patch: ProjectRootPatch,
+    expected: Option<i64>,
+) -> AppResult<()> {
+    if patch.is_empty() {
+        return Err(AppError::Validation("没有可更新的字段".into()));
+    }
     let (current_name, current_kind, current_description, current_goal, current_target, current_status):
         (String, String, String, String, Option<String>, String) = conn
         .query_row(
@@ -1418,7 +1464,7 @@ pub(crate) fn update_project_fields_tx(
         .optional()?
         .ok_or_else(|| AppError::NotFound(format!("工作空间项目不存在: {project_id}")))?;
     // 项目根 revision（v93）：同一事务内「读 → 比对 → 递增」，不匹配即 Conflict。
-    check_expected_revision_tx(conn, "workspace_projects", project_id, patch.expected_revision)?;
+    check_expected_revision_tx(conn, "workspace_projects", project_id, expected)?;
 
     let name = match patch.name {
         Some(value) => clean_text(&value, "项目名称", MAX_NAME, false)?,
@@ -1440,7 +1486,7 @@ pub(crate) fn update_project_fields_tx(
         Some(value) => clean_date(value, "目标日期")?,
         None => current_target,
     };
-    let status = match patch.status {
+    let status = match patch.lifecycle_status {
         Some(value) => clean_enum(&value, "项目状态", WORKSPACE_PROJECT_STATUSES)?,
         None => current_status,
     };
@@ -1453,6 +1499,7 @@ pub(crate) fn update_project_fields_tx(
         params![name, kind, description, goal, target_date, status, now, project_id],
     )?;
     // 计划容器上的同名字段只是兼容镜像，唯一事实来源是项目根。
+    // 只同步镜像列，不推进计划 revision（计划聚合的版本令牌只随计划自身写入变化）。
     conn.execute(
         "UPDATE planning_projects
          SET name = ?1, description = ?2, target_date = ?3, updated_at = ?4
@@ -1462,7 +1509,7 @@ pub(crate) fn update_project_fields_tx(
     Ok(())
 }
 
-pub fn update_project(db: &Db, project_id: &str, patch: ProjectPatch) -> AppResult<ProjectSummary> {
+pub fn update_project(db: &Db, project_id: &str, patch: ProjectRootPatch) -> AppResult<ProjectSummary> {
     let project_id = project_id.trim().to_string();
     if project_id.is_empty() {
         return Err(AppError::Validation("项目 ID 不能为空".into()));
@@ -1474,14 +1521,20 @@ pub fn update_project(db: &Db, project_id: &str, patch: ProjectPatch) -> AppResu
 }
 
 pub fn set_project_status(db: &Db, project_id: &str, status: &str) -> AppResult<ProjectSummary> {
-    update_project(
-        db,
-        project_id,
-        ProjectPatch {
-            status: Some(status.to_string()),
-            ..Default::default()
-        },
-    )
+    // 领域方法（归档/恢复）自带不变量，不要求调用方提供版本令牌；
+    // 但它仍然是项目根写入，revision 照常 +1。
+    db.with_transaction(|conn| {
+        apply_project_root_fields_tx(
+            conn,
+            project_id,
+            ProjectRootPatch {
+                lifecycle_status: Some(status.to_string()),
+                ..Default::default()
+            },
+            None,
+        )?;
+        load_summary(conn, project_id)
+    })
 }
 
 /// 归档 / 恢复项目根。只改项目生命周期状态，不修改计划执行状态。

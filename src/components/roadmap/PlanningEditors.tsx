@@ -142,6 +142,8 @@ export interface ProjectEditorViewProps {
 
 export function ProjectEditorView({ plan, onClose }: ProjectEditorViewProps) {
   const updatePlan = usePlanningStore((s) => s.updatePlan);
+  const updateProjectRoot = usePlanningStore((s) => s.updateProjectRoot);
+  const updateProjectAndPlan = usePlanningStore((s) => s.updateProjectAndPlan);
   const showToast = useUiStore((s) => s.showToast);
 
   const [name, setName] = useState(plan.name);
@@ -156,6 +158,17 @@ export function ProjectEditorView({ plan, onClose }: ProjectEditorViewProps) {
   // 同步防重入：状态更新到下一次渲染之间，连点保存不能触发第二次请求。
   const busyRef = useRef(false);
   const aliveRef = useRef(true);
+  // 读取基线：编辑器打开时的值与两个聚合的 revision 必须成对保存。
+  // 期间若有外部写入让 store/ prop 前进，仍以本次读取的令牌提交 → 服务端返回 Conflict，
+  // 绝不把「别人刚提交的新数据」当成本地草稿的基线静默覆盖。
+  const baseRef = useRef({
+    name: plan.name,
+    description: plan.description,
+    status: plan.status,
+    targetDate: plan.target_date ?? null,
+    planRevision: plan.revision ?? null,
+    projectRevision: plan.project_revision ?? null,
+  });
   useEffect(() => {
     aliveRef.current = true;
     return () => {
@@ -189,24 +202,64 @@ export function ProjectEditorView({ plan, onClose }: ProjectEditorViewProps) {
       setError("项目名称不能为空");
       return;
     }
+    const nextName = name.trim();
+    const nextDescription = description;
+    const nextTargetDate = normalizeDateInput(targetDate);
+    const base = baseRef.current;
+    // 两个聚合分别判定：根字段（名称/描述/目标日期）与计划执行状态互不代写。
+    const rootChanged =
+      nextName !== base.name ||
+      nextDescription !== base.description ||
+      nextTargetDate !== base.targetDate;
+    const statusChanged = status !== base.status;
+    if (!rootChanged && !statusChanged) {
+      showToast("没有需要保存的修改");
+      onClose();
+      return;
+    }
     busyRef.current = true;
     setBusy(true);
     setError(null);
     try {
-      // 项目根名称/描述由 ProjectService 同步（计划是项目容器，ADR-0008）。
-      await updatePlan(plan.id, {
-        name: name.trim(),
-        description,
-        status,
-        target_date: normalizeDateInput(targetDate),
-      });
-      showToast("计划已更新", { kind: "success" });
+      const rootPatch = rootChanged
+        ? {
+            name: nextName,
+            description: nextDescription,
+            target_date: nextTargetDate,
+            // 读取时拿到的项目根 revision；孤儿旧计划为 null，由后端补链后首次写入。
+            expected_project_revision: base.projectRevision ?? undefined,
+          }
+        : null;
+      const planPatch = statusChanged
+        ? {
+            status,
+            // 计划聚合自己的令牌，与项目根 revision 独立。
+            expected_revision: base.planRevision ?? undefined,
+          }
+        : null;
+      if (rootPatch && planPatch) {
+        // 一次改两个聚合：组合用例在同一事务内校验两个 revision，任一冲突整体回滚。
+        await updateProjectAndPlan(plan.id, rootPatch, planPatch);
+        showToast("项目与计划已更新", { kind: "success" });
+      } else if (rootPatch) {
+        await updateProjectRoot(plan.id, rootPatch);
+        showToast("项目已更新", { kind: "success" });
+      } else if (planPatch) {
+        await updatePlan(plan.id, planPatch);
+        showToast("计划状态已更新", { kind: "success" });
+      }
       if (aliveRef.current) onClose();
     } catch (e) {
-      // 保留输入，仅提示错误（编辑失败不丢用户内容）
+      // 保留输入，仅提示错误（编辑失败不丢用户内容）；冲突时明确提示刷新，
+      // 绝不自动用本地值覆盖服务端新数据。
+      const text = String(e);
+      const conflict = /版本冲突|CONFLICT/i.test(text);
+      const message = conflict
+        ? `保存冲突：${text}（其他 Agent 已提交新版本，请重新打开后再改）`
+        : `保存失败：${text}`;
       if (aliveRef.current) {
-        setError(`保存失败：${String(e)}`);
-        showToast(`保存失败：${String(e)}`, { kind: "error" });
+        setError(message);
+        showToast(message, { kind: "error" });
       }
     } finally {
       busyRef.current = false;
@@ -217,7 +270,7 @@ export function ProjectEditorView({ plan, onClose }: ProjectEditorViewProps) {
   return (
     <EditorShell
       title="编辑计划"
-      subtitle="修改计划名称、状态与目标日期，保存后回到项目总览。"
+      subtitle="名称、描述与目标日期写入项目；执行状态写入计划。保存时分别校验各自的版本。"
       backLabel="返回项目总览"
       dirty={dirty}
       busy={busy}

@@ -78,6 +78,7 @@ function summary(id: string, name: string): ProjectHubProjectSummary {
     activePlanId: `plan-${id}`,
     createdAt: "2026-11-20T00:00:00Z",
     updatedAt: "2026-11-20T00:00:00Z",
+    revision: 1,
     phaseCount: 2,
     taskCount: 1,
     completedTaskCount: 0,

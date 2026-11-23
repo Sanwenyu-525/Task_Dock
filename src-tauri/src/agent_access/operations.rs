@@ -287,12 +287,14 @@ impl OperationResult {
             .filter(|v| !v.is_empty());
         let project_id = pick("projectId")
             .or_else(|| pick("project_id"))
-            .or_else(|| {
-                if kind == "project" {
-                    nested_project_id.clone()
-                } else {
-                    None
+            .or_else(|| match kind {
+                "project" => nested_project_id.clone(),
+                // 计划结果带所属项目根（PlanningProject.workspace_project_id）；
+                // resource_id 仍是 PlanId，绝不把 PlanId 当 ProjectId。
+                "plan" => {
+                    pick("workspace_project_id").or_else(|| pick("workspaceProjectId"))
                 }
+                _ => None,
             });
         // 项目创建结果没有顶层 `id`：资源 ID 直接取项目根，不能用标题或计划 ID 顶替。
         let id = pick("id")
@@ -1493,6 +1495,11 @@ pub fn resource_kind_for_tool(tool: &str) -> &'static str {
     if name.contains("feature") {
         return "feature";
     }
+    // 计划聚合的写工具名包含 "plan"；必须在 "task" 之前判定
+    // （taskdock_update_plan 以 task 开头，否则会被误判成任务）。
+    if name.contains("plan") {
+        return "plan";
+    }
     if name.contains("project") {
         return "project";
     }
@@ -1534,6 +1541,8 @@ pub fn describe_rest_write(method: &str, path: &str) -> Option<(&'static str, &'
         ("POST", "projects") => ("project.create", "project"),
         // 项目更新（v92 projects.write 链路）：同样以项目根为资源。
         ("PATCH", "projects") => ("project.update", "project"),
+        // 计划更新：资源是计划（PlanId），项目根只作归属字段。
+        ("PATCH", "plans") => ("plan.update", "plan"),
         ("POST", "handoffs") => ("handoff.create", "handoff"),
         ("POST", "reports") => ("report.create", "report"),
         ("POST", "imports") => ("import.decide", "import"),

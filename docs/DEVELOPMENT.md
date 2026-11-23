@@ -288,7 +288,7 @@ task_dock/
 | 命令 | 用途 |
 |---|---|
 | `planning_list_projects(include_archived?)` | 项目列表（含功能统计与整体进度；空项目 has_features=false） |
-| `planning_create_project` / `planning_update_project` / `planning_delete_project` | 项目 CRUD（删除级联功能/步骤/历史；前端必须先确认） |
+| `planning_create_project` / `planning_update_project_root` / `planning_update_plan` / `planning_delete_project` | 项目根与计划的写入口（第五轮拆分；根/计划各自 revision）；删除级联功能/步骤/历史，前端必须先确认 |
 | `planning_archive_project(id, archived)` | 归档 / 恢复（与项目状态相互独立） |
 | `planning_reorder_projects(ids)` | 项目排序 |
 | `planning_list_features(project_id)` | 功能列表（含步骤与步骤进度） |

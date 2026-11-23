@@ -69,8 +69,13 @@ pub fn create_for_agent_in_conn(
     }
     // 统一创建服务：项目根 + 初始计划同事务；幂等归属由 principal 决定。
     let created = create_with_conn(conn, request)?;
-    // 自动授权只作用于刚创建的项目根，绝不扩大为全局权限。
-    permissions::grant_created_project_in_conn(conn, agent_row_id, &created.project.id)?;
+    // 自动授权**只在首次创建时**发生，且与创建同事务：
+    // - 幂等重放（created=false）不得补写授权，否则人类撤销的授权会被重放悄悄恢复；
+    // - 授权失败必须整体回滚（项目根、初始计划、幂等归属、事件一起回滚），
+    //   绝不能留下「项目已创建但创建者没有权限」的半提交状态。
+    if created.created {
+        permissions::grant_created_project_in_conn(conn, agent_row_id, &created.project.id)?;
+    }
     Ok(created)
 }
 
@@ -175,6 +180,23 @@ mod tests {
         assert!(created.created);
         assert_ne!(created.project.id, created.active_plan.id);
         let root_id = created.project.id.clone();
+        // 项目根与初始计划都真实落库（测试 A）。
+        let (root_rows, plan_rows): (i64, i64) = db
+            .with_read(|conn| {
+                let root_rows = conn.query_row(
+                    "SELECT COUNT(*) FROM workspace_projects WHERE id = ?1",
+                    rusqlite::params![root_id],
+                    |r| r.get(0),
+                )?;
+                let plan_rows = conn.query_row(
+                    "SELECT COUNT(*) FROM planning_projects WHERE id = ?1 AND workspace_project_id = ?2",
+                    rusqlite::params![created.active_plan.id, root_id],
+                    |r| r.get(0),
+                )?;
+                Ok((root_rows, plan_rows))
+            })
+            .unwrap();
+        assert_eq!((root_rows, plan_rows), (1, 1), "项目根与初始计划各一条");
         // 自动授权只落项目根（CreatorProject 语义），无计划级授权。
         let grants: Vec<String> = db
             .with_read(|conn| {
@@ -200,6 +222,188 @@ mod tests {
             .unwrap();
         assert_eq!(actor, "agent");
         assert_eq!(principal_id, row_id);
+    }
+
+    /// 读项目走统一授权三层（能力 + 项目根 grant），用于验证「重放不得恢复授权」。
+    fn read_project(db: &Db, row_id: &str, project_id: &str) -> AppResult<()> {
+        let principal = crate::agent_access::Principal::agent(
+            row_id.to_string(),
+            "usecase-reader".to_string(),
+            crate::agent_access::Source::Mcp,
+        );
+        crate::agent_access::permissions::require(db, &principal, Capability::ProjectsRead, project_id)
+    }
+
+    /// (项目根数, 计划数, 授权行数, 幂等归属行数)。
+    fn aggregate_counts(db: &Db) -> (i64, i64, i64, i64) {
+        db.with_read(|conn| {
+            let projects: i64 =
+                conn.query_row("SELECT COUNT(*) FROM workspace_projects", [], |r| r.get(0))?;
+            let plans: i64 =
+                conn.query_row("SELECT COUNT(*) FROM planning_projects", [], |r| r.get(0))?;
+            let grants: i64 =
+                conn.query_row("SELECT COUNT(*) FROM mcp_agent_grants", [], |r| r.get(0))?;
+            let idempotency: i64 =
+                conn.query_row("SELECT COUNT(*) FROM project_create_requests", [], |r| r.get(0))?;
+            Ok((projects, plans, grants, idempotency))
+        })
+        .unwrap()
+    }
+
+    fn revisions(db: &Db, root: &str, plan: &str) -> (i64, i64) {
+        db.with_read(|conn| {
+            let root_rev: i64 = conn.query_row(
+                "SELECT revision FROM workspace_projects WHERE id = ?1",
+                rusqlite::params![root],
+                |r| r.get(0),
+            )?;
+            let plan_rev: i64 = conn.query_row(
+                "SELECT revision FROM planning_projects WHERE id = ?1",
+                rusqlite::params![plan],
+                |r| r.get(0),
+            )?;
+            Ok((root_rev, plan_rev))
+        })
+        .unwrap()
+    }
+
+    /// 测试 B：撤权后重放同一 clientRequestId —— 项目不重建、授权不恢复、读取 FORBIDDEN。
+    /// 本轮最高优先级回归：人类撤销的权限不可被 Agent 自行恢复。
+    #[test]
+    fn replay_after_revocation_does_not_restore_grant() {
+        let db = Db::open_in_memory().unwrap();
+        let row_id = agent(
+            &db,
+            "revoke-replay",
+            "project_rw",
+            &["projects.create", "projects.read"],
+        );
+        let created = create_for_agent(&db, &row_id, request("撤权重放", "req-revoke")).unwrap();
+        let root = created.project.id.clone();
+        assert!(created.created);
+        read_project(&db, &row_id, &root).expect("首次创建后创建者可读");
+
+        crate::mcp::auth::revoke_project(&db, &row_id, &root).unwrap();
+        let grants_before: i64 = db
+            .with_read(|conn| {
+                Ok(conn.query_row(
+                    "SELECT COUNT(*) FROM mcp_agent_grants WHERE agent_row_id = ?1 AND project_id = ?2",
+                    rusqlite::params![row_id, root],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(grants_before, 0, "撤销后授权行必须不存在");
+        let counts_before = aggregate_counts(&db);
+
+        let replay = create_for_agent(&db, &row_id, request("撤权重放", "req-revoke")).unwrap();
+        assert!(!replay.created, "重放必须返回 created=false");
+        assert_eq!(replay.project.id, root, "重放返回历史创建结果，不新建项目");
+        assert_eq!(
+            aggregate_counts(&db),
+            counts_before,
+            "重放不得新增项目/计划/授权/幂等归属"
+        );
+        let grants_after: i64 = db
+            .with_read(|conn| {
+                Ok(conn.query_row(
+                    "SELECT COUNT(*) FROM mcp_agent_grants WHERE agent_row_id = ?1 AND project_id = ?2",
+                    rusqlite::params![row_id, root],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(grants_after, 0, "重放绝不允许重新写入授权行");
+        assert!(
+            read_project(&db, &row_id, &root).is_err(),
+            "撤权后重放仍必须 FORBIDDEN"
+        );
+    }
+
+    /// 测试 C：连续重放三次只返回同一结果，不产生额外数据，也不推进任何 revision。
+    #[test]
+    fn repeated_replay_creates_nothing_and_keeps_revisions() {
+        let db = Db::open_in_memory().unwrap();
+        let row_id = agent(&db, "replay3", "project_rw", &["projects.create"]);
+        let created = create_for_agent(&db, &row_id, request("连续重放", "req-replay3")).unwrap();
+        let root = created.project.id.clone();
+        let plan = created.active_plan.id.clone();
+        let counts = aggregate_counts(&db);
+        let revs = revisions(&db, &root, &plan);
+
+        for _ in 0..3 {
+            let replay = create_for_agent(&db, &row_id, request("连续重放", "req-replay3")).unwrap();
+            assert!(!replay.created);
+            assert_eq!(replay.project.id, root);
+            assert_eq!(replay.active_plan.id, plan);
+        }
+        assert_eq!(aggregate_counts(&db), counts, "重放不新增任何数据");
+        assert_eq!(revisions(&db, &root, &plan), revs, "重放不推进 revision");
+    }
+
+    /// 测试 D：只有人类显式重新授权后，Agent 才能恢复访问。
+    #[test]
+    fn explicit_regrant_restores_access_after_replay() {
+        let db = Db::open_in_memory().unwrap();
+        let row_id = agent(
+            &db,
+            "regrant",
+            "project_rw",
+            &["projects.create", "projects.read"],
+        );
+        let created = create_for_agent(&db, &row_id, request("重授权", "req-regrant")).unwrap();
+        let root = created.project.id.clone();
+        crate::mcp::auth::revoke_project(&db, &row_id, &root).unwrap();
+        // 重放不能恢复。
+        let replay = create_for_agent(&db, &row_id, request("重授权", "req-regrant")).unwrap();
+        assert!(!replay.created);
+        assert!(read_project(&db, &row_id, &root).is_err(), "重放后仍拒绝");
+        // 人类显式 grant_project 后才恢复。
+        crate::mcp::auth::grant_project(&db, &row_id, &root).unwrap();
+        read_project(&db, &row_id, &root).expect("显式重新授权后恢复访问");
+    }
+
+    /// 测试 E：首次授权写入失败 → 项目根、初始计划、幂等归属、事件整体回滚。
+    /// 用 SQLite 触发器模拟授权写入失败，避免依赖真实磁盘故障。
+    #[test]
+    fn grant_failure_rolls_back_project_plan_and_idempotency() {
+        let db = Db::open_in_memory().unwrap();
+        let row_id = agent(&db, "grant-fail", "project_rw", &["projects.create"]);
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER fail_grant BEFORE INSERT ON mcp_agent_grants
+                 BEGIN SELECT RAISE(ABORT, 'simulated grant failure'); END;",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        let error = create_for_agent(&db, &row_id, request("授权失败", "req-grant-fail")).unwrap_err();
+        assert!(
+            matches!(error, AppError::Db(_)),
+            "授权写入失败必须向上返回错误：{error:?}"
+        );
+        assert_eq!(
+            aggregate_counts(&db),
+            (0, 0, 0, 0),
+            "授权失败必须回滚项目根/初始计划/授权/幂等归属"
+        );
+        let events: i64 = db
+            .with_read(|conn| {
+                Ok(conn.query_row("SELECT COUNT(*) FROM project_events", [], |r| r.get(0))?)
+            })
+            .unwrap();
+        assert_eq!(events, 0, "回滚后不得残留创建事件");
+
+        // 去掉故障注入后同一请求 ID 可以正常创建：幂等记录确实被回滚了。
+        db.with_conn(|conn| {
+            conn.execute_batch("DROP TRIGGER fail_grant;")?;
+            Ok(())
+        })
+        .unwrap();
+        let created = create_for_agent(&db, &row_id, request("授权失败", "req-grant-fail")).unwrap();
+        assert!(created.created, "回滚后同一请求 ID 仍可首次创建");
+        assert_eq!(aggregate_counts(&db), (1, 1, 1, 1));
     }
 
     #[test]

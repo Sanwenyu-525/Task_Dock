@@ -71,6 +71,11 @@ pub struct PlanningProject {
     /// 所属项目根（`workspace_projects.id`，v78 补链后的新计划必有）。
     /// ADR-0010：`id` 是计划 ID，前端用它区分 planId 与 projectId，孤儿旧计划为 null。
     pub workspace_project_id: Option<String>,
+    /// 所属项目根的 revision（`workspace_projects.revision`，v93）。
+    /// 与 `revision`（计划自身）是两个独立聚合的版本令牌：
+    /// 桌面编辑器保存名称/描述/目标日期时必须原样回传，供根更新做并发判定。
+    /// 孤儿旧计划（无根）为 None。
+    pub project_revision: Option<i64>,
     pub stats: ProjectStats,
 }
 
@@ -179,22 +184,30 @@ pub struct ProjectInput {
     pub target_date: Option<String>,
 }
 
+/// 计划聚合 PATCH：**只允许计划自身字段**（执行状态 / 排序）。
+///
+/// 名称、描述、目标日期是项目根的镜像列，唯一事实来源是 `workspace_projects`，
+/// 只能由 `project_hub::service::update_project_fields_tx` 同步；计划服务不提供
+/// 这些字段的写入口，避免一个 PATCH 同时改两个聚合。
+///
+/// `expected_plan_revision` 是计划 revision（`planning_projects.revision`），
+/// 与项目根 revision 完全独立；通用写入口必须携带。
 #[derive(Deserialize)]
-pub struct ProjectPatch {
-    #[serde(default)]
-    pub name: Option<String>,
-    #[serde(default)]
-    pub description: Option<String>,
-    #[serde(default)]
-    pub status: Option<String>,
-    /// 三态：缺省 = 保持原值；null = 清除；值 = 设置
-    #[serde(default, deserialize_with = "deserialize_optional_field")]
-    pub target_date: Option<Option<String>>,
+pub struct PlanPatch {
+    /// 计划执行状态（planning | in_progress | paused | completed）。
+    #[serde(default, alias = "status")]
+    pub execution_status: Option<String>,
     #[serde(default)]
     pub sort_order: Option<i64>,
-    /// 乐观并发（v37）：传入时校验当前 revision，不匹配返回 Conflict；不传保持旧行为
-    #[serde(default)]
-    pub expected_revision: Option<i64>,
+    #[serde(default, alias = "expected_revision", alias = "expectedPlanRevision")]
+    pub expected_plan_revision: Option<i64>,
+}
+
+impl PlanPatch {
+    /// 是否提供了任何可写字段（版本令牌不算字段）。
+    pub fn is_empty(&self) -> bool {
+        self.execution_status.is_none() && self.sort_order.is_none()
+    }
 }
 
 #[derive(Deserialize)]
@@ -434,6 +447,7 @@ fn row_to_project(row: &rusqlite::Row<'_>) -> rusqlite::Result<PlanningProject> 
         updated_at: row.get(8)?,
         revision: row.get(16)?,
         workspace_project_id: row.get(17)?,
+        project_revision: row.get(18)?,
         stats,
     })
 }
@@ -442,8 +456,9 @@ const PROJECT_SELECT: &str = "SELECT p.id, p.name, p.description, p.status, p.ar
      p.sort_order, p.created_at, p.updated_at,
      COALESCE(f.total, 0), COALESCE(f.completed, 0), COALESCE(f.in_progress, 0), COALESCE(f.blocked, 0),
      COALESCE(f.planned, 0), COALESCE(f.review, 0), COALESCE(f.paused, 0), p.revision,
-     p.workspace_project_id
+     p.workspace_project_id, wp.revision
    FROM planning_projects p
+   LEFT JOIN workspace_projects wp ON wp.id = p.workspace_project_id
    LEFT JOIN (
      SELECT project_id,
             COUNT(*) AS total,
@@ -729,56 +744,52 @@ pub fn planning_create_project(
     create_project_impl(&db, input)
 }
 
-pub fn update_project_tx(
+/// 计划聚合写（只改计划自身字段）。
+///
+/// 不变量：
+/// - 入参必须是**计划 ID**（项目根 ID → Validation，不猜测调用方意图）；
+/// - 只改执行状态 / 排序，镜像列（name/description/target_date）与项目根归
+///   ProjectService 管，本函数不提供这些字段；
+/// - 必须携带 `expected_plan_revision`；空补丁返回 Validation（不递增 revision）；
+/// - 只推进计划 revision，项目根 revision 不变。
+pub fn update_plan_tx(
     conn: &Connection,
-    id: String,
-    patch: ProjectPatch,
+    plan_id: &str,
+    patch: PlanPatch,
 ) -> AppResult<PlanningProject> {
-    let name = match &patch.name {
-        Some(n) => Some(check_name(n, "项目", 100)?),
-        None => None,
-    };
-    let description = match &patch.description {
-        Some(d) => Some(check_text(d, "项目描述", 2000)?),
-        None => None,
-    };
-    if let Some(s) = &patch.status {
-        check_status(s, PROJECT_STATUSES, "项目")?;
+    let plan_id = plan_id.trim();
+    if plan_id.is_empty() {
+        return Err(AppError::Validation("计划 ID 不能为空".into()));
     }
-    // 兼容适配器：计划 ID → 项目根；旧数据缺失链时在同一事务内补建。
-    let project_id = crate::project_hub::service::ensure_project_for_plan_tx(conn, &id)?;
-    let current: (Option<String>, i64) = conn
-        .query_row(
-            "SELECT target_date, revision FROM planning_projects WHERE id = ?1",
-            rusqlite::params![id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+    // 身份防混用：项目根 ID 不是计划，不自动解析成 active 计划。
+    match crate::project_hub::service::resolve_project_ref(conn, plan_id)? {
+        Some(crate::project_hub::service::ProjectRef::Project(_)) => {
+            return Err(AppError::Validation(format!(
+                "{plan_id} 是项目根 ID，不是计划；项目根字段请更新项目，计划执行状态请传计划 ID"
+            )));
+        }
+        Some(crate::project_hub::service::ProjectRef::Plan { .. }) => {}
+        None => return Err(AppError::NotFound(format!("计划不存在: {plan_id}"))),
+    }
+    if patch.is_empty() {
+        return Err(AppError::Validation("没有可更新的字段".into()));
+    }
+    if let Some(status) = &patch.execution_status {
+        check_status(status, PROJECT_STATUSES, "计划")?;
+    }
+    let expected = patch.expected_plan_revision.ok_or_else(|| {
+        AppError::Validation(
+            "缺少 expectedPlanRevision：计划更新必须携带读取时获得的计划 revision".into(),
         )
-        .optional()
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::Validation(format!("项目不存在: {}", id)))?;
-    let target_date = resolve_date(&current.0, &parse_date_update(&patch.target_date)?);
-    crate::project_hub::service::check_expected_revision_tx(conn, "planning_projects", &id, patch.expected_revision)?;
-
-    // 项目字段（名称/描述/目标日期）交给 ProjectService，项目根是唯一事实来源；
-    // 它同时把同名列同步为计划容器的兼容镜像。
-    if name.is_some() || description.is_some() || patch.target_date.is_some() {
-        crate::project_hub::service::update_project_fields_tx(
-            conn,
-            &project_id,
-            crate::project_hub::service::ProjectPatch {
-                name,
-                description,
-                target_date: patch
-                    .target_date
-                    .is_some()
-                    .then(|| target_date.clone()),
-                ..Default::default()
-            },
-        )?;
-    }
-
+    })?;
+    crate::project_hub::service::check_expected_revision_tx(
+        conn,
+        "planning_projects",
+        plan_id,
+        Some(expected),
+    )?;
     let now = now_iso();
-    // 计划自身字段：执行状态、排序与乐观并发版本；不触碰项目生命周期状态。
+    // 只改计划自身字段与计划 revision；项目根与镜像列不在本函数职责内。
     conn.execute(
         "UPDATE planning_projects SET
            status = COALESCE(?1, status),
@@ -786,27 +797,144 @@ pub fn update_project_tx(
            revision = revision + 1,
            updated_at = ?3
          WHERE id = ?4",
-        rusqlite::params![patch.status, patch.sort_order, now, id],
+        rusqlite::params![patch.execution_status, patch.sort_order, now, plan_id],
     )
     .map_err(AppError::from)?;
-    load_project_tx(conn, &id)
+    load_project_tx(conn, plan_id)
 }
 
-pub fn update_project_impl(
-    db: &Db,
-    id: String,
-    patch: ProjectPatch,
-) -> AppResult<PlanningProject> {
-    db.with_transaction(|conn| update_project_tx(conn, id, patch))
+pub fn update_plan_impl(db: &Db, id: String, patch: PlanPatch) -> AppResult<PlanningProject> {
+    db.with_transaction(|conn| update_plan_tx(conn, &id, patch))
 }
 
 #[tauri::command]
-pub fn planning_update_project(
+pub fn planning_update_plan(
     db: State<'_, Arc<Db>>,
     id: String,
-    patch: ProjectPatch,
+    patch: PlanPatch,
 ) -> AppResult<PlanningProject> {
-    update_project_impl(&db, id, patch)
+    update_plan_impl(&db, id, patch)
+}
+
+/// 组合写结果：项目根聚合（revision = 根 revision）与计划聚合（revision = 计划 revision）。
+#[derive(Serialize, Clone, Debug)]
+pub struct ProjectAndPlanOutcome {
+    pub project: crate::project_hub::service::ProjectSummary,
+    pub plan: PlanningProject,
+}
+
+/// 项目根 + 计划在**同一事务**内更新（桌面端编辑器一次改两个聚合时使用）。
+///
+/// 1) 先校验项目根 revision（update_project_fields_tx 内）；
+/// 2) 再校验计划 revision（update_plan_tx 内）；
+/// 3) 任一冲突 → 整个事务回滚，绝不留「名称已改、状态未改」的半提交。
+pub fn update_project_and_plan_tx(
+    conn: &Connection,
+    plan_id: &str,
+    project_patch: crate::project_hub::service::ProjectRootPatch,
+    plan_patch: PlanPatch,
+) -> AppResult<ProjectAndPlanOutcome> {
+    if project_patch.is_empty() && plan_patch.is_empty() {
+        return Err(AppError::Validation("没有可更新的字段".into()));
+    }
+    let plan_id = plan_id.trim();
+    if plan_id.is_empty() {
+        return Err(AppError::Validation("计划 ID 不能为空".into()));
+    }
+    // 计划必须存在且必须是计划 ID（根 ID → Validation）。
+    match crate::project_hub::service::resolve_project_ref(conn, plan_id)? {
+        Some(crate::project_hub::service::ProjectRef::Project(_)) => {
+            return Err(AppError::Validation(format!(
+                "{plan_id} 是项目根 ID，不是计划；组合更新需要计划 ID"
+            )));
+        }
+        Some(crate::project_hub::service::ProjectRef::Plan { .. }) => {}
+        None => return Err(AppError::NotFound(format!("计划不存在: {plan_id}"))),
+    }
+    // 旧数据补链：计划没有根时在同一事务内补建（补链后根 revision 从 1 起）。
+    let root = crate::project_hub::service::ensure_project_for_plan_tx(conn, plan_id)?;
+    if !project_patch.is_empty() {
+        crate::project_hub::service::update_project_fields_tx(conn, &root, project_patch)?;
+    }
+    if !plan_patch.is_empty() {
+        update_plan_tx(conn, plan_id, plan_patch)?;
+    }
+    Ok(ProjectAndPlanOutcome {
+        project: crate::project_hub::service::load_summary(conn, &root)?,
+        plan: load_project_tx(conn, plan_id)?,
+    })
+}
+
+pub fn update_project_and_plan_impl(
+    db: &Db,
+    plan_id: String,
+    project: crate::project_hub::service::ProjectRootPatch,
+    plan: PlanPatch,
+) -> AppResult<ProjectAndPlanOutcome> {
+    db.with_transaction(|conn| update_project_and_plan_tx(conn, &plan_id, project, plan))
+}
+
+#[tauri::command]
+pub fn planning_update_project_and_plan(
+    db: State<'_, Arc<Db>>,
+    id: String,
+    project: crate::project_hub::service::ProjectRootPatch,
+    plan: PlanPatch,
+) -> AppResult<ProjectAndPlanOutcome> {
+    update_project_and_plan_impl(&db, id, project, plan)
+}
+
+/// 项目根写（桌面端编辑器：名称/描述/目标日期/生命周期）。
+///
+/// 入参是计划 ID（项目上下文通常只有计划）；直接传项目根 ID 也接受。
+/// 解析/补链出项目根后，只有**本次补链前没有根**的旧数据允许不带
+/// expectedProjectRevision（首次写入），已有根一律要求版本令牌。
+pub fn update_project_root_impl(
+    db: &Db,
+    id: String,
+    patch: crate::project_hub::service::ProjectRootPatch,
+) -> AppResult<ProjectAndPlanOutcome> {
+    if patch.is_empty() {
+        return Err(AppError::Validation("没有可更新的字段".into()));
+    }
+    db.with_transaction(|conn| {
+        let (root, plan_id, had_root) =
+            match crate::project_hub::service::resolve_project_ref(conn, &id)? {
+                Some(crate::project_hub::service::ProjectRef::Project(root)) => {
+                    // 已是项目根：镜像同步覆盖该根下的全部计划，回读 active 计划。
+                    let plan_id = crate::project_hub::service::load_summary(conn, &root.0)?
+                        .active_plan_id
+                        .ok_or_else(|| AppError::Validation("项目缺少 active 计划".into()))?;
+                    (root.0, plan_id, true)
+                }
+                Some(crate::project_hub::service::ProjectRef::Plan { .. }) => {
+                    let had_root =
+                        crate::project_hub::service::resolve_project_root(conn, &id)?.is_some();
+                    let root = crate::project_hub::service::ensure_project_for_plan_tx(conn, &id)?;
+                    (root, id.clone(), had_root)
+                }
+                None => return Err(AppError::NotFound(format!("项目/计划不存在: {id}"))),
+            };
+        if had_root {
+            crate::project_hub::service::update_project_fields_tx(conn, &root, patch)?;
+        } else {
+            // 补链后的首次写入：根 revision 从 1 起，没有「读取过的版本」可携带。
+            crate::project_hub::service::apply_project_root_fields_tx(conn, &root, patch, None)?;
+        }
+        Ok(ProjectAndPlanOutcome {
+            project: crate::project_hub::service::load_summary(conn, &root)?,
+            plan: load_project_tx(conn, &plan_id)?,
+        })
+    })
+}
+
+#[tauri::command]
+pub fn planning_update_project_root(
+    db: State<'_, Arc<Db>>,
+    id: String,
+    patch: crate::project_hub::service::ProjectRootPatch,
+) -> AppResult<ProjectAndPlanOutcome> {
+    update_project_root_impl(&db, id, patch)
 }
 
 /// 归档 / 恢复：只改变计划的 `archived` 标记，**不修改项目根生命周期状态**
@@ -1083,6 +1211,7 @@ pub fn planning_unlink_agent_session(
     let changed = crate::mcp::PlanningChanged {
         kind: "feature",
         project_id: Some(project_id),
+        plan_id: None,
         feature_id: Some(feature_id),
         revision: None,
     };
@@ -2050,23 +2179,40 @@ mod tests {
         // 「最后一个计划受保护」的删除回归单计划现场。
         delete_project_impl(&db, successor).unwrap();
 
-        // 更新项目字段
-        let updated = update_project_impl(
+        // 更新项目根字段（名称/描述/目标日期）：只推进项目根 revision
+        let root_rev = p.project_revision.expect("创建后计划应带项目根 revision");
+        let outcome = update_project_root_impl(
             &db,
             p.id.clone(),
-            ProjectPatch {
+            crate::project_hub::service::ProjectRootPatch {
                 name: Some("改名".into()),
                 description: Some("描述".into()),
-                status: Some("in_progress".into()),
                 target_date: Some(Some("2026-12-01".into())),
-                sort_order: None,
-                expected_revision: None,
+                expected_project_revision: Some(root_rev),
+                ..Default::default()
             },
         )
         .unwrap();
-        assert_eq!(updated.name, "改名");
+        assert_eq!(outcome.project.name, "改名");
+        assert_eq!(outcome.plan.name, "改名", "计划镜像同步项目根名称");
+        assert_eq!(outcome.plan.target_date.as_deref(), Some("2026-12-01"));
+        assert_eq!(outcome.project.revision, root_rev + 1, "根 revision +1");
+        assert_eq!(outcome.plan.revision, 1, "根写不得推进计划 revision");
+
+        // 计划执行状态：只推进计划 revision
+        let updated = update_plan_impl(
+            &db,
+            p.id.clone(),
+            PlanPatch {
+                execution_status: Some("in_progress".into()),
+                sort_order: None,
+                expected_plan_revision: Some(1),
+            },
+        )
+        .unwrap();
         assert_eq!(updated.status, "in_progress");
-        assert_eq!(updated.target_date.as_deref(), Some("2026-12-01"));
+        assert_eq!(updated.revision, 2);
+        assert_eq!(updated.name, "改名", "计划写不得回滚项目根镜像");
 
         // 归档计划不修改项目根生命周期状态
         let project_id: String = db
@@ -2558,35 +2704,31 @@ mod tests {
         let p = create_project_impl(&db, proj_input("P")).unwrap();
         let f = create_feature_impl(&db, p.id.clone(), feat_input("F")).unwrap();
         assert_eq!(p.revision, 1, "新建实体 revision 从 1 起步");
+        assert_eq!(p.project_revision, Some(1), "新建项目根 revision 从 1 起步");
         assert_eq!(f.revision, 1);
 
-        // 期望匹配 → 成功且 revision +1
-        let updated = update_project_impl(
+        // 项目根：期望匹配 → 成功，根 revision +1，计划 revision 不变
+        let outcome = update_project_root_impl(
             &db,
             p.id.clone(),
-            ProjectPatch {
+            crate::project_hub::service::ProjectRootPatch {
                 name: Some("改名".into()),
-                description: None,
-                status: None,
-                target_date: None,
-                sort_order: None,
-                expected_revision: Some(1),
+                expected_project_revision: Some(1),
+                ..Default::default()
             },
         )
         .unwrap();
-        assert_eq!(updated.revision, 2);
+        assert_eq!(outcome.project.revision, 2);
+        assert_eq!(outcome.plan.revision, 1, "根写不消耗计划 revision");
 
-        // 过期期望 → Conflict（带当前 revision），内容不被覆盖
-        let err = update_project_impl(
+        // 根 revision 过期 → Conflict，内容不被覆盖
+        let err = update_project_root_impl(
             &db,
             p.id.clone(),
-            ProjectPatch {
+            crate::project_hub::service::ProjectRootPatch {
                 name: Some("迟到写入".into()),
-                description: None,
-                status: None,
-                target_date: None,
-                sort_order: None,
-                expected_revision: Some(1),
+                expected_project_revision: Some(1),
+                ..Default::default()
             },
         )
         .unwrap_err();
@@ -2599,21 +2741,75 @@ mod tests {
         let current_name = db.with_read(|c| load_project_tx(c, &p.id)).unwrap().name;
         assert_eq!(current_name, "改名", "迟到的旧版本写入不得生效");
 
-        // 不传 expected_revision → 保持旧行为（UI 兼容），revision 仍然 +1
-        let updated = update_project_impl(
+        // 项目根通用入口不传 expectedProjectRevision → Validation（不允许跳过检查）
+        assert!(matches!(
+            update_project_root_impl(
+                &db,
+                p.id.clone(),
+                crate::project_hub::service::ProjectRootPatch {
+                    name: Some("无令牌".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap_err(),
+            AppError::Validation(_)
+        ));
+
+        // 计划聚合：计划 revision 独立，项目根 revision 不受影响
+        let plan1 = update_plan_impl(
             &db,
             p.id.clone(),
-            ProjectPatch {
-                name: Some("再改".into()),
-                description: None,
-                status: None,
-                target_date: None,
+            PlanPatch {
+                execution_status: Some("in_progress".into()),
                 sort_order: None,
-                expected_revision: None,
+                expected_plan_revision: Some(1),
             },
         )
         .unwrap();
-        assert_eq!(updated.revision, 3);
+        assert_eq!(plan1.revision, 2);
+        let root_rev_after_plan: i64 = db
+            .with_read(|c| {
+                Ok(c.query_row(
+                    "SELECT revision FROM workspace_projects WHERE id = (SELECT workspace_project_id FROM planning_projects WHERE id = ?1)",
+                    rusqlite::params![p.id],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(root_rev_after_plan, 2, "计划写不消耗项目根 revision");
+        // 计划 revision 过期 → Conflict
+        assert!(matches!(
+            update_plan_impl(
+                &db,
+                p.id.clone(),
+                PlanPatch {
+                    execution_status: Some("paused".into()),
+                    sort_order: None,
+                    expected_plan_revision: Some(1),
+                },
+            )
+            .unwrap_err(),
+            AppError::Conflict(_)
+        ));
+        // 空计划补丁 → Validation，且 revision 不变
+        assert!(matches!(
+            update_plan_impl(
+                &db,
+                p.id.clone(),
+                PlanPatch {
+                    execution_status: None,
+                    sort_order: None,
+                    expected_plan_revision: Some(2),
+                },
+            )
+            .unwrap_err(),
+            AppError::Validation(_)
+        ));
+        assert_eq!(
+            db.with_read(|c| load_project_tx(c, &p.id)).unwrap().revision,
+            2,
+            "空补丁不得推进 revision"
+        );
 
         // 功能更新同样受 revision 保护
         let f2 = update_feature_impl(
@@ -2686,18 +2882,105 @@ mod tests {
             AppError::Conflict(_)
         ));
 
-        // 不存在的对象按 Validation 报错（非 Conflict）
+        // 不存在的对象按 Validation/NotFound 报错（非 Conflict）
         assert!(matches!(
-            update_project_impl(
+            update_project_root_impl(
                 &db,
                 "ghost".into(),
-                ProjectPatch {
+                crate::project_hub::service::ProjectRootPatch {
                     name: Some("x".into()),
-                    description: None,
-                    status: None,
-                    target_date: None,
+                    expected_project_revision: Some(1),
+                    ..Default::default()
+                },
+            )
+            .unwrap_err(),
+            AppError::Validation(_) | AppError::NotFound(_)
+        ));
+    }
+
+    /// 组合更新（桌面编辑器一次改两个聚合）：两个 revision 各自校验，
+    /// 任一冲突整个事务回滚，不留「名称已改、状态未改」。
+    #[test]
+    fn combined_update_is_atomic_and_checks_both_aggregates() {
+        let db = memdb();
+        let p = create_project_impl(&db, proj_input("组合项目")).unwrap();
+        assert_eq!((p.revision, p.project_revision), (1, Some(1)));
+
+        // 两边都匹配 → 两个 revision 各自 +1，镜像同步。
+        let outcome = update_project_and_plan_impl(
+            &db,
+            p.id.clone(),
+            crate::project_hub::service::ProjectRootPatch {
+                name: Some("组合改名".into()),
+                description: Some("组合描述".into()),
+                expected_project_revision: Some(1),
+                ..Default::default()
+            },
+            PlanPatch {
+                execution_status: Some("in_progress".into()),
+                sort_order: None,
+                expected_plan_revision: Some(1),
+            },
+        )
+        .unwrap();
+        assert_eq!(outcome.project.revision, 2, "根 revision +1");
+        assert_eq!(outcome.plan.revision, 2, "计划 revision +1");
+        assert_eq!(outcome.plan.name, "组合改名", "计划镜像同步");
+
+        // 根令牌过期 + 计划令牌正确 → Conflict；计划字段也不得变化。
+        let err = update_project_and_plan_impl(
+            &db,
+            p.id.clone(),
+            crate::project_hub::service::ProjectRootPatch {
+                name: Some("半提交".into()),
+                expected_project_revision: Some(1),
+                ..Default::default()
+            },
+            PlanPatch {
+                execution_status: Some("paused".into()),
+                sort_order: None,
+                expected_plan_revision: Some(2),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, AppError::Conflict(_)), "{err:?}");
+        let after = db.with_read(|c| load_project_tx(c, &p.id)).unwrap();
+        assert_eq!(after.name, "组合改名", "根字段不得被半提交");
+        assert_eq!(after.status, "in_progress", "计划字段不得被半提交");
+        assert_eq!((after.revision, after.project_revision), (2, Some(2)));
+
+        // 计划令牌过期 + 根令牌正确 → Conflict；根字段也不得变化（整体回滚）。
+        let err = update_project_and_plan_impl(
+            &db,
+            p.id.clone(),
+            crate::project_hub::service::ProjectRootPatch {
+                name: Some("另一根".into()),
+                expected_project_revision: Some(2),
+                ..Default::default()
+            },
+            PlanPatch {
+                execution_status: Some("completed".into()),
+                sort_order: None,
+                expected_plan_revision: Some(1),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, AppError::Conflict(_)), "{err:?}");
+        let after = db.with_read(|c| load_project_tx(c, &p.id)).unwrap();
+        assert_eq!(after.name, "组合改名", "计划冲突不得提交根字段");
+        assert_eq!(after.status, "in_progress", "计划冲突不得提交计划字段");
+        assert_eq!((after.revision, after.project_revision), (2, Some(2)));
+
+        // 空组合补丁 → Validation（不推进任何 revision）。
+        assert!(matches!(
+            update_project_and_plan_impl(
+                &db,
+                p.id.clone(),
+                Default::default(),
+                PlanPatch {
+                    execution_status: None,
                     sort_order: None,
-                    expected_revision: Some(1),
+                    expected_plan_revision: None,
                 },
             )
             .unwrap_err(),

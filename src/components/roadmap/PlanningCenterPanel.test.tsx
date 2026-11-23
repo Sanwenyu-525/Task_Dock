@@ -21,7 +21,9 @@ const bridge = vi.hoisted(() => ({
   projectHubGetProject: vi.fn(),
   planningListProjects: vi.fn(),
   planningCreateProject: vi.fn(),
-  planningUpdateProject: vi.fn(),
+  planningUpdateProjectRoot: vi.fn(),
+  planningUpdatePlan: vi.fn(),
+  planningUpdateProjectAndPlan: vi.fn(),
   planningArchiveProject: vi.fn(),
   planningDeleteProject: vi.fn(),
   planningReorderProjects: vi.fn(),
@@ -117,7 +119,11 @@ function ms(
   };
 }
 
-const PROJECT_A = proj("p1", "我的应用", { workspace_project_id: "root-a" });
+const PROJECT_A = proj("p1", "我的应用", {
+  workspace_project_id: "root-a",
+  revision: 3,
+  project_revision: 7,
+});
 const PROJECT_B = proj("p2", "副业项目", {
   workspace_project_id: "root-b",
   stats: {
@@ -374,16 +380,102 @@ describe("项目总览", () => {
     await user.click(screen.getByRole("button", { name: "2026-11-20" }));
     expect(within(editor).getByRole("status").textContent).toContain("未保存");
 
-    bridge.planningUpdateProject.mockResolvedValue(proj("p1", "我的应用", { target_date: "2026-11-20" }));
+    bridge.planningUpdateProjectRoot.mockResolvedValue({
+      project: {
+        id: "proj-1",
+        name: "我的应用",
+        kind: "general",
+        status: "active",
+        description: "",
+        goal: "",
+        targetDate: "2026-11-20",
+        activePlanId: "p1",
+        createdAt: "2026-11-01T00:00:00Z",
+        updatedAt: "2026-11-02T00:00:00Z",
+        revision: 2,
+        phaseCount: 0,
+        taskCount: 0,
+        completedTaskCount: 0,
+        capabilityCount: 0,
+        capabilityGapCount: 0,
+        deliverableCount: 0,
+      },
+      plan: proj("p1", "我的应用", { target_date: "2026-11-20" }),
+    });
     await user.click(within(editor).getByRole("button", { name: "保存" }));
     await waitFor(
       () =>
-        expect(bridge.planningUpdateProject).toHaveBeenCalledWith(
+        expect(bridge.planningUpdateProjectRoot).toHaveBeenCalledWith(
           "p1",
           expect.objectContaining({ target_date: "2026-11-20" }),
         ),
       WAIT,
     );
+  });
+
+  it("只改执行状态 → 计划聚合，携带计划 revision，不碰项目根", async () => {
+    const user = await renderWithProjects();
+    await user.click(screen.getByRole("button", { name: "编辑计划" }));
+    const editor = await screen.findByRole("region", { name: "编辑计划" }, WAIT);
+    await user.click(within(editor).getByRole("combobox", { name: "项目状态" }));
+    await user.click(screen.getByRole("option", { name: "已暂停" }));
+    bridge.planningUpdatePlan.mockResolvedValue({ ...PROJECT_A, status: "paused", revision: 4 });
+    await user.click(within(editor).getByRole("button", { name: "保存" }));
+    await waitFor(
+      () =>
+        expect(bridge.planningUpdatePlan).toHaveBeenCalledWith("p1", {
+          status: "paused",
+          expected_revision: 3,
+        }),
+      WAIT,
+    );
+    expect(bridge.planningUpdateProjectRoot).not.toHaveBeenCalled();
+    expect(bridge.planningUpdateProjectAndPlan).not.toHaveBeenCalled();
+  });
+
+  it("同时改根字段与执行状态 → 组合事务，两个 revision 各自携带", async () => {
+    const user = await renderWithProjects();
+    await user.click(screen.getByRole("button", { name: "编辑计划" }));
+    const editor = await screen.findByRole("region", { name: "编辑计划" }, WAIT);
+    const nameInput = within(editor).getByLabelText("项目名称") as HTMLInputElement;
+    await user.clear(nameInput);
+    await user.type(nameInput, "组合改名");
+    await user.click(within(editor).getByRole("combobox", { name: "项目状态" }));
+    await user.click(screen.getByRole("option", { name: "已暂停" }));
+    bridge.planningUpdateProjectAndPlan.mockResolvedValue({
+      project: {
+        id: "root-a",
+        name: "组合改名",
+        kind: "general",
+        status: "active",
+        description: "",
+        goal: "",
+        targetDate: null,
+        activePlanId: "p1",
+        createdAt: "2026-11-01T00:00:00Z",
+        updatedAt: "2026-11-02T00:00:00Z",
+        revision: 8,
+        phaseCount: 0,
+        taskCount: 0,
+        completedTaskCount: 0,
+        capabilityCount: 0,
+        capabilityGapCount: 0,
+        deliverableCount: 0,
+      },
+      plan: { ...PROJECT_A, name: "组合改名", status: "paused", revision: 4 },
+    });
+    await user.click(within(editor).getByRole("button", { name: "保存" }));
+    await waitFor(
+      () =>
+        expect(bridge.planningUpdateProjectAndPlan).toHaveBeenCalledWith(
+          "p1",
+          expect.objectContaining({ name: "组合改名", expected_project_revision: 7 }),
+          expect.objectContaining({ status: "paused", expected_revision: 3 }),
+        ),
+      WAIT,
+    );
+    expect(bridge.planningUpdateProjectRoot).not.toHaveBeenCalled();
+    expect(bridge.planningUpdatePlan).not.toHaveBeenCalled();
   });
 
   it("编辑项目失败：提示错误、页面内编辑态保留用户输入", async () => {
@@ -393,7 +485,7 @@ describe("项目总览", () => {
     const nameInput = within(editor).getByLabelText("项目名称") as HTMLInputElement;
     await user.clear(nameInput);
     await user.type(nameInput, "改名后失败");
-    bridge.planningUpdateProject.mockRejectedValue("写入被拒绝");
+    bridge.planningUpdateProjectRoot.mockRejectedValue("写入被拒绝");
     await user.click(within(editor).getByRole("button", { name: "保存" }));
     await waitFor(() =>
       expect(useUiStore.getState().toasts.some((t) => t.kind === "error")).toBe(true),

@@ -32,7 +32,7 @@ ADR 记录"为什么这样决策"，让未来 Agent 理解取舍、避免反复�
 | [0008](0008-unified-project-identity-and-creation.md) | 统一项目身份与统一项目创建服务 | Accepted |
 | [0009](0009-window-close-behavior-and-tray-recall.md) | 窗口关闭策略（window_close_behavior）与托盘唤回入口 | Accepted |
 | [0010](0010-unified-project-context-and-lifecycle-workbench.md) | 统一项目上下文与项目生命周期工作台（ProjectContext + Plan 语义收敛） | Accepted |
-| [0011](0011-project-plan-dual-aggregate.md) | Project Root 与 Plan 双聚合及 API 契约（v93 根 revision、三入口创建事务统一） | Accepted |
+| [0011](0011-project-plan-dual-aggregate.md) | Project Root 与 Plan 双聚合及 API 契约（v93 根 revision；第五轮收紧：授权仅首次创建、权限令牌必填、计划 PATCH 不含根字段） | Accepted |
 | [0012](0012-clipboard-static-encryption.md) | 剪贴板历史静态加密：DPAPI 封装随机 CEK + 独立备份加密层 | Accepted（分批落地，见 §14） |
 
 ## 战略草案决策（未正式 Accepted，待用户确认）

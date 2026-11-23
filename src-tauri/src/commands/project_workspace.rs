@@ -536,14 +536,17 @@ pub fn workspace_project_save_impl(
         }
         Some(id) => {
             db.with_transaction(|conn| {
-                crate::project_hub::service::update_project_fields_tx(
+                // 本机工作空间编辑器（单一本地人类）：名称/类型是同一入口的编辑字段，
+                // 不是并发补丁通道；按领域内部接口写入，revision 照常 +1。
+                crate::project_hub::service::apply_project_root_fields_tx(
                     conn,
                     &id,
-                    crate::project_hub::service::ProjectPatch {
+                    crate::project_hub::service::ProjectRootPatch {
                         name: Some(name),
                         kind: Some(kind),
                         ..Default::default()
                     },
+                    None,
                 )?;
                 conn.execute(
                     "UPDATE workspace_projects

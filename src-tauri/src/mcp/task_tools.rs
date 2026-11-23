@@ -430,6 +430,7 @@ pub(crate) fn call(
                 Some(PlanningChanged {
                     kind: "task",
                     project_id: None,
+                    plan_id: None,
                     feature_id: None,
                     revision: Some(revision),
                 }),
@@ -484,6 +485,7 @@ pub(crate) fn call(
                 Some(PlanningChanged {
                     kind: "task",
                     project_id: None,
+                    plan_id: None,
                     feature_id: None,
                     revision: Some(revision),
                 }),

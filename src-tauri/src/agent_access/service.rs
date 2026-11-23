@@ -955,32 +955,28 @@ pub fn current_plan(db: &Db, principal: &Principal) -> AppResult<Option<PlanView
     }
 }
 
-/// 计划详情：入参可以是计划 ID，也可以是项目根（取 active 计划）。
+/// 计划详情：**入参严格是计划 ID**（`planning_projects.id`）。
+///
+/// 项目根 ID 不再自动解析成 active 计划：同一路径的 GET/PATCH 必须同义，
+/// 否则 `/plans/{id}` 的 id 在读写两侧含义不同。项目根 → active 计划请用
+/// [`current_plan`]（`GET /api/v1/plans/current`）或 `get_project`（含 activePlanId）。
 pub fn get_plan(db: &Db, principal: &Principal, id: &str) -> AppResult<PlanView> {
     let (root, plan_hint) = match db
         .with_read(|conn| crate::project_hub::service::resolve_project_ref(conn, id))?
     {
-        Some(crate::project_hub::service::ProjectRef::Project(root)) => (root.0, None),
+        Some(crate::project_hub::service::ProjectRef::Project(_)) => {
+            return Err(AppError::Validation(format!(
+                "{id} 是项目根 ID，不是计划；请使用 GET /api/v1/projects/{id} 读取项目根，或 GET /api/v1/plans/current 读取当前计划"
+            )));
+        }
         Some(crate::project_hub::service::ProjectRef::Plan {
             plan_id,
             project_id,
         }) => (project_id.0, Some(plan_id.0)),
-        None => return Err(AppError::NotFound(format!("项目/计划不存在: {id}"))),
+        None => return Err(AppError::NotFound(format!("计划不存在: {id}"))),
     };
     perms::require(db, principal, Capability::PlansRead, &root)?;
-    let plan_id = match plan_hint {
-        Some(plan_id) => plan_id,
-        None => {
-            let summaries = db
-                .with_read(|conn| crate::project_hub::service::list_plan_summaries(conn, &root))?;
-            summaries
-                .iter()
-                .find(|plan| plan.is_active && !plan.archived)
-                .or_else(|| summaries.first())
-                .map(|plan| plan.id.clone())
-                .ok_or_else(|| AppError::NotFound("项目没有计划".into()))?
-        }
-    };
+    let plan_id = plan_hint.ok_or_else(|| AppError::NotFound(format!("计划不存在: {id}")))?;
     let summary =
         db.with_read(|conn| crate::project_hub::service::load_plan_summary(conn, &plan_id))?;
     plan_view_from_plan(db, summary, true)

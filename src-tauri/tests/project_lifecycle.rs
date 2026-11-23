@@ -10,7 +10,8 @@ use std::sync::Arc;
 
 use task_dock_lib::commands::planning::{
     archive_project_impl, create_project_impl, create_project_tx, delete_project_impl,
-    list_projects_impl, update_project_impl, update_project_tx, ProjectInput, ProjectPatch,
+    list_projects_impl, update_plan_impl, update_plan_tx, update_project_root_impl,
+    PlanPatch, ProjectInput,
 };
 use task_dock_lib::commands::project_workspace::{
     workspace_project_delete_impl, workspace_project_list_impl, workspace_project_save_impl,
@@ -22,7 +23,7 @@ use task_dock_lib::project_hub::service::{
     activate_plan, archive_plan, create_project, create_project_plan, delete_plan, delete_project,
     get_project, get_snapshot, list_projects, validate_project_integrity, CreateCapabilityInput, CreateFeatureInput,
     CreateGoalInput, CreatePhaseInput, CreatePlanInput, CreateProjectInput, CreateProjectRootInput,
-    CreateTaskInput, ProjectPatch as RootPatch, ProjectSummary,
+    CreateTaskInput, ProjectRootPatch as RootPatch, ProjectSummary,
 };
 
 fn memdb() -> Db {
@@ -38,14 +39,12 @@ fn proj_input(name: &str) -> ProjectInput {
     }
 }
 
-fn planning_patch(name: Option<&str>) -> ProjectPatch {
-    ProjectPatch {
-        name: name.map(str::to_string),
-        description: None,
-        status: None,
-        target_date: None,
+/// 计划聚合补丁（只含计划自身字段）。
+fn plan_patch(status: Option<&str>, expected: i64) -> PlanPatch {
+    PlanPatch {
+        execution_status: status.map(str::to_string),
         sort_order: None,
-        expected_revision: None,
+        expected_plan_revision: Some(expected),
     }
 }
 
@@ -204,6 +203,7 @@ fn project_update_only_changes_requested_fields() {
         &summary.id,
         RootPatch {
             name: Some("新名".into()),
+            expected_project_revision: Some(summary.revision),
             ..Default::default()
         },
     )
@@ -219,6 +219,7 @@ fn project_update_only_changes_requested_fields() {
         &summary.id,
         RootPatch {
             target_date: Some(None),
+            expected_project_revision: Some(updated.revision),
             ..Default::default()
         },
     )
@@ -251,7 +252,7 @@ fn create_project_root(
 // ── 旧命令兼容 ──────────────────────────────────────────────────────
 
 #[test]
-fn planning_update_project_syncs_project_fields_without_touching_lifecycle() {
+fn planning_update_splits_project_fields_and_plan_status() {
     let db = memdb();
     let plan = create_project_impl(&db, proj_input("旧名")).unwrap();
     let project_id = text(
@@ -262,19 +263,27 @@ fn planning_update_project_syncs_project_fields_without_touching_lifecycle() {
         ),
     );
 
-    let updated = update_project_impl(
+    // 名称/描述/目标日期 → 项目根（同步计划镜像，不推进计划 revision）
+    let root_outcome = update_project_root_impl(
         &db,
         plan.id.clone(),
-        ProjectPatch {
+        RootPatch {
             name: Some("改名".into()),
             description: Some("新描述".into()),
-            status: Some("in_progress".into()),
             target_date: Some(Some("2026-12-01".into())),
-            sort_order: None,
-            expected_revision: None,
+            expected_project_revision: plan.project_revision,
+            ..Default::default()
         },
     )
     .unwrap();
+    assert_eq!(root_outcome.project.name, "改名");
+    assert_eq!(root_outcome.plan.name, "改名");
+    assert_eq!(root_outcome.plan.description, "新描述");
+    assert_eq!(root_outcome.plan.target_date.as_deref(), Some("2026-12-01"));
+    assert_eq!(root_outcome.plan.revision, plan.revision, "根写不得推进计划 revision");
+
+    // 执行状态 → 计划（不碰项目根）
+    let updated = update_plan_impl(&db, plan.id.clone(), plan_patch(Some("in_progress"), plan.revision)).unwrap();
     assert_eq!(updated.name, "改名");
     assert_eq!(updated.description, "新描述");
     assert_eq!(updated.status, "in_progress");
@@ -590,27 +599,29 @@ fn planning_delete_project_never_deletes_project_root() {
 #[test]
 fn mcp_write_path_keeps_working() {
     let db = memdb();
-    // MCP 工具直接拿事务连接调用这两个函数；签名与返回结构不得变化。
+    // MCP 工具直接拿事务连接调用计划写内核；签名与返回结构不得变化。
     let plan = db
         .with_conn(|conn| create_project_tx(conn, proj_input("MCP 项目")))
         .unwrap();
     assert_eq!(count(&db, "SELECT COUNT(*) FROM workspace_projects"), 1);
 
+    // 项目根字段（含镜像同步）：根 revision 递增，计划 revision 不变。
+    let root_outcome = update_project_root_impl(
+        &db,
+        plan.id.clone(),
+        RootPatch {
+            name: Some("MCP 改名".into()),
+            expected_project_revision: plan.project_revision,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(root_outcome.project.name, "MCP 改名");
+    assert_eq!(root_outcome.plan.revision, plan.revision);
+
+    // 计划执行状态：走事务内内核，只推进计划 revision。
     let updated = db
-        .with_conn(|conn| {
-            update_project_tx(
-                conn,
-                plan.id.clone(),
-                ProjectPatch {
-                    name: Some("MCP 改名".into()),
-                    description: None,
-                    status: Some("in_progress".into()),
-                    target_date: None,
-                    sort_order: None,
-                    expected_revision: Some(plan.revision),
-                },
-            )
-        })
+        .with_transaction(|conn| update_plan_tx(conn, &plan.id, plan_patch(Some("in_progress"), plan.revision)))
         .unwrap();
     assert_eq!(updated.name, "MCP 改名");
     assert_eq!(updated.status, "in_progress");
@@ -965,32 +976,21 @@ fn concurrent_distinct_requests_with_same_name_stay_isolated() {
 fn concurrent_update_uses_optimistic_revision() {
     let db = Arc::new(memdb());
     let plan = create_project_impl(db.as_ref(), proj_input("并发更新")).unwrap();
-    let revision: i64 = db
-        .with_conn(|c| {
-            c.query_row(
-                "SELECT revision FROM planning_projects WHERE id = ?1",
-                rusqlite::params![plan.id],
-                |r| r.get(0),
-            )
-            .map_err(AppError::from)
-        })
-        .unwrap();
+    // 项目根并发：两个线程拿同一个根 revision 改名，只能成功一次。
+    let revision = plan.project_revision.expect("新计划必带根 revision");
 
     let mut handles = Vec::new();
     for _ in 0..2 {
         let db = Arc::clone(&db);
         let id = plan.id.clone();
         handles.push(std::thread::spawn(move || {
-            update_project_impl(
+            update_project_root_impl(
                 db.as_ref(),
                 id,
-                ProjectPatch {
+                RootPatch {
                     name: Some("并发改名".into()),
-                    description: None,
-                    status: None,
-                    target_date: None,
-                    sort_order: None,
-                    expected_revision: Some(revision),
+                    expected_project_revision: Some(revision),
+                    ..Default::default()
                 },
             )
         }));
@@ -1014,7 +1014,16 @@ fn delete_then_update_returns_not_found_and_leaves_no_half_data() {
         ),
     );
     delete_project(&db, &project_id).unwrap();
-    let err = update_project_impl(&db, plan.id.clone(), planning_patch(Some("迟到更新"))).unwrap_err();
+    let err = update_project_root_impl(
+        &db,
+        plan.id.clone(),
+        RootPatch {
+            name: Some("迟到更新".into()),
+            expected_project_revision: plan.project_revision,
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
     assert!(err.to_string().contains("不存在"), "删除后更新必须失败: {err}");
     assert_eq!(count(&db, "SELECT COUNT(*) FROM workspace_projects"), 0);
     assert_eq!(count(&db, "SELECT COUNT(*) FROM planning_projects"), 0);
@@ -1026,6 +1035,7 @@ fn delete_then_update_returns_not_found_and_leaves_no_half_data() {
         &snapshot.project.id,
         RootPatch {
             name: Some("更新后删除".into()),
+            expected_project_revision: Some(snapshot.project.revision),
             ..Default::default()
         },
     )
@@ -1375,6 +1385,7 @@ fn plan_name_must_mirror_project_name() {
         &project_id,
         RootPatch {
             name: Some("改名后的项目".into()),
+            expected_project_revision: Some(snapshot.project.revision),
             ..Default::default()
         },
     )

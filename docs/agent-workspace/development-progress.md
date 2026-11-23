@@ -315,7 +315,9 @@ name/description/target_date 镜像同步到全部计划行（镜像写不动计
 
 接口契约拆分：REST `PATCH /api/v1/projects/{id}` 重写为项目根聚合（lifecycleStatus +
 expectedRevision + 根 revision；旧执行状态值 → Validation 指路），新增
-`PATCH /api/v1/plans/{id}` 计划聚合（planning::update_project_tx + 计划 revision）；
+`PATCH /api/v1/plans/{id}` 计划聚合（planning::update_project_tx + 计划 revision）
+**（第五轮更正：计划 PATCH 不再接受 name/description/targetDate，改走 `update_plan_tx`，
+详见文末第五轮章节）**；
 MCP `taskdock_list_projects/get_project/update_project` 改根读模型与根聚合，新增
 `taskdock_get_plan` / `taskdock_update_plan`（计划聚合），旧 `project_id` 传计划 ID 兼容归一根，
 计划工具传根 ID → Validation（身份防混用），`taskdock_update_plan` 列入 HIGH_RISK_ACTIONS；
@@ -348,3 +350,40 @@ J（删除清理）由 `delete_project_cleans_grants_and_idempotency_rows` 单�
 文档：新增 ADR-0011（编号 0010 已被并行 ProjectContext 任务占用）+ project-hub/05/06/10、
 agent-workspace 五件同步；上一轮「CLI `project update` 未实现」的记录已在本轮更正
 （见 feature-matrix）。
+
+## 第五轮：P1 安全与双聚合一致性（2026-11-23）
+
+修复两个 P1：
+
+1. **创建授权重放漏洞**（`agent_access/project_creation.rs`）：自动授权改为仅在
+   `created.created == true` 时执行。幂等重放返回历史结果、不写任何授权行——人类撤销授权后，
+   Agent 用原 `clientRequestId` 重放不再能恢复访问；只有人类显式 `grant_project` 才恢复。
+   授权失败仍在同一事务内整体回滚（项目根、初始计划、幂等归属、事件），
+   不会残留「项目已建但创建者无权」或「幂等行占位导致无法重试」。
+
+2. **双聚合写入分离**（`project_hub/service.rs`、`commands/planning.rs`）：
+   - `ProjectRootPatch{name,kind,description,goal,lifecycleStatus,targetDate,expectedProjectRevision}`
+     只写项目根并同步计划镜像；`expectedProjectRevision` 必填（缺失 Validation）。
+   - `PlanPatch{executionStatus,sortOrder,expectedPlanRevision}` 只写计划自身字段；
+     name/description/targetDate 不再有任何计划写入口。
+   - 新增 `update_plan_tx`、`update_project_and_plan_tx`（组合事务）与三个 IPC 命令
+     （`planning_update_project_root` / `planning_update_plan` / `planning_update_project_and_plan`）；
+     删除同时承载两个聚合的 `planning_update_project`。
+   - 空补丁统一 Validation：revision/updated_at 不变、无事件、无成功审计、无 committed 操作。
+
+P2：
+
+- MCP `taskdock_update_plan` 的资源身份改为 `plan`：`resource_kind=plan`、`resource_id=PlanId`、
+  `project_id=所属项目根`、`revision=计划 revision`；操作记录启动时解析根，运行中也能定位项目。
+  `planning-changed` 增加 `planId` 与 `kind:"plan"`；前端 store 按 `planId` 精确刷新当前计划，
+  根事件用 `workspace_project_id` 匹配。
+- REST `GET/PATCH /api/v1/plans/{planId}` 严格 PlanId（根 ID → Validation、未知 → NotFound）；
+  `GET /api/v1/plans/current` 与 `GET /api/v1/projects/{id}` 提供明确的快捷查询。
+- 桌面编辑器 `ProjectEditorView` 按聚合拆分保存：名称/描述/目标日期 → 根服务，
+  执行状态 → 计划服务，两边携带打开编辑器时读取的 revision（快照）；同时修改走组合事务。
+  冲突提示明确、保留输入、不自动覆盖服务端新数据；保存中禁止重复提交。
+
+验证（本轮实际执行）：`agent_access::project_creation::tests` 11/0、`mcp::tests` 64/0、
+`commands::planning::tests` 13/0、`agent_access::` 231/0、`project_creation_identity` 18/0、
+`mcp_e2e` 3/0、`project_lifecycle` 26/0、`npm run typecheck` 0 错误、
+前端 5 个定向文件 113/0。详见 [project-hub/06](../project-hub/06-验收标准.md) 第五轮章节。
