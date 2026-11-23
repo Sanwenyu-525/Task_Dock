@@ -11,6 +11,9 @@ import {
   getPreviewKind,
   getPreviewSizeLimit,
   isCodeLike,
+  isDelimitedExt,
+  isJsonExt,
+  isMarkdownExt,
   isPreviewSupported,
   previewLanguage,
   previewTypeLabel,
@@ -117,5 +120,25 @@ describe("语言标签与类型徽标", () => {
     expect(extOf(".gitignore")).toBe("gitignore");
     expect(extOf("a.")).toBe("");
     expect(extOf("a.tar.gz")).toBe("gz");
+  });
+});
+
+describe("结构化视图口径", () => {
+  it("Markdown / CSV / TSV / JSON 的判定互不重叠", () => {
+    expect(isMarkdownExt("md")).toBe(true);
+    expect(isMarkdownExt("markdown")).toBe(true);
+    expect(isDelimitedExt("csv")).toBe(true);
+    expect(isDelimitedExt("tsv")).toBe(true);
+    expect(isJsonExt("json")).toBe(true);
+
+    expect(isDelimitedExt("md")).toBe(false);
+    expect(isJsonExt("csv")).toBe(false);
+    expect(isMarkdownExt("json")).toBe(false);
+  });
+
+  it("jsonc 故意不进气树形视图（允许注释，JSON.parse 必然失败）", () => {
+    expect(isJsonExt("jsonc")).toBe(false);
+    // 但类型判定仍是文本预览，源码视图照常可用。
+    expect(getPreviewKind({ name: "a.jsonc", category: "text", kind: "file" })).toBe("text");
   });
 });

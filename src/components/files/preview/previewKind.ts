@@ -19,6 +19,8 @@ export const SVG_MAX_BYTES = 8 * 1024 * 1024;
 export const PDF_MAX_BYTES = 64 * 1024 * 1024;
 /** 超过该长度的文本关闭逐行语法高亮，避免一次生成过多 DOM 节点。 */
 export const HIGHLIGHT_MAX_CHARS = 160_000;
+/** 单次最多渲染的行数：超出只渲染前缀并提示，避免万行文件生成巨量节点。 */
+export const TEXT_RENDER_MAX_LINES = 5000;
 
 const IMAGE_EXT = new Set([
   "png",
@@ -193,6 +195,26 @@ export function isCodeLike(ext: string): boolean {
   const normalized = ext.toLowerCase();
   if (!normalized) return false;
   return normalized !== "txt" && normalized !== "text" && normalized !== "log";
+}
+
+/** Markdown 专属预览（阅读 / 源码双模式）：唯一判定口径，组件内不再自查扩展名。 */
+export function isMarkdownExt(ext: string): boolean {
+  const normalized = ext.toLowerCase();
+  return normalized === "md" || normalized === "markdown";
+}
+
+/** CSV / TSV（表格视图 + 分隔符嗅探）的唯一判定口径。 */
+export function isDelimitedExt(ext: string): boolean {
+  const normalized = ext.toLowerCase();
+  return normalized === "csv" || normalized === "tsv";
+}
+
+/**
+ * JSON 树形视图口径。`jsonc` 故意不算：它允许注释，`JSON.parse` 必然失败，
+ * 与其显示一条「无法解析」的假错误，不如保持源码视图。
+ */
+export function isJsonExt(ext: string): boolean {
+  return ext.toLowerCase() === "json";
 }
 
 /** 预览头部的类型徽标：优先扩展名，其次 kind。 */

@@ -75,7 +75,22 @@ export interface PersistedState {
   stashed?: PersistedTab[];
   /** 列表视图列宽（仅用户改过的列；旧数据缺失时该列回默认，向后兼容版本仍为 1）。 */
   colWidths?: ColWidths;
+  /**
+   * 右侧预览检查器（是否开启 + 宽度）。旧数据没有该字段 → 关闭 + 默认宽度，
+   * 不新增设置键、不新增 SQLite 表。
+   */
+  previewPane?: PersistedPreviewPane;
 }
+
+export interface PersistedPreviewPane {
+  open: boolean;
+  width: number;
+}
+
+/** 预览检查器宽度边界（与界面拖拽的钳制共用同一组常量）。 */
+export const PREVIEW_PANE_MIN_WIDTH = 280;
+export const PREVIEW_PANE_MAX_WIDTH = 520;
+export const PREVIEW_PANE_DEFAULT_WIDTH = 360;
 
 
 export interface PersistedTemplate {
@@ -255,6 +270,7 @@ function normalizeState(raw: unknown): PersistedState | null {
     typeof raw.activePaneId === "string" && ids.includes(raw.activePaneId)
       ? raw.activePaneId
       : ids[0];
+  const previewPane = normalizePreviewPane(raw.previewPane);
   return {
     tree,
     panes,
@@ -263,7 +279,23 @@ function normalizeState(raw: unknown): PersistedState | null {
     recentDirs: normalizeDirs(raw.recentDirs, MAX_RECENT_DIRS),
     stashed: normalizeStashed(raw.stashed, seenTabIds),
     colWidths: normalizeColWidths(raw.colWidths),
+    ...(previewPane ? { previewPane } : {}),
   };
+}
+
+/**
+ * 预览检查器状态归一化：宽度钳制到 [280, 520]，非整数四舍五入。
+ * 损坏/缺失 → undefined（读取侧用默认关闭 + 360px），绝不因一个字段回退整个布局。
+ */
+export function normalizePreviewPane(raw: unknown): PersistedPreviewPane | undefined {
+  if (!isRecord(raw)) return undefined;
+  const open = typeof raw.open === "boolean" ? raw.open : false;
+  const widthRaw = typeof raw.width === "number" && Number.isFinite(raw.width) ? raw.width : PREVIEW_PANE_DEFAULT_WIDTH;
+  const width = Math.min(
+    PREVIEW_PANE_MAX_WIDTH,
+    Math.max(PREVIEW_PANE_MIN_WIDTH, Math.round(widthRaw)),
+  );
+  return { open, width };
 }
 
 

@@ -49,6 +49,9 @@ import {
   MAX_RECENT_DIRS,
   MAX_STASHED_TABS,
   MAX_TEMPLATES,
+  PREVIEW_PANE_DEFAULT_WIDTH,
+  PREVIEW_PANE_MAX_WIDTH,
+  PREVIEW_PANE_MIN_WIDTH,
   bindSettingsStore,
   persistFilesWorkspace,
   readFilesWorkspacePersisted,
@@ -276,6 +279,10 @@ interface FilesWorkspaceState extends FilesWorkspaceData {
    * 随持久化 `colWidths` 字段跨会话保留。
    */
   colWidths: ColWidths;
+  /** 右侧预览检查器是否开启（随项目态持久化）。 */
+  previewPaneOpen: boolean;
+  /** 右侧预览检查器宽度（280-520，随项目态持久化）。 */
+  previewPaneWidth: number;
   /** 布局撤销栈（会话内）。 */
   layoutHistory: LayoutSnapshot[];
   /** 布局重做栈（会话内）。 */
@@ -303,6 +310,10 @@ export interface FilesWorkspaceActions {
   setStateKey: (stateKey: string) => void;
   /** 更新列表视图列宽（拖拽/键盘/双击重置后提交；全分栏共享）。 */
   setColWidths: (widths: ColWidths) => void;
+  /** 开关右侧预览检查器（关闭只停止渲染，不改变任何文件选择）。 */
+  setPreviewPaneOpen: (open: boolean) => void;
+  /** 提交预览检查器宽度（拖拽结束/键盘调整时调用；内部钳制到 280-520）。 */
+  setPreviewPaneWidth: (width: number) => void;
   snapshot: () => SnapshotPayload;
   persistNow: () => Promise<void>;
   /** 落盘待写防抖状态（项目切换/卸载前）。 */
@@ -745,6 +756,8 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
     recentTemplates: [],
     pinnedDirs: [],
     colWidths: {},
+    previewPaneOpen: false,
+    previewPaneWidth: PREVIEW_PANE_DEFAULT_WIDTH,
     layoutHistory: [],
     layoutFuture: [],
     layoutEditMode: false,
@@ -808,6 +821,8 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
         pinnedDirs: (state.pinnedDirs ?? []).slice(0, MAX_PINNED_DIRS),
         recentDirs: (state.recentDirs ?? []).slice(0, MAX_RECENT_DIRS),
         colWidths: state.colWidths ?? {},
+        previewPaneOpen: state.previewPane?.open ?? false,
+        previewPaneWidth: state.previewPane?.width ?? PREVIEW_PANE_DEFAULT_WIDTH,
         recentTemplates: restoredRecentTemplates,
         layoutHistory: [],
         layoutFuture: [],
@@ -821,6 +836,20 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
 
     setColWidths: (widths) => {
       set({ colWidths: widths });
+      schedulePersist(get);
+    },
+
+    setPreviewPaneOpen: (open) => {
+      set({ previewPaneOpen: open });
+      schedulePersist(get);
+    },
+
+    setPreviewPaneWidth: (width) => {
+      const clamped = Math.min(
+        PREVIEW_PANE_MAX_WIDTH,
+        Math.max(PREVIEW_PANE_MIN_WIDTH, Math.round(width)),
+      );
+      set({ previewPaneWidth: clamped });
       schedulePersist(get);
     },
 
@@ -846,6 +875,7 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
           recentDirs: [...s.recentDirs],
           // 空列宽不写键：与 normalizeState 的「全默认回 undefined」保持同一形态，往返稳定。
           ...(Object.keys(s.colWidths).length > 0 ? { colWidths: { ...s.colWidths } } : {}),
+          previewPane: { open: s.previewPaneOpen, width: s.previewPaneWidth },
           stashed: s.stashed.map(toPersistedTab),
         },
       };

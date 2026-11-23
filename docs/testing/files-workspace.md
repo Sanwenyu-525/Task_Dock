@@ -463,3 +463,87 @@ B/C 通道真机验收。
 - Windows 原生窗口上的真实像素/交互走查（图片缩放、PDF 阅读宽度、音频控制条在 125% DPI 下的表现）。
 - 超大真实 PDF（>20 MiB、含中日韩字体）与扫描件（JBIG2/JPX）的解码正确性。
 - `src/styles-flat.test.ts` 的窄窗任务页用例失败属其他任务在途改动（R10 已登记 P3），本轮未触碰。
+
+## 14. R14 预览系统与检查器测试记录（2026-11-23）
+
+- 环境：Windows（win32）、Node + Vitest 3.2.7、jsdom；工作目录 `D:/Develop/task_dock`。
+- 结论口径：本轮只有 **Dev 自动化验证**；`PASS` 仍需原生验收（见验收矩阵 §14），因此功能台账保持 `TESTING`。
+
+### 14.1 执行命令与结果
+
+| 序号 | 命令 | 退出码 | 结果 | 说明 |
+|---|---|---|---|---|
+| 1 | `npm run typecheck` | 0 | 通过 | `tsc --noEmit`，无输出 |
+| 2 | `npm run test:raw -- src/components/files/QuickPreviewDialog.preview.test.tsx` | 0 | 26 passed | 保留既有图片/文本/PDF/媒体/竞态用例 |
+| 3 | `npm run test:raw -- src/components/files/QuickPreviewDialog.lifecycle.test.tsx src/components/files/QuickPreviewDialog.test.tsx src/components/files/preview/previewKind.test.ts` | 0 | 82 passed | 生命周期/资源释放/类型判定回归 |
+| 4 | `npm run test:raw -- src/components/files/preview/codeHighlight.test.ts src/components/files/preview/textSearch.test.ts src/components/files/preview/markdownParse.test.ts src/lib/filesWorkspace/previewSelection.test.ts src/lib/filesWorkspace/previewPanePersist.test.ts` | 0 | 66 passed | 高亮 20 / 搜索 12 / Markdown 20 / 选择 9 / 持久化 5 |
+| 5 | `npm run test:raw -- src/components/files/FilePreviewPane.test.tsx` | 0 | 10 passed | 空态、挂起、单选、详细信息缓存、快捷操作、宽度键盘 |
+| 6 | `npm run test:raw -- src/components/files/FilesWorkspacePanel.previewPane.test.tsx` | 0 | 7 passed | 开关三入口、选择联动、非活动窗格忽略、弹窗互斥 |
+| 7 | `npm run test:raw -- src/components/files/preview/FileTextPreview.test.tsx` | 0 | 6 passed | Markdown 阅读/源码、链接白名单、搜索、换行/行号/字号 |
+| 8 | `npm run test:raw -- src/components/files` | 1 → 隔离复跑 0 | 408/409 → 17/17 | 唯一失败为 `FilePane.selection` 的 25,000 项性能用例在整目录并发下超 5s；单文件复跑 550ms 通过（判定：环境负载抖动，非回归） |
+| 9 | `npm run build` | 1 | **ENVIRONMENT BLOCKED** | `tsc` 通过、`vite` 完成 2296 模块转换后，在清空 `dist/` 时被环境安全删除守卫拦截（`SAFE_DELETE_BULK_CONFIRM_REQUIRED`，249 个文件 / 阈值 50） |
+| 10 | `npx vite build --emptyOutDir false` | 0 | 构建成功（23.72s） | 同一份源码的生产打包验证；`FilesWorkspacePanel-*.js` 198.96 kB / gzip 59.26 kB |
+
+> 第 8 条的失败未重复执行到“变绿”为止：只做了一次隔离复跑并保留两条记录，避免把环境抖动当成代码通过。
+
+### 14.2 新增/扩展用例清单
+
+| 文件 | 用例数 | 覆盖点 |
+|---|---|---|
+| `preview/codeHighlight.test.ts` | 20 | 11 类语言的语义分类、块注释跨行、预算降级、token 拼回原文无损 |
+| `preview/textSearch.test.ts` | 12 | 大小写、字面量、行号、循环导航、可见区间二分、上限截断、CRLF 规范化 |
+| `preview/markdownParse.test.ts` | 20 | 标题/段落/强调/任务列表/引用/表格/围栏代码、HTML 不执行、链接白名单、解析预算 |
+| `preview/FileTextPreview.test.tsx` | 6 | 阅读/源码切换不重读、搜索高亮与清空、换行/行号/字号、危险链接不生成入口 |
+| `FilePreviewPane.test.tsx` | 10 | 空态/多选/挂起、`fs_stat` 仅按需一次、缓存命中、四个快捷操作、宽度键盘 |
+| `FilesWorkspacePanel.previewPane.test.tsx` | 7 | 工具栏/Alt+P/关闭、单选自动预览、多选统计、非活动窗格竞态、弹窗挂起 |
+| `lib/filesWorkspace/previewSelection.test.ts` | 9 | 单选/多选/文件夹/筛选隐藏/大小写路径/统计口径 |
+| `lib/filesWorkspace/previewPanePersist.test.ts` | 5 | 宽度钳制、坏字段回退、旧数据无字段、归一化保留 |
+
+### 14.3 本轮未覆盖（不得标 PASS）
+
+- Windows 原生窗口/真实安装包：图片 HUD、PDF 页码输入、媒体控件在 125%/150% DPI 的表现；
+  面板拖拽宽度与 `SetWindowRgn` 圆角裁剪的视觉一致性。
+- 25,000 项目录下同时开启检查器的内存/滚动帧率（只有列表侧既有用例）。
+- 真实大文件（>100 MB PDF、>512 KiB Markdown、5000 行以上表格）在原生 WebView2 的渲染表现。
+- Markdown 阅读模式的字体度量与中文字形（jsdom 无排版）。
+- 详情页的 Windows 属性值与原资源管理器逐项对照（沿用 `FW-INFO-001` 的既有缺口）。
+
+### 14.4 收尾回归（文档统一后复跑，2026-11-23 20:55）
+
+| 命令 | 退出码 | 结果 |
+|---|---|---|
+| `npm run typecheck` | 0 | 通过 |
+| `npm run test:raw -- FilesWorkspacePanel.previewPane / FilePreviewPane / FileTextPreview / QuickPreviewDialog.preview` | 0 | 4 files / 49 tests passed（40.43s） |
+
+说明：文案 i18n 化与回收站提示统一后复跑，确认无回归；本条与 §14.1 的第 1/2/5/6 条同口径复验。
+
+### 14.5 结构化视图增补（CSV/TSV 表格 + JSON 树，2026-11-23 21:20）
+
+| # | 命令 | 退出码 | 结果 | 说明 |
+|---|---|---|---|---|
+| 1 | `npx tsc --noEmit` | 0 | 通过 | 新增 `preview/csvParse.ts`、`preview/jsonTree.ts`、`CsvTableView.tsx`、`JsonTreeView.tsx` 与 i18n 键后复验 |
+| 2 | `npm run test:raw -- src/components/files/preview/csvParse.test.ts src/components/files/preview/jsonTree.test.ts src/components/files/preview/previewKind.test.ts src/components/files/preview/FileTextPreview.test.tsx` | 0 | 4 files / 104 passed（39.30s） | CSV 17 + JSON 11 + 类型口径 65 + 文本通道 11 |
+| 3 | `npm run test:raw -- src/components/files` | 0 | 40 files / 444 passed（53.62s） | 上一轮 408/409 的性能用例（25,000 项并发抖动）本次并发下通过，未修改该用例代码 |
+| 4 | `node scripts/acceptance-files-structured-preview.mjs` | 0 | 12 PASS / 0 FAIL | 原生 Dev 验收：复用已运行 Vite 1420 + 重建后的 `task-dock.exe` + CDP，隔离数据目录；含「0 工作台直达 files 路由」；证据 `tmp/acceptance/files-workspace/round14/run-20261123-220408/` |
+| 5 | `npm run cargo -- test --lib project_workspace_window::` | 0 | 30 passed | 新增 `workbench_tabs_match_frontend_routes`：Rust `WORKBENCH_TABS` 必须与前端 `WORKBENCH_ROUTES` 逐项相等（本轮补 `files` / `life` / `vault` / `capability`） |
+| 6 | `npm run cargo -- build` | 0 | 4m05s | 重建 debug 二进制，供原生验收直接请求 `target=files` 复验 |
+
+**失败与修复记录（保留，不刷绿）**
+
+| 现象 | 根因 | 修复 |
+|---|---|---|
+| 首跑 4 文件 103/104：`FileTextPreview` 的「文件内搜索」用例报找不到 `fw.preview.find` | 我把查找框整体限定在源码模式；Markdown 阅读模式原本支持查找（命中经 `MarkdownView` 高亮） | 改为 `showSearch = markdown || showSource`：Markdown 阅读与所有源码模式保留查找，仅表格/树不显示 |
+
+**新增用例**
+
+| 文件 | 用例数 | 覆盖点 |
+|---|---|---|
+| `preview/csvParse.test.ts` | 17 | 引号（`""` 还原、引号内分隔符/换行、未闭合不抛错）、分隔符嗅探（tsv 固定 Tab / 分号 / 竖线 / 无候选回退逗号）、表头启发式与手动关闭、参差行、行/列/单元格预算与「恰好等于上限不误报」 |
+| `preview/jsonTree.test.ts` | 11 | 对象/数组/标量键与层级、字符串预览带引号、根标量、BOM、空容器、`empty`/`invalid`/`too-large` 错误码与位置、子项/层级/节点预算、`collectContainerPaths` |
+| `preview/previewKind.test.ts`（追加） | 2 | `isDelimitedExt` / `isJsonExt` 互不重叠；`jsonc` 不进树形视图但仍可源码预览 |
+| `preview/FileTextPreview.test.tsx`（追加） | 5 | CSV 默认表格（表头/行号列/查找框隐藏/只读一次）、表格↔源码切换不重读、表头开关；JSON 默认只展开根→全部展开→收起全部（3/6/1 行）、非法 JSON 回退并有原因、树形按钮禁用 |
+
+**本轮仍未覆盖**：600 行 × 40 列的实际滚动帧率（原生 Dev 验收只记录「出表耗时」1460–1765ms，未做帧率采样）、
+3000 节点 JSON 的折叠交互手感、150%/200% DPI 下表格字号与行高、真实超大 CSV（>512 KiB 读取上限前的边界）。
+（黏性表头、行号列、600×40 渲染上限与「切源码」提示已在原生窗口用截图取证，见
+`docs/acceptance/files-workspace.md §14.7`。）

@@ -37,9 +37,24 @@ export default function FilePdfPreview({ path, size }: Props) {
   const [rendering, setRendering] = useState(false);
   const [box, setBox] = useState({ width: 0, height: 0 });
   const [reloadKey, setReloadKey] = useState(0);
+  /** 页码输入草稿：与真实页同步，非法输入回退到当前页。 */
+  const [pageInput, setPageInput] = useState("1");
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    setPageInput(String(page));
+  }, [page]);
+
+  /** 提交页码：钳制到 [1, numPages]；空/非法输入回到当前页，不制造跳页。 */
+  const commitPageInput = () => {
+    const parsed = Number.parseInt(pageInput, 10);
+    const total = Math.max(numPages, 1);
+    const next = Number.isFinite(parsed) ? Math.min(Math.max(parsed, 1), total) : page;
+    setPage(next);
+    setPageInput(String(next));
+  };
 
   // 容器尺寸：适应宽度/适应页面都以此为基准（窗口缩放/分栏变化即时生效）。
   useEffect(() => {
@@ -203,9 +218,26 @@ export default function FilePdfPreview({ path, size }: Props) {
           >
             <ChevronLeft size={14} aria-hidden="true" />
           </button>
-          <span className="fw-preview-pdf-counter" aria-live="polite">
+          <span className="sr-only" aria-live="polite">
             {t("fw.preview.pdf.pageOf", { page, total: numPages })}
           </span>
+          {/* 页码直达：输入受限钳制，回车/失焦提交，不改动滚动与缩放状态。 */}
+          <input
+            className="fw-preview-pdf-page-input"
+            type="text"
+            inputMode="numeric"
+            aria-label={t("fw.preview.pdf.pageInput")}
+            value={pageInput}
+            onChange={(event) => setPageInput(event.target.value.replace(/[^\d]/g, "").slice(0, 6))}
+            onBlur={commitPageInput}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                commitPageInput();
+              }
+            }}
+          />
+          <span className="fw-preview-pdf-page-total">/ {numPages}</span>
           <button
             type="button"
             className="fw-icon-btn"

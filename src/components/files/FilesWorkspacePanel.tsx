@@ -50,6 +50,7 @@ import {
   Scissors,
   Trash2,
   Archive,
+  Eye,
 } from "lucide-react";
 
 import DropdownMenu, { type DropdownMenuItem } from "../ui/DropdownMenu";
@@ -150,6 +151,15 @@ import OperationQueueBar from "./OperationQueueBar";
 import BatchRenameDialog, { type BatchRenameRequest } from "./BatchRenameDialog";
 import FolderCompareDialog, { type CompareRequest } from "./FolderCompareDialog";
 import QuickPreviewDialog, { type PreviewRequest } from "./QuickPreviewDialog";
+import FilePreviewPane from "./FilePreviewPane";
+import {
+  emptyPreviewSelection,
+  type PreviewSelectionSnapshot,
+} from "../../lib/filesWorkspace/previewSelection";
+import {
+  PREVIEW_PANE_MAX_WIDTH,
+  PREVIEW_PANE_MIN_WIDTH,
+} from "../../lib/filesWorkspace/persist";
 import WorkspaceSearchDialog from "./WorkspaceSearchDialog";
 import DuplicateFinderDialog, { type DuplicateDeleteOutcome } from "./DuplicateFinderDialog";
 import OperationPreviewDialog from "./OperationPreviewDialog";
@@ -164,6 +174,10 @@ import { pruneScrollSessions } from "./FileList";
 /** 最小窗格尺寸（CSS px）：分割比例按容器实测换算钳制。 */
 const MIN_PANE_W = 220;
 const MIN_PANE_H = 140;
+/** 检查器内联布局的最小内容宽度；更窄时改为浮层抽屉，不挤压主列表。 */
+const PREVIEW_INLINE_MIN_WIDTH = 900;
+/** 内联时至少留给文件列表的宽度（宽度钳制的下限依据）。 */
+const PREVIEW_LIST_MIN_WIDTH = 340;
 
 // store 的串行写入链绑定设置存储（模块加载即绑定，幂等）。
 bindSettingsStore(() => useSettingsStore.getState());
@@ -179,9 +193,21 @@ interface SplitRenderProps {
   onHoverZone: (zone: FwDropZone | null) => void;
   layoutEditMode: boolean;
   projectRoot: string | null;
+  /** 活动窗格选择变化 → 右侧检查器（逐层透传，不在分栏层另建状态）。 */
+  onPreviewSelectionChange?: (selection: PreviewSelectionSnapshot) => void;
 }
 
-function SplitRender({ node, pageActive, maximizedPaneId, dropHintPane, dropHint, onHoverZone, layoutEditMode, projectRoot }: SplitRenderProps) {
+function SplitRender({
+  node,
+  pageActive,
+  maximizedPaneId,
+  dropHintPane,
+  dropHint,
+  onHoverZone,
+  layoutEditMode,
+  projectRoot,
+  onPreviewSelectionChange,
+}: SplitRenderProps) {
   const store = useFilesWorkspaceStore;
   if (node.type === "pane") {
     return (
@@ -194,6 +220,7 @@ function SplitRender({ node, pageActive, maximizedPaneId, dropHintPane, dropHint
           dropHint={dropHintPane === node.paneId ? dropHint : null}
           layoutEditMode={layoutEditMode}
           projectRoot={projectRoot}
+          onPreviewSelectionChange={onPreviewSelectionChange}
         />
       </Suspense>
     );
@@ -208,6 +235,7 @@ function SplitRender({ node, pageActive, maximizedPaneId, dropHintPane, dropHint
       onHoverZone={onHoverZone}
       layoutEditMode={layoutEditMode}
       projectRoot={projectRoot}
+      onPreviewSelectionChange={onPreviewSelectionChange}
     />
   );
 }
@@ -270,6 +298,7 @@ export function SplitWithDivider({
   onHoverZone,
   layoutEditMode,
   projectRoot,
+  onPreviewSelectionChange,
 }: SplitRenderProps & { node: Extract<SplitNode, { type: "split" }> }) {
   const { t } = useLocale();
   const ref = useRef<HTMLDivElement>(null);
@@ -462,6 +491,7 @@ export function SplitWithDivider({
           onHoverZone={onHoverZone}
           layoutEditMode={layoutEditMode}
           projectRoot={projectRoot}
+          onPreviewSelectionChange={onPreviewSelectionChange}
         />
       </div>
       <div
@@ -553,6 +583,7 @@ export function SplitWithDivider({
           onHoverZone={onHoverZone}
           layoutEditMode={layoutEditMode}
           projectRoot={projectRoot}
+          onPreviewSelectionChange={onPreviewSelectionChange}
         />
       </div>
     </div>
@@ -622,6 +653,8 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
   const recentDirs = useFilesWorkspaceStore((s) => s.recentDirs);
   const pinnedDirs = useFilesWorkspaceStore((s) => s.pinnedDirs);
   const selectionMap = useFilesWorkspaceStore((s) => s.selection);
+  const previewPaneOpen = useFilesWorkspaceStore((s) => s.previewPaneOpen);
+  const previewPaneWidth = useFilesWorkspaceStore((s) => s.previewPaneWidth);
   const store = useFilesWorkspaceStore;
 
   const [dropHint, setDropHint] = useState<FwDropZone | null>(null);
@@ -682,6 +715,10 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
   const [compareRequest, setCompareRequest] = useState<CompareRequest | null>(null);
   /** 快速预览：同一目录的文件列表随请求携带，左右方向键切换。 */
   const [previewRequest, setPreviewRequest] = useState<PreviewRequest | null>(null);
+  /** 右侧检查器：活动窗格的选择快照（唯一来源仍是 store.selection）。 */
+  const [previewSelection, setPreviewSelection] = useState<PreviewSelectionSnapshot | null>(null);
+  /** 页面内容宽度：决定检查器是内联分栏还是窄窗抽屉。 */
+  const [containerWidth, setContainerWidth] = useState(0);
   const [workspaceSearchOpen, setWorkspaceSearchOpen] = useState(false);
   const [duplicateOpen, setDuplicateOpen] = useState(false);
   /** 标题栏二级入口：files = 文件工作区；recycle = 文件回收站索引视图。
@@ -956,6 +993,52 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
     window.addEventListener("taskdock-fw-preview", onPreview);
     return () => window.removeEventListener("taskdock-fw-preview", onPreview);
   }, []);
+
+  // ── 右侧检查器：选择联动 ────────────────────────────────────────────
+  /**
+   * 只接受**当前活动窗格**的上报：旧窗格的晚到回调（或异步竞态）不得覆盖新选择。
+   * 文件选择的权威仍是 store.selection，这里只缓存派生的预览目标。
+   */
+  const handlePreviewSelectionChange = useCallback((snapshot: PreviewSelectionSnapshot) => {
+    if (snapshot.paneId !== useFilesWorkspaceStore.getState().activePaneId) return;
+    setPreviewSelection(snapshot);
+  }, []);
+
+  /** 检查器开关：回收站数据源没有文件预览，明确提示而不是静默切换一个看不见的状态。 */
+  const togglePreviewPane = useCallback(() => {
+    if (sourceRef.current === "recycle") {
+      showToast(t("fw.inspector.filesOnly"), { kind: "info" });
+      return;
+    }
+    store.getState().setPreviewPaneOpen(!store.getState().previewPaneOpen);
+  }, [showToast, store, t]);
+
+  // 内容宽度：内联（分栏）↔ 窄窗抽屉的唯一切换依据。
+  useEffect(() => {
+    const el = rootRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const measure = () => setContainerWidth(el.getBoundingClientRect().width);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  const activePreviewSelection = useMemo(
+    () =>
+      previewSelection && previewSelection.paneId === activePaneId
+        ? previewSelection
+        : emptyPreviewSelection(activePaneId, ""),
+    [previewSelection, activePaneId],
+  );
+  const previewPaneOverlay = containerWidth > 0 && containerWidth < PREVIEW_INLINE_MIN_WIDTH;
+  /** 内联宽度上限同时受内容和「列表至少保留 340px」约束，避免把列表挤到不可用。 */
+  const previewPaneEffectiveWidth = useMemo(() => {
+    if (containerWidth <= 0) return previewPaneWidth;
+    const inlineMax = Math.min(PREVIEW_PANE_MAX_WIDTH, containerWidth - PREVIEW_LIST_MIN_WIDTH);
+    const max = Math.max(PREVIEW_PANE_MIN_WIDTH, inlineMax);
+    return Math.min(max, Math.max(PREVIEW_PANE_MIN_WIDTH, previewPaneWidth));
+  }, [containerWidth, previewPaneWidth]);
 
   // ── 应用内拖拽/快速传输共用的真实文件操作 ────────────────────────────
   const applyFileDrop = useCallback(
@@ -1514,6 +1597,12 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
       // 必须在布局撤销之前处理，避免 Alt 组合被 Ctrl/Cmd 分支吞掉。
       if (e.altKey && !mod && !e.shiftKey) {
         const active = store.getState().activePaneId;
+        // Alt+P：预览检查器开关（与工具栏按钮同一动作；不改选择、不读文件）。
+        if (e.code === "KeyP" || e.key.toLowerCase() === "p") {
+          e.preventDefault();
+          togglePreviewPane();
+          return;
+        }
         if (e.key === "ArrowLeft") {
           e.preventDefault();
           store.getState().navigate(active, "back");
@@ -1665,7 +1754,7 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pageActive, hydrated, activePaneId, requestTransfer, quickTransfer, previewRequest]);
+  }, [pageActive, hydrated, activePaneId, requestTransfer, quickTransfer, previewRequest, togglePreviewPane]);
 
   // Delete 的确认语义（键盘触发时复用 ConfirmDialog）。
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -1928,6 +2017,13 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
   }
 
   const moreItems: DropdownMenuItem[] = [
+    {
+      // 窄内容区工具栏按钮被收纳后，预览检查器仍可从更多菜单开关。
+      key: "previewPane",
+      label: previewPaneOpen ? t("fw.inspector.hide") : t("fw.inspector.show"),
+      icon: <Eye size={13} />,
+      onSelect: togglePreviewPane,
+    },
     {
       key: "editLayout",
       label: layoutEditMode ? t("fw.layout.exitEdit") : t("fw.layout.edit"),
@@ -2245,6 +2341,19 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
             <Save size={13} aria-hidden="true" />
             {t("fw.toolbar.saveLayout")}
           </button>
+
+          {/* 右侧文件检查器（预览 / 详细信息）：与 Alt+P 同一动作。 */}
+          <button
+            type="button"
+            className={`btn sm fw-preview-toggle${previewPaneOpen ? " is-on" : ""}`}
+            aria-pressed={previewPaneOpen}
+            aria-controls="fw-preview-pane"
+            data-tip={t("fw.inspector.toggleTip")}
+            onClick={togglePreviewPane}
+          >
+            <Eye size={13} aria-hidden="true" />
+            <span className="fw-btn-label">{t("fw.inspector.toggle")}</span>
+          </button>
           </div>
 
           {/* 其他组：低频操作；窄窗被收纳的模板/存为模板/撤销重做在此兜底 */}
@@ -2287,7 +2396,12 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
       )}
 
       {/* 主区域：普通文件分割树 / 回收站数据源（同一外壳，独立权限） */}
-      <div className="fw-workarea">
+      <div
+        className={`fw-workarea${source === "files" && previewPaneOpen ? " has-preview" : ""}${
+          previewPaneOverlay ? " is-preview-overlay" : ""
+        }`}
+      >
+        <div className="fw-workarea-main">
         {source === "recycle" ? (
           <Suspense fallback={<div className="fw-pane-loading" role="status" />}>
             <RecycleWorkspaceView />
@@ -2302,6 +2416,7 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
             onHoverZone={onHoverZone}
             layoutEditMode={false}
             projectRoot={project?.rootPath ?? null}
+            onPreviewSelectionChange={handlePreviewSelectionChange}
           />
         ) : (
           <SplitRender
@@ -2313,6 +2428,21 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
             onHoverZone={onHoverZone}
             layoutEditMode={layoutEditMode}
             projectRoot={project?.rootPath ?? null}
+            onPreviewSelectionChange={handlePreviewSelectionChange}
+          />
+        )}
+        </div>
+        {source === "files" && previewPaneOpen && (
+          <FilePreviewPane
+            target={activePreviewSelection.target}
+            summary={activePreviewSelection.summary}
+            width={previewPaneEffectiveWidth}
+            suspended={previewRequest !== null}
+            overlay={previewPaneOverlay}
+            pageActive={pageActive}
+            onClose={() => store.getState().setPreviewPaneOpen(false)}
+            onCommitWidth={(width) => store.getState().setPreviewPaneWidth(width)}
+            onNotice={(message, kind) => showToast(message, { kind: kind ?? "info" })}
           />
         )}
       </div>

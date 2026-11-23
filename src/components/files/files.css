@@ -2863,11 +2863,46 @@ body.fw-resizing-row * {
   gap: 6px;
 }
 
-/* 快速预览：容器统一（头/体/脚），各类型内容区自行适配；舞台不产生页面级滚动 */
-.fw-preview-dialog .ui-dialog-panel,
-.fw-preview-dialog {
-  max-width: min(1120px, 94vw);
-  width: min(1120px, 94vw);
+/* 快速预览：容器统一（头/体/脚），各类型内容区自行适配；舞台不产生页面级滚动。
+   宽度必须落在**面板**上：`className` 传的是遮罩，给遮罩写 width 会让遮罩只盖住
+   窗口左侧一条（右侧背景不变暗），大型弹窗的遮罩因此不均匀。 */
+.fw-preview-dialog .ui-dialog {
+  width: min(1440px, calc(100vw - 48px));
+  max-width: min(1440px, calc(100vw - 48px));
+  max-height: calc(100dvh - 48px);
+  display: flex;
+  flex-direction: column;
+}
+
+.fw-preview-dialog .ui-dialog-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  /* 只有内容区滚动：body 自身不再成为第二个滚动容器。 */
+  overflow: hidden;
+}
+
+.fw-preview-dialog-title {
+  font-weight: 600;
+}
+
+/* 弹窗内容：信息头部 + 自适应高度舞台；只有舞台内部滚动。 */
+.fw-preview-layout {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.fw-preview-title-note {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .fw-preview-title {
@@ -2920,10 +2955,11 @@ body.fw-resizing-row * {
   align-items: stretch;
   justify-content: center;
   position: relative;
-  /* 大窗口充分利用高度；小高度窗口先按视口收敛，避免内容被顶出可视区。 */
-  height: clamp(260px, 62vh, 640px);
-  max-height: 62vh;
-  min-height: 0;
+  /* 高度由弹窗可用空间决定（信息头部 + 工具栏占位后剩余部分），只有内容区滚动。 */
+  flex: 1 1 auto;
+  min-height: 220px;
+  max-height: none;
+  min-width: 0;
   overflow: hidden;
   border: 1px solid var(--border-subtle);
   border-radius: 7px;
@@ -3277,21 +3313,27 @@ body.fw-resizing-row * {
 }
 
 .fw-preview-hint {
-  margin: 8px 0 0;
+  flex: 1 1 auto;
+  margin: 0;
+  text-align: center;
   font-size: 11px;
   color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .fw-preview-hint {
+    display: none;
+  }
 }
 
 @media (max-width: 720px) {
-  .fw-preview-dialog .ui-dialog-panel,
-  .fw-preview-dialog {
+  .fw-preview-dialog .ui-dialog {
     width: 96vw;
     max-width: 96vw;
-  }
-
-  .fw-preview-stage {
-    height: 52vh;
-    max-height: 52vh;
+    max-height: calc(100dvh - 24px);
   }
 
   .fw-preview-audio-controls {
@@ -3586,4 +3628,291 @@ body.fw-resizing-row * {
 
 .fw-tab {
   border-radius: var(--radius-xs) var(--radius-xs) 0 0;
+}
+
+/* ── 右侧文件检查器（预览 / 详细信息）───────────────────────────────── */
+
+/* 主列表与检查器的主轴容器：检查器开启时横向溢出只发生在主列表内部，
+   不把整页推成横向滚动（否则检查器会随页面一起被滚走）。 */
+.fw-workarea-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+
+.fw-workarea.has-preview {
+  overflow: hidden;
+}
+
+.fw-workarea.has-preview .fw-workarea-main {
+  overflow: auto;
+}
+
+.fw-workarea.is-preview-overlay {
+  position: relative;
+}
+
+/* 拖拽条：8px 透明命中带，1px 线贴在检查器左缘（--edge-end）。
+   检查器自身不画 border-left，避免出现「边框 + 拖拽线」并排两根线。 */
+.fw-preview-resizer {
+  flex: 0 0 8px;
+  align-self: stretch;
+  --ui-resizer-line: var(--border-subtle);
+}
+
+.fw-preview-pane {
+  flex: 0 0 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-subtle);
+  border-left: 0;
+  border-radius: var(--radius-card);
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  background: var(--surface-raised);
+  overflow: hidden;
+  container-type: inline-size;
+  container-name: fw-inspector;
+}
+
+/* 窄内容区：不挤压主列表，改为浮在内容右侧的抽屉。 */
+.fw-preview-pane.is-overlay {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-end: 0;
+  width: min(380px, 86%);
+  border-left: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-lg, 0 18px 48px rgb(0 0 0 / 22%));
+  z-index: 6;
+}
+
+.fw-preview-pane-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 8px 8px 6px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.fw-preview-pane-head-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.fw-preview-pane-title {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.fw-preview-pane-subtitle {
+  display: block;
+  margin-top: 2px;
+  font-size: 10px;
+  color: var(--text-tertiary);
+  line-height: 1.4;
+}
+
+.fw-preview-pane-tabs {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 2px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.fw-preview-pane-tab {
+  height: 24px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.fw-preview-pane-tab:hover {
+  background: var(--surface-overlay);
+  color: var(--text-primary);
+}
+
+.fw-preview-pane-tab.is-active {
+  background: color-mix(in srgb, var(--accent, #3b82f6) 14%, transparent);
+  color: var(--text-primary);
+}
+
+.fw-preview-pane-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.fw-preview-pane-preview {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.fw-preview-pane-empty {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 18px 14px;
+  text-align: center;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.fw-preview-pane-empty p {
+  margin: 0;
+  max-width: 34ch;
+}
+
+.fw-preview-pane-empty-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.fw-preview-pane-empty-hint {
+  color: var(--text-tertiary);
+  opacity: 0.9;
+}
+
+.fw-preview-pane-details {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 10px 12px;
+}
+
+.fw-preview-pane-detail-list {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.fw-preview-pane-detail-row {
+  display: grid;
+  grid-template-columns: 70px minmax(0, 1fr);
+  gap: 8px;
+  font-size: 11px;
+}
+
+.fw-preview-pane-detail-row dt {
+  color: var(--text-tertiary);
+}
+
+.fw-preview-pane-detail-row dd {
+  margin: 0;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.fw-preview-pane-detail-row dd.is-mono {
+  font-family: var(--font-mono, ui-monospace, Consolas, monospace);
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+
+.fw-preview-pane-detail-note {
+  margin: 10px 0 0;
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+.fw-preview-pane-details-error {
+  margin-bottom: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--danger, #e5484d) 10%, transparent);
+  color: var(--danger, #e5484d);
+  font-size: 11px;
+}
+
+.fw-preview-pane-details-error p {
+  margin: 0 0 6px;
+  overflow-wrap: anywhere;
+}
+
+.fw-preview-pane-actions {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.fw-preview-pane-actions .btn.sm {
+  min-height: 24px;
+  padding: 0 8px;
+  font-size: 11px;
+}
+
+.fw-preview-pane-footnote {
+  flex: 0 0 auto;
+  padding: 0 10px 8px;
+  font-size: 10px;
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+
+/* 工具栏开关：开启时与图标按钮同一种强调语义。 */
+.fw-preview-toggle.is-on {
+  border-color: color-mix(in srgb, var(--accent, #3b82f6) 38%, var(--border-subtle));
+  background: color-mix(in srgb, var(--accent, #3b82f6) 12%, transparent);
+  color: var(--text-primary);
+}
+
+/* 检查器很窄时隐藏次要文案，只保留图标 + tooltip。 */
+@container fw-inspector (max-width: 320px) {
+  .fw-preview-pane-actions .btn.sm {
+    padding: 0 6px;
+  }
+}
+
+/* PDF 页码直达输入。 */
+.fw-preview-pdf-page-input {
+  width: 42px;
+  height: 22px;
+  padding: 0 4px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 5px;
+  background: var(--surface-base);
+  color: var(--text-primary);
+  font-size: 11px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.fw-preview-pdf-page-input:focus-visible {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent, #3b82f6) 55%, var(--border-subtle));
+}
+
+.fw-preview-pdf-page-total {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
 }

@@ -1058,3 +1058,116 @@ SVG 安全：SVG 只以 `Blob(image/svg+xml)` 喂给 `<img>`；不在 DOM 注入
 | `npx vitest run src/components/files/RecycleWorkspaceView.test.tsx` | 21 passed |
 
 本轮新增：清空处置计划 4 个、准入与补扫 3 个、分层锁 5 个、孤儿/缺失数据不复活 2 个、状态判定 1 个、回收站验证 11 个。普通单测不触碰真实回收站：清空用纯状态机 + 子进程退出码映射；批量回收用 `shell_seam` 测试替身（mock 内真实删除临时文件）；符号链接用例在环境无法创建链接时跳过并打印「未执行」，不伪造通过。
+
+## 15. R14 专业预览与右侧检查器架构（2026-11-23）
+
+### 15.1 组件职责（没有第二套预览引擎）
+
+```text
+FilePane（活动窗格）
+  └─ effect: buildPreviewSelection(selectedPaths, visibleEntries, paneId, dirPath)
+        → onPreviewSelectionChange(snapshot)            [逐层透传 SplitRender → SplitWithDivider]
+FilesWorkspacePanel
+  ├─ handlePreviewSelectionChange（校验 paneId === activePaneId）
+  ├─ QuickPreviewDialog → FilePreviewContent → File{Text,Image,Pdf,Video,Audio}Preview
+  └─ FilePreviewPane（右侧检查器）→ FilePreviewContent（同一个组件）
+```
+
+- `previewKind.ts` 仍是类型判定的唯一入口（新增 `isMarkdownExt` / `isDelimitedExt` / `isJsonExt`，不新建词表）。
+- `FilePreviewContent` 是弹窗与检查器**唯一**的内容分发点：谁都不再直接调用 `FileTextPreview` 等。
+- `FileTextPreview` 是文本/Markdown 的唯一渲染通道；`useTextPreview` 是唯一读取点。
+- CSV/TSV 表格与 JSON 树形是 `FileTextPreview` 的**模式分支**（`CsvTableView` / `JsonTreeView`
+  只接收已解析结构），不是新的预览器，`FilePreviewContent` 仍只按 `kind=text` 分发。
+- 检查器归属整个文件工作区（面板层），不挂在 `FilePane` 上：N 个窗格不会产生 N 套播放器/PDF worker。
+
+### 15.2 选择联动时序与竞态
+
+1. `FilePane` 只在 `isActivePane` 为真时上报；离开活动态时清空签名。
+2. 上报内容是**纯函数快照**（目标 + 统计），不读文件、不写 Store。
+3. 面板只接受 `snapshot.paneId === store.activePaneId` 的上报；旧窗格晚到回调直接丢弃。
+4. 渲染时再次校验 `previewSelection.paneId === activePaneId`，因此活动窗格切换的同一帧内
+   旧目标不会闪现（无需在 effect 里清状态，避免「子 effect 先发布、父 effect 后清空」）。
+5. 目录轮询每 4s 刷新 listing（对象身份变化）：`FilePane` 用签名字符串去重，
+   同一选择不会周期性重推。
+
+### 15.3 文本渲染管线
+
+```text
+fsReadText(path, 512 KiB)            ← 唯一磁盘读取
+  → normalizeNewlines（CRLF→LF）      ← 展示/搜索/解析共用同一份文本
+  → 行切片（≤5000 行渲染预算）
+  → highlightSource（≤160k 字符；否则降级）
+       / parseMarkdown（阅读模式，≤5000 行 / 20000 节点）
+       / parseCsvText（表格模式，完整文本 → 行 / 列 / 单元格预算）
+       / buildJsonTree（树形模式，完整文本 → 节点 / 子项 / 层级预算）
+  → renderTokens / Markdown AST / CsvTableView / JsonTreeView → React 节点
+  → 搜索命中：findTextMatches → renderTextWithMatches（mark.is-active）
+```
+
+- 高亮与命中都只生成 React 节点，绝不拼 HTML 字符串。
+- 模式切换（阅读 ↔ 源码、表格 ↔ 源码、树形 ↔ 源码）、换行、行号、字号、搜索全部只操作内存数据，不触发 IPC。
+- 复制使用原始读取内容；搜索/渲染使用规范化文本，两者偏移口径一致（同一份 LF 文本）。
+- **结构化视图必须吃完整文本**：CSV/JSON 用 `viewContent` 而不是 5000 行切片——JSON 切片会被截成非法、
+  CSV 会静默漏行；行/列/节点预算由各自解析器承担并回报截断标记。
+- 表格与树没有字符偏移，因此**不显示**文件内查找；查找能力在源码模式（以及 Markdown 阅读模式）保留。
+
+### 15.4 安全检查表
+
+| 风险 | 处置 |
+|---|---|
+| Markdown 内嵌 HTML / 脚本 | 不解析为 HTML；按源码块展示并标注「不执行」 |
+| `javascript:` / `data:` 链接 | `sanitizeLinkHref` 白名单（http/https/mailto）；其余渲染为不可点击文本 |
+| 相对链接 | 本地文件预览无可靠基准，拒绝并降级为文本 |
+| 远程图片 | 不自动加载，只显示替代文本 |
+| 链接点击导航整个应用 | `<a>` 一律 `preventDefault`，交 `openExternalUrl`（系统浏览器，`opener:default`） |
+| 超大文件 DOM 膨胀 | 512 KiB 读取上限 + 160k 高亮上限 + 5000 行渲染上限 |
+| 旧请求覆盖新文件 | 组件以 `key={path}` 重挂载；读取回调带 `cancelled` 守卫 |
+
+### 15.5 性能预算与已知边界
+
+| 项 | 预算/边界 | 行为 |
+|---|---|---|
+| 文本读取 | 512 KiB | 超出显示截断提示；复制只含已读部分 |
+| 语法高亮 | 160,000 字符 | 超出关闭高亮，保留纯文本与搜索 |
+| 渲染行数 | 5,000 行 | 超出只渲染前缀并提示；复制仍为完整内容 |
+| 搜索 | 500 命中 / 2,000,000 字符 / 200 字符查询 | 超出标记截断，不阻塞 UI |
+| Markdown 解析 | 5,000 行 / 20,000 节点 / 深度 6 | 超出标记 `truncated`，不抛错 |
+| CSV 解析 | 2,000,000 字符 / 2,000 行 / 120 列 / 400 字符单格 | 逐级标记 `chars/rows/cols/cellTruncated` |
+| CSV 渲染 | 600 行 × 40 列 | 超出提示切源码视图（不假装渲染了整张表） |
+| JSON 结构 | 2,000,000 字符 / 3,000 节点 / 200 子项 / 64 层 | 超字符上限 → `too-large` 不解析；超节点/子项/层级 → `truncated` |
+| 详细信息 | 每路径 1 次 `fs_stat`，LRU 32 | 切换选择不重复 IPC；失败可重试 |
+| 面板宽度 | 280-520，内联至少给列表留 340px | 内容宽度 <900px 改浮层抽屉 |
+
+### 15.6 持久化与兼容
+
+- 只扩展既有设置键 `file_workspace_layouts` 的 `PersistedState`：新增可选
+  `previewPane { open: boolean, width: number }`。**不新增设置键、不新增 SQLite 表。**
+- 归一化：非对象 → 视为缺失（关闭 + 360）；`open` 非布尔 → false；`width` 非有限数 → 360；
+  宽度钳制 280-520 并取整。
+- 旧数据/旧备份缺少该字段 → 面板关闭，布局、标签、收藏目录完全不受影响（版本号仍为 1）。
+- 每次开关/宽度提交走既有 600ms 防抖串行写入链；拖拽过程只改本地草稿。
+
+### 15.7 禁止的第二套实现（R14 复核）
+
+| 能力 | 唯一实现 | 本轮确认 |
+|---|---|---|
+| 预览类型判定 | `preview/previewKind.ts` | 新增 `isMarkdownExt` 后仍唯一 |
+| 预览内容分发 | `preview/FilePreviewContent.tsx` | 弹窗/检查器都走它 |
+| 文本读取 | `preview/useTextPreview.ts` | 模式切换不重新读盘 |
+| 语法高亮 | `preview/codeHighlight.ts` | 不含第二份关键字表 |
+| Markdown 解析 | `preview/markdownParse.ts` | 零依赖，不引入第三方引擎 |
+| CSV/TSV 解析 | `preview/csvParse.ts` | 组件内不再写引号/分隔符逻辑 |
+| JSON 结构解析 | `preview/jsonTree.ts` | 不做第二套树构建或 JSON 美化器 |
+| 搜索 | `preview/textSearch.ts` | 不调用文件 IPC |
+| 选择状态 | `useFilesWorkspaceStore.selection` | 检查器不建 selectedPaths |
+| 暂存架/回收站/传输 | 既有 `shelf` / `recycle` / `mobile_sync` | 检查器只调用既有命令 |
+
+### 15.8 结构化视图（CSV / TSV / JSON，FW-PREVIEW-005）
+
+- 归属：`FileTextPreview` 的模式分支，不新建预览器、不新增读取通道；`FilePreviewContent` 仍只认 `kind=text`。
+- 判定：`isDelimitedExt`（csv/tsv）、`isJsonExt`（仅 `json`；`jsonc` 允许注释，保持源码视图）。
+- 口径：RFC 4180 引号（引号只在字段起始生效、`""` 还原、引号内允许分隔符与换行）；
+  分隔符嗅探（`.tsv` 固定 Tab，其余取引号外出现最多的候选）；表头是启发式且**可手动纠正**。
+- 失败策略：JSON `invalid` / `too-large` 强制回源码并展示解析器消息与位置，树形按钮 `disabled`，
+  绝不显示半成品树；CSV 解析不会失败，只有预算降级标记。
+- 能力边界（明确不做）：文件内查找、排序、列宽拖拽、冻结列、虚拟滚动；超宽表提示切源码视图。

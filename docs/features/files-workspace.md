@@ -1,7 +1,8 @@
 # 文件工作区唯一功能登记表（Feature Registry）
 
-- 日期：2026-11-19（Asia/Shanghai）
-- 阶段：**R10 开发前方案**（三层会话模型重构；只做盘点、登记、方案；未改业务代码、未执行测试）
+- 日期：2026-11-23（Asia/Shanghai）
+- 阶段：**R14 预览系统升级与检查器交付**（快速预览重做、Markdown 双模式、文件内搜索、右侧检查器；
+  Dev 自动化验证完成，原生验收未执行）
 - 模块：`workspace/files`
 - 相关文档：[技术架构与数据模型](../architecture/files-workspace.md)、
   [测试矩阵](../testing/files-workspace.md)、[验收矩阵](../acceptance/files-workspace.md)
@@ -55,9 +56,9 @@
 
 | 维度 | 数量 |
 |---|---|
-| Feature 总数 | **47** |
-| P0 / P1 / P2 | **21 / 17 / 9** |
-| 已有实现（TESTING + PARTIAL） | **36** |
+| Feature 总数 | **51** |
+| P0 / P1 / P2 | **22 / 19 / 10** |
+| 已有实现（TESTING + PARTIAL） | **40** |
 | 待开发（PLANNED） | **11** |
 | PASS（本轮） | **0** |
 | BLOCKED / DEPRECATED | **0 / 0** |
@@ -66,7 +67,7 @@
 
 | 状态 | 数量 | Feature |
 |---|---|---|
-| TESTING | 15 | FW-LAYOUT-001、FW-SELECT-001、FW-SELECT-002、FW-DRAG-001、FW-FILE-001、FW-FILE-002、FW-FILE-003、FW-FILE-004、FW-NAV-002、FW-OPS-003、FW-SEARCH-002、FW-RENAME-001、FW-RECYCLE-001、FW-SMART-002、FW-COMPARE-001 |
+| TESTING | 19 | FW-LAYOUT-001、FW-SELECT-001、FW-SELECT-002、FW-DRAG-001、FW-FILE-001、FW-FILE-002、FW-FILE-003、FW-FILE-004、FW-NAV-002、FW-OPS-003、FW-SEARCH-002、FW-RENAME-001、FW-RECYCLE-001、FW-SMART-002、FW-COMPARE-001、FW-PREVIEW-002、FW-PREVIEW-003、FW-PREVIEW-004、FW-PREVIEW-005 |
 | PARTIAL | 21 | FW-NAV-001、FW-OPS-001、FW-OPS-002、FW-OPS-004、FW-SEARCH-001、FW-SEARCH-003、FW-INFO-001、FW-SYS-001、FW-SYS-002、FW-WORKSPACE-001、FW-WORKSPACE-002、FW-WORKSPACE-003、FW-FAV-001、FW-FAV-002、FW-FILTER-001、FW-COLLECT-001、FW-COLLECT-002、FW-PROJECT-001、FW-DEVICE-001、FW-PREVIEW-001、FW-DRAG-002 |
 | PLANNED | 11 | FW-UNDO-001、FW-FILTER-002、FW-TAG-001、FW-HISTORY-001、FW-AUTO-001、FW-SMART-001、FW-SMART-003、FW-ARCHIVE-001、FW-PROJECT-002、FW-COLLECTION-001、FW-RELATION-001 |
 
@@ -642,6 +643,98 @@ fsops::start_delete（任务收尾，整批一次）
   正式构建上的原生截图验收（见验收矩阵 §13）。
 - 验收：50 次切换注册/释放各一次且不重复；PDF 渲染链路经真实 `getDocument → getPage → render`
   路径断言；二进制不误当文本。
+- 2026-11-23 R14 升级：弹窗改为「文件信息头部 + 类型工具栏 + 自适应内容区 + 底部导航」；
+  窗口宽度 `min(1440px, 100vw - 48px)`、高度 `100dvh - 48px`，只有内容区滚动；
+  文本工具栏新增查找/上下匹配/自动换行/行号/字号/复制选中；PDF 新增页码输入；
+  语法高亮从单份关键字正则升级为单遍扫描的多语言 token（TS/JS/Python/Rust/JSON/YAML/CSS/HTML/SQL/Shell/PS1），
+  超过 160k 字符仍降级纯文本；文件类型图标与标签按语义色区分；不支持类型仍给信息头部与外部打开入口。
+  Markdown 不再走通用代码高亮，改由 FW-PREVIEW-003 承担。
+
+#### FW-PREVIEW-002 右侧文件检查器 `P0` · `TESTING`
+- 目的/场景：不打开弹窗也能持续查看当前选中文件的预览与完整元数据；多选给统计，不擅自预览第一个文件。
+- 现有（2026-11-23）：`FilePreviewPane.tsx`（预览 / 详细信息双视图、快捷操作、空态、挂起态）
+  + `preview/FilePreviewContent.tsx`（与弹窗共用同一套类型组件）
+  + `lib/filesWorkspace/previewSelection.ts`（纯函数：`resolvePreviewSelection` /
+  `summarizePreviewSelection` / `buildPreviewSelection`）。
+- 选择联动：`FilePane` 在**活动窗格**发布选择快照（签名去重，目录轮询不重复推送）；
+  `FilesWorkspacePanel` 只接受 `paneId === activePaneId` 的上报，非活动窗格晚到回调被忽略；
+  选择权威仍是 `useFilesWorkspaceStore.selection`，没有第二套 selectedPaths。
+- 面板开关：工具栏眼睛按钮 / 更多菜单 / `Alt+P` 三个入口同一动作；回收站数据源明确提示不适用。
+- 宽度：拖拽 8px `ui-resizer` 命中带（280-520），键盘 ←/→ ±16、Shift ±40、Home/End 到边界、
+  Enter/双击复位 360；拖拽只改本地草稿，松开提交一次；窄内容区（<900px）改为右侧浮层抽屉，
+  不挤压主列表。
+- 详细信息：先用 `FsEntry` 即时展示，仅在切到该页时按路径调用一次 `fs_stat`（模块级 LRU 32），
+  失败给出错误与重试；不新增 SQLite 表。
+- 持久化：`PersistedState.previewPane { open, width }`（旧数据缺失 → 关闭 + 360；
+  宽度钳制 280-520；损坏字段逐项回退）。
+- 快捷操作：打开（`fs_open`）、定位（`fs_reveal`）、复制路径、加入暂存架（文件）、
+  固定目录（文件夹，`pinnedDirs`）。**文件收藏尚未实现，因此不渲染收藏按钮**。
+- 弹窗互斥：快速预览打开期间检查器主体替换为挂起提示，卸载侧栏预览内容，避免两个播放器/两份 PDF。
+- 测试：`FilePreviewPane.test.tsx`（10）、`FilesWorkspacePanel.previewPane.test.tsx`（7）、
+  `previewSelection.test.ts`（9）、`previewPanePersist.test.ts`（5）。
+- 未完成：真实 Windows 下的拖拽宽度手感和高 DPI；文件收藏/标签（依赖 FW-FAV-002/FW-TAG-001）。
+- 兼容：不新增设置键；旧备份/旧设置读取后保持「面板关闭」，不改变既有布局。
+
+#### FW-PREVIEW-003 Markdown 阅读 / 源码双模式 `P1` · `TESTING`
+- 目的/场景：`.md` 不再按普通代码渲染；阅读模式看结构，源码模式看原文与语法。
+- 实现：`preview/markdownParse.ts`（零依赖、GFM 子集解析器，输出带偏移的安全 AST）+
+  `preview/FileMarkdownView.tsx`（AST → React 元素）。支持标题 1-6、段落（保留软换行）、
+  粗体/斜体/删除线、行内代码、围栏代码块（多语言着色）、无序/有序/任务列表、引用、
+  分隔线、表格（对齐）、链接与自动链接。
+- 安全：不使用 `dangerouslySetInnerHTML`；原始 HTML 只作源码块展示、绝不执行；
+  链接仅 http/https/mailto（`sanitizeLinkHref`），相对链接与 `javascript:`/`data:` 降级为纯文本；
+  图片不自动加载，只显示替代文本；外部链接经系统浏览器打开（`lib/externalLinks.ts`）。
+- 预算：阅读模式最多解析 5000 行 / 20000 节点，超出标记「未完整解析」；模式切换只读内存，不重新读盘。
+- 明确不支持（避免误判为完整引擎）：引用式链接、脚注、定义列表、公式、图片渲染、内嵌 HTML。
+- 测试：`markdownParse.test.ts`（20）、`FileTextPreview.test.tsx`（6，含模式切换与搜索）。
+- 未完成：语法扩展（脚注/数学）、PDF 内搜索、Office 内嵌预览。
+
+#### FW-PREVIEW-004 文件内搜索 `P1` · `TESTING`
+- 目的/场景：在已打开文本/Markdown 中查找，不触发文件读取 IPC。
+- 函数：`findTextMatches(content, query, options)`、`getNextMatch(matches, currentIndex, direction)`、
+  `getVisibleMatchRange(matches, position)`（`preview/textSearch.ts`）。
+- 能力：大小写敏感开关（工具栏当前固定不敏感，纯函数已支持）、上一个/下一个循环、
+  命中计数、当前命中高亮（`mark.is-active`）、清空查询清除高亮、500 条命中上限、
+  2,000,000 字符扫描上限、查询串 200 字符上限。
+- 一致性：展示与搜索共用 `normalizeNewlines`（CRLF → LF）后的同一份文本，命中偏移与渲染行偏移一致；
+  复制仍使用原始读取内容。
+- 测试：`textSearch.test.ts`（12）、`FileTextPreview.test.tsx` 搜索两例。
+- 未完成：正则/全词匹配、跨行匹配、搜索结果侧栏。
+
+#### FW-PREVIEW-005 CSV/TSV 表格视图与 JSON 树形视图 `P2` · `TESTING`
+- 目的/场景：`.csv` / `.tsv` 不再只能看逗号原文，`.json` 不再只能看压成一行的源码；
+  在同一预览通道里提供「表格 / 树形 ↔ 源码」双模式，解析失败一律回退源码，不伪造结构。
+- 判定（唯一口径）：`previewKind.ts` 新增 `isDelimitedExt`（csv/tsv）与 `isJsonExt`（仅 `json`）。
+  `jsonc` 允许注释、`JSON.parse` 必然失败，故意不进树形视图，保持源码。
+- 纯函数：
+  - `preview/csvParse.ts`：RFC 4180 口径（引号只在**字段起始**生效、`""` 还原成一个引号、
+    引号内允许分隔符与换行）；分隔符嗅探（`.tsv` 固定 Tab，其余取引号外出现最多的候选，平手优先逗号）；
+    表头启发式（首行全非空且不全为数字），UI 提供手动纠正；预算 2,000,000 字符 / 2000 行 /
+    120 列 / 单格 400 字符，逐级标记 `charsTruncated / rowsTruncated / colsTruncated / cellTruncated`。
+  - `preview/jsonTree.ts`：`JSON.parse` 一次 + 单遍建树；错误保留解析器消息与
+    `position / line / column`，区分 `empty / invalid / too-large`；预算 2,000,000 字符 /
+    3000 节点 / 单容器 200 子项 / 64 层，超限打 `truncated`，标量预览截断到 300 字符。
+- 视图：`CsvTableView.tsx`（黏性表头、行号列、单元格截断省略号、自动换行开关；渲染再收敛到
+  600 行 × 40 列并明确提示）、`JsonTreeView.tsx`（`role="tree"` 可折叠、默认只展开根、
+  展开全部 / 收起全部、子项预算标记）。
+- 唯一通道：两者都作为模式挂在 `FileTextPreview.tsx`（文本/Markdown 唯一渲染通道），不新建预览器；
+  表格与树从**完整**已读文本解析（不喂 5000 行裁剪版，否则 JSON 会被截成非法、CSV 会静默漏行），
+  `useTextPreview` 仍是唯一读取点，切换模式不重新读盘。
+- 诚实边界：表格与树没有字符偏移，**不提供**文件内查找（切到源码视图再查）；JSON 解析失败时
+  树形按钮 `disabled` 并给出原因，绝不显示半成品树；`TooLarge` 不尝试解析。
+- 测试：`csvParse.test.ts`（17）、`jsonTree.test.ts`（11）、`previewKind.test.ts` 结构化口径 2 例、
+  `FileTextPreview.test.tsx` 新增 CSV 3 例 + JSON 2 例。
+- 原生 Dev 验收（2026-11-23 21:47，复用 1420 + 真实 WebView2，DPR 1.25）：11 项全通过——
+  表格/表头开关/源码切换/JSON 树/非法 JSON 回退/TSV 分隔符/700×45 大表 600×40 上限提示/
+  Markdown 查找回归/检查器挂起，`pageerror=0`。证据：
+  `tmp/acceptance/files-workspace/round14/run-20261123-214707/`，脚本
+  `scripts/acceptance-files-structured-preview.mjs`。状态仍为 `TESTING`：干净 `npm run build` 未通过
+  （构建守卫拦 dist 清理），滚动帧率未测。
+- 未完成：排序 / 列宽拖拽 / 冻结列、分隔符与编码的手动选择、JSONPath 查询、超宽表格虚拟滚动。
+- 观察项已修复（P2，导航白名单漏项）：Rust `WORKBENCH_TABS` 此前漏登记 `files` / `life` / `vault` /
+  `capability`，主窗口结构化导航到文件工作区会被拒（「未知的工作台导航目标: files」）；已按前端
+  `WORKBENCH_ROUTES` 补齐并新增 `workbench_tabs_match_frontend_routes` 回归用例（Rust 30 passed），
+  原生验收复跑 12/12 含「0 直达 files 路由」（`run-20261123-220408`）。
 
 ### 3.5 系统集成与压缩
 
@@ -1055,3 +1148,15 @@ P2：9
 9. **目录改名/移动同步**：TaskDock 内部重命名/移动目录时用统一 `remapTabPaths()` 精确映射
    所有受影响标签的 `openedPath/path/history`（分量边界，大小写不敏感，不误匹配相似前缀）；
    外部程序改动复用现有失效处理，定位不到新路径则显式标注失效，不猜层级。
+
+### 第五阶段源码复核结论（2026-11-23，只读审计，不新增实现）
+
+| 能力 | 源码事实 | 结论 |
+|---|---|---|
+| 文件操作暂停/恢复/重试 | `fsops/jobs.rs` 与任务快照无 `pause/resume/retry` 字段；`OperationQueueBar` 仅展示既有进度 | **不可在前端做假按钮**；需后端先支持 |
+| 项目多目录绑定 | `dev_projects.root_path` 唯一索引（`db/mod.rs:1570`） | 当前仅一个根目录，多角色绑定未实现 |
+| 文件标签 / 收藏 | Store 仅有 `pinnedDirs`（目录集合）；无 `fileTags` / `favorite` 持久化 | 文件级收藏、标签、分组均为 PLANNED |
+| 筛选预设 | 源码无 `filterPreset` / `filter_preset` | PLANNED |
+| 最近访问 | 仅 `recentDirs`（目录 LRU） | 最近文件/项目 PLANNED |
+| CSV/TSV、JSON 结构化预览 | `preview/csvParse.ts` + `preview/jsonTree.ts`（纯函数）+ `CsvTableView` / `JsonTreeView`，挂在 `FileTextPreview` 模式内 | 已实现（FW-PREVIEW-005，TESTING）；排序 / 虚拟滚动仍缺 |
+| ZIP 压缩/解压 | Rust 未引入 zip 依赖 | 未实现，新增依赖需先申请 |

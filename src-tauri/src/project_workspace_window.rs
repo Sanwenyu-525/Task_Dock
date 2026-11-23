@@ -155,13 +155,20 @@ fn frame_key_with_corner(
 pub const EVENT_WORKBENCH_NAVIGATE: &str = "workbench-navigate";
 pub const EVENT_WORKBENCH_NAV_ACK: &str = "workbench-nav-ack";
 
-/// 工作台可路由的稳定功能 ID（与前端 `Tab` + 工作台首页一致）。
+/// 工作台可路由的稳定功能 ID（与前端 `workbenchLayout.ts` 的 `WORKBENCH_ROUTES` 一一对应）。
 /// 只做白名单校验：未知目标直接拒绝，不允许任意字符串进入窗口路由。
+///
+/// 2026-11-23（R14）：补齐 `files` / `life` / `vault` / `capability` 四项——前端路由早已登记，
+/// 白名单漏项会让主窗口无法直接跳「文件工作区 / 生活 / 安全保险箱 / 能力中心」（只能进工作台再点 rail），
+/// 且错误信息看起来像功能不存在。新增/删除路由时必须两侧同步。
 const WORKBENCH_TABS: &[&str] = &[
     "home",
     "workbench",
     "workspace",
+    "files",
     "tasks",
+    "life",
+    "vault",
     "agents",
     "apps",
     "widgets",
@@ -173,6 +180,7 @@ const WORKBENCH_TABS: &[&str] = &[
     "workflows",
     "history",
     "roadmap",
+    "capability",
     "settings",
     "help",
     "diagnostics",
@@ -2565,6 +2573,52 @@ mod tests {
             ..Default::default()
         }))
         .is_err());
+    }
+
+    /// 白名单必须与前端 `WORKBENCH_ROUTES` 对齐：漏一项就会把合法导航当「未知目标」拒绝
+    /// （R14 实测 `files` 被拒，主窗口只能绕过 rail 点进文件工作区）。
+    #[test]
+    fn workbench_tabs_match_frontend_routes() {
+        let expected = [
+            "home",
+            "workbench",
+            "workspace",
+            "files",
+            "tasks",
+            "life",
+            "vault",
+            "agents",
+            "apps",
+            "widgets",
+            "actions",
+            "clipboard",
+            "mobile",
+            "inbox",
+            "shelf",
+            "workflows",
+            "history",
+            "roadmap",
+            "capability",
+            "settings",
+            "help",
+            "diagnostics",
+            "resource",
+        ];
+        assert_eq!(
+            WORKBENCH_TABS,
+            &expected[..],
+            "新增/删除工作台路由时，Rust 白名单与 workbenchLayout.ts 的 WORKBENCH_ROUTES 必须同步"
+        );
+        for tab in expected {
+            assert!(
+                normalize_workbench_target(Some(WorkbenchNavTarget {
+                    tab: tab.into(),
+                    ..Default::default()
+                }))
+                .is_ok(),
+                "tab {tab} 应被接受"
+            );
+        }
     }
 
     /// 导航队列按顺序交付；回执会清掉尚未拉取的同号请求（防止窗口重载重复执行）。

@@ -148,3 +148,889 @@
   background: color-mix(in srgb, var(--accent, #3b82f6) 12%, transparent);
   color: var(--text-primary);
 }
+
+/* ══ 文件信息头部（弹窗 / 检查器共用）══════════════════════════════════ */
+
+/* 语义色：按 tone 落到 --file-accent，图标底色与类型标签都从这里取。
+   文件夹/图片/视频/音频/文本沿用 .fw-root 的既有 --file-tone-*，其余在本文件补齐。 */
+.fw-file-head,
+.fw-file-chip {
+  --file-accent: var(--file-tone-other, #8b95a5);
+}
+
+.fw-file-head[data-tone="folder"] { --file-accent: var(--accent, #3b82f6); }
+.fw-file-head[data-tone="image"] { --file-accent: var(--file-tone-image, #22c55e); }
+.fw-file-head[data-tone="video"] { --file-accent: var(--file-tone-video, #b39dfb); }
+.fw-file-head[data-tone="audio"] { --file-accent: var(--file-tone-audio, #e879f9); }
+.fw-file-head[data-tone="text"] { --file-accent: var(--file-tone-text, #9aa9bd); }
+.fw-file-head[data-tone="code"] { --file-accent: #8b5cf6; }
+.fw-file-head[data-tone="pdf"] { --file-accent: #ef4444; }
+.fw-file-head[data-tone="doc"] { --file-accent: #3b82f6; }
+.fw-file-head[data-tone="sheet"] { --file-accent: #16a34a; }
+.fw-file-head[data-tone="slide"] { --file-accent: #f97316; }
+.fw-file-head[data-tone="archive"] { --file-accent: var(--file-tone-archive, #facc15); }
+.fw-file-head[data-tone="data"] { --file-accent: #eab308; }
+.fw-file-head[data-tone="program"] { --file-accent: #64748b; }
+
+.fw-file-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--surface-raised) 58%, transparent);
+}
+
+.fw-file-head-icon {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  color: var(--file-accent);
+  background: color-mix(in srgb, var(--file-accent) 14%, transparent);
+}
+
+.fw-file-head-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.fw-file-head-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.fw-file-head-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.fw-file-chip {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--file-accent) 14%, transparent);
+  color: var(--text-primary);
+  font-size: 10px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+.fw-file-chip[data-tone="folder"] { --file-accent: var(--accent, #3b82f6); }
+.fw-file-chip[data-tone="image"] { --file-accent: var(--file-tone-image, #22c55e); }
+.fw-file-chip[data-tone="video"] { --file-accent: var(--file-tone-video, #b39dfb); }
+.fw-file-chip[data-tone="audio"] { --file-accent: var(--file-tone-audio, #e879f9); }
+.fw-file-chip[data-tone="text"] { --file-accent: var(--file-tone-text, #9aa9bd); }
+.fw-file-chip[data-tone="code"] { --file-accent: #8b5cf6; }
+.fw-file-chip[data-tone="pdf"] { --file-accent: #ef4444; }
+.fw-file-chip[data-tone="doc"] { --file-accent: #3b82f6; }
+.fw-file-chip[data-tone="sheet"] { --file-accent: #16a34a; }
+.fw-file-chip[data-tone="slide"] { --file-accent: #f97316; }
+.fw-file-chip[data-tone="archive"] { --file-accent: var(--file-tone-archive, #facc15); }
+.fw-file-chip[data-tone="data"] { --file-accent: #eab308; }
+.fw-file-chip[data-tone="program"] { --file-accent: #64748b; }
+
+.fw-file-chip.is-quiet {
+  background: color-mix(in srgb, var(--text-tertiary) 12%, transparent);
+  color: var(--text-tertiary);
+}
+
+.fw-file-head-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.fw-file-head-dir,
+.fw-file-head-path {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fw-file-head[data-variant="panel"] {
+  padding: 8px 10px;
+  background: transparent;
+  border-bottom: 0;
+}
+
+.fw-file-head[data-variant="panel"] .fw-file-head-name {
+  font-size: 12px;
+}
+
+.fw-file-head[data-variant="panel"] .fw-file-head-icon {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+}
+
+/* 面板里路径单独占一行：完整路径比元信息更重要。 */
+.fw-file-head[data-variant="panel"] .fw-file-head-meta {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+}
+
+/* ══ 预览内容容器 ══════════════════════════════════════════════════════ */
+
+.fw-preview-content {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.fw-preview-folder {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  text-align: center;
+  min-height: 0;
+}
+
+.fw-preview-folder-icon {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
+  color: var(--accent, #3b82f6);
+  background: color-mix(in srgb, var(--accent, #3b82f6) 12%, transparent);
+}
+
+.fw-preview-folder-name {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.fw-preview-folder-path {
+  max-width: 100%;
+  padding: 3px 8px;
+  border-radius: 5px;
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.fw-preview-folder-hint {
+  margin: 0;
+  max-width: 52ch;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+/* ══ 文本 / Markdown 工具栏 ══════════════════════════════════════════════ */
+
+.fw-preview-text {
+  /* 语法色板：暗色为默认；浅色主题在下方覆盖。 */
+  --code-keyword: #c792ea;
+  --code-string: #a5d6a7;
+  --code-number: #f78c6c;
+  --code-comment: #7c8a9e;
+  --code-function: #82aaff;
+  --code-type: #ffcb6b;
+  --code-property: #89ddff;
+  --code-boolean: #ff9cac;
+  --code-key: #7fdbca;
+  --code-tag: #f07178;
+  --code-attr: #ffcb6b;
+  --code-selector: #c3e88d;
+  --code-operator: #89ddff;
+  --code-markup: #89ddff;
+  --code-link: #82aaff;
+}
+
+html[data-theme="light"] .fw-preview-text {
+  --code-keyword: #7c3aed;
+  --code-string: #0f7b3f;
+  --code-number: #b45309;
+  --code-comment: #7b8798;
+  --code-function: #1d4ed8;
+  --code-type: #a16207;
+  --code-property: #0e7490;
+  --code-boolean: #be123c;
+  --code-key: #0f766e;
+  --code-tag: #b91c1c;
+  --code-attr: #b45309;
+  --code-selector: #3f6212;
+  --code-operator: #0e7490;
+  --code-markup: #6d28d9;
+  --code-link: #1d4ed8;
+}
+
+.fw-preview-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--surface-raised) 62%, transparent);
+}
+
+.fw-preview-segment {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.fw-preview-segment-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 9px;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.fw-preview-segment-btn:hover {
+  color: var(--text-primary);
+  background: var(--surface-overlay);
+}
+
+.fw-preview-segment-btn.is-active {
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--accent, #3b82f6) 14%, transparent);
+}
+
+.fw-preview-search {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1 1 210px;
+  min-width: 0;
+  max-width: 430px;
+}
+
+.fw-preview-search .search-box {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.fw-preview-search-count {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.fw-preview-toolbar-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+.fw-preview-toolbar-group--copy {
+  margin-left: auto;
+}
+
+.fw-preview-font-btn {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.fw-preview-font-value {
+  min-width: 20px;
+  text-align: center;
+  font-size: 10px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.fw-preview-text-meta {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.fw-preview-text-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  padding: 8px 12px 14px;
+  font-size: var(--fw-preview-font-size, 12px);
+}
+
+.fw-preview-code {
+  min-width: 0;
+}
+
+.fw-preview-code-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-height: 1.6em;
+}
+
+.fw-preview-line-number {
+  flex: 0 0 auto;
+  width: 3.4em;
+  text-align: right;
+  color: var(--text-tertiary);
+  user-select: none;
+  font-family: var(--font-mono, ui-monospace, Consolas, monospace);
+  font-size: 0.92em;
+  line-height: 1.6;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
+}
+
+.fw-preview-code-text {
+  min-width: 0;
+  flex: 1 1 auto;
+  font-family: var(--font-mono, ui-monospace, Consolas, monospace);
+  line-height: 1.6;
+  white-space: pre;
+  tab-size: 2;
+}
+
+.fw-preview-text-scroll[data-wrap="true"] .fw-preview-code-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.fw-preview-text-scroll[data-line-numbers="false"] .fw-preview-line-number {
+  display: none;
+}
+
+.fw-preview-empty-text {
+  margin: 18px 4px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+/* 语义 token 着色：只上色，不改变字符。 */
+.fw-preview-token-keyword { color: var(--code-keyword); }
+.fw-preview-token-string { color: var(--code-string); }
+.fw-preview-token-number { color: var(--code-number); }
+.fw-preview-token-comment { color: var(--code-comment); font-style: italic; }
+.fw-preview-token-function { color: var(--code-function); }
+.fw-preview-token-type { color: var(--code-type); }
+.fw-preview-token-property { color: var(--code-property); }
+.fw-preview-token-boolean { color: var(--code-boolean); }
+.fw-preview-token-key { color: var(--code-key); }
+.fw-preview-token-tag { color: var(--code-tag); }
+.fw-preview-token-attr { color: var(--code-attr); }
+.fw-preview-token-selector { color: var(--code-selector); }
+.fw-preview-token-operator { color: var(--code-operator); }
+.fw-preview-token-markup { color: var(--code-markup); font-weight: 600; }
+.fw-preview-token-emphasis { color: var(--text-primary); font-style: italic; }
+.fw-preview-token-strike { color: var(--text-tertiary); text-decoration: line-through; }
+.fw-preview-token-link { color: var(--code-link); text-decoration: underline; }
+
+/* 搜索命中：默认黄色底，当前命中更亮并带描边。 */
+.fw-preview-match {
+  border-radius: 2px;
+  padding: 0 1px;
+  background: color-mix(in srgb, var(--warning, #d97706) 32%, transparent);
+  color: inherit;
+}
+
+.fw-preview-match.is-active {
+  background: color-mix(in srgb, var(--warning, #d97706) 62%, transparent);
+  outline: 1px solid color-mix(in srgb, var(--warning, #d97706) 75%, transparent);
+}
+
+/* ══ Markdown 阅读模式 ══════════════════════════════════════════════════ */
+
+.fw-md-body {
+  max-width: 78ch;
+  margin: 0 auto;
+  color: var(--text-primary);
+  font-size: 0.96em;
+  line-height: 1.75;
+  overflow-wrap: anywhere;
+}
+
+.fw-md-body > *:first-child {
+  margin-top: 0;
+}
+
+.fw-md-heading {
+  margin: 1.4em 0 0.5em;
+  line-height: 1.3;
+  font-weight: 650;
+}
+
+.fw-md-h1 { font-size: 1.62em; }
+.fw-md-h2 { font-size: 1.38em; }
+.fw-md-h3 { font-size: 1.2em; }
+.fw-md-h4 { font-size: 1.08em; }
+.fw-md-h5 { font-size: 1em; }
+.fw-md-h6 { font-size: 0.94em; color: var(--text-secondary); }
+
+.fw-md-paragraph {
+  margin: 0.65em 0;
+}
+
+.fw-md-inline-code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--text-tertiary) 14%, transparent);
+  font-family: var(--font-mono, ui-monospace, Consolas, monospace);
+  font-size: 0.9em;
+}
+
+.fw-md-code-block {
+  position: relative;
+  margin: 0.8em 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-base) 70%, transparent);
+  overflow: hidden;
+}
+
+.fw-md-code-lang {
+  position: absolute;
+  top: 4px;
+  right: 8px;
+  font-size: 10px;
+  color: var(--text-tertiary);
+  text-transform: lowercase;
+}
+
+.fw-md-pre {
+  margin: 0;
+  padding: 10px 12px;
+  overflow: auto;
+  font-family: var(--font-mono, ui-monospace, Consolas, monospace);
+  font-size: 0.9em;
+  line-height: 1.6;
+  white-space: pre;
+}
+
+.fw-md-quote {
+  margin: 0.8em 0;
+  padding: 2px 0 2px 12px;
+  border-left: 3px solid color-mix(in srgb, var(--accent, #3b82f6) 45%, transparent);
+  color: var(--text-secondary);
+}
+
+.fw-md-list {
+  margin: 0.6em 0;
+  padding-left: 1.4em;
+}
+
+.fw-md-list-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0.25em 0;
+}
+
+.fw-md-bullet {
+  flex: 0 0 auto;
+  min-width: 1.1em;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.fw-md-task {
+  flex: 0 0 auto;
+  margin: 0.45em 0 0;
+  accent-color: var(--accent, #3b82f6);
+}
+
+.fw-md-list-body {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.fw-md-list-body > .fw-md-paragraph {
+  margin: 0;
+}
+
+.fw-md-hr {
+  margin: 1.2em 0;
+  border: 0;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.fw-md-table-wrap {
+  margin: 0.9em 0;
+  overflow: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+}
+
+.fw-md-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.94em;
+}
+
+.fw-md-table th,
+.fw-md-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  border-right: 1px solid var(--border-subtle);
+  vertical-align: top;
+}
+
+.fw-md-table th:last-child,
+.fw-md-table td:last-child {
+  border-right: 0;
+}
+
+.fw-md-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.fw-md-table th {
+  background: color-mix(in srgb, var(--surface-raised) 70%, transparent);
+  font-weight: 600;
+}
+
+.fw-md-link {
+  color: var(--code-link, var(--accent, #3b82f6));
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.fw-md-link.is-blocked {
+  color: var(--text-tertiary);
+  text-decoration: line-through dotted;
+  cursor: help;
+}
+
+.fw-md-image {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--text-tertiary) 12%, transparent);
+  color: var(--text-secondary);
+  font-size: 0.92em;
+}
+
+.fw-md-html {
+  margin: 0.8em 0;
+  border: 1px dashed var(--border-strong);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--warning, #d97706) 6%, transparent);
+}
+
+.fw-md-html-note {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 10px;
+  color: var(--warning, #d97706);
+}
+
+.fw-md-html pre {
+  margin: 0;
+  overflow: auto;
+  font-family: var(--font-mono, ui-monospace, Consolas, monospace);
+  font-size: 0.88em;
+  white-space: pre-wrap;
+  color: var(--text-secondary);
+}
+
+/* 面板变窄时：工具栏分组换行、Markdown 不强行 78ch。 */
+.fw-preview-text[data-variant="panel"] .fw-preview-toolbar {
+  padding: 6px 8px;
+}
+
+.fw-preview-text[data-variant="panel"] .fw-preview-search {
+  flex: 1 1 100%;
+  max-width: none;
+}
+
+.fw-preview-text[data-variant="panel"] .fw-preview-toolbar-group--copy {
+  margin-left: 0;
+}
+
+.fw-preview-text[data-variant="panel"] .fw-md-body {
+  max-width: none;
+}
+
+.fw-preview-text[data-variant="panel"] .fw-preview-text-scroll {
+  padding: 8px 10px 14px;
+}
+
+/* ── 结构化视图（CSV / TSV 表格、JSON 树）──────────────────────────────────
+   两个视图都只读 `csvParse` / `jsonTree` 的结构，不参与解析；
+   样式只用语义 Token，颜色/圆角/阴影不写死。表格与树的滚动交给外层
+   `.fw-preview-text-scroll`，这里不另建滚动容器。 */
+
+.fw-csv-view {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.fw-csv-table {
+  border-collapse: separate;
+  border-spacing: 0;
+  min-width: max-content;
+  font-family: var(--font-mono, ui-monospace, Consolas, monospace);
+  font-size: 0.94em;
+}
+
+/* 表头黏在内容区顶部：横向滚动时列名跟着走，纵向滚动时行号跟着走。 */
+.fw-csv-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-sticky);
+  padding: 4px 8px;
+  text-align: left;
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--text-primary);
+  background: var(--surface-raised);
+  border-bottom: 1px solid var(--border-default);
+}
+
+.fw-csv-table tbody th {
+  position: sticky;
+  left: 0;
+  z-index: var(--z-content);
+  padding: 3px 8px;
+  text-align: left;
+  background: var(--surface-base, var(--surface-raised));
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.fw-csv-table tbody td {
+  padding: 3px 8px;
+  max-width: 26em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+}
+
+.fw-csv-table tbody tr:nth-child(even) {
+  background: color-mix(in srgb, var(--surface-raised) 42%, transparent);
+}
+
+.fw-csv-table tbody tr:hover {
+  background: var(--surface-overlay);
+}
+
+/* 行号列窄、右对齐、不可选中：复制单元格内容时不混入行号。 */
+.fw-csv-table .fw-csv-index {
+  min-width: 2.6em;
+  text-align: right;
+  color: var(--text-tertiary);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+
+.fw-csv-table thead th.fw-csv-index {
+  text-align: right;
+}
+
+.fw-csv-table th[data-empty="true"] {
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+
+.fw-csv-table td[data-empty="true"] {
+  color: var(--text-tertiary);
+}
+
+/* 被截断的单元格补一个省略号：截断是解析预算造成的，必须可见。 */
+.fw-csv-table td[data-clipped="true"]::after {
+  content: "…";
+  color: var(--text-tertiary);
+}
+
+.fw-csv-view[data-wrap="true"] .fw-csv-table tbody td {
+  max-width: 34em;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.fw-csv-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.fw-csv-notes .fw-preview-encoding {
+  margin: 2px 0 0;
+}
+
+/* JSON 树：缩进用节点层级算出的自定义属性，键盘/鼠标都能逐层展开。 */
+.fw-json-view {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.fw-json-toolbar {
+  display: flex;
+  gap: 6px;
+}
+
+.fw-json-tree {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.fw-json-node {
+  min-width: 0;
+}
+
+.fw-json-row {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 4px 1px var(--fw-json-indent, 0);
+  border-radius: var(--radius-xs, 4px);
+  font-family: var(--font-mono, ui-monospace, Consolas, monospace);
+  font-size: 0.94em;
+  line-height: 1.7;
+  min-width: 0;
+}
+
+.fw-json-row:hover {
+  background: var(--surface-overlay);
+}
+
+.fw-json-toggle {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.fw-json-toggle:hover {
+  color: var(--text-primary);
+}
+
+.fw-json-toggle svg {
+  transition: transform 120ms ease;
+}
+
+.fw-json-toggle.is-open svg {
+  transform: rotate(90deg);
+}
+
+.fw-json-dot {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.fw-json-dot::after {
+  content: "";
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--border-default);
+}
+
+.fw-json-key {
+  flex: 0 0 auto;
+  max-width: 22em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--code-property);
+}
+
+.fw-json-sep {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+  margin-right: 2px;
+}
+
+.fw-json-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fw-json-value.is-string { color: var(--code-string); }
+.fw-json-value.is-number { color: var(--code-number); }
+.fw-json-value.is-boolean { color: var(--code-keyword); }
+.fw-json-value.is-null { color: var(--text-tertiary); font-style: italic; }
+.fw-json-value.is-container { color: var(--text-secondary); }
+
+.fw-json-clip {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fw-json-toggle svg {
+    transition: none;
+  }
+}
+
+/* 面板变窄：表格列宽收紧，JSON 键名更早省略。 */
+.fw-preview-text[data-variant="panel"] .fw-csv-table tbody td {
+  max-width: 18em;
+}
+
+.fw-preview-text[data-variant="panel"] .fw-json-key {
+  max-width: 12em;
+}

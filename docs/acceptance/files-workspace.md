@@ -471,3 +471,126 @@ r9 修复范围（对应 §3.2 的 r8 发现）：
 | 正式构建 buildId / 安装包 / snapshotId | **未执行** | 同上；`npx vite build` 在 `dist/` 上还会被环境安全删除守卫拦截（`SAFE_DELETE_BULK_CONFIRM_REQUIRED`），本轮改用 `--outDir dist-r12` 验证打包。 |
 | 视频播放（真实编码） | **NOT EXECUTED** | 环境无 ffmpeg 与媒体样本，无法生成可播放视频夹具；仅自动化覆盖 token 生命周期与错误态。 |
 | 中文字形显示 | 环境限制 | 走查用的 headless Chromium 缺少中文字体，截图中汉字呈窄形占位；**布局/几何/交互结论有效，字形渲染需在原生 WebView2 复核**。 |
+
+## 14. R14 预览系统与检查器 Dev 验收（2026-11-23）
+
+- 通道：**Dev 功能验收**（真实 `vitest` jsdom + 生产打包），未推进 Release 状态机、未生成 `buildId`。
+- 范围：FW-PREVIEW-001（升级）、FW-PREVIEW-002/003/004（新增）、FW-INFO-001（侧栏详情部分）。
+- 事实来源：源码 + `docs/testing/files-workspace.md §14` 的命令输出。
+
+### 14.1 必测场景逐项结论
+
+| # | 场景 | 结论 | 证据/说明 |
+|---|---|---|---|
+| 1 | 单选文件自动预览 | Dev 通过 | `FilesWorkspacePanel.previewPane.test.tsx`「活动窗格单选」；读取 1 次 |
+| 2 | 多选文件显示统计 | Dev 通过 | 同上「多选显示统计」；无 `.fw-preview-code`、未读文件 |
+| 3 | 文件夹选择显示信息 | Dev 通过（纯函数层） | `previewSelection.test.ts` 文件夹身份与「不递归」口径；组件空态由 `FilePreviewContent` 覆盖 |
+| 4 | 活动窗格切换 | Dev 通过 | 非活动窗格上报被忽略；渲染层按 `paneId === activePaneId` 二次校验 |
+| 5 | 标签切换 | Dev 部分覆盖 | 依赖 `FilePane` effect（dirPath/selection 变化）；面板层用同一快照链路；未做真实标签点击的端到端用例 |
+| 6 | 关闭右侧面板 | Dev 通过 | 关闭按钮写 store，`aria-label` 检查器节点消失 |
+| 7 | Alt+P 开关 | Dev 通过 | 两次 `keydown` 断言 store 布尔值翻转 |
+| 8 | 调整面板宽度 | Dev 通过（键盘） | ←/→ ±16、Shift ±40、Home/End、Enter 复位；指针拖拽只有代码路径，未在 jsdom 断言几何 |
+| 9 | 窗口缩小/放大 | 未验证 | jsdom 无布局；断点（<900px → 浮层）只做代码审查 |
+| 10 | 快速切换 50 个文件 | Dev 通过（回归） | `QuickPreviewDialog.lifecycle` 既有「50 个视频」用例；文本侧靠 `key={path}` 重挂载 |
+| 11 | 关闭预览后媒体资源释放 | Dev 通过 | 既有 lifecycle 用例（token 恰好释放一次） |
+| 12 | PDF worker 释放 | Dev 通过 | 既有 PDF 销毁链路用例未改动 |
+| 13 | 图片 Blob URL 释放 | Dev 通过 | 既有图片用例 |
+| 14 | 视频音频 token 释放 | Dev 通过 | 既有用例 |
+| 15 | 旧请求晚到不覆盖新文件 | Dev 通过 | 既有「晚到响应」用例 + 选择联动 paneId 校验 |
+| 16 | Markdown 源码/阅读切换 | Dev 通过 | `FileTextPreview.test.tsx`：切换后 `fsReadText` 仍为 1 次 |
+| 17 | 文本长行自动换行 | Dev 通过（状态） | `data-wrap="true"` 默认；CSS `pre-wrap + overflow-wrap:anywhere` |
+| 18 | 文本文件内搜索 | Dev 通过 | 阅读/源码两种模式各 2 命中、当前命中唯一、清空后 0 |
+| 19 | 编码错误与截断 | Dev 通过（回归） | 既有编码/截断用例保持通过 |
+| 20 | 不支持格式回退 | Dev 通过 | 既有 `.exe` 用例：不读文本、显示 unsupported；本轮补信息头部 |
+
+### 14.2 通过项与缺口
+
+- **Dev 功能验收：部分通过**。
+  - 通过：预览内容管线、Markdown 双模式、文件内搜索、检查器开关/选择联动/授权命令、
+    资源释放回归、类型判定回归、生产打包。
+  - 未通过/未执行：原生窗口视觉与 DPI、真实指针拖拽几何、标签切换端到端、窄窗浮层实测、
+    正式安装包验收。
+- 没有把「既有通过结论」复制到本轮：上表所有 Dev 通过项都有本轮执行记录；未执行项明确标注。
+
+### 14.3 构建与正式验收状态
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| `npm run typecheck` | 通过 | 退出码 0 |
+| `npm run build` | **ENVIRONMENT BLOCKED** | `vite` 清空 `dist/` 被安全删除守卫拦截（249 文件 / 阈值 50）；`tsc` 与 2296 模块转换均已通过 |
+| `npx vite build --emptyOutDir false` | 通过 | 退出码 0，23.72s；`dist/` 中会同时保留旧哈希产物（守卫禁止批量删除），正式发布前应在无守卫环境执行一次 `npm run build` |
+| Release 正式验收（snapshot/build/accept） | **未执行** | 本轮为 Dev 功能验收，按规范不推进状态机、不生成 `buildId` |
+
+### 14.4 本轮结论
+
+**Dev 功能验收：部分通过。** 预览系统与右侧检查器已达到「可交付评审」状态；在完成
+Windows 原生视觉/DPI 走查与一次干净的 `npm run build` 之前，不得标记 `PASS`。
+
+### 14.5 结构化视图增补（Dev 功能验收，2026-11-23）
+
+| # | 场景 | 结论 | 证据 |
+|---|---|---|---|
+| 1 | `.csv` 打开即表格：表头、行号列、列名 | Dev 通过 | `FileTextPreview.test.tsx`「默认表格模式」：`thead` 列名 = 数据首列、`tbody` 2 行、首格 = `Alice` |
+| 2 | 表格 ↔ 源码切换不重新读盘 | Dev 通过 | 同一用例链断言 `fsReadText` 恰好 1 次；源码模式出现 `fw-preview-code` 与查找框 |
+| 3 | 首行表头手动纠正 | Dev 通过 | 点击 `fw.preview.csv.headerToggle` 后 `thead` 消失、数据行由 1 变 2 |
+| 4 | `.json` 默认树形：只展开根、逐层展开、全部展开/收起 | Dev 通过 | 可见行 3 → 6 → 1；全程 `fsReadText` 1 次 |
+| 5 | 非法 JSON 回退源码并说明原因 | Dev 通过 | 无 `fw-json-tree`、chip `fw.preview.json.fallbackChip`、树形模式按钮 `disabled`、提示条带解析器消息 |
+| 6 | `.jsonc` 保持源码视图（允许注释） | Dev 通过（判定层） | `previewKind.test.ts` 结构化口径用例：`isJsonExt("jsonc") === false` 且 kind 仍为 `text` |
+| 7 | 表格与树的文件内查找 | 明确不支持 | 结构化模式不显示查找框；切到源码视图可查找（设计见 architecture §15.8） |
+| 8 | 原生窗口 / DPI 下黏性表头、600 行渲染上限 | Dev 通过（2026-11-23 21:47 原生窗口） | `run-20261123-214707/screenshots/02-csv-table.png`（黏性表头 + 行号列）、`08-large-csv.png`（700×45 → 600×40 并给出「切到源码视图」提示）；滚动帧率仍未测量，见 §14.7 |
+
+**结论**：结构化视图子项为 **Dev 功能验收：通过（行为与预算）**，但**不改变 §14.4 的总体结论**：
+原生视觉/DPI 走查与一次干净的 `npm run build` 完成前，`FW-PREVIEW-005` 保持 `TESTING`，不得标 `PASS`。
+（原生窗口部分已于当晚 21:47 补验，见 §14.7；干净 `npm run build` 仍受阻。）
+
+### 14.7 原生窗口 Dev 验收（复用 1420，2026-11-23 21:47）
+
+- 通道：**Dev 功能验收**，真实 `task-dock.exe`（debug，含当前前端改动）。
+- 前端来源：**复用已运行的 Vite 1420**（脚本未启动第二个 dev server，也未关闭它）。
+- 附加方式：`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=<空闲端口>` + Playwright `connectOverCDP`；
+  按 `__TAURI_INTERNALS__.metadata.currentWindow.label` 区分主窗口（`main`）与完整工作台（`workspace`），
+  不靠 URL 猜窗口。
+- 隔离：`TASK_DOCK_DATA_DIR` 与 `WEBVIEW2_USER_DATA_FOLDER` 都指向运行目录，不触碰真实用户数据。
+- 脚本：`node scripts/acceptance-files-structured-preview.mjs`（`--keep` 可保留窗口供探针复核）。
+
+| # | 场景 | 结论 | 实测证据 |
+|---|---|---|---|
+| 1 | 工作区按持久化布局直达夹具目录 | 通过 | 列出 6 个夹具文件 |
+| 0 | `workbench_open_window(target=files)` 直达 | 通过（修复后复验） | 返回成功并直接落到文件工作区；修复前返回「未知的工作台导航目标: files」，见下方修复记录 |
+| 1b | 检查器同步预览 / 弹窗打开时挂起 | 通过 | 选中后检查器出现 `.fw-csv-table`；弹窗打开后检查器表格消失（不双解析） |
+| 2 | CSV 表格视图 | 通过 | 表头 `sku,name,city,price,note,stock`，数据 12 行，首格 `SKU-001`，meta `12 行 × 6 列 / 分隔符 ,` |
+| 3 | 表头开关 | 通过 | 点「首行作为表头」后数据行 12 → 13，`thead` 消失 |
+| 4 | 源码模式 | 通过 | 模式段 `[表格 | 源码]`；切源码后表格消失、查找框出现 |
+| 5 | JSON 树形视图 | 通过 | 默认可见 9 行 → 展开全部 45 行；chip `45 个节点 / 深度 8` |
+| 6 | 非法 JSON 回退 | 通过 | 无树、chip「已回退源码」、树形按钮禁用（段 `[树形(禁用) | 源码]`） |
+| 7 | TSV 分隔符 | 通过 | meta `8 行 × 5 列 / 分隔符 Tab` |
+| 8 | 700×45 大 CSV | 通过 | 1460–1765ms 出表（单次采样，非 p50）；渲染 600 行并提示「完整内容请切到源码视图」 |
+| 9 | Markdown 回归 | 通过 | `.md` 阅读模式仍保留查找框 |
+| 10 | 运行期错误 | 通过 | `pageerror=0`、`console.error=0` |
+
+- 环境：工作台视口 **1200×760 CSS px、`devicePixelRatio=1.25`**（Windows 125% 缩放的实机环境，非 headless 默认值）。
+- 证据：修复前 `run-20261123-214707/`（11 项，rail 绕过），修复后 `run-20261123-220408/`
+  （12 项含「0 直达 files 路由」，`summary.md`、`acceptance.log`、`screenshots/` 10 张含
+  `02-csv-table.png`、`05-json-tree.png`、`08-large-csv.png`）。
+
+**本轮发现并修复的问题（P2：工作台导航白名单漏项）**
+
+| 项 | 内容 |
+|---|---|
+| 现象 | 主窗口请求打开「文件工作区」时 `workbench_open_window` 返回「未知的工作台导航目标: files（允许: home, workbench, workspace, ...）」 |
+| 影响 | 所有走结构化导航到 `files` 的入口（胶囊/主窗口快捷入口/外部调用）都会失败；只能进工作台后手动点 rail，错误文案还会让人误判功能不存在 |
+| 根因 | Rust `project_workspace_window.rs` 的 `WORKBENCH_TABS` 白名单漏登记 `files`、`life`、`vault`、`capability` 四项（前端 `workbenchLayout.ts` 的 `WORKBENCH_ROUTES` 早已包含） |
+| 修复 | 白名单按前端顺序补齐四项，并在注释里写明「改一侧必须同步另一侧」；新增 Rust 回归用例 `workbench_tabs_match_frontend_routes`（逐项断言白名单 == 前端 23 个路由，且每个都能通过 `normalize_workbench_target`） |
+| 验证 | `npm run cargo -- test --lib project_workspace_window::` → 30 passed；`npm run cargo -- build` 退出码 0（4m05s）；重建后原生验收 12/12（`run-20261123-220408`） |
+
+- **未验证**：表格滚动帧率（无 instrumentation，只记录出表耗时）、多档 DPI（100%/150%/200%）、多显示器、
+  PDF 内搜索、Office/ZIP 预览。
+- 结论：**FW-PREVIEW-005 的原生 Dev 验收通过**；因干净 `npm run build` 仍被删除守卫拦截，台账继续保持
+  `TESTING`，不标 `PASS`、不推进 Release 状态机。
+
+### 14.6 本轮环境阻塞记录
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| Windows 原生 `npm run tauri dev` 走查 | **已补验（非 `tauri dev` 启动）** | 未另起 dev server：复用已运行的 Vite 1420 + `src-tauri/target/debug/task-dock.exe` + CDP 附加完成原生窗口走查，见 §14.7；`tauri dev` 全流程本身仍未单独执行 |
+| 验收提交 | **未提交** | `FilesWorkspacePanel.tsx` 与 `files.css` 同时含本任务与另一 Agent 的 `ui-resizer` 收敛改动（`fw-divider ui-resizer`、`styles-resizer.css`），无法按精确路径分离；不代提交、不整文件覆盖 |

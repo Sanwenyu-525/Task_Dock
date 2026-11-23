@@ -68,6 +68,10 @@ import { formatSize, CATEGORY_LABEL } from "../../lib/filesWorkspace/fileMeta";
 import { basename, breadcrumbSegments, joinPath, normalizePath, parentOf, samePath } from "../../lib/filesWorkspace/pathUtils";
 import { filterTransferablePaths } from "../../lib/filesWorkspace/transfer";
 import {
+  buildPreviewSelection,
+  type PreviewSelectionSnapshot,
+} from "../../lib/filesWorkspace/previewSelection";
+import {
   mergeMarqueeSelection,
   moveFocusIndex,
   type FilePointerGesture,
@@ -140,6 +144,11 @@ interface Props {
   layoutEditMode: boolean;
   /** 当前项目根目录（空窗格「从当前项目打开」用；无项目时为 null）。 */
   projectRoot?: string | null;
+  /**
+   * 活动窗格的选择变化 → 右侧预览检查器。
+   * 只上报「选中了什么」，不读文件内容；非活动窗格不回调（避免旧窗格覆盖新选择）。
+   */
+  onPreviewSelectionChange?: (selection: PreviewSelectionSnapshot) => void;
 }
 
 interface PendingOp {
@@ -347,6 +356,7 @@ export default function FilePane({
   dropHint,
   layoutEditMode,
   projectRoot,
+  onPreviewSelectionChange,
 }: Props) {
   const { t } = useLocale();
   const showToast = useUiStore((s) => s.showToast);
@@ -599,6 +609,33 @@ export default function FilePane({
   useEffect(() => {
     void primeVolumeKeys([dirPath, ...selectedPaths]);
   }, [dirPath, selectedPaths]);
+
+  /**
+   * 选择 → 右侧预览目标。只上报「选中了什么」（纯函数，不读文件、不写 Store）；
+   * 非活动窗格不上报，避免旧窗格的选择覆盖新活动窗格。
+   * 目录轮询会周期性刷新 listing（对象身份变化），这里用签名字符串去重，
+   * 避免每 4 秒把同一个选择重新推给面板。
+   */
+  const previewSignatureRef = useRef("");
+  useEffect(() => {
+    if (!isActivePane) {
+      previewSignatureRef.current = "";
+      return;
+    }
+    if (!onPreviewSelectionChange) return;
+    const snapshot = buildPreviewSelection(selectedPaths, visibleEntries, paneId, dirPath);
+    const signature = [
+      snapshot.target?.path ?? "",
+      snapshot.summary.count,
+      snapshot.summary.files,
+      snapshot.summary.dirs,
+      snapshot.summary.bytes,
+      snapshot.summary.folder?.path ?? "",
+    ].join("|");
+    if (signature === previewSignatureRef.current) return;
+    previewSignatureRef.current = signature;
+    onPreviewSelectionChange(snapshot);
+  }, [isActivePane, selectedPaths, visibleEntries, paneId, dirPath, onPreviewSelectionChange]);
 
   // ── 拖拽悬停解析（应用内拖拽，仅本窗格命中时上报）────────────────────
   const computeZone = useCallback(

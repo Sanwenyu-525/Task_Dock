@@ -1,24 +1,25 @@
-//! 快速预览容器：Space 打开、Escape 关闭、左右方向键切换同目录文件。
+//! 快速预览弹窗：文件信息头部 + 内容（含类型工具栏）+ 底部导航。
 //!
-//! 唯一入口与唯一容器：类型判定交给 `preview/previewKind`，各类型渲染交给
-//! `preview/File*Preview`；这里只负责列表导航、头部元信息、生命周期与键盘。
-//! 资源释放：媒体 token 由各媒体组件在经过同一 tracker 语义下释放，
-//! 图片 Blob URL / PDF 文档在各自组件卸载时释放，容器不持有第二套机制。
+//! 唯一入口与唯一容器：类型判定交给 `preview/previewKind`，内容渲染统一交给
+//! `preview/FilePreviewContent`（与右侧检查器共用同一套预览组件），
+//! 这里只负责 Dialog 外壳、同目录文件切换、键盘与生命周期。
+//!
+//! 资源释放：媒体 token 由各媒体组件经同一 tracker 语义释放，图片 Blob URL /
+//! PDF 文档在组件卸载时释放；本容器不持有第二套释放机制。
+//! 预览内容用 `key={currentPath}` 挂载：切换文件即卸载旧实例，杜绝「旧内容闪回」
+//! 与「两个播放器同时存在」。
 
 import { useEffect, useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight, ExternalLink } from "lucide-react";
 import { Dialog } from "../ui/Dialog";
 import { useLocale } from "../../hooks/useLocale";
 import { fsOpen, type FsEntry } from "../../lib/bridge";
-import { formatModified, formatSize } from "../../lib/filesWorkspace/fileMeta";
 import { joinPath } from "../../lib/filesWorkspace/pathUtils";
-import FileImagePreview from "./preview/FileImagePreview";
-import FileTextPreview from "./preview/FileTextPreview";
-import FilePdfPreview from "./preview/FilePdfPreview";
-import FileVideoPreview from "./preview/FileVideoPreview";
-import FileAudioPreview from "./preview/FileAudioPreview";
+import { useUiStore } from "../../store/useUiStore";
+import FileInfoHeader from "./preview/FileInfoHeader";
+import FilePreviewContent from "./preview/FilePreviewContent";
 import { PreviewUnsupported } from "./preview/PreviewState";
-import { extOf, getPreviewKind, previewTypeLabel } from "./preview/previewKind";
+import { getPreviewKind } from "./preview/previewKind";
 
 export { createPreviewTokenTracker, type PreviewTokenTracker } from "./preview/mediaToken";
 
@@ -45,6 +46,7 @@ function ownsKey(target: EventTarget | null): boolean {
 
 export default function QuickPreviewDialog({ request, onClose }: Props) {
   const { t } = useLocale();
+  const showToast = useUiStore((state) => state.showToast);
   const [index, setIndex] = useState(0);
 
   // 只在当前目录的**文件**之间切换：文件夹不进预览列表（与文件管理器一致）。
@@ -55,7 +57,6 @@ export default function QuickPreviewDialog({ request, onClose }: Props) {
   const current = files[index] ?? null;
   const kind = getPreviewKind(current);
   const currentPath = current && request ? joinPath(request.dir, current.name) : request?.path ?? "";
-  const ext = current ? extOf(current.name) : "";
 
   useEffect(() => {
     if (!request) return;
@@ -84,51 +85,27 @@ export default function QuickPreviewDialog({ request, onClose }: Props) {
   if (!request) return null;
 
   const title = current?.name ?? request.path.split(/[\\/]/).pop() ?? "";
-  const typeLabel = previewTypeLabel(kind, ext);
-
-  const body = (() => {
-    if (!current) {
-      return <PreviewUnsupported hint={t("fw.preview.unsupported")} />;
-    }
-    const common = { path: currentPath, name: current.name, size: current.size };
-    switch (kind) {
-      case "image":
-        return <FileImagePreview key={currentPath} {...common} />;
-      case "text":
-        return <FileTextPreview key={currentPath} {...common} />;
-      case "pdf":
-        return <FilePdfPreview key={currentPath} {...common} />;
-      case "video":
-        return <FileVideoPreview key={currentPath} {...common} />;
-      case "audio":
-        return <FileAudioPreview key={currentPath} {...common} />;
-      default:
-        return <PreviewUnsupported hint={t("fw.preview.unsupported")} />;
-    }
-  })();
+  const target =
+    current && kind !== "unsupported"
+      ? {
+          paneId: request.paneId,
+          path: currentPath,
+          dir: request.dir,
+          name: current.name,
+          size: current.size,
+          entry: current,
+        }
+      : null;
 
   return (
     <Dialog
       open
       onClose={onClose}
-      title={
-        <span className="fw-preview-title">
-          <span className="fw-preview-title-name" title={title}>
-            {title}
-          </span>
-          {current && (
-            <span className="fw-preview-title-meta">
-              {typeLabel}
-              {" · "}
-              {formatSize(current.size)}
-              {current.modifiedMs ? ` · ${formatModified(current.modifiedMs)}` : ""}
-            </span>
-          )}
-        </span>
-      }
+      title={<span className="fw-preview-dialog-title">{t("fw.preview.title")}</span>}
       size="lg"
       ariaLabel={t("fw.preview.title")}
       className="fw-preview-dialog"
+      panelClassName="fw-preview-panel"
       footer={
         <>
           <div className="fw-preview-nav" role="group" aria-label={t("fw.preview.navAria")}>
@@ -156,6 +133,7 @@ export default function QuickPreviewDialog({ request, onClose }: Props) {
               <ChevronRight size={14} aria-hidden="true" />
             </button>
           </div>
+          <p className="fw-preview-hint">{t("fw.preview.hint")}</p>
           <div className="fw-preview-actions">
             <button
               type="button"
@@ -173,10 +151,28 @@ export default function QuickPreviewDialog({ request, onClose }: Props) {
         </>
       }
     >
-      <div className="fw-preview-stage" data-kind={kind} data-preview-path={currentPath}>
-        {body}
+      <div className="fw-preview-layout">
+        {current ? (
+          <FileInfoHeader entry={current} path={currentPath} dir={request.dir} variant="dialog" />
+        ) : (
+          <p className="fw-preview-title-note" title={title}>
+            {title}
+          </p>
+        )}
+        <div className="fw-preview-stage" data-kind={kind} data-preview-path={currentPath}>
+          {target ? (
+            <FilePreviewContent
+              target={target}
+              variant="dialog"
+              onNotice={(message) => {
+                if (message) showToast(message, { kind: "error" });
+              }}
+            />
+          ) : (
+            <PreviewUnsupported hint={t("fw.preview.unsupported")} />
+          )}
+        </div>
       </div>
-      <p className="fw-preview-hint">{t("fw.preview.hint")}</p>
     </Dialog>
   );
 }
