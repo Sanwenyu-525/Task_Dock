@@ -90,6 +90,13 @@ taskdock sync resolve <conflict_id> --resolution db|file|dismiss [--json]
 
 ## 3.1 命令注册表与文档契约（v81）
 
+- `taskdock task list --project <id> --limit 20 --offset 0 --json` 查询项目内可读任务。
+- `taskdock task create --title "…" --project <id> --json` 在同一事务创建任务并关联项目。
+- `taskdock task link <task_id> --project <id>` 与 `taskdock task unlink <task_id> --project <id>`
+  修改关系，解绑保留任务。项目参数接受项目根 ID 或暂可解析到项目根的计划 ID。
+- Breaking Change: Yes（同步命令授权收紧）。`sync init`、`sync export/push` 仅供本机用户，
+  带 Agent 凭据的 `sync status`、`sync conflicts` 需要全局 `projects.read`。
+
 - `agent_access::cli::COMMANDS` 是命令真源（命令组、子命令、说明）；
 - `describe_cli_commands()` 输出人类可读清单（诊断/帮助用）；
 - `check_cli_documentation_contract(USAGE)` 校验帮助文本覆盖注册表，缺命令即失败（有单测锁定）；

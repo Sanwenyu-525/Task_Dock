@@ -430,7 +430,7 @@ fn operation_target(tool: &str, args: &Value) -> (String, String, String) {
     }
     .to_string();
     let id = match kind.as_str() {
-        "task" => pick(&["task_id"]),
+        "task" | "task_link" => pick(&["task_id"]),
         "feature" => pick(&["feature_id"]),
         "step" => pick(&["step_id"]),
         "milestone" => pick(&["milestone_id"]),

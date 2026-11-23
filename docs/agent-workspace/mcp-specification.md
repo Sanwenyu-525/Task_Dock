@@ -54,6 +54,15 @@ MCP 客户端 ──stdio──▶ taskdock.exe --mcp-server ──HTTP 127.0.0.
 `format: "compact_json"` 只返回单行 JSON 文本，或传 `format: "markdown"` 只返回 Markdown 文本。
 省略格式时继续返回含 Markdown 的结构化 JSON。
 
+项目任务操作使用项目根 ID，可兼容解析其计划 ID。任务工具有以下可选参数和新增工具：
+
+- `taskdock_list_tasks` 传 `project_id` 时支持 `limit` 与 `offset`，返回 `{items, page}`。
+  省略项目时保留原任务数组响应。
+- `taskdock_create_task` 传 `project_id` 时，任务与项目关联同事务提交。
+- `taskdock_link_project_task` 与 `taskdock_unlink_project_task` 接收 `project_id` 和 `task_id`，
+  返回归一化项目 ID、任务 ID 和关系状态 `linked`。重复请求同一状态为幂等。
+- Breaking Change: No。原调用保留，新增模式要求项目和任务两道权限，重放时也会重新核验。
+
 ## 3. Resources（只读，按需读取）
 
 | URI | 内容 | 分页 |

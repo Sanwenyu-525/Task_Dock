@@ -311,6 +311,14 @@ pub fn fetch_task(db: State<'_, Arc<Db>>, id: String) -> AppResult<Task> {
 }
 
 pub(crate) fn list_tasks_inner(db: &Db, filter: TaskFilter) -> AppResult<Vec<Task>> {
+    let (sql, params) = task_list_query(filter, None);
+    db.with_conn(|conn| query_task_rows(conn, &sql, &params))
+}
+
+fn task_list_query(
+    filter: TaskFilter,
+    project_scope: Option<(&str, Option<&str>)>,
+) -> (String, Vec<Box<dyn rusqlite::ToSql>>) {
     let mut sql = format!("{} WHERE 1=1", TASK_SELECT);
     let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
     let mut idx = 1;
@@ -402,6 +410,16 @@ pub(crate) fn list_tasks_inner(db: &Db, filter: TaskFilter) -> AppResult<Vec<Tas
             idx += 1;
         }
     }
+    if let Some((project, agent)) = project_scope {
+        sql += &format!(" AND EXISTS (SELECT 1 FROM workspace_task_links l WHERE l.project_id = ?{idx} AND l.task_id = t.id)");
+        params.push(Box::new(project.to_string()));
+        idx += 1;
+        if let Some(agent) = agent {
+            sql += &format!(" AND EXISTS (SELECT 1 FROM mcp_agent_capabilities g WHERE g.agent_row_id = ?{idx} AND g.capability = 'tasks.read' AND (g.resource_id = '' OR g.resource_id = t.id))");
+            params.push(Box::new(agent.to_string()));
+            idx += 1;
+        }
+    }
     let order = match filter.sort.as_deref() {
         Some("priority") => {
             " ORDER BY t.priority ASC, t.due_at IS NULL, t.due_at ASC, t.created_at DESC"
@@ -427,6 +445,9 @@ pub(crate) fn list_tasks_inner(db: &Db, filter: TaskFilter) -> AppResult<Vec<Tas
             .to_string(),
     };
     sql += &order;
+    if project_scope.is_some() {
+        sql += ", t.id ASC";
+    }
     // LIMIT 在筛选与排序之后应用；None 保持旧行为（不限制）。
     if let Some(limit) = effective_task_limit(filter.limit) {
         sql += &format!(" LIMIT ?{}", idx);
@@ -435,12 +456,39 @@ pub(crate) fn list_tasks_inner(db: &Db, filter: TaskFilter) -> AppResult<Vec<Tas
     }
     let _ = idx;
 
-    db.with_conn(|conn| {
-        let mut stmt = conn.prepare(&sql)?;
-        let params_ref: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
-        let rows = stmt.query_map(params_ref.as_slice(), row_to_task)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
-    })
+    (sql, params)
+}
+
+fn query_task_rows(
+    conn: &rusqlite::Connection,
+    sql: &str,
+    params: &[Box<dyn rusqlite::ToSql>],
+) -> AppResult<Vec<Task>> {
+    let mut stmt = conn.prepare(sql)?;
+    let args = rusqlite::params_from_iter(params.iter().map(|p| p.as_ref()));
+    let rows = stmt.query_map(args, row_to_task)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+}
+
+pub(crate) fn list_project_tasks_in_conn(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    agent: Option<&str>,
+    mut filter: TaskFilter,
+    limit: u32,
+    offset: u32,
+) -> AppResult<(Vec<Task>, u32)> {
+    filter.limit = None;
+    let (mut sql, mut params) = task_list_query(filter, Some((project_id, agent)));
+    let total: u32 = conn.query_row(
+        &format!("SELECT COUNT(*) FROM ({sql})"),
+        rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
+        |row| row.get(0),
+    )?;
+    sql += " LIMIT ? OFFSET ?";
+    params.push(Box::new(i64::from(limit)));
+    params.push(Box::new(i64::from(offset)));
+    Ok((query_task_rows(conn, &sql, &params)?, total))
 }
 
 /// 解析前端传入的可选 `trace_id`（与 shelf/agents 命令同一契约）：

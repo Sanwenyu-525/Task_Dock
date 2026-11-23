@@ -394,6 +394,106 @@ pub fn fetch_task(db: &Db, principal: &Principal, id: &str) -> AppResult<Task> {
     Ok(task)
 }
 
+pub fn list_project_tasks(
+    db: &Db,
+    principal: &Principal,
+    project_ref: &str,
+    filter: TaskFilter,
+    limit: u32,
+    offset: u32,
+) -> AppResult<(Vec<Task>, Page)> {
+    db.with_read(|conn| {
+        let snapshot = conn.unchecked_transaction()?;
+        let conn = &snapshot;
+        let (root, actor) = perms::project_task_scope(conn, principal, project_ref, false)?;
+        if let Some(actor) = actor {
+            let granted: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM mcp_agent_capabilities
+                 WHERE agent_row_id = ?1 AND capability = 'tasks.read')",
+                [actor],
+                |row| row.get(0),
+            )?;
+            if !granted {
+                return Err(perms::denial(Capability::TasksRead));
+            }
+        }
+        let (mut items, total) = crate::commands::tasks::list_project_tasks_in_conn(
+            conn, &root, actor, filter, limit, offset,
+        )?;
+        for task in &mut items {
+            let (counter, updated_at, _) = store::read_revision(conn, "task", &task.id)?;
+            task.revision = Some(store::effective_revision(counter, &updated_at, &task.updated_at));
+        }
+        snapshot.commit()?;
+        Ok((items, Page::new(limit, offset, total)))
+    })
+}
+
+#[derive(Serialize)]
+pub struct TaskProjectLink {
+    pub project_id: String,
+    pub task_id: String,
+    pub linked: bool,
+}
+
+pub(crate) fn set_project_task_link_in_conn(
+    conn: &rusqlite::Connection,
+    principal: &Principal,
+    project_ref: &str,
+    task_id: &str,
+    linked: bool,
+) -> AppResult<TaskProjectLink> {
+    let task_id = task_id.trim();
+    if task_id.is_empty() {
+        return Err(validation("任务 ID 不能为空"));
+    }
+    let root = perms::authorize_project_task_write(conn, principal, project_ref, task_id)?;
+    let changed = if linked {
+        // 复用本机工作空间已有的关联校验与幂等插入。
+        crate::commands::project_workspace::workspace_task_link_add_tx(conn, &root, task_id)?;
+        conn.changes()
+    } else {
+        get_task_in_conn(conn, task_id)?;
+        conn.execute(
+            "DELETE FROM workspace_task_links WHERE project_id = ?1 AND task_id = ?2",
+            rusqlite::params![root, task_id],
+        )? as u64
+    };
+    if changed != 0 {
+        store::write_activity(conn, &store::ActivityEntry {
+            principal,
+            action: if linked { "task.link" } else { "task.unlink" },
+            resource_kind: "task",
+            resource_id: task_id,
+            project_id: &root,
+            request_id: "",
+            success: true,
+            error_code: "",
+            detail: "修改项目任务关联",
+            revision: None,
+            duration_ms: 0,
+        })?;
+    }
+    Ok(TaskProjectLink { project_id: root, task_id: task_id.to_string(), linked })
+}
+
+pub fn set_project_task_link(
+    db: &Db,
+    principal: &Principal,
+    project_ref: &str,
+    task_id: &str,
+    linked: bool,
+    guard: &dyn store::WriteGuard,
+) -> AppResult<TaskProjectLink> {
+    db.with_transaction(|conn| {
+        guard.check(conn)?;
+        let result = set_project_task_link_in_conn(conn, principal, project_ref, task_id, linked)?;
+        guard.record_operation(conn, "task_link", &result.task_id)?;
+        guard.complete(conn)?;
+        Ok(result)
+    })
+}
+
 /// 给任务补上 Agent 入口需要的有效 revision（不改变桌面端既有 Task 契约）。
 pub fn task_revision(db: &Db, task: &Task) -> AppResult<i64> {
     db.with_read(|conn| {
@@ -520,8 +620,13 @@ pub fn create_task_guarded(
         recurrence: None,
     };
     let project_id = project_id.trim().to_string();
-    let (mut task, revision) = db.with_transaction(|conn| {
+    let (mut task, revision, project_id) = db.with_transaction(|conn| {
         guard.check(conn)?;
+        let project_id = if !project_id.is_empty() && principal.import.is_none() {
+            perms::authorize_project_task_write(conn, principal, &project_id, "")?
+        } else {
+            project_id
+        };
         let id = create_task_tx(conn, task_input)?;
         if !project_id.is_empty() {
             crate::commands::project_workspace::workspace_task_link_add_tx(
@@ -535,7 +640,7 @@ pub fn create_task_guarded(
             store::bump_revision(conn, "task", &id, principal, &task.updated_at, "")?;
         guard.record_operation(conn, "task", &id)?;
         guard.complete(conn)?;
-        Ok((task, revision))
+        Ok((task, revision, project_id))
     })?;
     task.revision = Some(revision);
     store::log_activity(

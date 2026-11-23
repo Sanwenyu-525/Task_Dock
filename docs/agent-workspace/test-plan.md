@@ -368,3 +368,12 @@ Dev 端到端复验 64/64，exit 0。用真实 Tauri 命令创建身份、授予
   独立测试数据库和无窗口模式。同一上下文的旧版和紧凑模式保留相同的条目及近期变更。
 - 复测采用 `o200k_base`。CLI 的 6000 token 样本标记截断，保留 24 个条目，输出测得 5432 token。
   证据：`tmp/acceptance/agent-context-compact/report.md`。本轮未执行桌面 UI 与 Release 安装态验收。
+
+## 17. 外部 Agent 项目任务（2026-11-23）
+
+- Rust 真实回环 REST 定向用例验证授权项目先过滤再分页、精确任务授权、创建原子性、
+  关联与解绑幂等、任务本身保留，以及项目撤销后的写入重放拒绝。Agent Access 模块回归 232/232。
+- 最终 Debug 二进制通过隔离数据上的真实 CLI、MCP stdio 与 REST 抽测 10/10。
+  覆盖空项目 ID、未授权项目、计划 ID 归一、跨入口关联与解绑、权限撤销、
+  CLI 同步权限和监听端口释放。证据：`tmp/acceptance/external-agent-project-tasks/report.md`。
+- 本轮后端验收使用无窗口测试进程，桌面界面和正式安装包未纳入范围。

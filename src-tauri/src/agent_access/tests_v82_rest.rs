@@ -1446,6 +1446,77 @@ fn grant_project(db: &Db, row_id: &str, project: &str) {
     .expect("授予项目授权");
 }
 
+#[test]
+fn project_tasks_use_both_grants_and_keep_link_writes_atomic() {
+    let _serial = serial();
+    let _ = rest::stop();
+    let db = Arc::new(db());
+    seed_project(&db, "task-project-a");
+    seed_project(&db, "task-project-b");
+    let (row, _, writer) = writable_agent(&db, "project-task-writer");
+    for cap in ["projects.read", "projects.write"] {
+        mcp_perm::grant(&db, &row, cap, "").unwrap();
+    }
+    grant_project(&db, &row, "task-project-a");
+    let reader = mcp_auth::create_agent(&db, "project-task-reader", "reader").unwrap();
+    mcp_auth::set_agent_scope(&db, &reader.info.id, "project_rw").unwrap();
+    grant_project(&db, &reader.info.id, "task-project-a");
+    mcp_perm::grant(&db, &reader.info.id, "projects.read", "task-project-a").unwrap();
+
+    let port = start_rest(&db);
+    let run_post = |path: &str, body: &Value, key: Option<&str>| {
+        let (status, _, text) = post(port, path, &writer, body.to_string().as_bytes(), key);
+        (status, serde_json::from_str::<Value>(&text).unwrap())
+    };
+    let (denied, _) = run_post("/api/v1/tasks", &json!({
+        "title": "cross-project", "project_id": "task-project-b",
+    }), None);
+    assert_eq!(denied, 403);
+    assert_eq!(task_count(&db), 0);
+    let in_project = json!({"title": "visible", "project_id": "task-project-a"});
+    let (status, response) = run_post("/api/v1/tasks", &in_project, Some("project-create"));
+    assert_eq!(status, 201, "{response}");
+    let task = response["data"]["id"].as_str().unwrap();
+    let (status, response) = run_post("/api/v1/tasks", &json!({"title": "peer"}), None);
+    assert_eq!(status, 201, "{response}");
+    let peer = response["data"]["id"].as_str().unwrap();
+    let (missing_cap, _, _) = get(port, "/api/v1/tasks?project=task-project-a", Some(&reader.token), &[]);
+    assert_eq!(missing_cap, 403);
+    mcp_perm::grant(&db, &reader.info.id, "tasks.read", task).unwrap();
+
+    let project = json!({"project_id": "task-project-a"});
+    for _ in 0..2 {
+        let (status, response) = run_post(&format!("/api/v1/tasks/{peer}/link"), &project, None);
+        assert_eq!(status, 201, "{response}");
+        assert_eq!(response["data"]["linked"], true);
+    }
+    let list = |token: &str, offset: u32| {
+        let (status, _, text) = get(port, &format!("/api/v1/tasks?project=task-project-a&limit=1&offset={offset}"), Some(token), &[]);
+        assert_eq!(status, 200, "{text}");
+        serde_json::from_str::<Value>(&text).unwrap()
+    };
+    let first = list(&reader.token, 0);
+    assert_eq!(first["data"][0]["id"], task);
+    assert_eq!(first["meta"]["pagination"]["total"], 1);
+    assert_eq!(list(&reader.token, 1)["data"], json!([]));
+    assert_eq!(list(&writer, 0)["meta"]["pagination"]["total"], 2);
+    let (denied, _, _) = get(port, "/api/v1/tasks?project=task-project-b", Some(&writer), &[]);
+    assert_eq!(denied, 403);
+
+    for _ in 0..2 {
+        let (status, response) = run_post(&format!("/api/v1/tasks/{peer}/unlink"), &project, None);
+        assert_eq!(status, 201, "{response}");
+        assert_eq!(response["data"]["linked"], false);
+    }
+    assert_eq!(list(&writer, 0)["meta"]["pagination"]["total"], 1);
+    assert_eq!(task_count(&db), 2);
+    mcp_auth::revoke_project(&db, &row, "task-project-a").unwrap();
+    let (denied, _) = run_post("/api/v1/tasks", &in_project, Some("project-create"));
+    assert_eq!(denied, 403);
+    assert_eq!(task_count(&db), 2);
+    let _ = rest::stop();
+}
+
 fn handoff_count(db: &Db) -> i64 {
     db.with_read(|conn| Ok(conn.query_row("SELECT COUNT(*) FROM agent_handoffs", [], |r| r.get(0))?))
         .expect("统计交接")

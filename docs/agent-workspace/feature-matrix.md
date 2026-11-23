@@ -6,8 +6,9 @@
 |---|---|---|---|---|---|
 | 项目查询 | 已实现 | 已实现（`taskdock_list_projects`） | 已实现 | 已实现（投影） | 规划项目 + 项目工作空间 |
 | 项目状态 | 已实现 | 已实现（`taskdock_get_project_status`） | 已实现 | 已实现 | 进度/功能计数/风险 |
-| 任务查询 | 已实现 | 已实现（`taskdock_list_tasks`） | 已实现 | 已实现 | 筛选/分页/字段筛选 |
-| 创建任务 | 已实现 | 已实现（`taskdock_create_task`） | 已实现 | 受控导入 | 文件写入 `tasks/inbox/*.json` 或 `.md` |
+| 任务查询 | 已实现（含项目分页） | 已实现（`taskdock_list_tasks`，含项目分页） | 已实现（含项目分页） | 已实现 | 项目与任务授权交集先于分页 |
+| 创建任务 | 已实现（可关联项目） | 已实现（`taskdock_create_task`，可关联项目） | 已实现（可关联项目） | 受控导入 | 创建与项目关联同事务 |
+| 已有任务关联/解绑 | 已实现 | 已实现 | 已实现 | 未开放 | 双重授权，重复设置关系幂等 |
 | 修改任务 | 已实现 | 已实现（`taskdock_update_task`） | 已实现（PATCH） | 受控导入 | 必须带 `base_revision` |
 | 完成任务 | 已实现 | 已实现（`taskdock_complete_task`） | 已实现 | 受控导入 | 走 `update_task_inner`，保留完成事件 |
 | 规划查询 | 已实现 | 已实现（`taskdock_list_plans` 等） | 已实现 | 已实现 | 里程碑/功能/步骤/活动 |

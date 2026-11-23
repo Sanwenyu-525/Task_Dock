@@ -99,51 +99,99 @@ fn require_agent(
     capability: Capability,
     resource_id: &str,
 ) -> AppResult<()> {
-    db.with_read(|conn| {
-        let scope = scope_of(conn, row_id)?;
-        if scope == McpScope::Disabled {
-            return Err(forbidden("Agent 已被禁用或撤销"));
-        }
-        if capability.is_write() {
-            if !scope.can_write() {
-                return Err(forbidden(format!(
-                    "scope={} 不允许写操作（需要 project_rw）",
-                    scope.as_str()
-                )));
-            }
-        } else if !scope.can_read() {
+    db.with_read(|conn| require_agent_in_conn(conn, row_id, capability, resource_id))
+}
+
+fn require_agent_in_conn(
+    conn: &Connection,
+    row_id: &str,
+    capability: Capability,
+    resource_id: &str,
+) -> AppResult<()> {
+    let scope = scope_of(conn, row_id)?;
+    if scope == McpScope::Disabled {
+        return Err(forbidden("Agent 已被禁用或撤销"));
+    }
+    if capability.is_write() {
+        if !scope.can_write() {
             return Err(forbidden(format!(
-                "scope={} 不允许读取（需要 readonly 或 project_rw）",
+                "scope={} 不允许写操作（需要 project_rw）",
                 scope.as_str()
             )));
         }
-        if !mcp_perm::has(conn, row_id, capability, resource_id)? {
+    } else if !scope.can_read() {
+        return Err(forbidden(format!(
+            "scope={} 不允许读取（需要 readonly 或 project_rw）",
+            scope.as_str()
+        )));
+    }
+    if !mcp_perm::has(conn, row_id, capability, resource_id)? {
+        return Err(forbidden(format!(
+            "缺少能力 {}（resource_id={}）",
+            capability.as_str(),
+            if resource_id.is_empty() {
+                "global"
+            } else {
+                resource_id
+            }
+        )));
+    }
+    // 统一授权第三层（v92）：项目型能力还要求该项目根上有显式授权（mcp_agent_grants）。
+    // capability 描述「会什么」，grant 描述「能动哪个项目」；缺一不可。
+    // 计划 ID 入参先解析到项目根；readonly 是用户显式选择的全局只读，不逐项目要 grant
+    // （与 MCP 读路径一致）。授权按项目根判定，不能跨项目继承。
+    if capability_scoped_by_project(capability) && !resource_id.is_empty() && scope != McpScope::ReadOnly {
+        let root = crate::project_hub::service::resolve_project_root(conn, resource_id)?
+            .ok_or_else(|| forbidden(format!("项目不存在: {resource_id}")))?;
+        if !crate::mcp::auth::has_project_grant(conn, row_id, &root)? {
             return Err(forbidden(format!(
-                "缺少能力 {}（resource_id={}）",
-                capability.as_str(),
-                if resource_id.is_empty() {
-                    "global"
-                } else {
-                    resource_id
-                }
+                "未授权项目: {root}（请在 Task Dock「设置 → MCP 接入」中授予该项目）"
             )));
         }
-        // 统一授权第三层（v92）：项目型能力还要求该项目根上有显式授权（mcp_agent_grants）。
-        // capability 描述「会什么」，grant 描述「能动哪个项目」；缺一不可。
-        // 计划 ID 入参先解析到项目根；readonly 是用户显式选择的全局只读，不逐项目要 grant
-        // （与 MCP 读路径一致）。授权按项目根判定，不能跨项目继承。
-        if capability_scoped_by_project(capability) && !resource_id.is_empty() && scope != McpScope::ReadOnly {
-            let root = crate::project_hub::service::resolve_project_root(conn, resource_id)?
-                .ok_or_else(|| forbidden(format!("项目不存在: {resource_id}")))?;
-            if !crate::mcp::auth::has_project_grant(conn, row_id, &root)? {
-                return Err(forbidden(format!(
-                    "未授权项目: {root}（请在 Task Dock「设置 → MCP 接入」中授予该项目）"
-                )));
-            }
-        }
-        Ok(())
-    })
+    }
+    Ok(())
 }
+
+/// 校验项目任务入口所需的项目能力，返回归一化项目根和已认证行 ID。
+pub(crate) fn project_task_scope<'a>(
+    conn: &Connection,
+    principal: &'a Principal,
+    project_ref: &str,
+    write: bool,
+) -> AppResult<(String, Option<&'a str>)> {
+    if write && principal.read_only {
+        return Err(forbidden("当前为只读模式"));
+    }
+    if project_ref.trim().is_empty() {
+        return Err(validation("项目 ID 不能为空"));
+    }
+    let root = crate::project_hub::service::resolve_project_root(conn, project_ref.trim())?
+        .ok_or_else(|| AppError::NotFound("项目不存在".into()))?;
+    match principal.identity {
+        Identity::LocalHuman | Identity::SystemInternal => Ok((root, None)),
+        Identity::RegisteredAgent if principal.import.is_none() => {
+            let row_id = principal.agent_row_id.as_deref().ok_or_else(|| forbidden("缺少 Agent 身份"))?;
+            let capability = if write { Capability::ProjectsWrite } else { Capability::ProjectsRead };
+            require_agent_in_conn(conn, row_id, capability, &root)?;
+            Ok((root, Some(row_id)))
+        }
+        _ => Err(forbidden("该身份不能直接操作项目任务")),
+    }
+}
+
+pub(crate) fn authorize_project_task_write(
+    conn: &Connection,
+    principal: &Principal,
+    project_ref: &str,
+    task_id: &str,
+) -> AppResult<String> {
+    let (root, row_id) = project_task_scope(conn, principal, project_ref, true)?;
+    if let Some(row_id) = row_id {
+        require_agent_in_conn(conn, row_id, Capability::TasksWrite, task_id)?;
+    }
+    Ok(root)
+}
+
 
 /// 该能力是否以**项目**为资源范围。
 ///

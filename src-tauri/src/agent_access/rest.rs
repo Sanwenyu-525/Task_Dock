@@ -31,6 +31,7 @@ use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use rusqlite::OptionalExtension;
+use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::net::TcpListener;
 use tokio::sync::Notify;
@@ -90,9 +91,11 @@ pub const ROUTES: &[(&str, &str, &str)] = &[
     ("GET", "/api/v1/projects/{id}", "项目详情（项目根 + activePlanId）"),
     ("PATCH", "/api/v1/projects/{id}", "更新项目根（需 projects.write 与 expectedRevision）"),
     ("GET", "/api/v1/projects/{id}/status", "项目状态与下一步"),
-    ("GET", "/api/v1/tasks", "任务列表（支持 status/search/limit/offset）"),
+    ("GET", "/api/v1/tasks", "任务列表（支持 project/status/search/limit/offset）"),
     ("GET", "/api/v1/tasks/{id}", "任务详情"),
-    ("POST", "/api/v1/tasks", "创建任务"),
+    ("POST", "/api/v1/tasks", "创建任务，可指定 project_id"),
+    ("POST", "/api/v1/tasks/{id}/link", "关联任务与 project_id"),
+    ("POST", "/api/v1/tasks/{id}/unlink", "解除任务与 project_id 的关联"),
     ("PATCH", "/api/v1/tasks/{id}", "更新任务（需 base_revision）"),
     ("POST", "/api/v1/tasks/{id}/complete", "完成任务"),
     ("GET", "/api/v1/plans", "规划列表"),
@@ -1240,6 +1243,11 @@ async fn handle(req: Request<Incoming>, state: Arc<RestState>) -> Response<Full<
 
     let mut claim: Option<IdemClaim> = None;
     if let Some((key, row_id, fp)) = &idem {
+        if let Err(err) = authorize_project_task_request(&state.db, &principal, &path, &body) {
+            let status = StatusCode::from_u16(http_status(error_code(&err)))
+                .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            return fail_response(status, &err, &principal, &request_id);
+        }
         match store::cache_claim(
             &state.db,
             row_id,
@@ -1663,6 +1671,44 @@ fn parse_body<T: serde::de::DeserializeOwned>(body: &[u8]) -> AppResult<T> {
         .map_err(|e| AppError::Validation(format!("请求体 JSON 非法: {e}")))
 }
 
+#[derive(Deserialize)]
+struct CreateTaskBody {
+    #[serde(flatten)]
+    task: service::TaskCreateInput,
+    project_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct TaskProjectBody {
+    project_id: String,
+}
+
+/// 缓存重放也必须在当前授权范围内，项目授权被撤销后不能读出旧响应。
+fn authorize_project_task_request(
+    db: &Db,
+    principal: &Principal,
+    path: &str,
+    body: &[u8],
+) -> AppResult<()> {
+    let segments: Vec<_> = path.trim_matches('/').split('/').collect();
+    let (project, task) = match segments.as_slice() {
+        ["api", "v1", "tasks"] => {
+            let request: CreateTaskBody = parse_body(body)?;
+            let Some(project) = request.project_id else {
+                return Ok(());
+            };
+            (project, "")
+        }
+        ["api", "v1", "tasks", task, "link" | "unlink"] => {
+            let request: TaskProjectBody = parse_body(body)?;
+            (request.project_id, *task)
+        }
+        _ => return Ok(()),
+    };
+    db.with_read(|conn| perms::authorize_project_task_write(conn, principal, &project, task))?;
+    Ok(())
+}
+
 /// 统一分发。`guard` 为事务内写守卫：有幂等占位时是 `RequestCacheGuard`，
 /// 否则是 `NoGuard`。泛型而非 `&dyn`，是为了让「引用可跨线程」在编译期成立
 /// （spawn 的后台执行 future 必须 `Send`）。
@@ -1946,13 +1992,30 @@ where
                 sort: query.get("sort").cloned(),
                 limit: None,
             };
-            let (items, page) =
-                service::list_tasks(db, principal, filter, q_num(query, "limit", 50), q_off(query))?;
+            let limit = q_num(query, "limit", 50);
+            let offset = q_off(query);
+            let (items, page) = match query.get("project") {
+                Some(project) => service::list_project_tasks(db, principal, project, filter, limit, offset)?,
+                None => service::list_tasks(db, principal, filter, limit, offset)?,
+            };
             Ok((serde_json::to_value(items)?, Some(page)))
         }
         ("POST", ["tasks"]) => {
-            let task = service::create_task_guarded(db, principal, parse_body(body)?, guard, "")?;
+            let request: CreateTaskBody = parse_body(body)?;
+            if request.project_id.as_deref().is_some_and(|id| id.trim().is_empty()) {
+                return Err(AppError::Validation("project_id 不能为空".into()));
+            }
+            let task = service::create_task_guarded(
+                db, principal, request.task, guard, request.project_id.as_deref().unwrap_or(""),
+            )?;
             Ok((serde_json::to_value(task)?, None))
+        }
+        ("POST", ["tasks", task, action @ ("link" | "unlink")]) => {
+            let request: TaskProjectBody = parse_body(body)?;
+            let link = service::set_project_task_link(
+                db, principal, &request.project_id, task, *action == "link", guard,
+            )?;
+            Ok((serde_json::to_value(link)?, None))
         }
         ("GET", ["tasks", _]) => {
             let id = seg(1);

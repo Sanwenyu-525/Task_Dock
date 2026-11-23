@@ -1479,6 +1479,9 @@ pub fn sanitize_detail(raw: &str) -> String {
 
 /// MCP 工具名 → 资源类型（用于在业务结果返回前就能展示「正在改什么」）。
 pub fn resource_kind_for_tool(tool: &str) -> &'static str {
+    if matches!(tool, "taskdock_link_project_task" | "taskdock_unlink_project_task") {
+        return "task_link";
+    }
     let name = tool.to_ascii_lowercase();
     if name.contains("knowledge") {
         return "knowledge";
@@ -1524,6 +1527,8 @@ pub fn describe_rest_write(method: &str, path: &str) -> Option<(&'static str, &'
     let action = match (method, collection) {
         // `/tasks/:id/complete` 是完成语义，不能记成创建。
         ("POST", "tasks") if sub_action == "complete" => ("task.complete", "task"),
+        ("POST", "tasks") if sub_action == "link" => ("task.link", "task_link"),
+        ("POST", "tasks") if sub_action == "unlink" => ("task.unlink", "task_link"),
         ("POST", "tasks") => ("task.create", "task"),
         ("PATCH", "tasks") => ("task.update", "task"),
         ("DELETE", "tasks") => ("task.delete", "task"),
@@ -1560,7 +1565,7 @@ pub fn describe_rest_write(method: &str, path: &str) -> Option<(&'static str, &'
 /// - 集合端点 `/api/v1/tasks` → 空（创建后由响应对象回填真实 ID）。
 pub fn rest_target_id(path: &str) -> String {
     const SUB_ACTIONS: &[&str] = &[
-        "complete", "accept", "approve", "reject", "run", "scan", "export", "resolve",
+        "complete", "link", "unlink", "accept", "approve", "reject", "run", "scan", "export", "resolve",
     ];
     let rest = path.trim_matches('/').split('/').collect::<Vec<_>>();
     if rest.len() < 4 || rest[0] != "api" || rest[1] != "v1" {

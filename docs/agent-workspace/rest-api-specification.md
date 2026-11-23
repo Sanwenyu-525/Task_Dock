@@ -80,6 +80,16 @@ HTTP 状态映射：`VALIDATION→400`、`UNAUTHORIZED→401`、`FORBIDDEN→403
 
 ## 3. 分页与字段筛选
 
+`GET /api/v1/tasks?project=<id>&limit=20&offset=0` 按项目列任务。项目参数接受项目根 ID 或其计划 ID。
+项目关联与任务读取权限先于分页应用，`meta.pagination.total` 只统计可见任务。
+
+- `POST /api/v1/tasks` 支持可选的 `project_id`。项目关联和创建同事务提交。
+- `POST /api/v1/tasks/{id}/link` 与 `/unlink` 接收 `{"project_id":"…" }`，
+  返回 `data.project_id`、`data.task_id`、`data.linked`。重复设定同一关系状态可安全重试。
+- 项目任务写入在事务内验证项目与任务权限。携带幂等键的重放仍检查当前权限。
+  关联请求若在提交后、响应缓存完成前中断，返回恢复冲突，可用项目列表确认关系。
+- Breaking Change: No。新路由和可选参数，原未指定项目的任务契约继续有效。
+
 - `limit` 默认 20（最大 200），`offset` 最大 10000；响应 `meta.pagination`。
 - GET 的 `fields=a,b` 保留 `data` 对象或列表各项的指定字段，分页信息仍在 `meta.pagination`。
   非空结果上的未知字段、空字段或超过 50 个字段返回 400。空列表仍返回空列表。

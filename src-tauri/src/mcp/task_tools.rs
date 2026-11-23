@@ -14,6 +14,7 @@
 use rusqlite::Connection;
 use serde_json::{json, Value};
 
+use crate::agent_access::{permissions as access_permissions, service};
 use crate::agent_access::store::{self, ActivityEntry};
 use crate::agent_access::{Principal, Source};
 use crate::commands::tasks::{
@@ -54,6 +55,7 @@ fn log_task_activity(
     task_id: &str,
     revision: i64,
     detail: &str,
+    project_id: &str,
 ) {
     let principal = agent_principal(ctx);
     let _ = store::write_activity(
@@ -63,7 +65,7 @@ fn log_task_activity(
             action,
             resource_kind: "task",
             resource_id: task_id,
-            project_id: "",
+            project_id,
             request_id: "",
             success: true,
             error_code: "",
@@ -78,7 +80,7 @@ pub(crate) fn defs() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: "taskdock_list_tasks",
-            description: "列出 Task Dock 任务（按视图/状态/分类/标签/关键词筛选）。需要 tasks.read 全局能力。",
+            description: "列出任务。提供 project_id 时按项目授权分页，可使用全局或单任务 tasks.read 授权。",
             input_schema: schema(
                 json!({
                     "view": { "type": "string", "enum": ["today","tomorrow","week","all","overdue","due_today","scheduled"] },
@@ -88,7 +90,9 @@ pub(crate) fn defs() -> Vec<ToolDef> {
                     "priority": { "type": "integer", "minimum": 0, "maximum": 3 },
                     "search": { "type": "string", "maxLength": 200 },
                     "sort": { "type": "string", "enum": ["due","priority","created","completed","scheduled"] },
-                    "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 200 },
+                    "project_id": { "type": "string" },
+                    "offset": { "type": "integer", "minimum": 0, "description": "仅用于项目分页" }
                 }),
                 &[],
             ),
@@ -109,6 +113,7 @@ pub(crate) fn defs() -> Vec<ToolDef> {
             input_schema: schema(
                 json!({
                     "title": { "type": "string", "maxLength": 200 },
+                    "project_id": { "type": "string", "description": "可选。创建并关联项目，需要写该项目权限" },
                     "description": { "type": "string", "maxLength": 4000 },
                     "priority": { "type": "integer", "minimum": 0, "maximum": 3 },
                     "category": { "type": "string", "maxLength": 64 },
@@ -121,6 +126,26 @@ pub(crate) fn defs() -> Vec<ToolDef> {
                 }),
                 &["title"],
             ),
+            write: true,
+        },
+        ToolDef {
+            name: "taskdock_link_project_task",
+            description: "关联已有任务与项目，重复调用为幂等。需要项目及任务写权限。",
+            input_schema: schema(json!({
+                "project_id": { "type": "string" },
+                "task_id": { "type": "string" },
+                "requestId": { "type": "string", "maxLength": 128 }
+            }), &["project_id", "task_id"]),
+            write: true,
+        },
+        ToolDef {
+            name: "taskdock_unlink_project_task",
+            description: "解除任务和项目的关联，保留任务本身。需要项目及任务写权限。",
+            input_schema: schema(json!({
+                "project_id": { "type": "string" },
+                "task_id": { "type": "string" },
+                "requestId": { "type": "string", "maxLength": 128 }
+            }), &["project_id", "task_id"]),
             write: true,
         },
         ToolDef {
@@ -250,7 +275,16 @@ pub(crate) fn authorize_replay(
 ) -> Result<bool, ToolError> {
     match name {
         "taskdock_create_task" => {
-            ensure_write_global(ctx, conn)?;
+            authorize_create_project(ctx, conn, args)?;
+            Ok(true)
+        }
+        "taskdock_link_project_task" | "taskdock_unlink_project_task" => {
+            let project = require_str(args, "project_id")?;
+            let task = require_str(args, "task_id")?;
+            access_permissions::authorize_project_task_write(
+                conn, &agent_principal(ctx), &project, &task,
+            )
+            .map_err(ToolError::Failed)?;
             Ok(true)
         }
         "taskdock_update_task" => {
@@ -260,6 +294,21 @@ pub(crate) fn authorize_replay(
         }
         _ => Ok(false),
     }
+}
+
+fn authorize_create_project(
+    ctx: &ToolCtx,
+    conn: &Connection,
+    args: &Value,
+) -> Result<Option<String>, ToolError> {
+    if args.get("project_id").is_none() {
+        ensure_write_global(ctx, conn)?;
+        return Ok(None);
+    }
+    let project = require_str(args, "project_id")?;
+    access_permissions::authorize_project_task_write(conn, &agent_principal(ctx), &project, "")
+        .map(Some)
+        .map_err(ToolError::Failed)
 }
 
 fn filter_from_args(args: &Value) -> Result<TaskFilter, ToolError> {
@@ -349,6 +398,17 @@ pub(crate) fn call(
     let db = ctx.db.as_ref();
     match name {
         "taskdock_list_tasks" => {
+            if args.get("project_id").is_some() {
+                let project = require_str(args, "project_id")?;
+                let filter = filter_from_args(args)?;
+                let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(50).clamp(1, 200) as u32;
+                let offset = args.get("offset").and_then(Value::as_u64).unwrap_or(0).min(10_000) as u32;
+                let (items, page) = service::list_project_tasks(
+                    db, &agent_principal(ctx), &project, filter, limit, offset,
+                )
+                .map_err(ToolError::Failed)?;
+                return Ok(Some(outcome(json!({ "items": items, "page": page }), "task", String::new(), None)));
+            }
             ensure_read_global(ctx)?;
             let filter = filter_from_args(args)?;
             let mut tasks = list_tasks_inner(db, filter).map_err(ToolError::Failed)?;
@@ -406,9 +466,13 @@ pub(crate) fn call(
         "taskdock_create_task" => {
             let conn = write_conn
                 .ok_or_else(|| ToolError::Failed(AppError::Validation("缺少写事务".into())))?;
-            ensure_write_global(ctx, conn)?;
+            let project = authorize_create_project(ctx, conn, args)?;
             let input = input_from_args(args, true)?;
             let task_id = create_task_tx(conn, input).map_err(ToolError::Failed)?;
+            if let Some(root) = &project {
+                crate::commands::project_workspace::workspace_task_link_add_tx(conn, root, &task_id)
+                    .map_err(ToolError::Failed)?;
+            }
             let mut task = get_task_in_conn(conn, &task_id).map_err(ToolError::Failed)?;
             let principal = agent_principal(ctx);
             let revision = store::bump_revision(
@@ -421,7 +485,7 @@ pub(crate) fn call(
             )
             .map_err(ToolError::Failed)?;
             task.revision = Some(revision);
-            log_task_activity(conn, ctx, "task.create", &task_id, revision, "创建任务");
+            log_task_activity(conn, ctx, "task.create", &task_id, revision, "创建任务", project.as_deref().unwrap_or(""));
             let value = serde_json::to_value(&task).map_err(AppError::from)?;
             Ok(Some(outcome(
                 value,
@@ -429,10 +493,32 @@ pub(crate) fn call(
                 task_id.clone(),
                 Some(PlanningChanged {
                     kind: "task",
-                    project_id: None,
+                    project_id: project,
                     plan_id: None,
                     feature_id: None,
                     revision: Some(revision),
+                }),
+            )))
+        }
+        "taskdock_link_project_task" | "taskdock_unlink_project_task" => {
+            let conn = write_conn
+                .ok_or_else(|| ToolError::Failed(AppError::Validation("缺少写事务".into())))?;
+            let project = require_str(args, "project_id")?;
+            let task = require_str(args, "task_id")?;
+            let link = service::set_project_task_link_in_conn(
+                conn, &agent_principal(ctx), &project, &task, name == "taskdock_link_project_task",
+            )
+            .map_err(ToolError::Failed)?;
+            Ok(Some(outcome(
+                serde_json::to_value(&link).map_err(AppError::from)?,
+                "task_link",
+                task,
+                Some(PlanningChanged {
+                    kind: "task",
+                    project_id: Some(link.project_id),
+                    plan_id: None,
+                    feature_id: None,
+                    revision: None,
                 }),
             )))
         }
@@ -476,7 +562,7 @@ pub(crate) fn call(
             )
             .map_err(ToolError::Failed)?;
             task.revision = Some(revision);
-            log_task_activity(conn, ctx, "task.update", &task_id, revision, "更新任务");
+            log_task_activity(conn, ctx, "task.update", &task_id, revision, "更新任务", "");
             let value = serde_json::to_value(&task).map_err(AppError::from)?;
             Ok(Some(outcome(
                 value,

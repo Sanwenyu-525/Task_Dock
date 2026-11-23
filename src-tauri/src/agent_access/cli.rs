@@ -35,11 +35,13 @@ pub const USAGE: &str = r#"Task Dock Agent CLI
   taskdock project update <project_id|plan_id> --base-revision N
                           [--name ...] [--description ...]
                           [--status active|archived] [--target-date YYYY-MM-DD]
-  taskdock task list [--status pending|completed|all] [--search KW] [--limit N]
+  taskdock task list [--project ID] [--status pending|completed|all] [--search KW] [--limit N]
   taskdock task get <task_id>
-  taskdock task create --title <标题> [--description ...] [--priority 0-3] [--due ISO] [--tag x]
+  taskdock task create --title <标题> [--project ID] [--description ...] [--priority 0-3] [--due ISO] [--tag x]
   taskdock task update <task_id> --base-revision N [--title ...] [--description ...]
   taskdock task complete <task_id> [--base-revision N]
+  taskdock task link <task_id> --project ID
+  taskdock task unlink <task_id> --project ID
   taskdock task search <关键词>
   taskdock plan list [--project ID] [--limit N]
   taskdock plan current
@@ -97,7 +99,7 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ("status", "-", "接口/工作空间/数据库/版本总览"),
     ("info", "-", "版本、路径、协议、schema"),
     ("project", "list|get|current|create|update", "项目列表/详情/当前/创建/更新"),
-    ("task", "list|get|create|update|complete|search", "任务读写"),
+    ("task", "list|get|create|update|complete|search|link|unlink", "任务读写和项目关联"),
     ("plan", "list|current|get", "规划列表/当前/详情"),
     ("knowledge", "bases|search|get|create|update", "知识检索与写入"),
     ("decision", "list|get|create", "决策记录"),
@@ -239,6 +241,8 @@ fn classify_cli_write(args: &[String]) -> Option<(&'static str, &'static str, St
         ("task", "create", _) => ("task.create", "task"),
         ("task", "update", _) => ("task.update", "task"),
         ("task", "complete", _) => ("task.complete", "task"),
+        ("task", "link", _) => ("task.link", "task_link"),
+        ("task", "unlink", _) => ("task.unlink", "task_link"),
         ("knowledge", "create", _) => ("knowledge.create", "knowledge"),
         ("knowledge", "update", _) => ("knowledge.update", "knowledge"),
         ("decision", "create", _) => ("decision.create", "decision"),
@@ -794,6 +798,7 @@ fn execute_inner(
         },
         "task" => match sub.as_str() {
             "list" | "search" => {
+                let project = take_flag(args, "--project");
                 if sub == "search" {
                     if let Some(pos) = args.iter().position(|a| !a.starts_with("--")) {
                         let kw = args.remove(pos);
@@ -802,8 +807,12 @@ fn execute_inner(
                     }
                 }
                 let filter = task_filter(args)?;
-                let (tasks, page) =
-                    service::list_tasks(db, principal, filter, cli.limit, cli.offset)?;
+                let (tasks, page) = match project {
+                    Some(project) => service::list_project_tasks(
+                        db, principal, &project, filter, cli.limit, cli.offset,
+                    )?,
+                    None => service::list_tasks(db, principal, filter, cli.limit, cli.offset)?,
+                };
                 let human = tasks
                     .iter()
                     .map(|t| format!("{}\t{}\t{}", t.id, t.status, t.title))
@@ -825,6 +834,10 @@ fn execute_inner(
                 })
             }
             "create" => {
+                let project = take_flag(args, "--project");
+                if project.as_deref().is_some_and(|id| id.trim().is_empty()) {
+                    return Err(usage_err("--project 不能为空"));
+                }
                 let title = take_flag(args, "--title")
                     .ok_or_else(|| usage_err("task create 需要 --title"))?;
                 let input = service::TaskCreateInput {
@@ -842,12 +855,26 @@ fn execute_inner(
                     advance_minutes: take_flag(args, "--advance-minutes")
                         .and_then(|v| v.parse::<i64>().ok()),
                 };
-                let task = service::create_task_guarded(db, principal, input, guard, "")?;
+                validate_cli_arguments(args)?;
+                let task = service::create_task_guarded(
+                    db, principal, input, guard, project.as_deref().unwrap_or(""),
+                )?;
                 Ok(Outcome {
                     human: format!("创建任务 {} {}", task.id, task.title),
                     data: serde_json::to_value(&task)?,
                     page: None,
                 })
+            }
+            "link" | "unlink" => {
+                let id = require_positional(args, "task_id")?;
+                let project = take_flag(args, "--project")
+                    .ok_or_else(|| usage_err("任务关联需要 --project"))?;
+                validate_cli_arguments(args)?;
+                let link = service::set_project_task_link(
+                    db, principal, &project, &id, sub == "link", guard,
+                )?;
+                let data = serde_json::to_value(link)?;
+                Ok(Outcome { human: serde_json::to_string_pretty(&data)?, data, page: None })
             }
             "update" => {
                 let id = require_positional(args, "task_id")?;
@@ -1357,6 +1384,7 @@ fn execute_inner(
         }
         "sync" => match sub.as_str() {
             "status" => {
+                perms::require(db, principal, Capability::ProjectsRead, "")?;
                 let status = file_sync::status(db)?;
                 let human = match &status.workspace {
                     Some(ws) => format!(
@@ -1372,6 +1400,7 @@ fn execute_inner(
                 })
             }
             "init" => {
+                require_local_sync_write(principal)?;
                 let path = take_flag(args, "--path");
                 let name = take_flag(args, "--name");
                 let row = workspace::init(db, path.as_deref(), name.as_deref())?;
@@ -1390,6 +1419,7 @@ fn execute_inner(
                 })
             }
             "export" | "push" => {
+                require_local_sync_write(principal)?;
                 let row = workspace::active(db)?
                     .ok_or_else(|| AppError::NotFound("工作空间尚未初始化".into()))?;
                 let report = projection::export_all(db, &row)?;
@@ -1427,6 +1457,7 @@ fn execute_inner(
                 })
             }
             "conflicts" => {
+                perms::require(db, principal, Capability::ProjectsRead, "")?;
                 let items = file_sync::list_conflicts(db)?;
                 let human = items
                     .iter()
@@ -1470,6 +1501,14 @@ fn execute_inner(
             other => Err(usage_err(&format!("未知子命令 sync {other}"))),
         },
         other => Err(usage_err(&format!("未知命令组 {other}"))),
+    }
+}
+
+fn require_local_sync_write(principal: &Principal) -> AppResult<()> {
+    if principal.identity == Identity::LocalHuman && !principal.read_only {
+        Ok(())
+    } else {
+        Err(super::forbidden("文件工作空间初始化与全量导出仅限本机用户"))
     }
 }
 
