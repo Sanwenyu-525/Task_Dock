@@ -152,7 +152,9 @@ pub fn assert_project_scope(conn: &Connection, actor: &Actor, project_id: &str) 
         .ok_or_else(|| AppError::Forbidden("Agent 身份缺少行 ID".to_string()))?;
     let granted: Option<i64> = conn
         .query_row(
-            "SELECT 1 FROM mcp_agent_grants WHERE agent_row_id = ?1 AND project_id = ?2 LIMIT 1",
+            "SELECT 1 FROM planning_projects plan
+             JOIN mcp_agent_grants grant_row ON grant_row.project_id = plan.workspace_project_id
+             WHERE grant_row.agent_row_id = ?1 AND plan.id = ?2 LIMIT 1",
             rusqlite::params![row, project_id],
             |r| r.get(0),
         )

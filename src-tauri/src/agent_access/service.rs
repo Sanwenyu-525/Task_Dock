@@ -365,6 +365,86 @@ pub fn project_status(db: &Db, principal: &Principal, id: &str) -> AppResult<Pro
     })
 }
 
+#[derive(Serialize)]
+pub struct ProjectCloseout {
+    pub project_id: String,
+    pub revision: i64,
+    pub status: String,
+    pub pending_tasks: i64,
+    pub unfinished_features: i64,
+    pub unaccepted_plans: i64,
+    pub open_issues: i64,
+    pub pending_handoffs: i64,
+    pub ready: bool,
+}
+
+pub(crate) fn project_closeout_in_conn(
+    conn: &rusqlite::Connection,
+    principal: &Principal,
+    project_ref: &str,
+) -> AppResult<ProjectCloseout> {
+    let (root, agent) = perms::project_task_scope(conn, principal, project_ref, false)?;
+    if let Some(agent) = agent {
+        // 汇总覆盖整个项目，不能把无权读取的记录当成零条。
+        perms::require_agent_in_conn(conn, agent, Capability::TasksRead, "")?;
+        perms::require_agent_in_conn(conn, agent, Capability::HandoffsRead, &root)?;
+    }
+    conn.query_row(
+        "WITH project_plans AS (
+             SELECT id FROM planning_projects WHERE workspace_project_id = ?1 AND archived = 0
+         ), project_tasks AS (
+             SELECT task_id FROM workspace_task_links WHERE project_id = ?1
+             UNION
+             SELECT task_id FROM task_plan_links WHERE project_id = ?1
+         )
+         SELECT p.revision, p.status,
+             (SELECT COUNT(*) FROM tasks t JOIN project_tasks l ON l.task_id = t.id
+              WHERE t.status <> 'completed'),
+             (SELECT COUNT(*) FROM planning_features f JOIN project_plans pp ON pp.id = f.project_id
+              WHERE f.status <> 'completed'),
+             (SELECT COUNT(*) FROM collab_plans cp JOIN project_plans pp ON pp.id = cp.project_id
+              WHERE cp.status NOT IN ('completed', 'archived')),
+             (SELECT COUNT(*) FROM collab_issues i JOIN project_plans pp ON pp.id = i.project_id
+              WHERE i.status NOT IN ('verified', 'closed', 'archived')
+                AND (i.kind = 'bug' OR i.status <> 'resolved')),
+             (SELECT COUNT(*) FROM agent_handoffs h
+              WHERE h.status IN ('pending', 'accepted')
+                AND (h.project_id = p.id OR (
+                    h.project_kind = 'planning' AND h.project_id IN (
+                        SELECT id FROM planning_projects WHERE workspace_project_id = p.id
+                    )
+                )))
+         FROM workspace_projects p WHERE p.id = ?1",
+        [&root],
+        |row| {
+            let pending_tasks = row.get(2)?;
+            let unfinished_features = row.get(3)?;
+            let unaccepted_plans = row.get(4)?;
+            let open_issues = row.get(5)?;
+            let pending_handoffs = row.get(6)?;
+            Ok(ProjectCloseout {
+                project_id: root.clone(),
+                revision: row.get(0)?,
+                status: row.get(1)?,
+                pending_tasks,
+                unfinished_features,
+                unaccepted_plans,
+                open_issues,
+                pending_handoffs,
+                ready: pending_tasks == 0 && unfinished_features == 0 && unaccepted_plans == 0
+                    && open_issues == 0 && pending_handoffs == 0,
+            })
+        },
+    ).map_err(AppError::from)
+}
+
+pub fn project_closeout(db: &Db, principal: &Principal, project_ref: &str) -> AppResult<ProjectCloseout> {
+    db.with_read(|conn| {
+        let snapshot = conn.unchecked_transaction()?;
+        project_closeout_in_conn(&snapshot, principal, project_ref)
+    })
+}
+
 // ── 任务 ─────────────────────────────────────────────────────────
 
 pub fn list_tasks(

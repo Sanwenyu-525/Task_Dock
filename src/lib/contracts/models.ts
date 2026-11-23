@@ -2318,6 +2318,7 @@ export interface PlanningFeaturePatch {
 }
 
 export interface PlanningMilestone {
+  revision?: number;
   id: string;
   project_id: string;
   name: string;

@@ -239,11 +239,12 @@ pub fn definitions_for_registry() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "taskdock_collab_submit_plan",
-            description: "把草稿/修改中的方案提交审阅；Agent 只能提交，不能批准。",
+            description: "提交方案审阅（默认）或申请验收（stage=acceptance，方案任务须全部完成）。审批和最终验收由人确认。",
             input_schema: schema(
                 json!({
                     "plan_id": { "type": "string" },
                     "expected_revision": { "type": "integer", "minimum": 1 },
+                    "stage": { "type": "string", "enum": ["review", "acceptance"] }
                 }),
                 &["plan_id", "expected_revision"],
             ),
@@ -770,9 +771,16 @@ fn call_owned(
         "taskdock_collab_submit_plan" => {
             let id = require_str(args, "plan_id")?;
             let expected = require_revision(args)?;
-            let value = write(write_conn, |core| {
-                core.submit_plan(&actor, &id, expected)
-            })?;
+            let value = match args.get("stage").and_then(Value::as_str).unwrap_or("review") {
+                "review" => write(write_conn, |core| core.submit_plan(&actor, &id, expected))?,
+                "acceptance" => write(write_conn, |core| {
+                    core.update_plan(&actor, &id, expected, &PlanPatch {
+                        status: Some("accepting".into()),
+                        ..Default::default()
+                    })
+                })?,
+                _ => return Err(ToolError::Failed(AppError::Validation("未知的方案提交阶段".into()))),
+            };
             Ok(outcome(value, "plan", id, None))
         }
         "taskdock_collab_create_visualization" => {

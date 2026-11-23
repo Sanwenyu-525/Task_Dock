@@ -225,6 +225,16 @@ pub fn tool_defs() -> &'static [ToolDef] {
             write: true,
         },
         ToolDef {
+            name: "taskdock_close_project",
+            description: "前置检查通过后归档项目。先用 taskdock_get_project_closeout 获取阻塞项计数和项目版本。检查与归档在同一事务。",
+            input_schema: schema(json!({
+                "project_id": { "type": "string" },
+                "expected_revision": { "type": "integer" },
+                "requestId": { "type": "string" }
+            }), &["project_id", "expected_revision"]),
+            write: true,
+        },
+        ToolDef {
             name: "taskdock_update_plan",
             description: "更新计划聚合（只含计划自身字段：执行状态 planning|in_progress|paused|completed、排序）。身份约定：planId=计划 planning_projects.id（不接受项目根 ID）；projectId=所属项目根 workspace_projects.id。expected_revision 是计划 revision（不是项目根 revision）。名称/描述/目标日期属于项目根，请用 taskdock_update_project。",
             input_schema: schema(
@@ -239,6 +249,42 @@ pub fn tool_defs() -> &'static [ToolDef] {
                 }),
                 &["plan_id", "expected_revision"],
             ),
+            write: true,
+        },
+        ToolDef {
+            name: "taskdock_create_plan",
+            description: "为授权项目新增非当前计划。项目名称等元数据沿用项目根。可传 requestId 去重。",
+            input_schema: schema(json!({
+                "project_id": { "type": "string" },
+                "requestId": { "type": "string" }
+            }), &["project_id"]),
+            write: true,
+        },
+        ToolDef {
+            name: "taskdock_set_plan_lifecycle",
+            description: "激活、归档或恢复单个计划。期望版本分别来自计划和项目根。归档当前计划时需要可用继任计划。",
+            input_schema: schema(json!({
+                "plan_id": { "type": "string" },
+                "action": { "type": "string", "enum": ["activate", "archive", "restore"] },
+                "expected_revision": { "type": "integer" },
+                "expected_project_revision": { "type": "integer" },
+                "requestId": { "type": "string" }
+            }), &["plan_id", "action", "expected_revision", "expected_project_revision"]),
+            write: true,
+        },
+        ToolDef {
+            name: "taskdock_save_milestone",
+            description: "为计划新建或编辑里程碑。新建需 name，编辑需 milestone_id 和 expected_revision。可传 requestId 去重。",
+            input_schema: schema(json!({
+                "plan_id": { "type": "string" },
+                "milestone_id": { "type": "string" },
+                "expected_revision": { "type": "integer" },
+                "name": { "type": "string" },
+                "description": { "type": "string" },
+                "target_date": { "type": ["string", "null"] },
+                "sort_order": { "type": "integer", "description": "仅编辑时使用" },
+                "requestId": { "type": "string" }
+            }), &["plan_id"]),
             write: true,
         },
         ToolDef {
@@ -612,10 +658,14 @@ fn authorize_replay(
             }
             replay.entity_id.clone()
         }
-        "taskdock_update_project" | "taskdock_create_feature" | "taskdock_add_progress_note" => {
+        "taskdock_update_project" | "taskdock_close_project" | "taskdock_create_plan" | "taskdock_create_feature" | "taskdock_add_progress_note" => {
             require_str(args, "project_id")?.to_string()
         }
-        "taskdock_update_plan" => require_str(args, "plan_id")?.to_string(),
+        "taskdock_update_plan" => require_str(args, "plan_id")?,
+        "taskdock_set_plan_lifecycle" | "taskdock_save_milestone" => {
+            let plan_id = require_str(args, "plan_id")?;
+            crate::project_hub::service::load_plan_summary(conn, &plan_id)?.project_id
+        }
         "taskdock_update_feature"
         | "taskdock_add_step"
         | "taskdock_link_agent_session"
@@ -644,8 +694,14 @@ fn authorize_replay(
     let root = ensure_grant(ctx, conn, &project_id)?;
     // update_project / update_plan 会改写项目根元数据或经根镜像同步：
     // 重放同样按当前能力复核 projects.write。
-    if name == "taskdock_update_project" || name == "taskdock_update_plan" {
+    if matches!(name, "taskdock_update_project" | "taskdock_close_project" | "taskdock_update_plan" | "taskdock_create_plan" | "taskdock_set_plan_lifecycle" | "taskdock_save_milestone") {
         ensure_projects_write(ctx, conn, &root)?;
+    }
+    if name == "taskdock_close_project" {
+        let principal = crate::agent_access::Principal::agent(
+            ctx.agent.row_id.clone(), ctx.agent.agent_id.clone(), crate::agent_access::Source::Mcp,
+        );
+        crate::agent_access::service::project_closeout_in_conn(conn, &principal, &root)?;
     }
     Ok(())
 }
@@ -1182,6 +1238,48 @@ fn call(
                 }),
             ))
         }
+        "taskdock_close_project" => {
+            use crate::project_hub::service as hub;
+            let conn = write_conn
+                .ok_or_else(|| ToolError::Failed(AppError::Validation("缺少写事务".into())))?;
+            let root = ensure_grant(ctx, conn, &require_str(args, "project_id")?)?;
+            ensure_projects_write(ctx, conn, &root)?;
+            let principal = crate::agent_access::Principal::agent(
+                agent.row_id.clone(), agent.agent_id.clone(), crate::agent_access::Source::Mcp,
+            );
+            let expected = require_revision(args)?;
+            hub::check_expected_revision_tx(conn, "workspace_projects", &root, Some(expected))?;
+            let closeout = crate::agent_access::service::project_closeout_in_conn(conn, &principal, &root)?;
+            if !closeout.ready {
+                return Err(ToolError::Failed(AppError::Conflict(format!(
+                    "项目尚未达到结项条件：未完成任务 {}、功能 {}、未验收方案 {}、待处理问题 {}、未完成交接 {}",
+                    closeout.pending_tasks, closeout.unfinished_features, closeout.unaccepted_plans,
+                    closeout.open_issues, closeout.pending_handoffs,
+                ))));
+            }
+            if closeout.status == "archived" {
+                return Ok(outcome(serde_json::to_value(closeout).map_err(AppError::from)?, "project", root, None));
+            }
+            hub::update_project_fields_tx(conn, &root, hub::ProjectRootPatch {
+                lifecycle_status: Some("archived".into()),
+                expected_project_revision: Some(expected),
+                ..Default::default()
+            })?;
+            let closeout = crate::agent_access::service::project_closeout_in_conn(conn, &principal, &root)?;
+            let revision = closeout.revision;
+            Ok(outcome(
+                serde_json::to_value(closeout).map_err(AppError::from)?,
+                "project",
+                root.clone(),
+                Some(PlanningChanged {
+                    kind: "project",
+                    project_id: Some(root),
+                    plan_id: None,
+                    feature_id: None,
+                    revision: Some(revision),
+                }),
+            ))
+        }
         "taskdock_update_plan" => {
             let conn = write_conn
                 .ok_or_else(|| ToolError::Failed(AppError::Validation("缺少写事务".into())))?;
@@ -1238,6 +1336,96 @@ fn call(
                 plan_id.clone(),
                 Some(PlanningChanged {
                     kind: "plan",
+                    project_id: Some(root),
+                    plan_id: Some(plan_id),
+                    feature_id: None,
+                    revision: Some(revision),
+                }),
+            ))
+        }
+        "taskdock_create_plan" | "taskdock_set_plan_lifecycle" => {
+            use crate::project_hub::service as hub;
+
+            let conn = write_conn
+                .ok_or_else(|| ToolError::Failed(AppError::Validation("缺少写事务".into())))?;
+            let (root, plan_id) = if name == "taskdock_create_plan" {
+                let root = ensure_grant(ctx, conn, &require_str(args, "project_id")?)?;
+                ensure_projects_write(ctx, conn, &root)?;
+                let id = hub::create_project_plan_tx(conn, hub::CreatePlanInput {
+                    project_id: root.clone(),
+                    name: None,
+                    description: None,
+                    target_date: None,
+                    status: None,
+                    template_id: None,
+                    make_active: false,
+                })?;
+                (root, id)
+            } else {
+                let plan_id = require_str(args, "plan_id")?;
+                let plan = hub::load_plan_summary(conn, &plan_id)?;
+                let root = ensure_grant(ctx, conn, &plan.project_id)?;
+                ensure_projects_write(ctx, conn, &root)?;
+                let project_revision = args["expected_project_revision"].as_i64()
+                    .ok_or_else(|| AppError::Validation("缺少 expected_project_revision".into()))?;
+                hub::check_expected_revision_tx(conn, "workspace_projects", &root, Some(project_revision))?;
+                hub::check_expected_revision_tx(conn, "planning_projects", &plan_id, Some(require_revision(args)?))?;
+                match require_str(args, "action")?.as_str() {
+                    "activate" => { hub::activate_plan_tx(conn, &plan_id)?; }
+                    "archive" => hub::archive_plan_tx(conn, &plan_id, true)?,
+                    "restore" => hub::archive_plan_tx(conn, &plan_id, false)?,
+                    _ => return Err(ToolError::Failed(AppError::Validation("未知计划操作".into()))),
+                }
+                (root, plan_id)
+            };
+            let plan = hub::load_plan_summary(conn, &plan_id)?;
+            let revision = plan.revision;
+            Ok(outcome(
+                serde_json::to_value(plan).map_err(AppError::from)?,
+                "plan",
+                plan_id.clone(),
+                Some(PlanningChanged {
+                    kind: "plan",
+                    project_id: Some(root),
+                    plan_id: Some(plan_id),
+                    feature_id: None,
+                    revision: Some(revision),
+                }),
+            ))
+        }
+        "taskdock_save_milestone" => {
+            use crate::commands::planning;
+            use crate::project_hub::service as hub;
+            let conn = write_conn
+                .ok_or_else(|| ToolError::Failed(AppError::Validation("缺少写事务".into())))?;
+            let plan_id = require_str(args, "plan_id")?;
+            let plan = hub::load_plan_summary(conn, &plan_id)?;
+            let root = ensure_grant(ctx, conn, &plan.project_id)?;
+            ensure_projects_write(ctx, conn, &root)?;
+            let milestone = if args.get("milestone_id").is_some() {
+                let id = require_str(args, "milestone_id")?;
+                let belongs: bool = conn.query_row(
+                    "SELECT EXISTS (SELECT 1 FROM planning_milestones
+                     WHERE id = ?1 AND project_id = ?2 AND kind = 'milestone')",
+                    rusqlite::params![id, plan_id],
+                    |row| row.get(0),
+                ).map_err(AppError::from)?;
+                if !belongs {
+                    return Err(ToolError::Failed(AppError::NotFound("该计划内找不到里程碑".into())));
+                }
+                hub::check_expected_revision_tx(conn, "planning_milestones", &id, Some(require_revision(args)?))?;
+                planning::update_milestone_tx(conn, &id, serde_json::from_value(args.clone()).map_err(AppError::from)?)?
+            } else {
+                planning::create_milestone_tx(conn, &plan_id, serde_json::from_value(args.clone()).map_err(AppError::from)?)?
+            };
+            let id = milestone.id.clone();
+            let revision = milestone.revision;
+            Ok(outcome(
+                serde_json::to_value(milestone).map_err(AppError::from)?,
+                "milestone",
+                id,
+                Some(PlanningChanged {
+                    kind: "milestone",
                     project_id: Some(root),
                     plan_id: Some(plan_id),
                     feature_id: None,

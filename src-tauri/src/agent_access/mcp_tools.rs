@@ -54,6 +54,12 @@ pub(crate) fn defs() -> Vec<ToolDef> {
             write: false,
         },
         ToolDef {
+            name: "taskdock_get_project_closeout",
+            description: "查询结项阻塞计数和项目版本，覆盖任务、功能、协作方案、问题和交接。",
+            input_schema: schema(json!({ "project_id": { "type": "string" } }), &["project_id"]),
+            write: false,
+        },
+        ToolDef {
             name: "taskdock_list_plans",
             description: "列出规划（里程碑 + 功能 + 进度），可按项目过滤。",
             input_schema: schema(
@@ -249,6 +255,40 @@ pub(crate) fn defs() -> Vec<ToolDef> {
             write: false,
         },
         ToolDef {
+            name: "taskdock_transition_handoff",
+            description: "Accept, reject, complete or cancel a handoff using its current revision. The recipient accepts/rejects/completes; the sender cancels.",
+            input_schema: schema(
+                json!({
+                    "handoff_id": { "type": "string" },
+                    "action": { "type": "string", "enum": ["accept", "reject", "complete", "cancel"] },
+                    "base_revision": { "type": "integer", "minimum": 1 },
+                    "reason": { "type": "string", "maxLength": 500 }
+                }),
+                &["handoff_id", "action", "base_revision"],
+            ),
+            write: false,
+        },
+        ToolDef {
+            name: "taskdock_list_work_reports",
+            description: "List authorized work reports, optionally by handoff or author.",
+            input_schema: schema(
+                json!({
+                    "handoff_id": { "type": "string" },
+                    "agent_id": { "type": "string" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 200 },
+                    "offset": { "type": "integer", "minimum": 0 }
+                }),
+                &[],
+            ),
+            write: false,
+        },
+        ToolDef {
+            name: "taskdock_get_work_report",
+            description: "Read one authorized work report.",
+            input_schema: schema(json!({ "report_id": { "type": "string" } }), &["report_id"]),
+            write: false,
+        },
+        ToolDef {
             name: "taskdock_submit_work_report",
             description: "提交工作报告（追加式，不可修改）；可关联交接/项目/任务与证据元数据。",
             input_schema: schema(
@@ -305,6 +345,7 @@ pub(crate) fn defs() -> Vec<ToolDef> {
 
 pub const NAMES: &[&str] = &[
     "taskdock_get_project_status",
+    "taskdock_get_project_closeout",
     "taskdock_list_plans",
     "taskdock_get_current_plan",
     "taskdock_get_plan_details",
@@ -321,6 +362,9 @@ pub const NAMES: &[&str] = &[
     "taskdock_create_handoff",
     "taskdock_get_handoff",
     "taskdock_list_handoffs",
+    "taskdock_transition_handoff",
+    "taskdock_list_work_reports",
+    "taskdock_get_work_report",
     "taskdock_submit_work_report",
     "taskdock_search",
     "taskdock_agent_registry",
@@ -345,6 +389,12 @@ pub(crate) fn call(
                 let id = need(args, "project_id")?;
                 let status = service::project_status(db, &principal, &id)?;
                 Ok((serde_json::to_value(status)?, "project", id))
+            }
+            "taskdock_get_project_closeout" => {
+                let id = need(args, "project_id")?;
+                let closeout = service::project_closeout(db, &principal, &id)?;
+                let root = closeout.project_id.clone();
+                Ok((serde_json::to_value(closeout)?, "project", root))
             }
             "taskdock_list_plans" => {
                 let project = arg_str(args, "project_id");
@@ -516,6 +566,35 @@ pub(crate) fn call(
                     "handoff",
                     String::new(),
                 ))
+            }
+            "taskdock_transition_handoff" => {
+                let id = need(args, "handoff_id")?;
+                let revision = int_arg(args, "base_revision")
+                    .filter(|revision| *revision > 0)
+                    .ok_or_else(|| AppError::Validation("base_revision must be positive".into()))?;
+                let reason = arg_str(args, "reason").unwrap_or_default();
+                let item = match need(args, "action")?.as_str() {
+                    "accept" => handoff::accept_handoff(db, &principal, &id, revision)?,
+                    "reject" => handoff::reject_handoff(db, &principal, &id, revision, reason)?,
+                    "complete" => handoff::complete_handoff(db, &principal, &id, revision)?,
+                    "cancel" => handoff::cancel_handoff(db, &principal, &id, revision, reason)?,
+                    _ => return Err(AppError::Validation("Unknown handoff action".into())),
+                };
+                Ok((serde_json::to_value(item)?, "handoff", id))
+            }
+            "taskdock_list_work_reports" => {
+                let limit = int_arg(args, "limit").unwrap_or(20).clamp(1, 200) as u32;
+                let offset = int_arg(args, "offset").unwrap_or(0).clamp(0, u32::MAX.into()) as u32;
+                let (items, page) = handoff::list_reports(
+                    db, &principal, arg_str(args, "agent_id"), arg_str(args, "handoff_id"),
+                    limit, offset,
+                )?;
+                Ok((json!({ "items": items, "page": page }), "report", String::new()))
+            }
+            "taskdock_get_work_report" => {
+                let id = need(args, "report_id")?;
+                let item = handoff::get_report(db, &principal, &id)?;
+                Ok((serde_json::to_value(item)?, "report", id))
             }
             "taskdock_submit_work_report" => {
                 let input = store::ReportInput {

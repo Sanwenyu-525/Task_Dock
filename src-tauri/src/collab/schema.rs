@@ -220,3 +220,21 @@ CREATE TABLE collab_visual_assets (
 CREATE INDEX idx_collab_visual_assets_project ON collab_visual_assets(project_id, status, created_at);
 CREATE INDEX idx_collab_visual_assets_document ON collab_visual_assets(document_id);
 "#;
+
+// Backfill project membership for live tasks split from historical collaboration plans.
+pub const MIGRATION_94: (i64, &str) = (
+    94,
+    r#"
+ALTER TABLE planning_milestones ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+
+INSERT OR IGNORE INTO workspace_task_links (project_id, task_id, created_at)
+SELECT owner.id, link.target_id, MIN(link.created_at)
+FROM collab_plan_links link
+JOIN collab_plans collab ON collab.id = link.plan_id
+JOIN planning_projects plan ON plan.id = collab.project_id
+JOIN workspace_projects owner ON owner.id = plan.workspace_project_id
+JOIN tasks task ON task.id = link.target_id
+WHERE link.target_kind = 'task'
+GROUP BY owner.id, link.target_id;
+"#,
+);

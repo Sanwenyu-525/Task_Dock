@@ -208,8 +208,10 @@ pub fn update_plan(
             next.approved_by = actor.id.clone();
             next.approved_at = Some(now_iso());
         }
-        if status == "changes_requested" {
-            next.review_note = patch.review_note.clone().unwrap_or_default();
+        if status == "changes_requested" || (current.status == "accepting" && status == "developing") {
+            next.review_note = validate_text(
+                patch.review_note.as_deref().unwrap_or_default(), "退回原因", MAX_DESCRIPTION, true,
+            )?;
         }
     }
 
@@ -296,7 +298,7 @@ fn apply_status_transition(
         "in_review" => matches!(to.as_str(), "approved" | "changes_requested" | "archived"),
         "approved" => matches!(to.as_str(), "developing" | "archived"),
         "developing" => matches!(to.as_str(), "accepting" | "archived"),
-        "accepting" => matches!(to.as_str(), "completed" | "archived"),
+        "accepting" => matches!(to.as_str(), "completed" | "developing" | "archived"),
         "completed" | "archived" => to == "archived",
         _ => false,
     };
@@ -306,9 +308,16 @@ fn apply_status_transition(
             current.status, to
         )));
     }
-    if matches!(to.as_str(), "approved" | "changes_requested" | "completed" | "accepting" | "archived")
+    if matches!(to.as_str(), "approved" | "changes_requested" | "completed" | "archived")
+        || (current.status == "accepting" && to == "developing")
     {
         actor.require_review()?;
+    }
+    if to == "completed" || (to == "accepting" && actor.kind != ActorKind::Ui) {
+        let tasks = plan_tasks(conn, &current.id)?;
+        if tasks.is_empty() || tasks.iter().any(|task| task.status != "completed") {
+            return Err(AppError::Conflict("验收要求方案关联任务全部完成".into()));
+        }
     }
     if to == "changes_requested" && note.unwrap_or("").trim().is_empty() {
         return Err(AppError::Validation("驳回必须填写原因".to_string()));
@@ -338,6 +347,7 @@ pub fn submit_plan(
 ) -> AppResult<Plan> {
     actor.require(Capability::PlansWrite)?;
     let current = load_plan(conn, id)?;
+    assert_project_scope(conn, actor, &current.project_id)?;
     if current.status == "in_review" {
         return Ok(current);
     }
@@ -363,20 +373,19 @@ pub fn review_plan(
 ) -> AppResult<Plan> {
     actor.require_review()?;
     let current = load_plan(conn, id)?;
-    if current.status != "in_review" {
-        return Err(AppError::Conflict(format!(
-            "只有待审阅的方案可以审批（当前 {}）",
-            current.status
-        )));
-    }
-    let status = match decision {
-        "approve" => "approved",
-        "reject" => "changes_requested",
-        _ => {
-            return Err(AppError::Validation(
-                "审批决定必须是 approve 或 reject".to_string(),
-            ))
-        }
+    let approving = match decision {
+        "approve" => true,
+        "reject" | "request_changes" => false,
+        _ => return Err(AppError::Validation("审批决定必须是 approve 或 reject".into())),
+    };
+    let status = match (current.status.as_str(), approving) {
+        ("in_review", true) => "approved",
+        ("in_review", false) => "changes_requested",
+        ("accepting", true) => "completed",
+        ("accepting", false) => "developing",
+        _ => return Err(AppError::Conflict(format!(
+            "只有待审阅或待验收的方案可以审批（当前 {}）", current.status,
+        ))),
     };
     update_plan(
         conn,
@@ -527,6 +536,7 @@ pub fn create_tasks_from_plan(
         });
     }
 
+    let project_root = crate::project_hub::service::ensure_project_for_plan_tx(conn, &plan.project_id)?;
     let mut created = Vec::new();
     let now = now_iso();
     for draft in &plan.breakdown {
@@ -544,6 +554,7 @@ pub fn create_tasks_from_plan(
              VALUES (?1,?2,'task',?3,?4)",
             rusqlite::params![new_id("pl"), plan.id, task_id, now],
         )?;
+        crate::commands::project_workspace::workspace_task_link_add_tx(conn, &project_root, &task_id)?;
         created.push(task_id);
     }
 

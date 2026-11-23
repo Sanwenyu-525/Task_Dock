@@ -571,11 +571,15 @@ fn tool_defs_are_complete_and_unique() {
     // 或使用 updated_at 作为并发令牌（任务）。
     let no_revision_required = [
         "taskdock_create_project",
+        "taskdock_create_plan",
+        "taskdock_save_milestone", // 创建无需版本，编辑时由写入口强制校验。
         "taskdock_create_feature",
         "taskdock_add_progress_note",
         "taskdock_link_agent_session",
         "taskdock_unlink_agent_session",
         "taskdock_create_task",
+        "taskdock_link_project_task",
+        "taskdock_unlink_project_task",
         "taskdock_create_note",
         "taskdock_link_note_task",
         "taskdock_add_task_progress",

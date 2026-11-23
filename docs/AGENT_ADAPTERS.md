@@ -320,9 +320,9 @@ ZCode 的用户配置 `~/.zcode/cli/config.json` 支持配置式 hooks，Task Do
 - 外部 MCP 客户端通过 `task-dock.exe --mcp-server` stdio 子命令进入本机 loopback
   bridge；`mcp_server_enabled` 默认关闭。设置页显示独立的开关，并从 bridge 运行态读取
   是否监听和实际端口，不用开关值冒充运行状态。
-- MCP 只开放用户自建规划项目、功能、步骤、里程碑、进度及 Agent 会话关联；不开放
-  任务、剪贴板正文、内置路线图或任意 SQL。`readonly` 是用户显式选择的全项目只读；
-  `project_rw` 的读写都限制在显式授权项目，创建项目后仅创建者 Agent 自动获得该项目授权。
+- 项目托管、规划、任务、协作和交接的当前 MCP 契约见 [MCP 规范](agent-workspace/mcp-specification.md)。
+  `readonly` 由用户显式选择，`project_rw` 的项目操作要求项目授权。授权创建项目后，仅创建者
+  自动获得该项目授权。具体资源的能力检查由各服务执行。
 - 设置页可创建身份、调整 scope、授予/撤销项目、轮换/撤销凭据、生成 Claude Code、
   Codex CLI、Cursor、Trae、generic 配置片段，并分页查看审计摘要。新身份默认 `disabled`。
   Token 明文只在创建或轮换命令的响应返回一次，数据库只存 SHA-256；前端只在当前创建

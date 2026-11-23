@@ -46,7 +46,9 @@ ADR-0008 之后，项目根（`workspace_projects`）与计划容器（`planning
 | 服务层 | `project_hub::service`（ProjectService） | `commands::planning`（PlanningService） |
 
 镜像同步规则：项目根字段变更由 `update_project_fields_tx` 在同一事务内同步到全部计划行；
-计划侧不回写根的生命周期状态。
+计划侧不回写根的生命周期状态。v94 的计划激活与归档可改变根的 `active_plan_id`，
+这类变更在同一事务推进项目根版本和受影响计划的版本。MCP 生命周期工具同时检查目标计划与
+项目根的版本，避免旧选择覆盖当前计划。恢复单个计划只推进该计划自己的版本。
 
 ### 3.2 API 资源边界
 

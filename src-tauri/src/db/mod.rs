@@ -2179,6 +2179,7 @@ CREATE INDEX idx_sec_audit_cat ON security_audit_log(category, created_at);
     crate::agent_access::schema::MIGRATION_92,
     // 统一项目身份第三轮（v93）：项目根乐观并发版本列（Project/Plan 双聚合 revision 分离）。
     crate::project_hub::schema::MIGRATION_93,
+    crate::collab::schema::MIGRATION_94,
 ];
 
 /// 历史测试数据的保守回填（幂等）。

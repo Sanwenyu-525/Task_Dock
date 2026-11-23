@@ -326,6 +326,11 @@ fn transition(
     };
     let detail = format!("交接状态 → {next}");
     db.with_transaction(|conn| {
+        if let Some(row_id) = principal.agent_row_id.as_deref().filter(|_| principal.is_agent()) {
+            let root = perms::resolve_project_root(conn, &current.project_id)?
+                .unwrap_or_else(|| current.project_id.clone());
+            perms::require_agent_in_conn(conn, row_id, Capability::HandoffsWrite, &root)?;
+        }
         // 事务内重读状态与版本：事务外的快照只是预检，这里才是判定依据。
         let (status, revision): (String, i64) = conn.query_row(
             "SELECT status, revision FROM agent_handoffs WHERE id = ?1",

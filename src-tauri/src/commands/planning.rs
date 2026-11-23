@@ -128,6 +128,7 @@ pub struct PlanningMilestone {
     pub updated_at: String,
     pub feature_total: i64,
     pub feature_completed: i64,
+    pub revision: i64,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -564,13 +565,14 @@ fn row_to_milestone(row: &rusqlite::Row<'_>) -> rusqlite::Result<PlanningMilesto
         updated_at: row.get(7)?,
         feature_total: row.get(8)?,
         feature_completed: row.get(9)?,
+        revision: row.get(10)?,
     })
 }
 
 const MILESTONE_SELECT: &str =
     "SELECT ms.id, ms.project_id, ms.name, ms.description, ms.target_date,
      ms.sort_order, ms.created_at, ms.updated_at,
-     COALESCE(f.total, 0), COALESCE(f.completed, 0)
+     COALESCE(f.total, 0), COALESCE(f.completed, 0), ms.revision
    FROM planning_milestones ms
    LEFT JOIN (
      SELECT milestone_id,
@@ -1765,28 +1767,30 @@ pub(crate) fn create_milestone_impl(
     project_id: String,
     input: MilestoneInput,
 ) -> AppResult<PlanningMilestone> {
+    db.with_transaction(|conn| create_milestone_tx(conn, &project_id, input))
+}
+
+pub(crate) fn create_milestone_tx(
+    conn: &Connection,
+    project_id: &str,
+    input: MilestoneInput,
+) -> AppResult<PlanningMilestone> {
     let name = check_name(&input.name, "里程碑", 100)?;
     let description = check_text(&input.description, "里程碑描述", 2000)?;
     let target_date = normalize_date(&input.target_date)?;
-    let now = now_iso();
+    if !project_exists(conn, project_id)? {
+        return Err(AppError::Validation(format!("项目不存在: {project_id}")));
+    }
+    let sort_order =
+        next_sort_order(conn, "planning_milestones", Some(("project_id", project_id)))?;
     let id = new_id();
-    db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
-        if !project_exists(&tx, &project_id)? {
-            return Err(AppError::Validation(format!("项目不存在: {}", project_id)));
-        }
-        let sort_order =
-            next_sort_order(&tx, "planning_milestones", Some(("project_id", &project_id)))?;
-        tx.execute(
-            "INSERT INTO planning_milestones (id, project_id, name, description, target_date, sort_order, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
-            rusqlite::params![id, project_id, name, description, target_date, sort_order, now],
-        )
-        .map_err(AppError::from)?;
-        tx.commit().map_err(AppError::from)?;
-        Ok(())
-    })?;
-    db.with_read(|conn| load_milestone_tx(conn, &id))
+    let now = now_iso();
+    conn.execute(
+        "INSERT INTO planning_milestones (id, project_id, name, description, target_date, sort_order, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+        rusqlite::params![id, project_id, name, description, target_date, sort_order, now],
+    )?;
+    load_milestone_tx(conn, &id)
 }
 
 #[tauri::command]
@@ -1803,6 +1807,14 @@ pub(crate) fn update_milestone_impl(
     id: String,
     patch: MilestonePatch,
 ) -> AppResult<PlanningMilestone> {
+    db.with_transaction(|conn| update_milestone_tx(conn, &id, patch))
+}
+
+pub(crate) fn update_milestone_tx(
+    conn: &Connection,
+    id: &str,
+    patch: MilestonePatch,
+) -> AppResult<PlanningMilestone> {
     let name = match &patch.name {
         Some(n) => Some(check_name(n, "里程碑", 100)?),
         None => None,
@@ -1811,34 +1823,26 @@ pub(crate) fn update_milestone_impl(
         Some(d) => Some(check_text(d, "里程碑描述", 2000)?),
         None => None,
     };
-    let now = now_iso();
-    db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
-        let current: (Option<String>,) = tx
-            .query_row(
-                "SELECT target_date FROM planning_milestones WHERE id = ?1",
-                rusqlite::params![id],
-                |r| Ok((r.get(0)?,)),
-            )
-            .optional()
-            .map_err(AppError::from)?
-            .ok_or_else(|| AppError::Validation(format!("里程碑不存在: {}", id)))?;
-        let target_date = resolve_date(&current.0, &parse_date_update(&patch.target_date)?);
-        tx.execute(
-            "UPDATE planning_milestones SET
-               name = COALESCE(?1, name),
-               description = COALESCE(?2, description),
-               target_date = ?3,
-               sort_order = COALESCE(?4, sort_order),
-               updated_at = ?5
-             WHERE id = ?6",
-            rusqlite::params![name, description, target_date, patch.sort_order, now, id],
+    let current: Option<String> = conn
+        .query_row(
+            "SELECT target_date FROM planning_milestones WHERE id = ?1",
+            [id],
+            |row| row.get(0),
         )
-        .map_err(AppError::from)?;
-        tx.commit().map_err(AppError::from)?;
-        Ok(())
-    })?;
-    db.with_read(|conn| load_milestone_tx(conn, &id))
+        .optional()?
+        .ok_or_else(|| AppError::Validation(format!("里程碑不存在: {id}")))?;
+    let target_date = resolve_date(&current, &parse_date_update(&patch.target_date)?);
+    conn.execute(
+        "UPDATE planning_milestones SET
+           name = COALESCE(?1, name),
+           description = COALESCE(?2, description),
+           target_date = ?3,
+           sort_order = COALESCE(?4, sort_order),
+           updated_at = ?5, revision = revision + 1
+         WHERE id = ?6",
+        rusqlite::params![name, description, target_date, patch.sort_order, now_iso(), id],
+    )?;
+    load_milestone_tx(conn, id)
 }
 
 #[tauri::command]
@@ -2180,7 +2184,11 @@ mod tests {
         delete_project_impl(&db, successor).unwrap();
 
         // 更新项目根字段（名称/描述/目标日期）：只推进项目根 revision
-        let root_rev = p.project_revision.expect("创建后计划应带项目根 revision");
+        let current = db.with_read(|conn| load_project_tx(conn, &p.id)).unwrap();
+        let root_rev = current.project_revision.expect("计划应带项目根 revision");
+        let plan_rev = current.revision;
+        assert!(root_rev > p.project_revision.unwrap(), "切换当前计划应推进根版本");
+        assert!(plan_rev > p.revision, "归档和恢复应推进计划版本");
         let outcome = update_project_root_impl(
             &db,
             p.id.clone(),
@@ -2197,7 +2205,7 @@ mod tests {
         assert_eq!(outcome.plan.name, "改名", "计划镜像同步项目根名称");
         assert_eq!(outcome.plan.target_date.as_deref(), Some("2026-12-01"));
         assert_eq!(outcome.project.revision, root_rev + 1, "根 revision +1");
-        assert_eq!(outcome.plan.revision, 1, "根写不得推进计划 revision");
+        assert_eq!(outcome.plan.revision, plan_rev, "根写不得推进计划 revision");
 
         // 计划执行状态：只推进计划 revision
         let updated = update_plan_impl(
@@ -2206,12 +2214,12 @@ mod tests {
             PlanPatch {
                 execution_status: Some("in_progress".into()),
                 sort_order: None,
-                expected_plan_revision: Some(1),
+                expected_plan_revision: Some(plan_rev),
             },
         )
         .unwrap();
         assert_eq!(updated.status, "in_progress");
-        assert_eq!(updated.revision, 2);
+        assert_eq!(updated.revision, plan_rev + 1);
         assert_eq!(updated.name, "改名", "计划写不得回滚项目根镜像");
 
         // 归档计划不修改项目根生命周期状态

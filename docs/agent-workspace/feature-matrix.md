@@ -12,13 +12,15 @@
 | 修改任务 | 已实现 | 已实现（`taskdock_update_task`） | 已实现（PATCH） | 受控导入 | 必须带 `base_revision` |
 | 完成任务 | 已实现 | 已实现（`taskdock_complete_task`） | 已实现 | 受控导入 | 走 `update_task_inner`，保留完成事件 |
 | 规划查询 | 已实现 | 已实现（`taskdock_list_plans` 等） | 已实现 | 已实现 | 里程碑/功能/步骤/活动 |
+| 计划管理、里程碑编辑 | 仅项目创建时带初始计划 | 已实现 | 仅项目创建与计划执行状态更新 | 未开放 | MCP 可新增、激活、归档、恢复计划，创建和修改里程碑 |
+| 项目结项检查与归档 | 可修改归档状态 | 已实现（带结项检查） | 可修改归档状态 | 未开放 | MCP 在同一事务复查阻塞后归档 |
 | 知识检索 | 已实现 | 已实现（`taskdock_search_knowledge`） | 已实现 | 已实现 | 复用分块检索 |
 | 知识写入 | 已实现 | 已实现（`taskdock_create_knowledge`） | 已实现 | 受控导入 | 需 `knowledge.write` |
 | 决策记录 | 已实现 | 已实现（`taskdock_create_decision` 等） | 已实现 | 已实现 + 导入 | 新表 `agent_decisions` |
 | Skill 查询 | 已实现 | 已实现（`taskdock_list_skills`） | 已实现 | 已实现（索引） | 只读 |
 | 上下文获取 | 已实现 | 已实现（3 个 context 工具） | 已实现 | 已实现 | Context Engine |
 | Agent 工作记录 | 已实现 | 已实现（活动由工具自动记录） | 已实现（`/agents/activity`） | 已实现（registry/sessions） | 只读为主 |
-| 交接 | 已实现 | 已实现（create/get/list/submit_report） | 已实现 | 已实现 + 导入 | 状态机见 handoff 文档 |
+| 交接 | 已实现 | 已实现（创建、读取、流转、报告） | 已实现 | 已实现 + 导入 | 状态机见 handoff 文档 |
 | 版本历史 | 已实现 | 已实现（`revision` 字段 + 冲突错误） | 已实现 | 已实现（导出） | 单表计数器 + updated_at 双校验 |
 | 搜索 | 已实现 | 已实现（`taskdock_search`） | 已实现 | 已实现 | 跨任务/知识/决策 |
 | 同步状态 | 已实现 | 未开放（MCP 不暴露同步写） | 已实现（`/sync/*`） | 已实现 | 文件接口需要明确动作 |

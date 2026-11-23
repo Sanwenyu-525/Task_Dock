@@ -16,6 +16,15 @@
 `decisions.read`、`decisions.write`、`context.read`、`handoffs.read`、`handoffs.write`、`skills.read`、
 `notes.read`、`notes.write`、`workflows.read`、`workspace.read`。
 
+### v94 项目托管数据一致性
+
+- 协作方案仍归属规划计划，授权检查从计划映射到项目根。方案拆解同时写入 `collab_plan_links`
+  和 `workspace_task_links`，使项目查询、工作区与方案进度引用同一批任务。
+- 迁移 v94 根据方案、所属计划和项目根补登已有有效任务的关联。使用现有主键去重，
+  跳过已删除任务或没有有效项目根的引用。成功升级后再次拆解只返回已有任务。
+- `planning_milestones.revision` 默认 1，桌面与 MCP 共用写入逻辑并同步递增。旧库升级及缺少
+  该列的备份记录使用默认值。未增加表。升级会推进库版本，回退程序时使用迁移前备份。
+
 ## 2. 新增表
 
 ### 2.1 `agent_workspaces`（共享目录注册）

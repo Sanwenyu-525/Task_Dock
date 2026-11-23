@@ -261,6 +261,10 @@ fn plan_requires_review_and_can_create_tasks() {
         .expect("拆解任务");
     assert_eq!(tasks.created.len(), 2);
     assert_eq!(tasks.plan.status, "developing");
+    let linked = crate::commands::project_workspace::workspace_task_link_list_impl(&db, PROJECT)
+        .expect("project tasks");
+    assert_eq!(linked.len(), tasks.created.len());
+    assert!(linked.iter().all(|item| tasks.created.contains(&item.task_id)));
 
     let progress = db
         .with_conn(|conn| Core::new(conn).plan_progress(&ui, &plan.id))
@@ -1608,4 +1612,141 @@ fn mcp_tools_are_stable_and_share_core() {
         .expect("Agent 创建可视化");
     assert_eq!(created_visual.value["authoringMode"], "agent_authored");
     assert_eq!(created_visual.value["version"], 1);
+}
+
+#[test]
+fn managed_project_mcp_lifecycle_requires_human_review_and_finished_handoff() {
+    use crate::mcp::tools::run_tool_call;
+    use serde_json::{json, Value};
+
+    fn call(ctx: &ToolCtx, name: &str, args: Value) -> Result<Value, String> {
+        let out = run_tool_call(ctx, name, &args).map_err(|e| e.message)?;
+        let text = out["content"][0]["text"].as_str().expect("MCP text");
+        if out["isError"] == true {
+            Err(text.to_owned())
+        } else {
+            Ok(serde_json::from_str(text).expect("MCP JSON"))
+        }
+    }
+
+    let db = Arc::new(Db::open_in_memory().expect("isolated database"));
+    let make_agent = |id| {
+        let agent = mcp_row(id, McpScope::ProjectRw);
+        insert_agent(&db, &agent, false);
+        for cap in ["projects.read", "projects.create", "projects.write", "tasks.read",
+                    "tasks.write", "handoffs.read", "handoffs.write"] {
+            crate::mcp::permissions::grant(&db, &agent.row_id, cap, "").expect("capability");
+        }
+        ToolCtx { db: db.clone(), agent, emit: Arc::new(|_| {}) }
+    };
+    let sender = make_agent("owner");
+    let recipient = make_agent("recipient");
+    let project = call(&sender, "taskdock_create_project", json!({
+        "name": "Managed project", "requestId": "project-1"
+    })).unwrap();
+    let root = project["projectId"].as_str().unwrap();
+    let plan_id = project["activePlanId"].as_str().unwrap();
+    assert_ne!(root, plan_id);
+    let close_args = json!({ "project_id": root });
+    assert!(call(&recipient, "taskdock_get_project_closeout", close_args.clone()).is_err());
+
+    let milestone = call(&sender, "taskdock_save_milestone", json!({
+        "plan_id": plan_id, "name": "Milestone", "requestId": "milestone-1"
+    })).unwrap();
+    let edit = json!({
+        "plan_id": plan_id, "milestone_id": milestone["id"], "name": "Updated",
+        "expected_revision": milestone["revision"]
+    });
+    assert!(call(&sender, "taskdock_save_milestone", edit.clone()).is_ok());
+    assert!(call(&sender, "taskdock_save_milestone", edit).is_err());
+
+    let issue = call(&sender, "taskdock_collab_create_issue", json!({
+        "project_id": plan_id, "kind": "feature", "title": "Managed requirement",
+        "description": "Implement and verify"
+    })).unwrap();
+    let issue_id = issue["issue"]["id"].as_str().unwrap();
+    let plan = call(&sender, "taskdock_collab_create_plan", json!({ "issue_id": issue_id })).unwrap();
+    let scheme = plan["id"].as_str().unwrap();
+    let submitted = call(&sender, "taskdock_collab_submit_plan", json!({
+        "plan_id": scheme, "expected_revision": plan["revision"]
+    })).unwrap();
+
+    let split = || call(&sender, "taskdock_collab_create_tasks_from_plan", json!({ "plan_id": scheme }));
+    assert!(split().is_err());
+    let ui = Actor::ui();
+    let human_review = |revision, decision, note| db.with_transaction(|conn| {
+        Core::new(conn).review_plan(&ui, scheme, revision, decision, note)
+    }).unwrap();
+    let returned = human_review(
+        submitted["revision"].as_i64().unwrap(), "request_changes", Some("Refine"),
+    );
+    let submitted = call(&sender, "taskdock_collab_submit_plan", json!({
+        "plan_id": scheme, "expected_revision": returned.revision
+    })).unwrap();
+    human_review(submitted["revision"].as_i64().unwrap(), "approve", None);
+    let generated = split().unwrap();
+    assert_eq!(split().unwrap()["created"], json!([]));
+
+    let tasks = call(&sender, "taskdock_list_tasks", json!({ "project_id": root })).unwrap();
+    let tasks = tasks["items"].as_array().unwrap();
+    assert!(!tasks.is_empty());
+    assert!(tasks.iter().all(|task| generated["created"].as_array().unwrap().contains(&task["id"])));
+    let request_acceptance = || call(&sender, "taskdock_collab_submit_plan", json!({
+        "plan_id": scheme, "expected_revision": generated["plan"]["revision"], "stage": "acceptance"
+    }));
+    assert!(request_acceptance().is_err());
+    for task in tasks {
+        call(&sender, "taskdock_complete_task", json!({
+            "task_id": task["id"], "expected_revision": task["revision"]
+        })).unwrap();
+    }
+    let accepting = request_acceptance().unwrap();
+    let accepted = PlanPatch { status: Some("completed".into()), ..Default::default() };
+    let accepting_revision = accepting["revision"].as_i64().unwrap();
+    let external = Actor::agent(&sender.agent, "mcp");
+    assert!(db.with_transaction(|conn| {
+        Core::new(conn).update_plan(&external, scheme, accepting_revision, &accepted)
+    }).is_err());
+    let returned = human_review(accepting_revision, "request_changes", Some("Add verification"));
+    assert_eq!(returned.status, "developing");
+    assert_eq!(returned.review_note, "Add verification");
+    let resubmitted = call(&sender, "taskdock_collab_submit_plan", json!({
+        "plan_id": scheme, "expected_revision": returned.revision, "stage": "acceptance"
+    })).unwrap();
+    let accepted = human_review(resubmitted["revision"].as_i64().unwrap(), "approve", None);
+    assert_eq!(accepted.status, "completed");
+    call(&sender, "taskdock_collab_update_issue", json!({
+        "issue_id": issue_id, "expected_revision": issue["issue"]["revision"], "status": "resolved"
+    })).unwrap();
+
+    crate::mcp::auth::grant_project(&db, &recipient.agent.row_id, root).unwrap();
+    let handoff = call(&sender, "taskdock_create_handoff", json!({
+        "project_id": root, "to_agent_id": recipient.agent.agent_id, "summary": "Ready to hand over"
+    })).unwrap();
+    let id = handoff["handoff"]["id"].as_str().unwrap();
+    let status = call(&sender, "taskdock_get_project_closeout", close_args.clone()).unwrap();
+    assert_eq!(status["pending_handoffs"], 1);
+    assert_eq!(status["ready"], false);
+    let close = || call(&sender, "taskdock_close_project", json!({
+        "project_id": root, "expected_revision": status["revision"], "requestId": "close"
+    }));
+    assert!(close().is_err());
+    let accept_args = json!({ "handoff_id": id, "base_revision": handoff["revision"], "action": "accept" });
+    assert!(call(&sender, "taskdock_transition_handoff", accept_args.clone()).is_err());
+    let handoff = call(&recipient, "taskdock_transition_handoff", accept_args).unwrap();
+    call(&recipient, "taskdock_submit_work_report", json!({
+        "handoff_id": id, "summary": "Release evidence", "result": "completed"
+    })).unwrap();
+    let reports = call(&sender, "taskdock_list_work_reports", json!({ "handoff_id": id })).unwrap();
+    assert_eq!(reports["items"].as_array().unwrap().len(), 1);
+    call(&recipient, "taskdock_transition_handoff", json!({
+        "handoff_id": id, "base_revision": handoff["revision"], "action": "complete"
+    })).unwrap();
+    let archived = close().unwrap();
+    assert_eq!(archived["status"], "archived");
+    assert_eq!(close().unwrap()["revision"], archived["revision"]);
+    let reopened = call(&sender, "taskdock_update_project", json!({
+        "project_id": root, "expected_revision": archived["revision"], "lifecycle_status": "active"
+    })).unwrap();
+    assert_eq!(reopened["status"], "active");
 }

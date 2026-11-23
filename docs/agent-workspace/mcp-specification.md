@@ -42,11 +42,8 @@ MCP 客户端 ──stdio──▶ taskdock.exe --mcp-server ──HTTP 127.0.0.
 | `taskdock_agent_registry` | 读 | `workspace.read` | 已注册 Agent、scope、最近访问 |
 | `taskdock_agent_activity` | 读 | `workspace.read` | 四入口统一活动日志 |
 
-共 **21** 个新工具。注册方式：`mcp::tools::tool_defs()` 追加，`call()` 命中 `is_owned` 后走
-`agent_access::mcp_tools::call`。全部注册为 `write: false`，由 service 自己开短事务，避免与 MCP
-外层写事务嵌套；授权、版本、审计仍在统一层完成。
-
-已有工具（规划 18 个 + 任务/笔记/工作流/文件工作区/知识/Skill）保持不变，语义与授权不变。
+共享工作空间工具由 `mcp::tools::tool_defs()` 注册，命中 `is_owned` 后走统一 service。
+这些工具由 service 自己开短事务，避免嵌套写事务。规划写工具复用 MCP 的事务、审计和请求去重。
 其中 `taskdock_create_task` / `taskdock_update_task` 返回的任务 JSON 也包含 `revision`，并在同一
 事务内写入 `agent_activity_logs`（`interface=mcp`），与 CLI/REST/文件入口共用版本与审计口径。
 
@@ -62,6 +59,29 @@ MCP 客户端 ──stdio──▶ taskdock.exe --mcp-server ──HTTP 127.0.0.
 - `taskdock_link_project_task` 与 `taskdock_unlink_project_task` 接收 `project_id` 和 `task_id`，
   返回归一化项目 ID、任务 ID 和关系状态 `linked`。重复请求同一状态为幂等。
 - Breaking Change: No。原调用保留，新增模式要求项目和任务两道权限，重放时也会重新核验。
+
+### 项目托管
+
+| 操作 | MCP 工具 | 参数与结果 |
+|---|---|---|
+| 新建计划 | `taskdock_create_plan` | 传 `project_id`，新增非当前计划；同一 `requestId` 可安全重放 |
+| 激活、归档、恢复计划 | `taskdock_set_plan_lifecycle` | 传 `plan_id`、`action`（`activate/archive/restore`）、计划 `expected_revision`、项目根 `expected_project_revision`。归档当前计划时自动切换到同项目未归档继任计划。无继任计划时拒绝；恢复不自动激活 |
+| 保存里程碑 | `taskdock_save_milestone` | 新建传 `plan_id` 和 `name`。修改再传 `milestone_id`、读取结果里的 `expected_revision`。可修改日期（传 `null` 清空）与排序。旧列表工具 `taskdock_list_milestones` 的 `project_id` 参数实际为计划 ID |
+| 申请方案验收 | `taskdock_collab_submit_plan` | 传协作方案 ID、`expected_revision` 和 `stage: "acceptance"`。方案已有任务且均完成后进入 `accepting`。省略 `stage` 仍是提交方案审阅 |
+| 流转交接 | `taskdock_transition_handoff` | 传 `handoff_id`、`base_revision`、`action`（`accept/reject/complete/cancel`）。接收方可接收、拒绝、完成，发起方可取消。遇到旧版本时先读交接确认上次操作是否已生效 |
+| 查工作报告 | `taskdock_list_work_reports`、`taskdock_get_work_report` | 列表可按交接或作者分页，详情按 `report_id` 查询；报告写入仍须关联交接 |
+| 查结项条件 | `taskdock_get_project_closeout` | 传 `project_id`，返回项目版本、状态、`ready` 及五类阻塞计数。读权限覆盖完整项目，需 `projects.read`、全局 `tasks.read`、该项目 `handoffs.read` |
+| 检查并结项 | `taskdock_close_project` | 传 `project_id`、`expected_revision`，建议提供 `requestId`。同一写事务复查阻塞再归档；已归档项目可用 `taskdock_update_project` 恢复 |
+
+计划、里程碑与结项写入要求 `project_rw`、`projects.write` 和项目根授权。协作方案验收通过与退回
+由本机 `collab_plan_review` 服务处理，退回到 developing 并保存原因，Agent 可读取后再次提交。
+当前桌面方案页提供方案审阅按钮，待验收状态的通过／退回按钮尚待接入。
+结项检查包含项目任务、未归档计划的功能/协作方案/问题和待处理交接。缺陷需经验证、关闭或归档；
+其他问题标为 resolved 也可结项。已归档计划下的项目级待办任务仍计入。旧 `taskdock_update_project`
+继续处理一般归档，项目托管交付流程应使用带检查的 `taskdock_close_project`。
+
+**Breaking Change: No。** 新增 MCP 能力，保留现有 CLI、REST、文件及 MCP 契约。里程碑读取增加 `revision`。
+当前版本的客户端应在切换当前计划后重新读取项目根和受影响计划的版本。
 
 ## 3. Resources（只读，按需读取）
 

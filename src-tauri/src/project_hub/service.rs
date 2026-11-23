@@ -1937,18 +1937,21 @@ pub(crate) fn activate_plan_tx(conn: &Connection, plan_id: &str) -> AppResult<St
         ));
     }
     let project_id = ensure_project_for_plan_tx(conn, plan_id)?;
+    if plan.is_active {
+        return Ok(project_id);
+    }
     let now = now_iso();
     conn.execute(
-        "UPDATE planning_projects SET is_active = 0, updated_at = ?2
+        "UPDATE planning_projects SET is_active = 0, updated_at = ?2, revision = revision + 1
          WHERE workspace_project_id = ?1 AND is_active = 1 AND id <> ?3",
         params![project_id, now, plan_id],
     )?;
     conn.execute(
-        "UPDATE planning_projects SET is_active = 1, updated_at = ?2 WHERE id = ?1",
+        "UPDATE planning_projects SET is_active = 1, updated_at = ?2, revision = revision + 1 WHERE id = ?1",
         params![plan_id, now],
     )?;
     conn.execute(
-        "UPDATE workspace_projects SET active_plan_id = ?2, updated_at = ?3 WHERE id = ?1",
+        "UPDATE workspace_projects SET active_plan_id = ?2, updated_at = ?3, revision = revision + 1 WHERE id = ?1",
         params![project_id, plan_id, now],
     )?;
     Ok(project_id)
@@ -1969,7 +1972,7 @@ pub(crate) fn archive_plan_tx(conn: &Connection, plan_id: &str, archived: bool) 
     let now = now_iso();
     if !archived {
         conn.execute(
-            "UPDATE planning_projects SET archived = 0, updated_at = ?2 WHERE id = ?1",
+            "UPDATE planning_projects SET archived = 0, updated_at = ?2, revision = revision + 1 WHERE id = ?1 AND archived = 1",
             params![plan_id, now],
         )?;
         return Ok(());
@@ -1986,14 +1989,14 @@ pub(crate) fn archive_plan_tx(conn: &Connection, plan_id: &str, archived: bool) 
     let Some(project_id) = project_id else {
         // 尚无项目根的遗留计划：直接归档，补链在下次写入时完成。
         conn.execute(
-            "UPDATE planning_projects SET archived = 1, updated_at = ?2 WHERE id = ?1",
+            "UPDATE planning_projects SET archived = 1, updated_at = ?2, revision = revision + 1 WHERE id = ?1",
             params![plan_id, now],
         )?;
         return Ok(());
     };
     if !plan.is_active {
         conn.execute(
-            "UPDATE planning_projects SET archived = 1, updated_at = ?2 WHERE id = ?1",
+            "UPDATE planning_projects SET archived = 1, updated_at = ?2, revision = revision + 1 WHERE id = ?1",
             params![plan_id, now],
         )?;
         conn.execute(
@@ -2026,15 +2029,15 @@ pub(crate) fn archive_plan_tx(conn: &Connection, plan_id: &str, archived: bool) 
         params![plan_id],
     )?;
     conn.execute(
-        "UPDATE planning_projects SET is_active = 1, updated_at = ?2 WHERE id = ?1",
+        "UPDATE planning_projects SET is_active = 1, updated_at = ?2, revision = revision + 1 WHERE id = ?1",
         params![next, now],
     )?;
     conn.execute(
-        "UPDATE workspace_projects SET active_plan_id = ?2, updated_at = ?3 WHERE id = ?1",
+        "UPDATE workspace_projects SET active_plan_id = ?2, updated_at = ?3, revision = revision + 1 WHERE id = ?1",
         params![project_id, next, now],
     )?;
     conn.execute(
-        "UPDATE planning_projects SET archived = 1, updated_at = ?2 WHERE id = ?1",
+        "UPDATE planning_projects SET archived = 1, updated_at = ?2, revision = revision + 1 WHERE id = ?1",
         params![plan_id, now],
     )?;
     Ok(())
@@ -2046,81 +2049,83 @@ pub fn archive_plan(db: &Db, plan_id: &str, archived: bool) -> AppResult<()> {
 
 /// 新建计划容器；`make_active=true` 时在同一事务切换 active 计划。
 pub fn create_project_plan(db: &Db, input: CreatePlanInput) -> AppResult<String> {
+    db.with_transaction(|conn| create_project_plan_tx(conn, input))
+}
+
+pub(crate) fn create_project_plan_tx(conn: &Connection, input: CreatePlanInput) -> AppResult<String> {
     let project_id = input.project_id.trim().to_string();
     if project_id.is_empty() {
         return Err(AppError::Validation("项目 ID 不能为空".into()));
     }
-    db.with_transaction(|conn| {
-        let (project_name, project_description, project_target): (String, String, Option<String>) = conn
-            .query_row(
-                "SELECT name, description, target_date FROM workspace_projects WHERE id = ?1",
-                params![project_id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .optional()?
-            .ok_or_else(|| AppError::NotFound(format!("工作空间项目不存在: {project_id}")))?;
-        // 名称契约（v87）：项目名称是唯一事实来源，计划名称只是镜像。
-        // 允许省略（默认取项目名），但拒绝独立命名——否则项目重命名时
-        // 要么覆盖用户自定义名称，要么让两处名称长期互相矛盾。
-        let name = match input.name {
-            Some(value) => {
-                let value = clean_text(&value, "计划名称", MAX_NAME, false)?;
-                if value != project_name {
-                    return Err(AppError::Validation(
-                        "计划名称跟随项目名称，不支持单独命名；请先修改项目名称".into(),
-                    ));
-                }
-                value
+    let (project_name, project_description, project_target): (String, String, Option<String>) = conn
+        .query_row(
+            "SELECT name, description, target_date FROM workspace_projects WHERE id = ?1",
+            params![project_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?
+        .ok_or_else(|| AppError::NotFound(format!("工作空间项目不存在: {project_id}")))?;
+    // 名称契约（v87）：项目名称是唯一事实来源，计划名称只是镜像。
+    // 允许省略（默认取项目名），但拒绝独立命名——否则项目重命名时
+    // 要么覆盖用户自定义名称，要么让两处名称长期互相矛盾。
+    let name = match input.name {
+        Some(value) => {
+            let value = clean_text(&value, "计划名称", MAX_NAME, false)?;
+            if value != project_name {
+                return Err(AppError::Validation(
+                    "计划名称跟随项目名称，不支持单独命名；请先修改项目名称".into(),
+                ));
             }
-            None => project_name,
-        };
-        let description = match input.description {
-            Some(value) => clean_text(&value, "计划描述", MAX_DESCRIPTION, true)?,
-            None => project_description,
-        };
-        let target_date = match input.target_date {
-            Some(value) => clean_date(Some(value), "目标日期")?,
-            None => project_target,
-        };
-        let status = clean_enum(
-            input.status.as_deref().unwrap_or("planning"),
-            "计划状态",
-            PLAN_STATUSES,
-        )?;
-        let template_id = input
-            .template_id
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_default();
-        let now = now_iso();
-        let plan_id = uuid::Uuid::new_v4().to_string();
-        let sort_order: i64 = conn.query_row(
-            "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM planning_projects",
-            [],
-            |r| r.get(0),
-        )?;
-        conn.execute(
-            "INSERT INTO planning_projects
-             (id, name, description, status, archived, target_date, sort_order,
-              created_at, updated_at, revision, workspace_project_id, template_id, is_active)
-             VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6, ?7, ?7, 1, ?8, ?9, 0)",
-            params![
-                plan_id,
-                name,
-                description,
-                status,
-                target_date,
-                sort_order,
-                now,
-                project_id,
-                template_id
-            ],
-        )?;
-        if input.make_active {
-            activate_plan_tx(conn, &plan_id)?;
+            value
         }
-        Ok(plan_id)
-    })
+        None => project_name,
+    };
+    let description = match input.description {
+        Some(value) => clean_text(&value, "计划描述", MAX_DESCRIPTION, true)?,
+        None => project_description,
+    };
+    let target_date = match input.target_date {
+        Some(value) => clean_date(Some(value), "目标日期")?,
+        None => project_target,
+    };
+    let status = clean_enum(
+        input.status.as_deref().unwrap_or("planning"),
+        "计划状态",
+        PLAN_STATUSES,
+    )?;
+    let template_id = input
+        .template_id
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_default();
+    let now = now_iso();
+    let plan_id = uuid::Uuid::new_v4().to_string();
+    let sort_order: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM planning_projects",
+        [],
+        |r| r.get(0),
+    )?;
+    conn.execute(
+        "INSERT INTO planning_projects
+         (id, name, description, status, archived, target_date, sort_order,
+          created_at, updated_at, revision, workspace_project_id, template_id, is_active)
+         VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6, ?7, ?7, 1, ?8, ?9, 0)",
+        params![
+            plan_id,
+            name,
+            description,
+            status,
+            target_date,
+            sort_order,
+            now,
+            project_id,
+            template_id
+        ],
+    )?;
+    if input.make_active {
+        activate_plan_tx(conn, &plan_id)?;
+    }
+    Ok(plan_id)
 }
 
 /// 删除单个计划：最后一个计划受保护；删除 active 计划时在同一事务内选继任计划。
@@ -2179,11 +2184,11 @@ pub(crate) fn delete_plan_tx(conn: &Connection, plan_id: &str) -> AppResult<()> 
                 params![plan_id],
             )?;
             conn.execute(
-                "UPDATE planning_projects SET is_active = 1, updated_at = ?2 WHERE id = ?1",
+                "UPDATE planning_projects SET is_active = 1, updated_at = ?2, revision = revision + 1 WHERE id = ?1",
                 params![next, now],
             )?;
             conn.execute(
-                "UPDATE workspace_projects SET active_plan_id = ?2, updated_at = ?3 WHERE id = ?1",
+                "UPDATE workspace_projects SET active_plan_id = ?2, updated_at = ?3, revision = revision + 1 WHERE id = ?1",
                 params![project_id, next, now],
             )?;
         }

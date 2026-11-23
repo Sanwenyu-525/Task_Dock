@@ -102,7 +102,7 @@ fn require_agent(
     db.with_read(|conn| require_agent_in_conn(conn, row_id, capability, resource_id))
 }
 
-fn require_agent_in_conn(
+pub(crate) fn require_agent_in_conn(
     conn: &Connection,
     row_id: &str,
     capability: Capability,
