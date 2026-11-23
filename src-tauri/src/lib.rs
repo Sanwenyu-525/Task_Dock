@@ -835,6 +835,33 @@ pub fn run() {
                 Default::default()
             });
 
+            // Agent 导出自动清理：只在用户显式开启时执行，放在后台线程避免启动阻塞。
+            // 先于剪贴板监听启动，不影响新导出（新目录 mtime 为当前时间，不会被删）。
+            if settings.clipboard_export_auto_purge {
+                let db_purge = db.clone();
+                let data_purge = data_dir.clone();
+                let days = settings.clipboard_export_retention_days as i64;
+                tauri::async_runtime::spawn_blocking(move || {
+                    let outcome = clipboard::agent_bridge::purge_exports(&data_purge, days);
+                    commands::clipboard::audit_purge_outcome_triggered(
+                        &db_purge,
+                        days,
+                        &outcome,
+                        "startup",
+                    );
+                    match &outcome {
+                        Ok(report) => tracing::info!(
+                            "启动自动清理 Agent 导出：removed={}, failed={}, skipped={}, bytes={}",
+                            report.removed,
+                            report.failed,
+                            report.skipped,
+                            report.bytes
+                        ),
+                        Err(err) => tracing::warn!("启动自动清理 Agent 导出失败: {err}"),
+                    }
+                });
+            }
+
             // 智能剪贴板：模块关闭时不启动监听/维护；监听失败只降级为「不自动记录」。
             // 配置不可靠时保持监听线程运行但停止采集（fail-closed），
             // 以便界面显示“配置异常”并在用户显式修复后立即恢复。

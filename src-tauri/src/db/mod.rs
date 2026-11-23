@@ -2974,6 +2974,12 @@ pub struct Settings {
     /// 非收藏条目的保留天数
     #[serde(default = "default_clip_retention")]
     pub clipboard_retention_days: u32,
+    /// Agent 导出目录保留天数（手动清理与自动清理共用）
+    #[serde(default = "default_clip_export_retention")]
+    pub clipboard_export_retention_days: u32,
+    /// 启动时自动清理过期 Agent 导出（默认关闭，避免静默删除用户文件）
+    #[serde(default)]
+    pub clipboard_export_auto_purge: bool,
     /// 最大条目数（非收藏、非置顶）
     #[serde(default = "default_clip_max_items")]
     pub clipboard_max_items: u32,
@@ -3306,6 +3312,8 @@ pub const CLIPBOARD_SETTING_KEYS: &[&str] = &[
     "clipboard_auto_group",
     "clipboard_group_window_secs",
     "clipboard_retention_days",
+    "clipboard_export_retention_days",
+    "clipboard_export_auto_purge",
     "clipboard_max_items",
     "clipboard_max_storage_mb",
     "clipboard_exclude_apps",
@@ -3464,6 +3472,7 @@ fn clipboard_value_valid(key: &str, value: &serde_json::Value) -> bool {
             | "clipboard_auto_group"
             | "clipboard_sensitive_filter"
             | "clipboard_encrypt_history"
+            | "clipboard_export_auto_purge"
             | "clipboard_ocr_auto"
     );
     if boolean {
@@ -3483,6 +3492,7 @@ fn clipboard_value_valid(key: &str, value: &serde_json::Value) -> bool {
     let range = match key {
         "clipboard_group_window_secs" => Some((5, 600)),
         "clipboard_retention_days" => Some((1, 3650)),
+        "clipboard_export_retention_days" => Some((1, 365)),
         "clipboard_max_items" => Some((20, 50_000)),
         "clipboard_max_storage_mb" => Some((16, 102_400)),
         "clipboard_paste_interval_ms"
@@ -3650,6 +3660,10 @@ impl Settings {
         boolean!(clipboard_auto_group, "clipboard_auto_group");
         boolean!(clipboard_sensitive_filter, "clipboard_sensitive_filter");
         boolean!(clipboard_encrypt_history, "clipboard_encrypt_history");
+        boolean!(
+            clipboard_export_auto_purge,
+            "clipboard_export_auto_purge"
+        );
         boolean!(clipboard_ocr_auto, "clipboard_ocr_auto");
         ranged!(
             clipboard_group_window_secs,
@@ -3662,6 +3676,12 @@ impl Settings {
             "clipboard_retention_days",
             1,
             3650
+        );
+        ranged!(
+            clipboard_export_retention_days,
+            "clipboard_export_retention_days",
+            1,
+            365
         );
         ranged!(clipboard_max_items, "clipboard_max_items", 20, 50_000);
         ranged!(
@@ -3792,6 +3812,10 @@ impl Settings {
             "clipboard_auto_group" => serde_json::json!(d.clipboard_auto_group),
             "clipboard_group_window_secs" => serde_json::json!(d.clipboard_group_window_secs),
             "clipboard_retention_days" => serde_json::json!(d.clipboard_retention_days),
+            "clipboard_export_retention_days" => {
+                serde_json::json!(d.clipboard_export_retention_days)
+            }
+            "clipboard_export_auto_purge" => serde_json::json!(d.clipboard_export_auto_purge),
             "clipboard_max_items" => serde_json::json!(d.clipboard_max_items),
             "clipboard_max_storage_mb" => serde_json::json!(d.clipboard_max_storage_mb),
             "clipboard_exclude_apps" => serde_json::json!(d.clipboard_exclude_apps),
@@ -4027,6 +4051,33 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    #[test]
+    fn clipboard_export_cleanup_settings_default_off_and_roundtrip() {
+        let db = Db::open_in_memory().unwrap();
+        let defaults = Settings::load(&db).unwrap();
+        assert_eq!(defaults.clipboard_export_retention_days, 7);
+        assert!(
+            !defaults.clipboard_export_auto_purge,
+            "自动清理默认关闭，不能在升级时静默删除用户导出"
+        );
+
+        db.set_setting("clipboard_export_retention_days", serde_json::json!(14))
+            .unwrap();
+        db.set_setting("clipboard_export_auto_purge", serde_json::json!(true))
+            .unwrap();
+        let loaded = Settings::load(&db).unwrap();
+        assert_eq!(loaded.clipboard_export_retention_days, 14);
+        assert!(loaded.clipboard_export_auto_purge);
+        assert_eq!(
+            Settings::clipboard_setting_default("clipboard_export_auto_purge"),
+            Some(serde_json::json!(false))
+        );
+        assert_eq!(
+            Settings::clipboard_setting_default("clipboard_export_retention_days"),
+            Some(serde_json::json!(7))
+        );
     }
 
     #[test]

@@ -245,7 +245,7 @@ ACCESS_LOCK
 | 快照关联（v0.5 并行模块） | `clipboard_link_snapshot`、`clipboard_unlink_snapshot`、`clipboard_snapshot_links` |
 | 粘贴 | `clipboard_visible_targets`、`clipboard_foreground_target`、`clipboard_paste_precheck`、`clipboard_paste_group`、`clipboard_paste_items`、`clipboard_paste_cancel`、`clipboard_paste_resume`、`clipboard_paste_job`、`clipboard_paste_active` |
 | 维护/诊断 | `clipboard_cleanup`、`clipboard_clear_history`、`clipboard_status`、`clipboard_probe` |
-| Agent | `clipboard_agent_targets`、`clipboard_export_for_agent`、`clipboard_export_preview`、`clipboard_purge_agent_exports`（手动清理过期导出目录，默认保留 7 天） |
+| Agent | `clipboard_agent_targets`、`clipboard_export_for_agent`、`clipboard_export_preview`、`clipboard_purge_agent_exports`（手动清理过期导出目录，默认保留 7 天；设置页可开启启动自动清理） |
 
 约定：
 
@@ -425,6 +425,15 @@ failed/cancelled/confirmed`，其中 `confirmed` 仅在存在独立接收信号�
   再进入 `spawn_blocking` 写文件。目标/任务/内容变化、过期或重复使用均拒绝。
 - 导出未暴露给 Agent API/MCP；门槛用于防误触和确认后内容漂移，不构成对已攻陷渲染进程的
   授权边界，也不改变导出包仍为明文的事实。
+
+### 5.6 Agent 导出可选自动清理（ADR-0012，批次 8）
+
+- 设置键 `clipboard_export_retention_days`（1–365，默认 7）与 `clipboard_export_auto_purge`
+  （默认关闭）持久化在 `application_settings`，手动清理与自动清理共用同一保留窗口。
+- 启动流程在设置加载完成后、剪贴板 runtime 启动前检查开关；开启则 `spawn_blocking` 调用
+  `agent_bridge::purge_exports`，只删 `clipboard-exports/` 过期直接子目录，失败保留并计数。
+- 手动审计 `trigger=manual`、启动审计 `trigger=startup`；明细仍只含保留天数与计数，不写路径、
+  文件名或正文。自动清理默认关闭，升级不会静默删除用户导出。
 
 ## 六、降级与边界
 

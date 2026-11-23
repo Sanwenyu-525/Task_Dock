@@ -2912,6 +2912,49 @@ mod tests {
         assert!(!config.capture_allowed());
     }
 
+    /// 导出清理策略是本机文件删除偏好：备份里即使带 auto=true/保留 1 天，
+    /// 恢复也不得写回，避免旧备份在下次启动删除本机仍需保留的导出包。
+    #[test]
+    fn restore_does_not_apply_backup_export_cleanup_policy() {
+        let (_, source) = make_source_bundle("export-cleanup-policy", false);
+        rewrite_bundle(&source.bundle, |values| {
+            for value in values.iter_mut() {
+                if value.get("record").and_then(|r| r.as_str()) == Some("section")
+                    && value.get("table").and_then(|t| t.as_str()) == Some("settings")
+                {
+                    if let Some(settings) = value.get_mut("value").and_then(|v| v.as_object_mut()) {
+                        settings.insert("clipboard_export_auto_purge".into(), json!(true));
+                        settings.insert("clipboard_export_retention_days".into(), json!(1));
+                    }
+                }
+            }
+        });
+
+        let root = temp_dir("export-cleanup-policy-target");
+        let db = make_target_db();
+        db.set_setting("clipboard_export_auto_purge", json!(false))
+            .unwrap();
+        db.set_setting("clipboard_export_retention_days", json!(30))
+            .unwrap();
+        let outcome = restore_bundle(
+            &root,
+            &db,
+            &source.bundle,
+            &restore_opts(RestoreFaults::default()),
+        )
+        .unwrap();
+        assert_eq!(outcome.state, RestoreState::Completed);
+        let settings = crate::db::Settings::load(&db).unwrap();
+        assert!(
+            !settings.clipboard_export_auto_purge,
+            "旧备份不得开启本机自动清理"
+        );
+        assert_eq!(
+            settings.clipboard_export_retention_days, 30,
+            "旧备份不得改短本机导出保留窗口"
+        );
+    }
+
     #[test]
     fn duplicate_archive_name_is_rejected() {
         let (_, source) = make_source_bundle("dup-archive", false);

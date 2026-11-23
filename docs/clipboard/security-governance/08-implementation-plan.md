@@ -341,9 +341,36 @@
 - 本批验证（MSVC）：`cargo test --lib clipboard::` 301 passed / 0 failed / 1 ignored；其中 `export_gate::` 4、`preview_snapshot_counts_and_context_without_body` 1、`export_audit_omits_paths_and_content` 1、`denied_export_is_audited_without_token_or_target_id` 1；`npx vitest run src/components/clipboard` 18 files / 322 tests passed；`npm run typecheck` 0。
 - 测试隔离：统一 `secure::TEST_LOCK`，避免 `secure`/`store`/迁移用例并行清空全局 CEK 缓存造成偶发失败。
 
-### 6.13 尚未执行（等待后续批次）
+### 6.13 批次 8（2026-11-23，已实施）
+
+已落地 Agent 导出可选自动清理、保留设置持久化，并修复加密开关的设置白名单遗漏：
+
+- `db::Settings` 新增 `clipboard_export_retention_days`（1–365，默认 7）与
+  `clipboard_export_auto_purge`（默认关闭）；同步 `CLIPBOARD_SETTING_KEYS`、布尔校验、
+  范围校验、加载映射与 `clipboard_setting_default`。
+- `commands::settings` 把上述两键与 `clipboard_encrypt_history` 加入 `ALLOWED_KEYS`；
+  此前加密开关既不在白名单也无布尔校验，设置页切换会被「未知设置键」拒绝，本批一并修复。
+- `lib.rs` 启动流程在设置加载后、剪贴板 runtime 启动前检查开关；开启则 `spawn_blocking`
+  调用 `agent_bridge::purge_exports`，清理失败只告警不影响启动。新导出目录 mtime 为当前时间，
+  不会被本次启动误删。
+- 清理审计抽出 `audit_purge_outcome_triggered`，手动为 `trigger=manual`、启动为
+  `trigger=startup`；保留原 `retentionDays/removed/failed/skipped` 计数，仍不含路径与正文。
+- 设置页：删除本地保留天数草稿，手动与自动共用 `clipboard_export_retention_days`；
+  新增「启动时自动清理」开关，文案说明默认关闭、失败保留与共用窗口。
+- `backup::LOCAL_PRIVACY_SETTINGS` 加入导出保留天数与自动开关：备份可存，但恢复旧备份
+  不开启自动清理、不改短保留窗口，避免在用户不知情时删除本机导出包。
+- 测试新增：设置白名单/布尔/1–365 范围、默认关闭与持久化往返、启动审计 trigger、
+  备份恢复不写回导出清理策略；手动审计补充 `trigger=manual` 断言。
+- 本批验证（MSVC）：`cargo test --lib clipboard::` 302 passed / 0 failed / 1 ignored；
+  `cargo test --lib commands::clipboard` 10 passed / 0 failed；
+  `cargo test --lib commands::settings::tests::clipboard_encryption_and_export_cleanup_settings_are_allowlisted`
+  1 passed；`npx vitest run src/components/settings/SettingsPanel.test.tsx` 24 passed；`npm run typecheck` 0。
+- 未改变边界：导出包仍为明文；自动清理是 opt-in，不默认删除升级前生成的导出；
+  目录显式 ACL 与 Agent 能力白名单仍未实现。
+
+### 6.14 尚未执行（等待后续批次）
 
 - 批次 4c（余项）：旧明文包一次性加密迁移；恢复续跑日志对资产重加密后的版本兼容复核。
-- Agent 导出自动清理策略/保留期默认值、目录显式 ACL、真机 Dev 验收与性能基准。
-- 本批次未执行：数据库 schema 迁移、Agent 能力白名单、Dev 真机走查。
+- 目录显式 ACL、真机 Dev 验收（尤其启动自动清理与设置页交互）与性能基准。
+- 本批次未执行：数据库 schema 迁移、Agent 能力白名单。
 - 残余风险按 ADR §14「实施偏差与影响」如实登记，不得对外宣称剪贴板历史已全面加密。

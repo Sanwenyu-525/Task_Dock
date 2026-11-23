@@ -442,6 +442,10 @@ export interface Settings {
   clipboard_auto_group: boolean;
   clipboard_group_window_secs: number;
   clipboard_retention_days: number;
+  /** Agent 导出目录保留天数：手动清理与启动自动清理共用 */
+  clipboard_export_retention_days: number;
+  /** 启动时自动清理过期 Agent 导出；默认 false，避免静默删除用户文件 */
+  clipboard_export_auto_purge: boolean;
   clipboard_max_items: number;
   clipboard_max_storage_mb: number;
   clipboard_exclude_apps: string;

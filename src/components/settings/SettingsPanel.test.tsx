@@ -198,6 +198,8 @@ const BASE_SETTINGS: Settings = {
   clipboard_auto_group: true,
   clipboard_group_window_secs: 30,
   clipboard_retention_days: 7,
+  clipboard_export_retention_days: 7,
+  clipboard_export_auto_purge: false,
   clipboard_max_items: 500,
   clipboard_max_storage_mb: 100,
   clipboard_exclude_apps: "",

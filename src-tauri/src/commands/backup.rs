@@ -79,6 +79,10 @@ pub const LOCAL_PRIVACY_SETTINGS: &[&str] = &[
     // 历史加密开关同样是本机隐私选择：恢复旧备份不能悄悄关掉（或打开）静态加密，
     // 否则新采集数据的落盘形态会与用户当前预期不符。
     "clipboard_encrypt_history",
+    // 导出清理策略属于本机文件删除偏好：恢复旧备份不得开启自动清理，
+    // 也不得把保留天数改短后在下一次启动删除本机仍需保留的导出包。
+    "clipboard_export_retention_days",
+    "clipboard_export_auto_purge",
 ];
 /// 设备相关设置：允许导出，但恢复后仍需按本机窗口/自启动状态重新校验。
 pub const DEVICE_SPECIFIC_SETTINGS: &[&str] = &[
@@ -4440,6 +4444,21 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("td-backup-{}-{}", tag, uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// 导出清理策略不能随旧备份写回：否则恢复后可能自动删除本机导出包，
+    /// 或把保留窗口改短。仅锁常量清单，导入路径统一在此清单处跳过。
+    #[test]
+    fn export_cleanup_settings_are_local_privacy() {
+        for key in [
+            "clipboard_export_retention_days",
+            "clipboard_export_auto_purge",
+        ] {
+            assert!(
+                LOCAL_PRIVACY_SETTINGS.contains(&key),
+                "{key} 必须保留本机当前值，不得随备份恢复写回"
+            );
+        }
     }
 
     fn seed_minimal(db: &Db) {

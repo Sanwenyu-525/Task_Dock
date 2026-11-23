@@ -37,8 +37,7 @@ export default function ClipboardSettingsPage() {
   const [clipConfigOrigin, setClipConfigOrigin] = useState<string | null>(null);
   const [excludeApps, setExcludeApps] = useState("");
   const [busyKey, setBusyKey] = useState<string | null>(null);
-  /** Agent 导出目录清理：保留天数（默认 7 天）与确认框。 */
-  const [exportRetentionDays, setExportRetentionDays] = useState(7);
+  /** Agent 导出目录清理确认框；保留天数与自动开关来自持久化设置。 */
   const [pendingExportPurge, setPendingExportPurge] = useState(false);
   /** 读取失败显示真实错误与重试，不把失败伪装成空数据。 */
   const [dataLoadError, setDataLoadError] = useState<string | null>(null);
@@ -182,9 +181,10 @@ export default function ClipboardSettingsPage() {
 
   /** 手动清理过期 Agent 导出；后端只删直接子目录，失败目录保留并计数。 */
   async function onPurgeExports() {
+    if (!settings) return;
     setBusyKey("clip-exports");
     try {
-      const r = await clipboardPurgeAgentExports(exportRetentionDays);
+      const r = await clipboardPurgeAgentExports(settings.clipboard_export_retention_days);
       if (r.failed > 0) {
         showToast(
           t("settings.clipboard.exportCleanupPartial", {
@@ -508,11 +508,19 @@ export default function ClipboardSettingsPage() {
       <div className="setting-note">{t("settings.clipboard.cleanupNote")}</div>
       <div className="setting-note">{t("settings.clipboard.encryptExistingNote")}</div>
       <div className="setting-row">
+        <span>{t("settings.clipboard.exportAutoPurge")}</span>
+        <Switch
+          checked={settings.clipboard_export_auto_purge}
+          ariaLabel={t("settings.clipboard.exportAutoPurge")}
+          onChange={(v) => update({ clipboard_export_auto_purge: v })}
+        />
+      </div>
+      <div className="setting-row">
         <span>{t("settings.clipboard.exportCleanup")}</span>
         <div className="btn-row">
           <NumberInput
-            value={exportRetentionDays}
-            onChange={setExportRetentionDays}
+            value={settings.clipboard_export_retention_days}
+            onChange={(v) => update({ clipboard_export_retention_days: v })}
             min={1}
             max={365}
             size="sm"
@@ -533,13 +541,14 @@ export default function ClipboardSettingsPage() {
           </button>
         </div>
       </div>
+      <div className="setting-note">{t("settings.clipboard.exportAutoPurgeNote")}</div>
       <div className="setting-note">{t("settings.clipboard.exportCleanupNote")}</div>
       <ConfirmDialog
         open={pendingExportPurge}
         danger
         title={t("settings.clipboard.exportCleanupConfirmTitle")}
         detail={t("settings.clipboard.exportCleanupConfirmDetail", {
-          days: exportRetentionDays,
+          days: settings.clipboard_export_retention_days,
         })}
         confirmLabel={t("settings.clipboard.exportCleanupAction")}
         busy={busyKey === "clip-exports"}

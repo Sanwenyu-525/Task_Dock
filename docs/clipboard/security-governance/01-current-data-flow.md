@@ -101,7 +101,7 @@
 - `EXTENDED_TABLES` 登记并导出：`clipboard_items`、`clipboard_assets`、`clipboard_groups`、`clipboard_group_items`、`clipboard_task_links`、`clipboard_paste_jobs`、`clipboard_paste_items`、`clipboard_snapshot_links`。
 - 图片资产：`StagedAsset` 按 `clipboard_assets.path` 读取 `clipboard/` 下文件，base64 分块（512 KB/块）写入 bundle；完整备份全量，快速备份按收藏/置顶 + 最近 N 条裁剪（`QUICK_CLIPBOARD_ITEM_LIMIT=2000`、`QUICK_CLIPBOARD_PASTE_LIMIT=500`）。
 - **现状：bundle 内的正文文本、HTML、预览与图片资产都是明文**（JSON 行 + base64 PNG）；bundle 本身只有 SHA-256 完整性校验，无加密。
-- 设置项：`clipboard_enabled`、`clipboard_paused` 列入 `LOCAL_PRIVACY_SETTINGS`，备份可存但恢复时不写回本机；其余剪贴板配置随备份迁移。
+- 设置项：`clipboard_enabled`、`clipboard_paused`、`clipboard_encrypt_history` 与导出清理两项列入 `LOCAL_PRIVACY_SETTINGS`，备份可存但恢复时不写回本机；其余剪贴板配置随备份迁移。
 - 快速备份对剪贴板历史做裁剪，不代表完整隐私清理。
 
 ### 5.2 恢复（`commands/restore.rs`）
@@ -129,7 +129,7 @@
   - 导出成功/失败/手动清理已写 `security_audit_log`（`category=clipboard`），明细不含目录、文件名或正文；成功事件带 `confirmed=1`。
   - 预览只统计条目/图片/类型/字节与“是否包含任务上下文”，不返回任务标题/描述；确认框在包含时明示。
   - 导出包含关联任务的 `title`/`description`（`task_context`），属于跨模块数据带出。
-  - 导出目录仍长期保留明文，现由设置页按保留天数手动清理（默认 7 天，需确认）；无自动过期策略。
+  - 导出目录仍长期保留明文。设置页按持久化保留天数（1–365 天，默认 7）提供手动清理（需确认）；用户可显式开启「启动时自动清理」，默认关闭，启动阶段在后台线程清理过期直接子目录并写 `trigger=startup` 审计，失败目录保留并计数。
 
 ### 7.2 其他可能带出剪贴板数据的路径（实施阶段逐一核对）
 
@@ -155,7 +155,7 @@
 
 ## 10. 治理前缺口小结（基线，部分已修复）
 
-> 本清单保留 2026-11-23 调查时的基线，用于追溯；批次 1–7 已修复正文/元数据/图片静态明文、备份明文与导出无确认等问题。仍存在：Agent 导出包明文与无自动清理、目录显式 ACL、WAL 物理残留、真机与性能验证。
+> 本清单保留 2026-11-23 调查时的基线，用于追溯；批次 1–8 已修复正文/元数据/图片静态明文、备份明文、导出无确认与导出无自动清理等问题。仍存在：Agent 导出包明文、目录显式 ACL、WAL 物理残留、真机与性能验证。
 
 1. 库内正文/HTML/预览、图片原图/缩略图/预览缓存均为静态明文。
 2. WAL 未做面向隐私的 checkpoint/擦除策略；删除条目后明文可能滞留 WAL。

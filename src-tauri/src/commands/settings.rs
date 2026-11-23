@@ -84,6 +84,8 @@ const ALLOWED_KEYS: &[&str] = &[
     "clipboard_auto_group",
     "clipboard_group_window_secs",
     "clipboard_retention_days",
+    "clipboard_export_retention_days",
+    "clipboard_export_auto_purge",
     "clipboard_max_items",
     "clipboard_max_storage_mb",
     "clipboard_exclude_apps",
@@ -92,6 +94,7 @@ const ALLOWED_KEYS: &[&str] = &[
     "clipboard_paste_interval_html_ms",
     "clipboard_paste_interval_files_ms",
     "clipboard_sensitive_filter",
+    "clipboard_encrypt_history",
     "clipboard_ocr_auto",
     // 全局快速捕获（v0.7）：上次选择的捕获类型
     "quick_capture_last_type",
@@ -264,6 +267,8 @@ pub fn validate_setting(key: &str, v: &serde_json::Value) -> AppResult<()> {
         | "clipboard_capture_html"
         | "clipboard_auto_group"
         | "clipboard_sensitive_filter"
+        | "clipboard_encrypt_history"
+        | "clipboard_export_auto_purge"
         | "clipboard_ocr_auto"
         // 统一提示音 / 语音播报 / 缓存（v0.13）
         | "audio_sound_enabled"
@@ -355,6 +360,7 @@ pub fn validate_setting(key: &str, v: &serde_json::Value) -> AppResult<()> {
         "nav_workspace_max" => int_in_range(v, key, 1, 20),
         "clipboard_group_window_secs" => int_in_range(v, key, 5, 600),
         "clipboard_retention_days" => int_in_range(v, key, 1, 3650),
+        "clipboard_export_retention_days" => int_in_range(v, key, 1, 365),
         "clipboard_max_items" => int_in_range(v, key, 20, 50_000),
         "clipboard_max_storage_mb" => int_in_range(v, key, 16, 102_400),
         "clipboard_paste_interval_ms"
@@ -1076,6 +1082,37 @@ mod tests {
         assert!(validate_setting("agent_event_archive", &serde_json::json!("true")).is_err());
         assert!(validate_setting("perf_diagnostics_enabled", &serde_json::json!(false)).is_ok());
         assert!(validate_setting("perf_diagnostics_enabled", &serde_json::json!(1)).is_err());
+    }
+
+    /// 剪贴板加密开关与导出清理设置必须可持久化；加密开关此前漏在白名单外，
+    /// 设置页点击会报“未知设置键”，这里连同批次 8 的新键一起锁住。
+    #[test]
+    fn clipboard_encryption_and_export_cleanup_settings_are_allowlisted() {
+        for key in [
+            "clipboard_encrypt_history",
+            "clipboard_export_auto_purge",
+            "clipboard_export_retention_days",
+        ] {
+            assert!(ALLOWED_KEYS.contains(&key), "{key} 必须可持久化");
+        }
+        assert!(validate_setting("clipboard_encrypt_history", &serde_json::json!(true)).is_ok());
+        assert!(validate_setting("clipboard_encrypt_history", &serde_json::json!(1)).is_err());
+        assert!(
+            validate_setting("clipboard_export_auto_purge", &serde_json::json!(false)).is_ok()
+        );
+        assert!(validate_setting("clipboard_export_auto_purge", &serde_json::json!("false")).is_err());
+        assert!(
+            validate_setting("clipboard_export_retention_days", &serde_json::json!(7)).is_ok()
+        );
+        assert!(
+            validate_setting("clipboard_export_retention_days", &serde_json::json!(365)).is_ok()
+        );
+        assert!(
+            validate_setting("clipboard_export_retention_days", &serde_json::json!(0)).is_err()
+        );
+        assert!(
+            validate_setting("clipboard_export_retention_days", &serde_json::json!(366)).is_err()
+        );
     }
 
     /// 设置页「诊断与日志」可直接修改这四项；白名单缺失会让 update_settings 报

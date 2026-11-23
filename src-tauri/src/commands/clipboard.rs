@@ -1248,11 +1248,21 @@ fn audit_export_denied(db: &crate::db::Db, target_type: &str, error: &AppError) 
     security_audit::record(db, event, true);
 }
 
-/// 清理审计：只记保留天数与计数，不写具体导出目录。
+/// 清理审计：只记保留天数、计数与触发来源，不写具体导出目录。
 fn audit_purge_outcome(
     db: &crate::db::Db,
     older_than_days: i64,
     outcome: &AppResult<agent_bridge::ExportPurgeReport>,
+) {
+    audit_purge_outcome_triggered(db, older_than_days, outcome, "manual");
+}
+
+/// 手动与启动自动清理共用；`trigger` 只允许调用方传入固定枚举值。
+pub(crate) fn audit_purge_outcome_triggered(
+    db: &crate::db::Db,
+    older_than_days: i64,
+    outcome: &AppResult<agent_bridge::ExportPurgeReport>,
+    trigger: &str,
 ) {
     let mut event = AuditEvent::new(
         CATEGORY_CLIPBOARD,
@@ -1265,10 +1275,13 @@ fn audit_purge_outcome(
     );
     event.reason_code = Some(match outcome {
         Ok(report) => format!(
-            "retentionDays={older_than_days};removed={};failed={};skipped={}",
+            "retentionDays={older_than_days};removed={};failed={};skipped={};trigger={trigger}",
             report.removed, report.failed, report.skipped
         ),
-        Err(error) => format!("retentionDays={older_than_days};code={}", error.code()),
+        Err(error) => format!(
+            "retentionDays={older_than_days};code={};trigger={trigger}",
+            error.code()
+        ),
     });
     security_audit::record(db, event, false);
 }
@@ -1636,6 +1649,37 @@ mod tests {
         assert!(details
             .iter()
             .any(|d| d.starts_with("retentionDays=7;removed=2")));
+        assert!(details.iter().any(|d| d.ends_with(";trigger=manual")));
+    }
+
+    /// 启动自动清理审计必须可与手动清理区分，且仍只含计数。
+    #[test]
+    fn startup_purge_audit_marks_trigger() {
+        let db = crate::db::Db::open_in_memory().unwrap();
+        audit_purge_outcome_triggered(
+            &db,
+            30,
+            &Ok(agent_bridge::ExportPurgeReport {
+                removed: 1,
+                skipped: 0,
+                failed: 0,
+                bytes: 9,
+            }),
+            "startup",
+        );
+        let page = security_audit::list_page(
+            &db,
+            security_audit::AuditFilter {
+                category: Some(CATEGORY_CLIPBOARD.into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(page.total, 1);
+        assert_eq!(
+            page.items[0].reason_code.as_deref(),
+            Some("retentionDays=30;removed=1;failed=0;skipped=0;trigger=startup")
+        );
     }
 
     /// 批量状态语义与 200 条上限：保留输入顺序，存在的报 ok、缺失的报 missing。
