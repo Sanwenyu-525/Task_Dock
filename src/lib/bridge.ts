@@ -603,10 +603,16 @@ export const getSnapState = () =>
 
 
 export const exportData = (path: string) => invoke<string>("export_data", { path });
-export const importData = (path: string, allowPartial = false) =>
-  invoke<RestoreOutcome>("import_data", { path, allowPartial });
+/** `passphrase`：填入时对备份的剪贴板段加密（≥8 字符），恢复需同一口令；留空保持原明文格式。 */
+export const importData = (path: string, allowPartial = false, passphrase?: string) =>
+  invoke<RestoreOutcome>("import_data", {
+    path,
+    allowPartial,
+    passphrase: passphrase ?? null,
+  });
 export const inspectBackup = (path: string) => invoke<BackupMeta>("inspect_backup", { path });
-export const backupNow = (full = false) => invoke<string>("backup_now", { full });
+export const backupNow = (full = false, passphrase?: string) =>
+  invoke<string>("backup_now", { full, passphrase: passphrase ?? null });
 export const listBackups = () => invoke<BackupEntry[]>("list_backups");
 
 // ── 用户偏好镜像（语言 / 桌面微件布局）──

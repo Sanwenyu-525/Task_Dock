@@ -59,10 +59,12 @@ export default function DataBackupSettingsPage() {
   // 危险操作的应用内确认（替代系统原生 confirm，统一液态玻璃视觉与键盘交互）
   const [pendingDanger, setPendingDanger] = useState<
     | { type: "audit-apply"; count: number }
-    | { type: "import"; path: string; partial: boolean; detail: string }
+    | { type: "import"; path: string; partial: boolean; detail: string; sealed: boolean }
     | null
   >(null);
   const [dangerBusy, setDangerBusy] = useState(false);
+  /** 备份口令：填入后备份的剪贴板段加密；恢复加密备份时必须填同一个口令。 */
+  const [passphrase, setPassphrase] = useState("");
   /** 备份列表读取失败：显示真实错误与重试，不伪装成空数据。 */
   const [dataLoadError, setDataLoadError] = useState<string | null>(null);
 
@@ -94,6 +96,17 @@ export default function DataBackupSettingsPage() {
     }
   }
 
+  /** 口令校验：留空表示不加密；填写时至少 8 个字符（与后端一致）。 */
+  function backupPassphrase(): string | undefined {
+    const value = passphrase.trim();
+    if (!value) return undefined;
+    if (value.length < 8) {
+      showToast(t("settings.data.passphraseTooShort"), { kind: "error" });
+      return undefined;
+    }
+    return value;
+  }
+
   async function onExport() {
     await withBusy("export", async () => {
       const path = await save({
@@ -114,6 +127,13 @@ export default function DataBackupSettingsPage() {
       });
       if (!path || Array.isArray(path)) return;
       const meta = await inspectBackup(path);
+      const sealed = meta.clipboard_sealed === true;
+      const typed = passphrase.trim();
+      if (sealed && typed.length < 8) {
+        // 加密备份必须先拿到口令，否则恢复一定失败；这里提前拦截，不让用户白等一次完整恢复流程。
+        showToast(t("settings.data.sealedNeedsPassphrase"), { kind: "error" });
+        return;
+      }
       const truncated = meta.truncated_tables ?? [];
       const lines = [
         meta.partial
@@ -129,6 +149,7 @@ export default function DataBackupSettingsPage() {
         meta.config_included
           ? t("settings.data.importConfigIncluded")
           : t("settings.data.importConfigAbsent"),
+        sealed ? t("settings.data.importSealed") : "",
         t("settings.data.importRollback"),
         t("settings.data.importContinue"),
       ].filter(Boolean);
@@ -138,6 +159,7 @@ export default function DataBackupSettingsPage() {
         path,
         partial: meta.partial,
         detail: lines.join("\n\n"),
+        sealed,
       });
     });
   }
@@ -147,7 +169,11 @@ export default function DataBackupSettingsPage() {
     if (pendingDanger?.type !== "import" || dangerBusy) return;
     setDangerBusy(true);
     try {
-      const outcome = await importData(pendingDanger.path, pendingDanger.partial);
+      const outcome = await importData(
+        pendingDanger.path,
+        pendingDanger.partial,
+        pendingDanger.sealed ? passphrase.trim() : undefined,
+      );
       setBackups(await listBackups());
       // 配置恢复是非致命环节：数据已恢复时，冲突/降级必须持续可见，不能只闪一条 Toast。
       setRestoreWarnings(outcome.warnings ?? []);
@@ -270,12 +296,23 @@ export default function DataBackupSettingsPage() {
       </SettingsGroup>
 
       <SettingsGroup title={t("settings.data.group.actions")} description={t("settings.data.group.actionsDesc")}>
+        <input
+          type="password"
+          className="settings-passphrase-input"
+          value={passphrase}
+          onChange={(e) => setPassphrase(e.target.value)}
+          placeholder={t("settings.data.passphrasePlaceholder")}
+          aria-label={t("settings.data.passphraseLabel")}
+          autoComplete="new-password"
+          spellCheck={false}
+        />
+        <div className="setting-note">{t("settings.data.passphraseNote")}</div>
         <div className="settings-actions-row">
           <button
             className="btn sm"
             disabled={busyKey === "backup"}
             onClick={() => withBusy("backup", async () => {
-              const p = await backupNow(false);
+              const p = await backupNow(false, backupPassphrase());
               setBackups(await listBackups());
               showToast(t("settings.data.quickBackupDone", { path: p }), { kind: "success" });
             })}
@@ -287,7 +324,7 @@ export default function DataBackupSettingsPage() {
             className="btn sm"
             disabled={busyKey === "backup-full"}
             onClick={() => withBusy("backup-full", async () => {
-              const p = await backupNow(true);
+              const p = await backupNow(true, backupPassphrase());
               setBackups(await listBackups());
               showToast(t("settings.data.fullBackupDone", { path: p }), { kind: "success" });
             })}

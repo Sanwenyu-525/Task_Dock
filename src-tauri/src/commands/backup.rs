@@ -4,6 +4,8 @@
 //! - header：格式版本、备份类型（quick/full）、是否部分、导出时间、各表行数；
 //! - section：`rows` 分块（默认 500 行/块），事件/通知可达到十万级而不占满内存；
 //! - archive：事件归档 JSONL 按 1 MiB 文本块写入，导入时先落暂存目录并校验 SHA-256；
+//! - clipboard_sealed：剪贴板段的 BEK 信封密文（可选，需备份口令才能恢复，见
+//!   `crate::clipboard::backup_crypto`）；同表的行合并为单个记录，不再逐表写 section；
 //! - integrity：对所有前序行（含换行）的 SHA-256，缺行/截断/篡改一律拒绝。
 //!
 //! 可靠性：
@@ -21,9 +23,10 @@ use base64::Engine as _;
 use chrono::SecondsFormat;
 use rusqlite::types::ValueRef;
 use rusqlite::Connection;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::clipboard::backup_crypto;
 use crate::commands::data::{self, EventRow, RunRow, TaskRow};
 use crate::db::Db;
 use crate::error::{AppError, AppResult};
@@ -48,6 +51,8 @@ const QUICK_EXTENDED_LOG_LIMIT: i64 = 500;
 
 /// 恢复提交标记：与业务数据同事务写入，用于崩溃恢复判定。
 pub const RESTORE_COMMIT_KEY: &str = "restore_commit_id";
+/// 剪贴板段加密记录类型名（需备份口令才能恢复）。
+pub const CLIPBOARD_SEALED_RECORD: &str = "clipboard_sealed";
 /// 本机安全项与恢复内部标记：绝不进入任何导出文件。
 pub const EXCLUDED_SETTINGS: &[&str] = &["http_token", RESTORE_COMMIT_KEY];
 /// 本机隐私偏好：备份里可以带，但导入/恢复时一律不写回本机。
@@ -1519,6 +1524,52 @@ struct Section<'a, T> {
     rows: &'a [T],
 }
 
+/// 加密剪贴板段的载荷：按表聚合的行（表名与行内容一并封在同一条密文里）。
+#[derive(Serialize, Deserialize)]
+struct SealedClipboardPayload {
+    tables: Vec<SealedClipboardTable>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SealedClipboardTable {
+    table: String,
+    rows: Vec<serde_json::Value>,
+}
+
+#[derive(Serialize)]
+struct ClipboardSealedRecord<'a> {
+    record: &'static str,
+    envelope: &'a backup_crypto::BackupKeyEnvelope,
+    payload: &'a backup_crypto::SealedSection,
+}
+
+#[derive(Deserialize)]
+struct ClipboardSealedIn {
+    envelope: backup_crypto::BackupKeyEnvelope,
+    payload: backup_crypto::SealedSection,
+}
+
+/// 读出一张扩展表的全部行（与 `write_generic_table` 同一条 SQL 与取值规则）。
+fn collect_table_rows(
+    conn: &Connection,
+    table: &str,
+    kind: BackupKind,
+) -> AppResult<Vec<serde_json::Value>> {
+    let sql = generic_sql(table, kind)?;
+    let mut stmt = conn.prepare(&sql)?;
+    let names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+    let mut rows = stmt.query([])?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next()? {
+        let mut map = serde_json::Map::with_capacity(names.len());
+        for (i, name) in names.iter().enumerate() {
+            map.insert(name.clone(), value_to_json(row.get_ref(i)?));
+        }
+        out.push(serde_json::Value::Object(map));
+    }
+    Ok(out)
+}
+
 fn write_small_sections(writer: &mut BundleWriter, tx: &Connection) -> AppResult<()> {
     {
         let mut stmt = tx.prepare("SELECT id, title, description, priority, status, category, tags, due_at, remind_at, advance_minutes, recurrence_rule_id, created_at, updated_at, completed_at FROM tasks ORDER BY id")?;
@@ -2265,7 +2316,20 @@ pub fn write_bundle(
     kind: BackupKind,
 ) -> AppResult<BackupWriteResult> {
     let _gate = crate::audio::voice_packs::asset_gate_read();
-    write_bundle_inner(db, sources, target, kind)
+    write_bundle_inner(db, sources, target, kind, None)
+}
+
+/// 写带口令加密剪贴板段的备份：剪贴板类表合并为单条 `clipboard_sealed` 记录，
+/// 其余表仍按原有分块格式写入；恢复时必须提供同一口令。
+pub fn write_bundle_sealed(
+    db: &Db,
+    sources: BackupSources<'_>,
+    target: &Path,
+    kind: BackupKind,
+    passphrase: &str,
+) -> AppResult<BackupWriteResult> {
+    let _gate = crate::audio::voice_packs::asset_gate_read();
+    write_bundle_inner(db, sources, target, kind, Some(passphrase))
 }
 
 /// 恢复流程已持有语音资产写门禁时使用，避免恢复点备份再次获取读锁而死锁。
@@ -2275,7 +2339,7 @@ pub(crate) fn write_bundle_without_voice_gate(
     target: &Path,
     kind: BackupKind,
 ) -> AppResult<BackupWriteResult> {
-    write_bundle_inner(db, sources, target, kind)
+    write_bundle_inner(db, sources, target, kind, None)
 }
 
 fn write_bundle_inner(
@@ -2283,6 +2347,7 @@ fn write_bundle_inner(
     sources: BackupSources<'_>,
     target: &Path,
     kind: BackupKind,
+    clipboard_passphrase: Option<&str>,
 ) -> AppResult<BackupWriteResult> {
     let voice_pack_dir = sources
         .data_dir
@@ -2310,6 +2375,11 @@ fn write_bundle_inner(
         None => None,
     };
     let config_warnings = collected.warnings;
+    // 信封在进入读事务前创建：Argon2id 派生不必占着数据库读锁。
+    let sealed_clipboard = match clipboard_passphrase {
+        Some(pass) => Some(backup_crypto::create(Some(pass), false)?),
+        None => None,
+    };
     let result = db.with_read(|conn| {
             let tx = conn.unchecked_transaction()?;
             let totals = table_counts(&tx)?;
@@ -2370,6 +2440,8 @@ fn write_bundle_inner(
                 // 列表/检查界面据此提示「此备份是否含用户配置」；
                 // config 本体是可选字段，缺失即旧备份语义。
                 "config_included": config_included,
+                // true 表示剪贴板段已加密：恢复必须提供备份口令。
+                "clipboard_sealed": sealed_clipboard.is_some(),
             });
             if let Some(config) = config_value.clone() {
                 if let Some(obj) = header.as_object_mut() {
@@ -2398,7 +2470,25 @@ fn write_bundle_inner(
             counts.insert("notification_history".into(), notifications as i64);
             counts.insert("navigation_log".into(), nav_logs as i64);
 
+            let mut sealed_tables: Vec<SealedClipboardTable> = Vec::new();
             for table in EXTENDED_TABLES {
+                // 加密剪贴板段开启时，剪贴板类表合并进单条密封记录，不再逐表写 section。
+                let is_clipboard_class = table_rule(table)
+                    .map(|rule| rule.class == "clipboard")
+                    .unwrap_or(false);
+                if sealed_clipboard.is_some() && is_clipboard_class {
+                    let rows = if is_local_transient_table(table) {
+                        Vec::new()
+                    } else {
+                        collect_table_rows(&tx, table, kind)?
+                    };
+                    counts.insert((*table).to_string(), rows.len() as i64);
+                    sealed_tables.push(SealedClipboardTable {
+                        table: (*table).to_string(),
+                        rows,
+                    });
+                    continue;
+                }
                 if is_local_transient_table(table) {
                     // 即使为空也写 section 以保持新格式的「空表/缺表」区分，但不写任何本机路径。
                     writer.line(&Section {
@@ -2411,6 +2501,23 @@ fn write_bundle_inner(
                 }
                 let n = write_generic_table(&mut writer, &tx, table, kind)?;
                 counts.insert((*table).to_string(), n as i64);
+            }
+
+            if let Some(created) = sealed_clipboard.as_ref() {
+                // 明文行只在内存里聚合，落盘前整体 AEAD 加密；AAD 绑定备份 ID 与段名。
+                let payload = serde_json::to_vec(&SealedClipboardPayload {
+                    tables: sealed_tables,
+                })?;
+                let aad = backup_crypto::section_aad(
+                    &created.envelope.backup_id,
+                    backup_crypto::SECTION_CLIPBOARD,
+                );
+                let sealed_payload = backup_crypto::seal_section(&created.bek, &aad, &payload)?;
+                writer.line(&ClipboardSealedRecord {
+                    record: CLIPBOARD_SEALED_RECORD,
+                    envelope: &created.envelope,
+                    payload: &sealed_payload,
+                })?;
             }
 
             // 图片资产：完整备份必须包含所有被引用的原图/缩略图；
@@ -2786,13 +2893,22 @@ impl AssetSink {
 /// 读取并校验备份；归档与剪贴板资产写入 `staging_dir`（只有对应记录时才创建），
 /// 业务表行按表写入 `staging_dir/rows/`（JSONL），内存中只保留元信息与设置。
 pub fn read_bundle(path: &Path, staging_dir: &Path) -> AppResult<ReadBackup> {
-    read_bundle_impl(path, staging_dir, &staging_dir.join("rows"), true)
+    read_bundle_impl(path, staging_dir, &staging_dir.join("rows"), true, None)
+}
+
+/// 带备份口令读取：备份含加密剪贴板段时必须使用；未加密的旧备份传 `None` 即可。
+pub fn read_bundle_with_secret(
+    path: &Path,
+    staging_dir: &Path,
+    secret: Option<&str>,
+) -> AppResult<ReadBackup> {
+    read_bundle_impl(path, staging_dir, &staging_dir.join("rows"), true, secret)
 }
 
 /// 只校验与解析，不把归档/资产落盘（回滚数据库时使用，避免磁盘被二次复制打满）；
 /// 表行仍落到 `rows_dir`（由调用方指定并在会话清理时删除）。
 pub(crate) fn read_bundle_data_only(path: &Path, rows_dir: &Path) -> AppResult<ReadBackup> {
-    read_bundle_impl(path, Path::new(""), rows_dir, false)
+    read_bundle_impl(path, Path::new(""), rows_dir, false, None)
 }
 
 /// 按行读取但先检查长度上限：超长行在分配前就被拒绝，避免恶意/损坏备份撑爆内存。
@@ -2943,6 +3059,7 @@ fn read_bundle_impl(
     staging_dir: &Path,
     rows_dir: &Path,
     materialize: bool,
+    secret: Option<&str>,
 ) -> AppResult<ReadBackup> {
     // 重试用同一行目录时必须先清空：残留的旧表文件会被误读成这次备份的行。
     if rows_dir.exists() {
@@ -2960,6 +3077,7 @@ fn read_bundle_impl(
     let mut asset_sinks: HashMap<String, AssetSink> = HashMap::new();
     let mut staged_assets: Vec<StagedAsset> = Vec::new();
     let mut integrity: Option<serde_json::Value> = None;
+    let mut sealed_seen = false;
     let mut line_no = 0usize;
     let mut line_buf: Vec<u8> = Vec::new();
 
@@ -3267,6 +3385,71 @@ fn read_bundle_impl(
                 if sink.written == sink.expected_size {
                     let sink = asset_sinks.remove(rel).expect("存在");
                     sink.finish(&mut staged_assets)?;
+                }
+            }
+            "clipboard_sealed" => {
+                if header.is_none() {
+                    return Err(AppError::Validation("备份缺少头记录".into()));
+                }
+                if sealed_seen {
+                    return Err(AppError::Validation(
+                        "备份含多条剪贴板加密记录（拒绝重复覆盖）".into(),
+                    ));
+                }
+                sealed_seen = true;
+                let sealed_in: ClipboardSealedIn = serde_json::from_value(value).map_err(|e| {
+                    AppError::Validation(format!("剪贴板加密记录损坏: {}", e))
+                })?;
+                sealed_in.envelope.validate()?;
+                let secret = secret.ok_or_else(|| {
+                    AppError::PermissionRequired(
+                        "该备份的剪贴板段已加密，需要输入备份口令后才能恢复".into(),
+                    )
+                })?;
+                let bek = backup_crypto::unwrap_with_password(&sealed_in.envelope, secret)?;
+                let aad = backup_crypto::section_aad(
+                    &sealed_in.envelope.backup_id,
+                    backup_crypto::SECTION_CLIPBOARD,
+                );
+                let plain = backup_crypto::open_section(&bek, &aad, &sealed_in.payload)?;
+                let payload: SealedClipboardPayload =
+                    serde_json::from_slice(&plain).map_err(|e| {
+                        AppError::Validation(format!("剪贴板加密段解析失败: {}", e))
+                    })?;
+                std::fs::create_dir_all(rows_dir)?;
+                for entry in payload.tables {
+                    let rule = table_rule(&entry.table).ok_or_else(|| {
+                        AppError::Validation(format!(
+                            "剪贴板加密段包含未登记的数据表 {}（拒绝静默丢失或覆盖）",
+                            entry.table
+                        ))
+                    })?;
+                    if rule.class != "clipboard" {
+                        return Err(AppError::Validation(format!(
+                            "剪贴板加密段包含非剪贴板数据表 {}",
+                            entry.table
+                        )));
+                    }
+                    if section_writers.contains_key(&entry.table) {
+                        return Err(AppError::Validation(format!(
+                            "数据表 {} 在备份中出现多次",
+                            entry.table
+                        )));
+                    }
+                    let file = File::create(rows_dir.join(format!("{}.jsonl", entry.table)))?;
+                    let mut sink = BufWriter::with_capacity(1024 * 1024, file);
+                    for row in &entry.rows {
+                        serde_json::to_writer(&mut sink, row).map_err(|e| {
+                            AppError::Validation(format!(
+                                "剪贴板加密段 {} 表数据无法写入暂存: {}",
+                                entry.table, e
+                            ))
+                        })?;
+                        sink.write_all(b"\n")?;
+                    }
+                    let count = entry.rows.len();
+                    section_counts.insert(entry.table.clone(), count);
+                    section_writers.insert(entry.table, sink);
                 }
             }
             other => return Err(AppError::Validation(format!("未知备份记录类型: {}", other))),
@@ -3690,6 +3873,8 @@ pub fn bundle_meta(path: &Path) -> Option<serde_json::Value> {
         "extended_modules": value.get("extended_modules").cloned().unwrap_or(serde_json::Value::Bool(false)),
         // 可选用户配置（快捷键 / 语言 / 微件布局）；旧备份缺省即 false。
         "config_included": value.get("config_included").cloned().unwrap_or(serde_json::Value::Bool(false)),
+        // 剪贴板段是否加密：true 时恢复必须输入备份口令。
+        "clipboard_sealed": value.get("clipboard_sealed").cloned().unwrap_or(serde_json::Value::Bool(false)),
         "exported_at": value.get("exported_at").cloned().unwrap_or(serde_json::Value::Null),
     }))
 }
@@ -5159,6 +5344,88 @@ mod tests {
             })
             .unwrap();
         assert_eq!(link_task, "t1");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn sealed_clipboard_bundle_requires_passphrase_and_roundtrips() {
+        let dir = temp_dir("sealed-clipboard");
+        let root = dir.join("clipboard");
+        let db = memdb();
+        seed_clipboard(&db, &root);
+        let now = now_iso();
+        db.with_conn(|c| {
+            c.execute(
+                "INSERT INTO clipboard_items (id,kind,text,html,preview,content_hash,byte_size,source_app,source_title,image_width,image_height,file_paths,favorite,pinned,copy_count,created_at,last_seen_at)
+                 VALUES ('i2','text','SECRET-CLIP-BODY','','SECRET-PREVIEW','hash-2',16,'','',0,0,'[]',0,0,1,?1,?1)",
+                rusqlite::params![now],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let target = dir.join("sealed.json");
+        write_bundle_sealed(
+            &db,
+            BackupSources {
+                archive_dir: None,
+                clipboard_dir: Some(&root),
+                shelf_dir: None,
+                data_dir: None,
+            },
+            &target,
+            BackupKind::Full,
+            "correct horse battery",
+        )
+        .unwrap();
+
+        // 落盘文件不含剪贴板正文/预览/哈希明文
+        let raw = std::fs::read_to_string(&target).unwrap();
+        assert!(!raw.contains("SECRET-CLIP-BODY"), "剪贴板正文不应明文落盘");
+        assert!(!raw.contains("SECRET-PREVIEW"), "剪贴板预览不应明文落盘");
+        assert!(!raw.contains("hash-2"), "剪贴板内容哈希不应明文落盘");
+        assert_eq!(bundle_meta(&target).unwrap()["clipboard_sealed"], true);
+
+        // 缺口令 → 明确要求口令；错误口令 → 解密失败
+        let err = read_bundle(&target, &dir.join("no-secret")).unwrap_err();
+        assert!(matches!(err, AppError::PermissionRequired(_)));
+        assert!(read_bundle_with_secret(&target, &dir.join("wrong"), Some("wrong passphrase"))
+            .is_err());
+
+        let read = read_bundle_with_secret(
+            &target,
+            &dir.join("ok"),
+            Some("correct horse battery"),
+        )
+        .unwrap();
+        let rows = spilled_rows(&read, "clipboard_items");
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().any(|r| r["text"] == "SECRET-CLIP-BODY"));
+        let dst = memdb();
+        import_read(&dst, &read).unwrap();
+        let count: i64 = dst
+            .with_conn(|c| {
+                c.query_row("SELECT COUNT(*) FROM clipboard_items", [], |r| r.get(0))
+                    .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(count, 2);
+
+        // 不传口令的备份仍是原明文分块格式，读取行为不变
+        let plain = dir.join("plain.json");
+        write_bundle(
+            &db,
+            BackupSources {
+                archive_dir: None,
+                clipboard_dir: Some(&root),
+                shelf_dir: None,
+                data_dir: None,
+            },
+            &plain,
+            BackupKind::Full,
+        )
+        .unwrap();
+        assert_eq!(bundle_meta(&plain).unwrap()["clipboard_sealed"], false);
+        assert!(read_bundle(&plain, &dir.join("plain-read")).is_ok());
         std::fs::remove_dir_all(dir).ok();
     }
 

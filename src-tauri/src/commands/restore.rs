@@ -191,6 +191,8 @@ pub struct RestoreFaults {
 pub struct RestoreOptions {
     /// 快速/部分备份必须由用户显式确认后才允许恢复
     pub allow_partial: bool,
+    /// 备份含加密剪贴板段时的备份口令；旧备份或未加密备份为 None
+    pub clipboard_secret: Option<String>,
     pub faults: RestoreFaults,
 }
 
@@ -1049,7 +1051,11 @@ pub fn restore_bundle(
 
     let t0 = std::time::Instant::now();
     // 1. 读取并做完整性/结构校验（资产、归档与表行写入会话暂存目录）。
-    let read = match backup::read_bundle(source, &staging) {
+    let read = match backup::read_bundle_with_secret(
+        source,
+        &staging,
+        options.clipboard_secret.as_deref(),
+    ) {
         Ok(read) => read,
         Err(e) => return abort(data_dir, journal, e),
     };
@@ -1697,6 +1703,7 @@ mod tests {
     fn restore_opts(faults: RestoreFaults) -> RestoreOptions {
         RestoreOptions {
             allow_partial: true,
+            clipboard_secret: None,
             faults,
         }
     }

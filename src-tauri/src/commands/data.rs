@@ -711,6 +711,7 @@ fn backup_to_dir(
     dir: &Path,
     db: &Db,
     kind: BackupKind,
+    passphrase: Option<&str>,
 ) -> AppResult<(String, crate::commands::backup::BackupWriteResult)> {
     use crate::commands::backup::BackupSources;
     std::fs::create_dir_all(dir)?;
@@ -728,14 +729,24 @@ fn backup_to_dir(
         shelf_dir: Some(shelf.as_path()),
         data_dir: Some(data_dir),
     };
-    let result = crate::commands::backup::write_bundle(db, sources, &path, kind)?;
+    let result = match passphrase {
+        Some(secret) => {
+            crate::commands::backup::write_bundle_sealed(db, sources, &path, kind, secret)?
+        }
+        None => crate::commands::backup::write_bundle(db, sources, &path, kind)?,
+    };
     Ok((path.to_string_lossy().to_string(), result))
 }
 
-fn backup_now_inner(app: &tauri::AppHandle, db: &Db, kind: BackupKind) -> AppResult<String> {
+fn backup_now_inner(
+    app: &tauri::AppHandle,
+    db: &Db,
+    kind: BackupKind,
+    passphrase: Option<&str>,
+) -> AppResult<String> {
     let data_dir = app_data(app)?;
     let dir = backup_dir(app)?;
-    let (path, result) = backup_to_dir(&data_dir, &dir, db, kind)?;
+    let (path, result) = backup_to_dir(&data_dir, &dir, db, kind, passphrase)?;
     prune_backups(app, db)?;
     tracing::info!(
         "本地备份完成: {}（{}，部分={}，{} 字节，SHA-256 {}）",
@@ -751,15 +762,19 @@ fn backup_now_inner(app: &tauri::AppHandle, db: &Db, kind: BackupKind) -> AppRes
 /// 立即备份到应用数据目录。
 /// `full=false`（默认）为快速备份：显式标记 partial，事件/通知按上限截断；
 /// `full=true` 为完整备份：全部任务、全部受保护 Agent 事件、完整通知与事件归档。
+/// `passphrase`：填写时对剪贴板段做口令加密（恢复需同一口令）；留空保持原明文分块格式。
 #[tauri::command]
 pub async fn backup_now(
     app: tauri::AppHandle,
     db: State<'_, Arc<Db>>,
     full: Option<bool>,
+    passphrase: Option<String>,
 ) -> AppResult<String> {
     let db = db.inner().clone();
     let kind = BackupKind::from_full_flag(full);
-    tauri::async_runtime::spawn_blocking(move || backup_now_inner(&app, &db, kind))
+    tauri::async_runtime::spawn_blocking(move || {
+        backup_now_inner(&app, &db, kind, passphrase.as_deref())
+    })
         .await
         .map_err(|e| AppError::Agent(format!("备份任务中断: {}", e)))?
 }
@@ -844,7 +859,8 @@ pub fn auto_backup_if_needed_inner(app: &tauri::AppHandle, db: &Db) -> AppResult
     };
     if stale {
         // 自动备份走快速备份：始终显式标记 partial，绝不伪装成完整备份。
-        let path = backup_now_inner(app, db, BackupKind::Quick)?;
+        // 自动备份不加密剪贴板段（无用户口令可用），保持原明文分块格式。
+        let path = backup_now_inner(app, db, BackupKind::Quick, None)?;
         tracing::info!("启动自动备份完成: {}", path);
         return Ok(Some(path));
     }
@@ -1977,6 +1993,7 @@ fn import_data_inner(
     db: &Db,
     path: &str,
     allow_partial: bool,
+    passphrase: Option<&str>,
 ) -> AppResult<crate::commands::restore::RestoreOutcome> {
     let data_dir = app_data(app)?;
     let source = Path::new(path);
@@ -1987,6 +2004,7 @@ fn import_data_inner(
             source,
             &crate::commands::restore::RestoreOptions {
                 allow_partial,
+                clipboard_secret: passphrase.map(|s| s.to_string()),
                 ..Default::default()
             },
         )?;
@@ -2034,17 +2052,19 @@ fn import_bundle_from(data_dir: &Path, db: &Db, source: &Path) -> AppResult<()> 
 /// 从 JSON 文件导入（整体替换，导入前生成完整恢复点）。
 /// 校验/备份/单事务导入全部在阻塞线程池执行，避免大文件卡住 UI 主线程。
 /// `allow_partial`：分块备份若为快速（部分）备份，必须由用户显式确认后才允许恢复。
+/// `passphrase`：备份含加密剪贴板段时必填，用于解出该段的备份口令。
 #[tauri::command]
 pub async fn import_data(
     app: tauri::AppHandle,
     db: State<'_, Arc<Db>>,
     path: String,
     allow_partial: Option<bool>,
+    passphrase: Option<String>,
 ) -> AppResult<serde_json::Value> {
     let db = db.inner().clone();
     let allow_partial = allow_partial.unwrap_or(false);
     tauri::async_runtime::spawn_blocking(move || {
-        let outcome = import_data_inner(&app, &db, &path, allow_partial)?;
+        let outcome = import_data_inner(&app, &db, &path, allow_partial, passphrase.as_deref())?;
         serde_json::to_value(outcome).map_err(AppError::from)
     })
     .await

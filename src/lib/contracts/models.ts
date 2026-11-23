@@ -1459,6 +1459,8 @@ export interface BackupMeta {
   counts?: Record<string, number> | null;
   /** 是否携带可选用户配置（快捷键/语言/微件布局）；旧备份为 false/缺省。 */
   config_included?: boolean;
+  /** 剪贴板段是否已加密：true 时恢复必须提供备份口令。 */
+  clipboard_sealed?: boolean;
 }
 
 /** 备份内的单个微件偏好（与 src/lib/widgets/model.ts 的 WidgetItem 同形）。 */

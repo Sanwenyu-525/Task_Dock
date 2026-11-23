@@ -707,6 +707,25 @@
   padding: 4px 0;
 }
 
+/* 备份口令输入：与按钮同高，颜色/边框全部走字段语义 Token。 */
+.settings-panel .settings-passphrase-input {
+  flex: 0 1 260px;
+  min-width: 180px;
+  min-height: var(--control-height);
+  padding: 0 10px;
+  border: 1px solid var(--field-border);
+  border-radius: var(--radius-control);
+  background: var(--field-bg);
+  color: var(--color-text-primary);
+  font-size: var(--font-size-secondary);
+  box-sizing: border-box;
+}
+
+.settings-panel .settings-passphrase-input:focus {
+  outline: none;
+  border-color: var(--field-border-focus);
+}
+
 /* 状态条：带语义圆点的只读状态（MCP 运行状态等）。 */
 .settings-panel .settings-status {
   display: flex;
