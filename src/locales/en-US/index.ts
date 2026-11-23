@@ -1403,6 +1403,8 @@ export const enUS: Record<MessageKey, string> = {
   "settings.clipboard.pasteIntervalImage": "Image paste delay (ms, ≥ 1000 recommended)",
   "settings.clipboard.pasteIntervalFiles": "File paste delay (ms)",
   "settings.clipboard.sensitiveFilter": "Filter high-confidence sensitive content (e.g. PEM private keys)",
+  "settings.clipboard.encryptHistory": "Encrypt clipboard history (local DPAPI key)",
+  "settings.clipboard.encryptNote": "When enabled, newly captured text and images are stored encrypted with a key protected by the current Windows user's DPAPI; another Windows user or another machine cannot decrypt them. Existing history stays plaintext until migrated separately. OCR, backup bundles and Agent exports are not covered yet, so this is not full encryption.",
   "settings.clipboard.sensitiveNote": "The filter only covers clear high-confidence patterns; it does not claim to detect every password or token. Logs record only type, size and counts, never clipboard text or images. The source app is inferred from the clipboard owner window (system record) or the foreground window; when unknown it is marked as \"unknown source\", the exclusion list cannot be proven effective, and stricter credential-field filtering is applied. Add password managers to the exclusion list below. While paused, nothing is read or uploaded; sending to an Agent must be triggered manually in the UI.",
   "settings.clipboard.exclude": "Excluded apps (exe name or path, comma / newline separated)",
   "settings.clipboard.excludeAria": "Clipboard app exclusion list",

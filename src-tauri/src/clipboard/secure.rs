@@ -475,6 +475,33 @@ pub fn encrypt_for_write(
     encrypt_field(&key, aad, plaintext)
 }
 
+/// 是否已有可用的进程内 CEK（决定派生缓存是否加密写入）。
+pub fn has_cached_key() -> bool {
+    cached_cek().is_some()
+}
+
+/// 派生缓存写入：有可用 CEK 时加密，否则保持明文（迁移前行为）。
+///
+/// 与历史数据不同，预览缓存属可重建派生数据：缺密钥时不阻塞读取路径，
+/// 但一旦密钥可用，后续缓存写入即为密文。
+pub fn maybe_encrypt_blob(aad: &str, bytes: &[u8]) -> AppResult<Vec<u8>> {
+    match cached_cek() {
+        Some(key) => encrypt_bytes(&key, aad, bytes),
+        None => Ok(bytes.to_vec()),
+    }
+}
+
+/// 二进制读取兼容解密：旧明文资产原样返回；密文缺密钥时 fail-closed。
+pub fn decrypt_blob_if_encrypted(aad: &str, stored: &[u8]) -> AppResult<Zeroizing<Vec<u8>>> {
+    if !is_encrypted_blob(stored) {
+        return Ok(Zeroizing::new(stored.to_vec()));
+    }
+    let key = cached_cek().ok_or_else(|| {
+        AppError::Unavailable("剪贴板加密密钥未加载，无法读取已加密的图片资产".into())
+    })?;
+    decrypt_bytes(&key, aad, stored)
+}
+
 /// 该信封能否被当前 Windows 用户解封装（诊断/迁移前置检查，不解明文）。
 pub fn envelope_is_usable(db: &Db) -> AppResult<bool> {
     match load_envelope(db)? {

@@ -374,6 +374,8 @@ impl ClipboardRuntime {
     pub fn new(db: Arc<Db>, root: PathBuf, app: AppHandle) -> Arc<Self> {
         let _ = std::fs::create_dir_all(root.join("images"));
         let _ = std::fs::create_dir_all(root.join("thumbs"));
+        // 上一进程为 OCR/另存/外发留下的明文派生缓存必须清掉（ADR-0012 批次 2）。
+        let _ = store::purge_transient_assets(&root);
         let self_write = Arc::new(AtomicU32::new(platform::current_sequence()));
         let paste =
             paste::PasteManager::new(db.clone(), root.clone(), app.clone(), self_write.clone());

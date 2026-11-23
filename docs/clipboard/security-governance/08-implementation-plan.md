@@ -130,7 +130,28 @@
 - Agent 导出授权与审计、目录显式 ACL。
 - 真机 Dev 验收与性能基准。
 
-### 6.2 尚未执行（等待后续批次）
+### 6.2 批次 2（2026-11-23，已实施）
+
+已落地：
+
+- 图片资产加密接入：`write_assets` 写入容器密文（原图/缩略图），`read_asset_plain` 透明解密；
+  `image_png`/`image_data_url`/`thumb_data_url`/`preview_data_url` 全部改走解密读取；
+  640 预览缓存在有密钥时加密落盘。
+- `image_abs_path` / `image_abs_path_by_conn`：密文资产按需解出 `transient/<id>-image.png`
+  明文供 OCR/另存/外发/工作篮使用；`purge_transient_assets` 在启动、删除、清空历史时清理。
+- 设置页开关与文案：`clipboard_encrypt_history` Switch + 局限说明（中英），说明已有历史仍需迁移、
+  备份/导出/OCR 未覆盖。
+- 测试新增 3 项：资产密文写入与透明读取、旧明文 PNG 兼容与路径保持、预览缓存加密复用。
+
+未落地（后续批次）：
+
+- 历史**图片资产**迁移（当前迁移工具只处理正文/HTML）。
+- `preview`/`title`/`source_*`/`file_paths` 加密与“解密后过滤”搜索。
+- 迁移命令与设置页迁移入口（现有历史 -> 密文）。
+- 备份 bundle 加密（BEK/恢复口令）、Agent 导出授权与审计、目录显式 ACL。
+- 真机 Dev 验收与性能基准。
+
+### 6.3 尚未执行（等待后续批次）
 
 - 本批次未执行：数据库 schema 迁移、依赖变更、Dev 真机走查。
 - 残余风险按 ADR §14「实施偏差与影响」如实登记，不得对外宣称剪贴板历史已全面加密。

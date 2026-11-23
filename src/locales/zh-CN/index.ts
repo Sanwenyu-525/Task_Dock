@@ -1385,6 +1385,8 @@ export const zhCN = {
   "settings.clipboard.pasteIntervalImage": "图片粘贴间隔（毫秒，建议 ≥ 1000）",
   "settings.clipboard.pasteIntervalFiles": "文件粘贴间隔（毫秒）",
   "settings.clipboard.sensitiveFilter": "高置信敏感内容过滤（如 PEM 私钥）",
+  "settings.clipboard.encryptHistory": "剪贴板历史加密（本机 DPAPI 密钥）",
+  "settings.clipboard.encryptNote": "开启后新采集的正文与图片以密文保存，密钥由当前 Windows 用户的 DPAPI 保护，换 Windows 用户或换机无法解密。已有历史仍为明文，需另行迁移；图片文字识别、备份包与 Agent 导出暂未覆盖，不能视为全面加密。",
   "settings.clipboard.sensitiveNote": "敏感过滤只覆盖明确的高置信模式，不宣称能识别全部密码 / 令牌；日志只记录类型、大小与计数，绝不记录剪贴板正文或图片内容。来源应用由剪贴板所有者窗口（系统记录）或前台窗口推断，无法识别时会标记为「未知来源」，此时排除名单无法证明生效，并会启用更保守的凭据字段过滤。建议把密码管理器加入下方排除名单。暂停记录后不会读取也不会上传任何内容；发送给 Agent 必须由你在界面中手动触发。",
   "settings.clipboard.exclude": "应用排除名单（exe 名或路径，逗号 / 换行分隔）",
   "settings.clipboard.excludeAria": "剪贴板排除的应用名单",

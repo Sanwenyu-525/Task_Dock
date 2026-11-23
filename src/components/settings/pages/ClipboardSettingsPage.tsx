@@ -374,6 +374,15 @@ export default function ClipboardSettingsPage() {
         />
       </div>
       <div className="setting-note">{t("settings.clipboard.sensitiveNote")}</div>
+      <div className="setting-row">
+        <span>{t("settings.clipboard.encryptHistory")}</span>
+        <Switch
+          checked={Boolean(settings.clipboard_encrypt_history)}
+          ariaLabel={t("settings.clipboard.encryptHistory")}
+          onChange={(v) => update({ clipboard_encrypt_history: v })}
+        />
+      </div>
+      <div className="setting-note">{t("settings.clipboard.encryptNote")}</div>
       <div className="setting-row setting-row-block">
         <span>{t("settings.clipboard.exclude")}</span>
         <textarea

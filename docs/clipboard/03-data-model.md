@@ -121,10 +121,13 @@
 - 密钥信封存 `application_settings` 键 `clipboard_crypto_envelope`：格式标识、版本、CEK 代数、
   `kek=dpapi-user`、entropy 标识、DPAPI 密文、创建时间；不含明文 CEK。
 - `preview` / `title` / `source_app` / `source_title` / `file_paths` 本批仍为明文（列表与搜索可见面）。
-- 图片资产容器格式已定义（`TDCLB1\0 + nonce + ct`，AAD `tdclip|asset|<role>|<item_id>|v1`），
-  但**尚未接入**写入/读取（批次 2）。
-- 历史迁移：`clipboard/secure_migration.rs` 按批加密现有明文行（幂等、批内往返校验、
-  完成后 `wal_checkpoint(TRUNCATE)`），不碰 `preview` 与关联表。
+- 图片资产容器格式（批次 2 已接入）：文件头 `TDCLB1\0` + 12B nonce + 密文，
+  AAD = `tdclip|asset|<image|thumb|preview640>|<item_id>|v1`；文件名与 `clipboard_assets.path`
+  布局不变，读取按魔数识别密文并透明解密，旧明文 PNG 原样透传。
+- `image_abs_path`（供 OCR/另存/外发/工作篮）在密文资产上会解出
+  `transient/<item_id>-image.png` 明文副本；启动、删除条目、清空历史时清理。
+- 历史迁移：`clipboard/secure_migration.rs` 按批加密现有明文正文（幂等、批内往返校验、
+  完成后 `wal_checkpoint(TRUNCATE)`），不碰 `preview` 与关联表；**图片资产暂不在迁移范围**。
 
 ## 三、迁移
 - 机制：`MIGRATIONS` 数组按 `PRAGMA user_version` 顺序执行，每步 SQL 与版本号

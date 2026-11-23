@@ -23,6 +23,10 @@ use super::{
 };
 use crate::db::{Db, Settings};
 use crate::error::{AppError, AppResult};
+use zeroize::Zeroizing;
+
+/// 640px 预览派生的缓存角色名：只用于加密 AAD 绑定，不写入 `clipboard_assets`。
+const PREVIEW_CACHE_ROLE: &str = "preview640";
 
 const ITEM_FIELDS: &str =
     "i.id, i.kind, i.text, i.html, i.preview, i.title, i.title_source, i.byte_size,
@@ -714,6 +718,7 @@ fn write_assets(
     root: &Path,
     item_id: &str,
     img: &super::CapturedImage,
+    cipher: Option<&[u8; 32]>,
 ) -> AppResult<Vec<AssetFile>> {
     let dir_img = root.join("images");
     let dir_thumb = root.join("thumbs");
@@ -733,6 +738,16 @@ fn write_assets(
     let (thumb_rgba, tw, th) = image::thumbnail(rgba, width, height);
     let thumb_png = image::encode_png(&thumb_rgba, tw, th)?;
 
+    // 资产静态加密（ADR-0012 批次 2）：开启后原图/缩略图以容器密文落盘，
+    // 文件名与 `clipboard_assets.path` 布局不变，读取侧按魔数识别并解密。
+    let (stored_img, stored_thumb) = match cipher {
+        Some(cek) => (
+            secure::encrypt_bytes(cek, &secure::item_asset_aad(item_id, "image"), &img.png)?,
+            secure::encrypt_bytes(cek, &secure::item_asset_aad(item_id, "thumb"), &thumb_png)?,
+        ),
+        None => (img.png.clone(), thumb_png.clone()),
+    };
+
     let rel_img = format!("images/{item_id}.png");
     let rel_thumb = format!("thumbs/{item_id}.png");
     let abs_img = root.join(&rel_img);
@@ -745,7 +760,7 @@ fn write_assets(
         })?;
         Ok(())
     };
-    if let Err(e) = write(&abs_img, &img.png).and_then(|_| write(&abs_thumb, &thumb_png)) {
+    if let Err(e) = write(&abs_img, &stored_img).and_then(|_| write(&abs_thumb, &stored_thumb)) {
         let _ = std::fs::remove_file(&abs_img);
         let _ = std::fs::remove_file(&abs_thumb);
         return Err(e);
@@ -755,7 +770,8 @@ fn write_assets(
             id: uuid::Uuid::new_v4().to_string(),
             role: "image",
             rel: rel_img,
-            size: img.png.len() as i64,
+            // 记录实际落盘字节，容量统计与磁盘事实一致（密文比明文多 28 字节头）。
+            size: stored_img.len() as i64,
             width: Some(img.width as i64),
             height: Some(img.height as i64),
         },
@@ -763,7 +779,7 @@ fn write_assets(
             id: uuid::Uuid::new_v4().to_string(),
             role: "thumb",
             rel: rel_thumb,
-            size: thumb_png.len() as i64,
+            size: stored_thumb.len() as i64,
             width: Some(tw as i64),
             height: Some(th as i64),
         },
@@ -1320,8 +1336,20 @@ pub fn record_capture(
     }
 
     let item_id = uuid::Uuid::new_v4().to_string();
+    // 资产加密开关与正文字段共用同一开关：CEK 只解封装一次，图像写入与正文入库
+    // 使用同一把密钥，避免出现“正文密文、图片明文”的半套状态。
+    let asset_key = if settings.clipboard_encrypt_history {
+        Some(secure::cek(db)?)
+    } else {
+        None
+    };
     let assets = match &p.image {
-        Some(img) => Some(write_assets(root, &item_id, img)?),
+        Some(img) => Some(write_assets(
+            root,
+            &item_id,
+            img,
+            asset_key.as_ref().map(|k| &**k),
+        )?),
         None => None,
     };
     let now = Utc::now();
@@ -1789,6 +1817,13 @@ fn remove_files_unreferenced(db: &Db, root: &Path, paths: Vec<String>) -> i64 {
                 }
             }
         }
+        // 该条目不再被引用时，同步清掉为其解出的明文派生缓存（批次 2 过渡接口）。
+        if let Some(stem) = rel
+            .strip_prefix("images/")
+            .and_then(|name| name.strip_suffix(".png"))
+        {
+            let _ = std::fs::remove_file(root.join("transient").join(format!("{stem}-image.png")));
+        }
     }
     freed
 }
@@ -1809,6 +1844,7 @@ pub fn delete_items(db: &Db, root: &Path, ids: &[String]) -> AppResult<DeleteRep
         Ok((n, p))
     })?;
     let freed = remove_files_unreferenced(db, root, paths);
+    remove_transient_for(root, ids);
     Ok(DeleteReport {
         deleted,
         freed_bytes: freed,
@@ -3314,6 +3350,8 @@ pub fn clear_history(db: &Db, root: &Path) -> AppResult<ClearReport> {
         Ok((items, groups))
     })?;
     let purge = purge_orphan_files(db, root)?;
+    // 清空历史后派生明文缓存必须一起消失，否则 OCR/另存留下的原图副本仍在盘上。
+    purge_transient_assets(root);
     Ok(ClearReport {
         items,
         groups,
@@ -3344,6 +3382,30 @@ fn png_data_url(bytes: &[u8]) -> String {
     )
 }
 
+/// 读取资产并透明解密：兼容迁移前的明文 PNG 与批次 2 的容器密文。
+///
+/// 返回 `Zeroizing`，明文只在本调用栈内存在；缺密钥时 fail-closed（不返回密文）。
+fn read_asset_plain(
+    db: &Db,
+    root: &Path,
+    item_id: &str,
+    role: &str,
+) -> AppResult<Option<Zeroizing<Vec<u8>>>> {
+    let Some(rel) = asset_rel(db, item_id, role)? else {
+        return Ok(None);
+    };
+    let abs = asset_abs(root, &rel)?;
+    let stored = match std::fs::read(&abs) {
+        Ok(bytes) => bytes,
+        // 缺图是正常状态（历史条目/清理后），不当作加密失败。
+        Err(_) => return Ok(None),
+    };
+    Ok(Some(secure::decrypt_blob_if_encrypted(
+        &secure::item_asset_aad(item_id, role),
+        &stored,
+    )?))
+}
+
 fn data_url(
     db: &Db,
     root: &Path,
@@ -3351,19 +3413,14 @@ fn data_url(
     role: &str,
     max_bytes: usize,
 ) -> AppResult<Option<String>> {
-    let Some(rel) = asset_rel(db, item_id, role)? else {
+    let Some(plain) = read_asset_plain(db, root, item_id, role)? else {
         return Ok(None);
     };
-    let abs = asset_abs(root, &rel)?;
-    let meta = match std::fs::metadata(&abs) {
-        Ok(m) => m,
-        Err(_) => return Ok(None),
-    };
-    if meta.len() as usize > max_bytes {
+    // 上限按解密后明文长度判定，避免密文头让边界判断偏移。
+    if plain.len() > max_bytes {
         return Err(AppError::Validation("图片过大，无法内联预览".into()));
     }
-    let bytes = std::fs::read(&abs)?;
-    Ok(Some(png_data_url(&bytes)))
+    Ok(Some(png_data_url(&plain)))
 }
 
 pub fn thumb_data_url(db: &Db, root: &Path, item_id: &str) -> AppResult<Option<String>> {
@@ -3397,15 +3454,23 @@ pub fn preview_data_url(db: &Db, root: &Path, item_id: &str) -> AppResult<Option
     };
     if let Ok(meta) = std::fs::metadata(&cache_abs) {
         let len = meta.len() as usize;
-        if len > 0 && len <= PREVIEW_MAX_BYTES {
-            if let Ok(bytes) = std::fs::read(&cache_abs) {
-                return Ok(Some(png_data_url(&bytes)));
+        // 密文缓存比明文多 28 字节头，上限留出余量后按解密结果再校验。
+        if len > 0 && len <= PREVIEW_MAX_BYTES + 64 {
+            if let Ok(stored) = std::fs::read(&cache_abs) {
+                if let Ok(plain) = secure::decrypt_blob_if_encrypted(
+                    &secure::item_asset_aad(item_id, PREVIEW_CACHE_ROLE),
+                    &stored,
+                ) {
+                    if !plain.is_empty() && plain.len() <= PREVIEW_MAX_BYTES {
+                        return Ok(Some(png_data_url(&plain)));
+                    }
+                }
             }
         }
     }
-    let bytes = match std::fs::read(&abs) {
-        Ok(bytes) => bytes,
-        Err(_) => return thumb_data_url(db, root, item_id),
+    let bytes = match read_asset_plain(db, root, item_id, "image") {
+        Ok(Some(bytes)) => bytes,
+        _ => return thumb_data_url(db, root, item_id),
     };
     let (rgba, width, height) = match image::decode_png_rgba(&bytes) {
         Ok(value) => value,
@@ -3423,7 +3488,13 @@ pub fn preview_data_url(db: &Db, root: &Path, item_id: &str) -> AppResult<Option
                 "{item_id}-preview-{PREVIEW_MAX_EDGE}.{}.tmp",
                 uuid::Uuid::new_v4()
             ));
-            let ok = std::fs::write(&tmp, &png).is_ok()
+            // 派生缓存与历史数据同等级加密；密钥不可用时退回明文缓存（迁移前行为）。
+            let cache_bytes = secure::maybe_encrypt_blob(
+                &secure::item_asset_aad(item_id, PREVIEW_CACHE_ROLE),
+                &png,
+            )
+            .unwrap_or_else(|_| png.clone());
+            let ok = std::fs::write(&tmp, &cache_bytes).is_ok()
                 && std::fs::rename(&tmp, &cache_abs).is_ok();
             if !ok {
                 let _ = std::fs::remove_file(&tmp);
@@ -3438,13 +3509,69 @@ pub fn image_data_url(db: &Db, root: &Path, item_id: &str) -> AppResult<Option<S
 }
 
 pub fn image_png(db: &Db, root: &Path, item_id: &str) -> Option<Vec<u8>> {
-    let rel = asset_rel(db, item_id, "image").ok()??;
-    std::fs::read(asset_abs(root, &rel).ok()?).ok()
+    read_asset_plain(db, root, item_id, "image")
+        .ok()
+        .flatten()
+        .map(|bytes| bytes.to_vec())
 }
 
+/// 需要“明文文件路径”的消费方（OCR/另存/外发）专用：密文资产按需解密到
+/// `transient/` 派生目录并返回该路径；明文资产直接返回原路径。
+///
+/// 这是过渡接口：明文缓存只服务于必须读文件的旧调用链，启动、删除、清空历史
+/// 都会清理；后续批次应改为直接消费字节流，彻底取消明文落地。
 pub fn image_abs_path(db: &Db, root: &Path, item_id: &str) -> Option<PathBuf> {
     let rel = asset_rel(db, item_id, "image").ok()??;
-    asset_abs(root, &rel).ok()
+    materialize_plain_image(root, item_id, &rel)
+}
+
+/// 密文资产解密并落到 `transient/`；明文资产直接返回原路径。
+fn materialize_plain_image(root: &Path, item_id: &str, rel: &str) -> Option<PathBuf> {
+    let abs = asset_abs(root, &rel.to_owned()).ok()?;
+    let stored = std::fs::read(&abs).ok()?;
+    if !secure::is_encrypted_blob(&stored) {
+        return Some(abs);
+    }
+    let plain = secure::decrypt_blob_if_encrypted(
+        &secure::item_asset_aad(item_id, "image"),
+        &stored,
+    )
+    .ok()?;
+    let dir = root.join("transient");
+    std::fs::create_dir_all(&dir).ok()?;
+    let target = dir.join(format!("{item_id}-image.png"));
+    let tmp = dir.join(format!("{item_id}-image-{}.tmp", uuid::Uuid::new_v4()));
+    std::fs::write(&tmp, plain.as_slice()).ok()?;
+    std::fs::rename(&tmp, &target)
+        .inspect_err(|_| {
+            let _ = std::fs::remove_file(&tmp);
+        })
+        .ok()?;
+    Some(target)
+}
+
+/// 清理 `transient/` 派生明文缓存（启动/清空历史后调用）。
+pub fn purge_transient_assets(root: &Path) -> usize {
+    let dir = root.join("transient");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() && std::fs::remove_file(&path).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
+/// 删除指定条目的派生明文缓存（不触碰其他条目）。
+fn remove_transient_for(root: &Path, ids: &[String]) {
+    let dir = root.join("transient");
+    for id in ids {
+        let _ = std::fs::remove_file(dir.join(format!("{id}-image.png")));
+    }
 }
 
 /// 供工作篮仅持连接时读取剪贴板条目（不重复实现行映射）。
@@ -3473,7 +3600,8 @@ pub fn image_abs_path_by_conn(
         .optional()
         .ok()
         .flatten();
-    asset_abs(root, &rel?).ok()
+    let rel = rel?;
+    materialize_plain_image(root, item_id, &rel)
 }
 
 /// 条目内容哈希：OCR 结果缓存的第二重身份（与条目 id 组合），内容变化即失效。
@@ -3638,6 +3766,93 @@ mod tests {
         secure::reset_cache();
         let err = get_item(&db, &out.item.id).unwrap_err();
         assert!(matches!(err, AppError::Db(_)), "读取必须整体失败: {err}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn encrypt_history_on_encrypts_image_assets_and_reads_them_back() {
+        let _guard = ENC_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        secure::reset_cache();
+        let tmp = TempRoot::new();
+        let db = Db::open(&tmp.0.join("app.db")).unwrap();
+        let root = tmp.0.join("clipboard");
+        let mut s = settings();
+        s.clipboard_encrypt_history = true;
+        let out = record_capture(&db, &root, &solid_image([12, 34, 56, 255], 8, 6), &s).unwrap();
+        let id = out.item.id.clone();
+
+        // 落盘必须是容器密文，且不再能当 PNG 解码。
+        let raw = std::fs::read(root.join("images").join(format!("{id}.png"))).unwrap();
+        assert!(secure::is_encrypted_blob(&raw), "原图必须为密文容器");
+        assert!(
+            crate::clipboard::image::decode_png_rgba(&raw).is_err(),
+            "密文不得被当作合法 PNG"
+        );
+        let raw_thumb = std::fs::read(root.join("thumbs").join(format!("{id}.png"))).unwrap();
+        assert!(secure::is_encrypted_blob(&raw_thumb), "缩略图必须为密文容器");
+
+        // 读取路径透明解密：字节可解码，data URL 可用。
+        let png = image_png(&db, &root, &id).expect("原图必须可读");
+        assert_eq!(&png[..4], b"\x89PNG");
+        let url = image_data_url(&db, &root, &id).unwrap().expect("应能内联");
+        assert!(url.starts_with("data:image/png;base64,"));
+        assert!(thumb_data_url(&db, &root, &id).unwrap().is_some());
+
+        // 需要文件路径的旧消费方拿到的是 transient 明文副本，可被清理。
+        let path = image_abs_path(&db, &root, &id).expect("应能解出明文路径");
+        assert!(path.starts_with(root.join("transient")));
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(&bytes[..4], b"\x89PNG");
+        assert!(purge_transient_assets(&root) >= 1);
+        assert!(!path.exists(), "启动/清空后不得残留明文副本");
+        // 删除条目时同样清理。
+        let _ = image_abs_path(&db, &root, &id);
+        delete_items(&db, &root, &[id.clone()]).unwrap();
+        assert!(!root
+            .join("transient")
+            .join(format!("{id}-image.png"))
+            .exists());
+    }
+
+    #[test]
+    fn legacy_plaintext_image_assets_stay_plaintext_and_path_is_original() {
+        let _guard = ENC_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        secure::reset_cache();
+        let tmp = TempRoot::new();
+        let db = Db::open(&tmp.0.join("app.db")).unwrap();
+        let root = tmp.0.join("clipboard");
+        let s = settings();
+        let out = record_capture(&db, &root, &solid_image([7, 8, 9, 255], 5, 4), &s).unwrap();
+        let id = out.item.id.clone();
+        let abs = root.join("images").join(format!("{id}.png"));
+        let raw = std::fs::read(&abs).unwrap();
+        assert_eq!(&raw[..4], b"\x89PNG", "默认必须保持迁移前明文 PNG");
+        assert_eq!(image_abs_path(&db, &root, &id).unwrap(), abs);
+        assert!(image_data_url(&db, &root, &id).unwrap().is_some());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn preview_cache_is_encrypted_and_reused() {
+        let _guard = ENC_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        secure::reset_cache();
+        let tmp = TempRoot::new();
+        let db = Db::open(&tmp.0.join("app.db")).unwrap();
+        let root = tmp.0.join("clipboard");
+        let mut s = settings();
+        s.clipboard_encrypt_history = true;
+        let out = record_capture(&db, &root, &solid_image([90, 120, 150, 255], 40, 30), &s).unwrap();
+        let id = out.item.id.clone();
+
+        let first = preview_data_url(&db, &root, &id).unwrap().expect("应有预览");
+        let cache = root
+            .join("thumbs")
+            .join(format!("{id}-preview-{PREVIEW_MAX_EDGE}.png"));
+        assert!(cache.exists(), "预览缓存应已落盘");
+        let stored = std::fs::read(&cache).unwrap();
+        assert!(secure::is_encrypted_blob(&stored), "派生缓存必须加密");
+        let second = preview_data_url(&db, &root, &id).unwrap().expect("缓存应可读");
+        assert_eq!(first, second, "密文缓存解密后必须与首次结果一致");
     }
 
     fn url_payload(url: &str) -> CapturedContent {
