@@ -16,9 +16,15 @@ const api = vi.hoisted(() => ({
   comicShotList: vi.fn(),
   comicSceneList: vi.fn(),
   comicMediaList: vi.fn(),
+  comicEpisodeCharacterOverrideList: vi.fn(),
+  comicEpisodeCharacterOverrideSave: vi.fn(),
+  comicEpisodeCharacterOverrideDelete: vi.fn(),
 }));
 
+const dialog = vi.hoisted(() => ({ open: vi.fn() }));
+
 vi.mock("./ipc", () => api);
+vi.mock("@tauri-apps/plugin-dialog", () => dialog);
 
 import { EpisodesPanel } from "./EpisodesPanel";
 import { buildEpisodeShotStats } from "./shotStats";
@@ -64,11 +70,42 @@ const character = {
 
 /** 本集镜头：完成 2 / 进行中 1 / 待办 1（共 4 条），用于派生统计断言。 */
 const shotsOfEpisodeA = [
-  { id: "h1", episodeId: "e1", status: "done" as const },
-  { id: "h2", episodeId: "e1", status: "done" as const },
-  { id: "h3", episodeId: "e1", status: "doing" as const },
-  { id: "h4", episodeId: "e1", status: "todo" as const },
+  { id: "h1", episodeId: "e1", status: "done" as const, characterIds: ["c1"] },
+  { id: "h2", episodeId: "e1", status: "done" as const, characterIds: ["c1"] },
+  { id: "h3", episodeId: "e1", status: "doing" as const, characterIds: ["c1"] },
+  { id: "h4", episodeId: "e1", status: "todo" as const, characterIds: ["c1"] },
 ];
+
+const overrideEp1 = {
+  id: "o1",
+  projectId: "p1",
+  episodeId: "e1",
+  characterId: "c1",
+  roleInEpisode: "学生",
+  appearanceLabel: "高中时期",
+  appearanceDescription: "16 岁，黑色短发",
+  costumeDescription: "蓝白校服",
+  hairStyleDescription: "自然短发",
+  stateDescription: "正常状态",
+  visualPromptOverride: "",
+  refImagePath: "",
+  refImageExists: false,
+  character,
+  createdAt: "2026-11-16T09:00:00+00:00",
+  updatedAt: "2026-11-16T09:00:00+00:00",
+};
+
+const overrideEp2 = {
+  ...overrideEp1,
+  id: "o2",
+  episodeId: "e2",
+  roleInEpisode: "成年",
+  appearanceLabel: "成年时期",
+  appearanceDescription: "26 岁，稍长发型",
+  costumeDescription: "深色夹克",
+  hairStyleDescription: "稍长发型",
+  stateDescription: "成熟状态",
+};
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -78,6 +115,25 @@ beforeEach(() => {
   api.comicEpisodeSave.mockResolvedValue({ episode: episodeA });
   api.comicEpisodeDelete.mockResolvedValue({ ok: true });
   api.comicEpisodeReorder.mockResolvedValue({ episodes: [episodeA, episodeB] });
+  api.comicEpisodeCharacterOverrideList.mockImplementation(
+    (_projectId: string, episodeId: string) =>
+      Promise.resolve({
+        overrides: episodeId === "e2" ? [overrideEp2] : [overrideEp1],
+      }),
+  );
+  api.comicEpisodeCharacterOverrideSave.mockImplementation(
+    (input: Record<string, unknown>) =>
+      Promise.resolve({
+        record: {
+          ...overrideEp1,
+          ...input,
+          appearanceLabel: String(input.appearanceLabel ?? ""),
+          costumeDescription: String(input.costumeDescription ?? ""),
+        },
+      }),
+  );
+  api.comicEpisodeCharacterOverrideDelete.mockResolvedValue({ ok: true });
+  dialog.open.mockResolvedValue(null);
 });
 
 afterEach(() => cleanup());
@@ -95,7 +151,7 @@ describe("EpisodesPanel", () => {
       expect(screen.getByDisplayValue("第一集")).toBeTruthy();
     });
     expect(screen.getByDisplayValue("第一场剧本正文。")).toBeTruthy();
-    expect(screen.getByText("黑发少年")).toBeTruthy();
+    expect(screen.getAllByText("黑发少年").length).toBeGreaterThan(0);
   });
 
   it("保存前裁剪已失效的角色弱引用，不向校验层发送悬空 ID", async () => {
@@ -222,5 +278,118 @@ describe("EpisodesPanel", () => {
 
     const stats = screen.getByRole("region", { name: "本集镜头统计" });
     expect(stats.textContent).toContain("镜头完成比例 0%（0/0）");
+  });
+
+  it("同一角色在两集拥有不同本集形象，切换剧集互不影响", async () => {
+    render(<EpisodesPanel {...base} archived={false} onNotice={vi.fn()} />);
+    await screen.findByText(/第一集/);
+
+    screen.getByText(/第一集/).click();
+    await waitFor(() => {
+      expect(screen.getByText(/本集形象：高中时期/)).toBeTruthy();
+    });
+    expect(screen.getByText("蓝白校服")).toBeTruthy();
+    expect(screen.getByText(/全局基础设定：196cm，25 号球衣/)).toBeTruthy();
+
+    screen.getByText(/第二集/).click();
+    await waitFor(() => {
+      expect(screen.getByText(/本集形象：成年时期/)).toBeTruthy();
+    });
+    expect(screen.getByText("深色夹克")).toBeTruthy();
+    expect(screen.queryByText("蓝白校服")).toBeNull();
+    expect(api.comicEpisodeCharacterOverrideList).toHaveBeenCalledWith("p1", "e2");
+  });
+
+  it("保存第二集形象只提交本集覆盖，不修改全局档案", async () => {
+    const onNotice = vi.fn();
+    render(<EpisodesPanel {...base} archived={false} onNotice={onNotice} />);
+    await screen.findByText(/第二集/);
+    screen.getByText(/第二集/).click();
+    await screen.findByDisplayValue("第二集");
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "编辑本集形象" })).toBeTruthy();
+    });
+    screen.getByRole("button", { name: "编辑本集形象" }).click();
+
+    await screen.findByLabelText("本集服装");
+    fireEvent.change(screen.getByLabelText("本集服装"), {
+      target: { value: "深色风衣" },
+    });
+    screen.getByRole("button", { name: "保存本集形象" }).click();
+
+    await waitFor(() => {
+      expect(api.comicEpisodeCharacterOverrideSave).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: "p1",
+          episodeId: "e2",
+          characterId: "c1",
+          costumeDescription: "深色风衣",
+        }),
+      );
+    });
+    expect(api.comicEpisodeSave).not.toHaveBeenCalled();
+    expect(onNotice).toHaveBeenCalledWith("ok", expect.stringContaining("全局档案未修改"));
+    // 全局基础设定仍在页面上，没有被本集覆盖覆盖掉。
+    expect(screen.getByText(/全局基础设定：196cm，25 号球衣/)).toBeTruthy();
+  });
+
+  it("恢复全局形象只删除本集覆盖", async () => {
+    const onNotice = vi.fn();
+    render(<EpisodesPanel {...base} archived={false} onNotice={onNotice} />);
+    await screen.findByText(/第一集/);
+    screen.getByText(/第一集/).click();
+    await screen.findByDisplayValue("第一集");
+
+    const resetButton = await screen.findByRole("button", { name: "恢复全局形象" });
+    resetButton.click();
+    const confirmReset = await screen.findByRole("button", { name: "再次点击确认恢复" });
+    confirmReset.click();
+
+    await waitFor(() => {
+      expect(api.comicEpisodeCharacterOverrideDelete).toHaveBeenCalledWith("p1", "e1", "c1");
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/沿用全局形象/)).toBeTruthy();
+    });
+    expect(onNotice).toHaveBeenCalledWith("ok", expect.stringContaining("恢复"));
+  });
+
+  it("角色仍被本集镜头引用时拒绝移出，并说明还有几个镜头", async () => {
+    render(<EpisodesPanel {...base} archived={false} onNotice={vi.fn()} />);
+    await screen.findByText(/第一集/);
+    screen.getByText(/第一集/).click();
+    await screen.findByDisplayValue("第一集");
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "移出本集" })).toBeTruthy();
+    });
+    screen.getByRole("button", { name: "移出本集" }).click();
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "移出本集" })).toBeNull();
+    });
+    screen.getByRole("button", { name: "保存剧集" }).click();
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert").textContent).toContain("仍被本集 4 个镜头引用");
+    });
+    expect(api.comicEpisodeSave).not.toHaveBeenCalled();
+  });
+
+  it("归档项目：本集形象编辑与恢复入口置灰", async () => {
+    render(<EpisodesPanel {...base} archived onNotice={vi.fn()} />);
+    await screen.findByText(/第一集/);
+    screen.getByText(/第一集/).click();
+    await screen.findByDisplayValue("第一集");
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "编辑本集形象" })).toBeTruthy();
+    });
+    expect(
+      (screen.getByRole("button", { name: "编辑本集形象" }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(
+      (screen.getByRole("button", { name: "恢复全局形象" }) as HTMLButtonElement).disabled,
+    ).toBe(true);
   });
 });

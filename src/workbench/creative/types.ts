@@ -41,6 +41,8 @@ export type CreativeModuleId =
   // AI 漫剧 C1
   | "episodes"
   | "shots"
+  // AI 漫剧 C3（v96）：提示词模板与 Skill 快照
+  | "prompts"
   // 通用 U1
   | "milestones"
   | "materials"

@@ -19,6 +19,7 @@ const api = vi.hoisted(() => ({
   comicShotDelete: vi.fn(),
   comicShotReorder: vi.fn(),
   comicMediaList: vi.fn(),
+  comicEpisodeCharacterOverrideList: vi.fn(),
 }));
 
 const fs = vi.hoisted(() => ({
@@ -51,7 +52,7 @@ const episode = {
   script: "",
   status: "scripting" as const,
   progress: 30,
-  characterIds: [],
+  characterIds: ["c1"],
   shotCount: 3,
   sortOrder: 0,
   createdAt: "2026-11-16T09:00:00+00:00",
@@ -137,6 +138,7 @@ beforeEach(() => {
   api.comicShotDelete.mockResolvedValue({ ok: true });
   api.comicShotReorder.mockResolvedValue({ shots: [shotA, shotB] });
   api.comicMediaList.mockResolvedValue({ versions: [version, missingVersion] });
+  api.comicEpisodeCharacterOverrideList.mockResolvedValue({ overrides: [] });
   fs.fsThumbnail.mockResolvedValue(null);
   fs.fsReadBinary.mockRejectedValue(new Error("读取失败"));
   fs.fsPreviewImage.mockResolvedValue(null);
@@ -301,5 +303,112 @@ describe("ShotsPanel", () => {
 
     expect(screen.getByText(/v1 线稿 · 图片/)).toBeTruthy();
     expect(api.comicMediaList).toHaveBeenCalledWith("p1");
+  });
+
+  it("只展示本集出场角色，不展示其他角色", async () => {
+    const other = { ...character, id: "c2", name: "队友" };
+    api.comicCharacterList.mockResolvedValue({ characters: [character, other] });
+    api.comicEpisodeCharacterOverrideList.mockResolvedValue({
+      overrides: [
+        {
+          id: "o1",
+          projectId: "p1",
+          episodeId: "e1",
+          characterId: "c1",
+          roleInEpisode: "",
+          appearanceLabel: "高中时期",
+          appearanceDescription: "",
+          costumeDescription: "蓝白校服",
+          hairStyleDescription: "",
+          stateDescription: "",
+          visualPromptOverride: "",
+          refImagePath: "",
+          refImageExists: false,
+          character,
+          createdAt: "2026-11-16T09:00:00+00:00",
+          updatedAt: "2026-11-16T09:00:00+00:00",
+        },
+      ],
+    });
+    render(<ShotsPanel {...base} archived={false} onNotice={vi.fn()} />);
+    await screen.findByText(/A-镜头1描述/);
+    screen.getByText(/A-镜头1描述/).click();
+    await screen.findByDisplayValue("A-镜头1描述");
+
+    await waitFor(() => {
+      expect(screen.getByText(/黑发少年 · 本集形象：高中时期/)).toBeTruthy();
+    });
+    expect(screen.queryByText(/队友/)).toBeNull();
+  });
+
+  it("本集没有出场角色时给出明确空状态并可切到剧集模块", async () => {
+    api.comicEpisodeList.mockResolvedValue({
+      episodes: [{ ...episode, characterIds: [] }],
+    });
+    const switchModule = vi.fn();
+    render(
+      <ShotsPanel
+        {...base}
+        switchModule={switchModule}
+        archived={false}
+        onNotice={vi.fn()}
+      />,
+    );
+
+    await screen.findByText(/A-镜头1描述/);
+    expect(screen.getByText(/本集还没有出场角色/)).toBeTruthy();
+    expect(screen.getByText(/分镜不会回退到项目全部角色/)).toBeTruthy();
+
+    screen.getByRole("button", { name: "去剧集添加出场角色" }).click();
+    expect(switchModule).toHaveBeenCalledWith("episodes");
+  });
+
+  it("后端拒绝跨集角色时错误可见，不静默吞错", async () => {
+    api.comicShotSave.mockRejectedValue(
+      new Error("角色「队友」不在本集出场名单，不能用于本集分镜"),
+    );
+    const onNotice = vi.fn();
+    render(<ShotsPanel {...base} archived={false} onNotice={onNotice} />);
+    await screen.findByText(/A-镜头1描述/);
+    screen.getByText(/A-镜头1描述/).click();
+    await screen.findByDisplayValue("A-镜头1描述");
+
+    screen.getByRole("button", { name: "保存镜头" }).click();
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert").textContent).toContain("不在本集出场名单");
+    });
+    expect(onNotice).toHaveBeenCalledWith("error", expect.stringContaining("不在本集出场名单"));
+  });
+
+  it("切换剧集后角色名单与覆盖刷新", async () => {
+    const other = { ...character, id: "c2", name: "队友" };
+    const episode2 = {
+      ...episode,
+      id: "e2",
+      episodeNo: 2,
+      title: "第二集",
+      characterIds: ["c2"],
+    };
+    api.comicEpisodeList.mockResolvedValue({ episodes: [episode, episode2] });
+    api.comicCharacterList.mockResolvedValue({ characters: [character, other] });
+    api.comicShotList.mockImplementation((_projectId: string, episodeId: string | null) =>
+      Promise.resolve({ shots: episodeId === "e2" ? [] : [shotA, shotB] }),
+    );
+    render(<ShotsPanel {...base} archived={false} onNotice={vi.fn()} />);
+    await screen.findByText(/A-镜头1描述/);
+
+    fireEvent.click(screen.getByRole("combobox", { name: "剧集" }));
+    const episodeOption = await screen.findByRole("option", { name: /第二集/ });
+    fireEvent.click(episodeOption);
+
+    await screen.findByRole("button", { name: "加镜头" });
+    screen.getByRole("button", { name: "加镜头" }).click();
+
+    await waitFor(() => {
+      expect(screen.getByText(/队友 · 沿用全局形象/)).toBeTruthy();
+    });
+    expect(screen.queryByText(/黑发少年/)).toBeNull();
+    expect(api.comicEpisodeCharacterOverrideList).toHaveBeenCalledWith("p1", "e2");
   });
 });

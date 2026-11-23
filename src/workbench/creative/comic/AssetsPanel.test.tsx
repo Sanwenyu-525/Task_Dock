@@ -19,6 +19,12 @@ const api = vi.hoisted(() => ({
   comicShotList: vi.fn(),
   comicCharacterList: vi.fn(),
   comicSceneList: vi.fn(),
+  comicEpisodeList: vi.fn(),
+  comicGenerationRecordList: vi.fn(),
+  comicGenerationRecordCreate: vi.fn(),
+  comicPromptTemplateList: vi.fn(),
+  comicPromptVersionList: vi.fn(),
+  comicSkillSnapshotList: vi.fn(),
 }));
 
 const fs = vi.hoisted(() => ({
@@ -145,6 +151,32 @@ beforeEach(() => {
   api.comicMediaSave.mockResolvedValue({ version: missing });
   api.comicMediaAdopt.mockResolvedValue({ version: adopted });
   api.comicMediaDelete.mockResolvedValue({ ok: true });
+  api.comicEpisodeList.mockResolvedValue({
+    episodes: [
+      {
+        id: "e1",
+        projectId: "p1",
+        episodeNo: 1,
+        title: "第一集",
+        synopsis: "",
+        script: "",
+        status: "draft",
+        progress: 0,
+        characterIds: [],
+        shotCount: 1,
+        sortOrder: 0,
+        createdAt: "2026-11-16T09:00:00+00:00",
+        updatedAt: "2026-11-16T09:00:00+00:00",
+      },
+    ],
+  });
+  api.comicGenerationRecordList.mockResolvedValue({ runs: [] });
+  api.comicGenerationRecordCreate.mockResolvedValue({
+    run: { id: "run1" },
+  });
+  api.comicPromptTemplateList.mockResolvedValue({ templates: [] });
+  api.comicPromptVersionList.mockResolvedValue({ versions: [] });
+  api.comicSkillSnapshotList.mockResolvedValue({ snapshots: [] });
   fs.fsThumbnail.mockResolvedValue(null);
   fs.fsReadBinary.mockRejectedValue(new Error("读取失败"));
   fs.fsPreviewImage.mockResolvedValue(null);

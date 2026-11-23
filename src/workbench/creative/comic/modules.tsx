@@ -9,10 +9,12 @@ import { EpisodesPanel } from "./EpisodesPanel";
 import { ShotsPanel } from "./ShotsPanel";
 import { CharactersPanel } from "./CharactersPanel";
 import { AssetsPanel } from "./AssetsPanel";
+import { PromptsPanel } from "./PromptsPanel";
 
 export const COMIC_CREATIVE_MODULES: CreativeModuleMap = {
   episodes: EpisodesPanel,
   shots: ShotsPanel,
   characters: CharactersPanel,
   assets: AssetsPanel,
+  prompts: PromptsPanel,
 };

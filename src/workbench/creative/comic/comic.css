@@ -483,3 +483,235 @@ button.comic-list-row:hover {
     transition: none;
   }
 }
+
+/* ── 每集角色形象卡片（v96）──────────────────────────────────────────── */
+
+.comic-character-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.comic-character-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 10px;
+  min-width: 0;
+}
+
+.comic-character-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--surface-raised);
+  padding: 10px;
+}
+
+.comic-character-card-head {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  min-width: 0;
+}
+
+.comic-character-card-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.comic-character-global {
+  overflow-wrap: anywhere;
+}
+
+.comic-character-badge {
+  align-self: flex-start;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  padding: 1px 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.comic-character-badge[data-tone="override"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.comic-character-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 6px 10px;
+  margin: 0;
+}
+
+.comic-character-facts div {
+  min-width: 0;
+}
+
+.comic-character-facts dt {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.comic-character-facts dd {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.comic-character-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.comic-appearance-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 10px;
+  min-width: 0;
+}
+
+.comic-empty-roster {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.comic-empty-roster p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+/* ── 提示词与 Skill（v96）──────────────────────────────────────────── */
+
+.comic-prompts-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.comic-prompt-version-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.comic-prompt-body {
+  min-height: 260px;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+  line-height: 1.55;
+}
+
+.comic-prompt-params {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+}
+
+.comic-prompt-vars {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  padding: 8px 10px;
+  min-width: 0;
+}
+
+.comic-prompt-vars summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.comic-prompt-vars code {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+  font-size: 11px;
+  color: var(--text-primary);
+}
+
+.comic-prompt-preview,
+.comic-prompt-skill,
+.comic-prompt-snapshot {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  padding: 10px;
+}
+
+.comic-prompt-preview-result {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.comic-prompt-pre {
+  margin: 0;
+  max-height: 420px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  background: var(--surface-sunken, var(--surface-raised));
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  padding: 8px 10px;
+}
+
+.comic-prompt-manifest {
+  max-height: 240px;
+}
+
+.comic-prompt-skill-name {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* ── 外部生成记录（v96）──────────────────────────────────────────── */
+
+.comic-generation-runs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 12px;
+}
+
+.comic-generation-run {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  padding: 8px 10px;
+}
+
+.comic-generation-run-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  align-items: baseline;
+  justify-content: space-between;
+  min-width: 0;
+}

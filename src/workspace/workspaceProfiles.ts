@@ -41,6 +41,8 @@ export type WorkspaceModuleId =
   // 漫剧 C1
   | "episodes"
   | "shots"
+  // 漫剧 C3（v96）：提示词模板与 Skill 快照
+  | "prompts"
   // 通用 U1
   | "milestones"
   | "materials"
@@ -75,6 +77,7 @@ export type WorkspaceCapabilityId =
   | "game.test"
   | "comic.scripts"
   | "comic.review"
+  | "comic.promptManagement"
   | "general.templates"
   | "general.milestones"
   | "general.materials"
@@ -333,6 +336,20 @@ export const WORKSPACE_CAPABILITIES: Record<WorkspaceCapabilityId, WorkspaceCapa
     condition: "AI 漫剧项目；归档只读",
     fallback: "只登记素材引用与采用状态；未接入任何生成模型，不伪造产物",
   },
+  // 漫剧第三阶段（v96）：只做提示词/Skill 版本管理、预览与外部生成追溯。
+  // 能力状态诚实为 limited：`comic.generate` 仍为 unavailable，不渲染生成按钮。
+  "comic.promptManagement": {
+    id: "comic.promptManagement",
+    label: "提示词与 Skill 版本",
+    summary: "提示词模板 + 不可变版本、按真实剧集/镜头渲染预览、Skill 内容快照、外部生成追溯。",
+    state: "limited",
+    provider:
+      "comic_prompt_templates / comic_prompt_versions / comic_skill_snapshots / comic_generation_runs（v96）+ capability_skills",
+    condition: "AI 漫剧项目；归档只读；Skill 需在能力中心启用且未丢失",
+    fallback:
+      "只提供版本管理、纯文本渲染预览与外部生成记录；不调用图像/视频模型，生成仍由外部工具完成",
+    action: { kind: "module", target: "prompts" },
+  },
   "general.templates": {
     id: "general.templates",
     label: "项目模板",
@@ -509,6 +526,8 @@ const COMIC_MODULES: WorkspaceModule[] = [
   { id: "shots", label: "分镜" },
   { id: "characters", label: "角色与场景" },
   { id: "assets", label: "素材与产物" },
+  // C3（v96）：提示词模板 / 不可变版本 / Skill 快照 / 渲染预览
+  { id: "prompts", label: "提示词与 Skill" },
   { id: "links", label: "任务关联" },
   { id: "settings", label: "设置" },
 ];
@@ -631,6 +650,7 @@ export const WORKSPACE_PROFILES: Record<WorkspaceKind, WorkspaceProfile> = {
       "comic.generate",
       "comic.scripts",
       "comic.review",
+      "comic.promptManagement",
     ],
     recommendedTools: ["用事项阶段 episode / shot 记录剧集与镜头"],
   },
@@ -770,6 +790,7 @@ function isModuleId(value: unknown): value is WorkspaceModuleId {
     value === "builds" ||
     value === "episodes" ||
     value === "shots" ||
+    value === "prompts" ||
     value === "milestones" ||
     value === "materials" ||
     value === "git" ||

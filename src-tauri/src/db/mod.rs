@@ -2180,6 +2180,10 @@ CREATE INDEX idx_sec_audit_cat ON security_audit_log(category, created_at);
     // 统一项目身份第三轮（v93）：项目根乐观并发版本列（Project/Plan 双聚合 revision 分离）。
     crate::project_hub::schema::MIGRATION_93,
     crate::collab::schema::MIGRATION_94,
+    // 漫剧第三阶段（v96）：每集角色形象覆盖、提示词不可变版本、Skill 内容快照、
+    // 外部生成追溯；并在迁移内回填「历史镜头角色 → 剧集出场名单」，避免新校验卡住旧数据。
+    // 注意：v95 已被小说章节资料占用（并行任务），此处顺延，不能复用版本号。
+    crate::commands::comic_workspace::MIGRATION_96,
 ];
 
 /// 历史测试数据的保守回填（幂等）。

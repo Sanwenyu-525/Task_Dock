@@ -11,6 +11,7 @@ import { basename } from "../../../lib/filesWorkspace/pathUtils";
 import type { CreativeModuleProps } from "../types";
 import {
   comicCharacterList,
+  comicEpisodeCharacterOverrideList,
   comicMediaList,
   comicSceneList,
   comicEpisodeList,
@@ -25,11 +26,13 @@ import {
   SHOT_STATUS_LABELS,
   type ComicCharacter,
   type ComicEpisode,
+  type ComicEpisodeCharacterOverride,
   type ComicMediaVersion,
   type ComicScene,
   type ComicShot,
   type ShotStatus,
 } from "./types";
+import { indexOverrides, episodeLookLabel, getEffectiveEpisodeCharacter } from "./episodeCharacters";
 import { ArchivedBanner, errorText, Field, LoadError } from "./shared";
 import { MediaPreview, MediaThumb } from "./MediaPreview";
 
@@ -81,8 +84,12 @@ export function ShotsPanel({ projectId, archived, onNotice, switchModule }: Crea
   const [deleteArmed, setDeleteArmed] = useState(false);
   /** 展开查看的素材版本（大图 + 标注 + 修改意见）；null = 未展开。 */
   const [previewVersionId, setPreviewVersionId] = useState<string | null>(null);
+  /** 当前剧集角色形象覆盖（v96）：只用于角色选项展示，不改分镜数据。 */
+  const [overrides, setOverrides] = useState<ComicEpisodeCharacterOverride[]>([]);
+  const [overrideError, setOverrideError] = useState<string | null>(null);
 
   const seqRef = useRef(0);
+  const overrideSeqRef = useRef(0);
 
   const loadEpisodes = useCallback(async () => {
     const token = ++seqRef.current;
@@ -192,6 +199,62 @@ export function ShotsPanel({ projectId, archived, onNotice, switchModule }: Crea
     label: `第 ${episode.episodeNo} 集 · ${episode.title}`,
   }));
 
+  // ── 本集角色名单（P0）────────────────────────────────────────────────
+  // 分镜角色只能来自 `activeEpisode.characterIds`；绝不回退到项目全部角色。
+  const activeEpisode = useMemo(
+    () => episodes.find((episode) => episode.id === activeEpisodeId) ?? null,
+    [episodes, activeEpisodeId],
+  );
+  const episodeCharacterIds = useMemo(
+    () => new Set(activeEpisode?.characterIds ?? []),
+    [activeEpisode],
+  );
+  const availableCharacters = useMemo(
+    () => characters.filter((character) => episodeCharacterIds.has(character.id)),
+    [characters, episodeCharacterIds],
+  );
+  const overrideById = useMemo(() => indexOverrides(overrides), [overrides]);
+
+  // 切剧集：关闭上一集的编辑态，避免把旧镜头草稿保存到新剧集。
+  useEffect(() => {
+    setSelectedId(null);
+    setCreating(false);
+    setDraft(EMPTY_DRAFT);
+    setPreviewVersionId(null);
+    setSaveError(null);
+    setDeleteArmed(false);
+  }, [activeEpisodeId]);
+
+  // 本集形象覆盖随剧集刷新；失败只提示，不阻断分镜编辑（角色名仍可用全局档案）。
+  useEffect(() => {
+    const token = ++overrideSeqRef.current;
+    if (!activeEpisodeId) {
+      setOverrides([]);
+      setOverrideError(null);
+      return;
+    }
+    comicEpisodeCharacterOverrideList(projectId, activeEpisodeId)
+      .then((result) => {
+        if (token !== overrideSeqRef.current) return;
+        setOverrides(result.overrides ?? []);
+        setOverrideError(null);
+      })
+      .catch((error) => {
+        if (token !== overrideSeqRef.current) return;
+        setOverrides([]);
+        setOverrideError(errorText(error));
+      });
+  }, [projectId, activeEpisodeId]);
+
+  /** 角色选项副标题：本集形象名称（没有覆盖时明确写「沿用全局形象」）。 */
+  function characterOptionLabel(character: ComicCharacter): string {
+    const effective = getEffectiveEpisodeCharacter(
+      character,
+      overrideById.get(character.id) ?? null,
+    );
+    return `${character.name} · ${episodeLookLabel(effective)}`;
+  }
+
   async function saveShot() {
     if (archived || saving) return;
     if (!activeEpisodeId) {
@@ -204,10 +267,17 @@ export function ShotsPanel({ projectId, archived, onNotice, switchModule }: Crea
       setSaveError("预计时长必须是不小于 0 的数字");
       return;
     }
-    // 角色/场景为弱引用：档案被删除后草稿里可能残留失效 ID，保存前按当前清单裁剪，
-    // 避免不可见的悬空引用把后端归属校验卡住。
-    const knownCharacterIds = new Set(characters.map((character) => character.id));
-    const characterIds = draft.characterIds.filter((id) => knownCharacterIds.has(id));
+    // 角色/场景为弱引用：档案被删除或角色被移出本集后，草稿里可能残留失效 ID。
+    // 角色一律按「本集出场名单」裁剪（后端会再次拒绝跨集角色）；发生裁剪时明确提示，
+    // 不静默丢失用户选择。
+    const allowedCharacterIds = new Set(availableCharacters.map((character) => character.id));
+    const characterIds = draft.characterIds.filter((id) => allowedCharacterIds.has(id));
+    if (characterIds.length !== draft.characterIds.length) {
+      onNotice(
+        "info",
+        "已忽略不在本集出场名单中的角色；如需使用，请先在「剧集」模块把角色加入本集",
+      );
+    }
     const sceneId =
       draft.sceneId && scenes.some((scene) => scene.id === draft.sceneId)
         ? draft.sceneId
@@ -392,6 +462,40 @@ export function ShotsPanel({ projectId, archived, onNotice, switchModule }: Crea
       <div className="comic-pane comic-pane-detail">
         {archived && <ArchivedBanner />}
 
+        {/* P0：本集没有出场角色时，即使还没打开镜头编辑也要给出明确空状态与出口。 */}
+        {activeEpisode && availableCharacters.length === 0 && (
+          <div className="comic-empty-roster ws-notice" data-tone="info" role="status">
+            <p>
+              本集还没有出场角色，无法为分镜选择角色。
+              <strong>分镜不会回退到项目全部角色。</strong>
+            </p>
+            <p className="ws-meta">
+              请先在「剧集」模块勾选本集出场角色并保存。
+              {characters.length === 0
+                ? " 本项目还没有全局角色，需要先建立角色档案。"
+                : ""}
+            </p>
+            <div className="ws-form-actions">
+              <button
+                type="button"
+                className="ws-btn ws-btn-primary"
+                onClick={() => switchModule("episodes")}
+              >
+                去剧集添加出场角色
+              </button>
+              {characters.length === 0 && (
+                <button
+                  type="button"
+                  className="ws-btn"
+                  onClick={() => switchModule("characters")}
+                >
+                  去角色与场景建立角色
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
         {!editorOpen && !loading && (
           <p className="ws-empty">从左侧选择镜头，或为当前剧集加一个镜头。</p>
         )}
@@ -492,11 +596,21 @@ export function ShotsPanel({ projectId, archived, onNotice, switchModule }: Crea
               </Field>
             </div>
 
-            {characters.length > 0 && (
-              <fieldset className="comic-check-group">
-                <legend className="comic-field-label">出场角色</legend>
+            <fieldset className="comic-check-group">
+              <legend className="comic-field-label">
+                出场角色
+                <em className="comic-field-hint">
+                  只显示本集出场名单；跨集角色由后端拒绝
+                </em>
+              </legend>
+
+              {!activeEpisode && (
+                <p className="ws-meta">先在左上角选择一个剧集，再为该集镜头选择角色。</p>
+              )}
+
+              {activeEpisode && availableCharacters.length > 0 && (
                 <div className="comic-check-grid">
-                  {characters.map((character) => (
+                  {availableCharacters.map((character) => (
                     <label key={character.id} className="comic-check">
                       <input
                         type="checkbox"
@@ -504,12 +618,24 @@ export function ShotsPanel({ projectId, archived, onNotice, switchModule }: Crea
                         disabled={archived || saving}
                         onChange={() => toggleCharacter(character.id)}
                       />
-                      <span>{character.name}</span>
+                      <span>{characterOptionLabel(character)}</span>
                     </label>
                   ))}
                 </div>
-              </fieldset>
-            )}
+              )}
+
+              {activeEpisode && availableCharacters.length === 0 && (
+                <p className="ws-meta">
+                  本集暂无出场角色：请按上方提示先到「剧集」模块添加，再回到分镜选择角色。
+                </p>
+              )}
+
+              {overrideError && (
+                <p className="ws-notice" data-tone="info" role="status">
+                  <span>本集形象覆盖加载失败（不影响选择角色）：{overrideError}</span>
+                </p>
+              )}
+            </fieldset>
 
             <fieldset className="comic-check-group comic-shot-media">
               <legend className="comic-field-label">
@@ -545,6 +671,7 @@ export function ShotsPanel({ projectId, archived, onNotice, switchModule }: Crea
                           <span className="ws-meta">
                             {MEDIA_STATUS_LABELS[version.status]}
                             {!version.fileExists ? " · 文件缺失" : ""}
+                            {version.generationLabel ? ` · 生成：${version.generationLabel}` : ""}
                           </span>
                         </span>
                         <button
