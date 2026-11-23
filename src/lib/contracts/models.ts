@@ -929,6 +929,14 @@ export interface ExportPackage {
   warnings: string[];
 }
 
+/** Agent 导出目录清理结果：只含计数，不回传具体路径。 */
+export interface ExportPurgeReport {
+  removed: number;
+  skipped: number;
+  failed: number;
+  bytes: number;
+}
+
 // ── 句式命令（ux.command-phrases）──
 export interface PhraseTaskCandidate {
   id: string;

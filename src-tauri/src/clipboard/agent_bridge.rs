@@ -377,6 +377,100 @@ fn kind_label(kind: &str) -> &'static str {
 /// 名称生成器持续返回已存在名字时无限循环。
 const EXPORT_DIR_MAX_ATTEMPTS: usize = 5;
 
+/// 清理 Agent 导出目录的结果：只统计，不回传具体路径，避免把用户目录写进日志/界面。
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportPurgeReport {
+    pub removed: usize,
+    pub skipped: usize,
+    pub failed: usize,
+    pub bytes: u64,
+}
+
+/// 递归统计目录大小；符号链接与非常规文件不计入，也不跟随。
+fn dir_size_no_follow(path: &Path) -> u64 {
+    let mut total = 0u64;
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(md) = std::fs::symlink_metadata(entry.path()) else {
+                continue;
+            };
+            if md.file_type().is_symlink() {
+                continue;
+            }
+            if md.is_dir() {
+                stack.push(entry.path());
+            } else if md.is_file() {
+                total = total.saturating_add(md.len());
+            }
+        }
+    }
+    total
+}
+
+/// 删除 `clipboard-exports/` 下超过保留期的导出目录。
+///
+/// - 只处理该目录的直接子目录；不删除父目录、普通文件或符号链接；
+/// - 年龄按目录 mtime 计算（导出写入期间 mtime 会刷新，不会误删正在写的目录）；
+/// - `older_than_days = 0` 表示「全部清理」，供测试与显式全量清理使用；界面最小 1 天；
+/// - 单个目录删除失败只计失败，不中断其余清理，也不回滚已删目录。
+pub fn purge_exports(app_data: &Path, older_than_days: i64) -> AppResult<ExportPurgeReport> {
+    let base = app_data.join("clipboard-exports");
+    let mut report = ExportPurgeReport::default();
+    if !base.exists() {
+        return Ok(report);
+    }
+    let age_limit =
+        Duration::from_secs(older_than_days.clamp(0, 3650).saturating_mul(24 * 60 * 60) as u64);
+    let entries = std::fs::read_dir(&base)?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(md) = std::fs::symlink_metadata(&path) else {
+            report.failed += 1;
+            continue;
+        };
+        if md.file_type().is_symlink() || !md.is_dir() {
+            report.skipped += 1;
+            continue;
+        }
+        let age = md
+            .modified()
+            .ok()
+            .and_then(|m| SystemTime::now().duration_since(m).ok())
+            .unwrap_or_default();
+        if age < age_limit {
+            report.skipped += 1;
+            continue;
+        }
+        let size = dir_size_no_follow(&path);
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => {
+                report.removed += 1;
+                report.bytes = report.bytes.saturating_add(size);
+            }
+            Err(e) => {
+                report.failed += 1;
+                tracing::warn!(
+                    error = %e,
+                    "清理过期剪贴板导出目录失败（目录保留，不影响其余导出）"
+                );
+            }
+        }
+    }
+    tracing::info!(
+        removed = report.removed,
+        skipped = report.skipped,
+        failed = report.failed,
+        bytes = report.bytes,
+        "剪贴板 Agent 导出目录清理完成"
+    );
+    Ok(report)
+}
+
 /// 独占创建一个**全新**导出目录并返回其路径。
 ///
 /// 安全边界（历史导出目录与用户数据不可被误删/覆盖）：
@@ -1042,6 +1136,59 @@ mod tests {
         dirs.dedup();
         assert_eq!(dirs.len(), 8, "并发导出必须各自得到独立目录");
         assert!(dirs.iter().all(|d| d.is_dir()));
+    }
+
+    /// 清理只作用于 `clipboard-exports/` 的直接子目录：父目录、根下普通文件与
+    /// 其他目录（例如迁移备份）都不得被删除。
+    #[test]
+    fn purge_exports_removes_only_direct_export_dirs() {
+        let base = Temp::new();
+        let exports = base.0.join("clipboard-exports");
+        std::fs::create_dir_all(&exports).unwrap();
+        let first = exports.join("export-a");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::write(first.join("clipboard.md"), b"plaintext export").unwrap();
+        let second = exports.join("export-b");
+        std::fs::create_dir_all(&second).unwrap();
+        std::fs::write(second.join("manifest.json"), b"{}").unwrap();
+        std::fs::write(exports.join("keep-note.txt"), b"not an export dir").unwrap();
+        let sibling = base.0.join("clipboard-backups");
+        std::fs::create_dir_all(&sibling).unwrap();
+        std::fs::write(sibling.join("db.sqlite"), b"backup").unwrap();
+
+        // 0 天 = 全部清理，避免测试依赖真实时钟或改文件时间。
+        let report = purge_exports(&base.0, 0).unwrap();
+        assert_eq!(report.removed, 2, "两个导出目录都应被删除");
+        assert_eq!(report.failed, 0);
+        assert!(report.bytes >= 16 + 2, "应统计删除前的明文体积");
+        assert!(!first.exists() && !second.exists());
+        assert_eq!(
+            std::fs::read_to_string(exports.join("keep-note.txt")).unwrap(),
+            "not an export dir",
+            "根下普通文件不属于导出目录，不得删除"
+        );
+        assert!(exports.is_dir(), "父目录本身必须保留");
+        assert!(sibling.join("db.sqlite").exists(), "其他数据目录不得被清理");
+    }
+
+    /// 大保留期下新导出必须保留，并计入 skipped；缺失目录时返回零结果而不是报错。
+    #[test]
+    fn purge_exports_keeps_recent_dirs_and_tolerates_missing_root() {
+        let base = Temp::new();
+        let missing = purge_exports(&base.0, 7).unwrap();
+        assert_eq!(
+            (missing.removed, missing.skipped, missing.failed),
+            (0, 0, 0)
+        );
+
+        let exports = base.0.join("clipboard-exports");
+        std::fs::create_dir_all(exports.join("fresh-export")).unwrap();
+        std::fs::write(exports.join("fresh-export").join("clipboard.md"), b"recent").unwrap();
+        let report = purge_exports(&base.0, 3650).unwrap();
+        assert_eq!(report.removed, 0, "未到保留期的导出不得删除");
+        assert_eq!(report.skipped, 1);
+        assert_eq!(report.bytes, 0);
+        assert!(exports.join("fresh-export").join("clipboard.md").exists());
     }
 
     /// 真机性能探针：需要本机已安装/运行部分 Agent，结果依赖环境，故默认不参与 CI。

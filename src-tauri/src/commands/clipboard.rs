@@ -1223,6 +1223,20 @@ pub async fn clipboard_export_for_agent(
     Ok(pkg)
 }
 
+/// 清理过期的 Agent 导出目录（用户手动触发）；只删 `clipboard-exports/<uuid>/` 子目录，
+/// 不触碰当前正在写入的目录、普通文件或符号链接。默认保留 7 天。
+#[tauri::command]
+pub async fn clipboard_purge_agent_exports(
+    app: AppHandle,
+    older_than_days: Option<i64>,
+) -> AppResult<agent_bridge::ExportPurgeReport> {
+    let data_dir = crate::app_data_dir(&app);
+    let days = older_than_days.unwrap_or(7);
+    tauri::async_runtime::spawn_blocking(move || agent_bridge::purge_exports(&data_dir, days))
+        .await
+        .map_err(|e| AppError::Agent(format!("导出清理后台任务异常结束：{e}")))?
+}
+
 #[tauri::command]
 pub fn clipboard_export_preview(
     state: State<'_, Arc<ClipboardRuntime>>,

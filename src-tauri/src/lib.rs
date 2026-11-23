@@ -1811,6 +1811,7 @@ pub fn run() {
             commands::clipboard::clipboard_status,
             commands::clipboard::clipboard_agent_targets,
             commands::clipboard::clipboard_export_for_agent,
+            commands::clipboard::clipboard_purge_agent_exports,
             commands::clipboard::clipboard_export_preview,
             commands::clipboard::clipboard_probe,
             commands::clipboard::clipboard_link_snapshot,

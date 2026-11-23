@@ -230,7 +230,7 @@ ACCESS_LOCK
   `SendInput` 均在锁外，目标应用无响应不会阻塞用户复制，也不会持锁等待目标。
 - 无法打开剪贴板时返回“剪贴板被其他程序占用，请稍后重试”，不进入半写入状态。
 
-## 四、IPC 命令（51 个）
+## 四、IPC 命令（52 个）
 
 注册位置：`src-tauri/src/lib.rs` 的 `invoke_handler`；前端封装：`src/lib/bridge.ts`。
 
@@ -245,7 +245,7 @@ ACCESS_LOCK
 | 快照关联（v0.5 并行模块） | `clipboard_link_snapshot`、`clipboard_unlink_snapshot`、`clipboard_snapshot_links` |
 | 粘贴 | `clipboard_visible_targets`、`clipboard_foreground_target`、`clipboard_paste_precheck`、`clipboard_paste_group`、`clipboard_paste_items`、`clipboard_paste_cancel`、`clipboard_paste_resume`、`clipboard_paste_job`、`clipboard_paste_active` |
 | 维护/诊断 | `clipboard_cleanup`、`clipboard_clear_history`、`clipboard_status`、`clipboard_probe` |
-| Agent | `clipboard_agent_targets`、`clipboard_export_for_agent`、`clipboard_export_preview` |
+| Agent | `clipboard_agent_targets`、`clipboard_export_for_agent`、`clipboard_export_preview`、`clipboard_purge_agent_exports`（手动清理过期导出目录，默认保留 7 天） |
 
 约定：
 

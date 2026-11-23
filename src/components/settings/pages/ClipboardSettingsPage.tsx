@@ -7,11 +7,13 @@
 import { useEffect, useRef, useState } from "react";
 import { Clipboard, RefreshCw, Trash2 } from "lucide-react";
 import { NumberInput, Switch } from "../../ui";
+import { ConfirmDialog } from "../../ui/Dialog";
 import SettingsPageLayout from "../SettingsPageLayout";
 import {
   clipboardCleanup,
   clipboardEncryptHistoryMigrate,
   clipboardProbe,
+  clipboardPurgeAgentExports,
   clipboardRepairConfig,
   clipboardStats,
   clipboardStatus,
@@ -35,6 +37,9 @@ export default function ClipboardSettingsPage() {
   const [clipConfigOrigin, setClipConfigOrigin] = useState<string | null>(null);
   const [excludeApps, setExcludeApps] = useState("");
   const [busyKey, setBusyKey] = useState<string | null>(null);
+  /** Agent 导出目录清理：保留天数（默认 7 天）与确认框。 */
+  const [exportRetentionDays, setExportRetentionDays] = useState(7);
+  const [pendingExportPurge, setPendingExportPurge] = useState(false);
   /** 读取失败显示真实错误与重试，不把失败伪装成空数据。 */
   const [dataLoadError, setDataLoadError] = useState<string | null>(null);
   const mountedRef = useRef(false);
@@ -155,7 +160,8 @@ export default function ClipboardSettingsPage() {
     }
   }
 
-  async function onClipCleanup() {    setBusyKey("clip-cleanup");
+  async function onClipCleanup() {
+    setBusyKey("clip-cleanup");
     try {
       const r = await clipboardCleanup();
       await refreshClipStats();
@@ -171,6 +177,40 @@ export default function ClipboardSettingsPage() {
       showToast(t("settings.clipboard.cleanupFailed", { error: String(e) }), { kind: "error" });
     } finally {
       setBusyKey(null);
+    }
+  }
+
+  /** 手动清理过期 Agent 导出；后端只删直接子目录，失败目录保留并计数。 */
+  async function onPurgeExports() {
+    setBusyKey("clip-exports");
+    try {
+      const r = await clipboardPurgeAgentExports(exportRetentionDays);
+      if (r.failed > 0) {
+        showToast(
+          t("settings.clipboard.exportCleanupPartial", {
+            removed: r.removed,
+            failed: r.failed,
+            size: formatBytes(r.bytes),
+          }),
+          { kind: "error" },
+        );
+      } else {
+        showToast(
+          t("settings.clipboard.exportCleanupDone", {
+            removed: r.removed,
+            skipped: r.skipped,
+            size: formatBytes(r.bytes),
+          }),
+          { kind: "success" },
+        );
+      }
+    } catch (e) {
+      showToast(t("settings.clipboard.exportCleanupFailed", { error: errorMessage(e) }), {
+        kind: "error",
+      });
+    } finally {
+      setBusyKey(null);
+      setPendingExportPurge(false);
     }
   }
 
@@ -467,6 +507,47 @@ export default function ClipboardSettingsPage() {
       </div>
       <div className="setting-note">{t("settings.clipboard.cleanupNote")}</div>
       <div className="setting-note">{t("settings.clipboard.encryptExistingNote")}</div>
+      <div className="setting-row">
+        <span>{t("settings.clipboard.exportCleanup")}</span>
+        <div className="btn-row">
+          <NumberInput
+            value={exportRetentionDays}
+            onChange={setExportRetentionDays}
+            min={1}
+            max={365}
+            size="sm"
+            ariaLabel={t("settings.clipboard.exportRetentionAria")}
+            suffix={t("settings.clipboard.exportRetentionUnit")}
+          />
+          <button
+            className="btn sm"
+            onClick={() => setPendingExportPurge(true)}
+            disabled={busyKey !== null}
+          >
+            {busyKey === "clip-exports" ? (
+              <RefreshCw size={11} className="spin" />
+            ) : (
+              <Trash2 size={11} />
+            )}{" "}
+            {t("settings.clipboard.exportCleanupAction")}
+          </button>
+        </div>
+      </div>
+      <div className="setting-note">{t("settings.clipboard.exportCleanupNote")}</div>
+      <ConfirmDialog
+        open={pendingExportPurge}
+        danger
+        title={t("settings.clipboard.exportCleanupConfirmTitle")}
+        detail={t("settings.clipboard.exportCleanupConfirmDetail", {
+          days: exportRetentionDays,
+        })}
+        confirmLabel={t("settings.clipboard.exportCleanupAction")}
+        busy={busyKey === "clip-exports"}
+        onConfirm={() => void onPurgeExports()}
+        onCancel={() => {
+          if (busyKey === null) setPendingExportPurge(false);
+        }}
+      />
     </SettingsPageLayout>
   );
 }

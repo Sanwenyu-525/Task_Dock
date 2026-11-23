@@ -267,10 +267,29 @@
 `assets`（剪贴板）/`shelf_assets`/`voice_assets` 分开计数，读取端兼容旧包的合并口径
 （`assets` 等于三类之和时也接受），旧备份仍可恢复。
 
-### 6.9 尚未执行（等待后续批次）
+### 6.9 批次 5a（2026-11-23，已实施）
+
+已落地「用户手动清理过期 Agent 导出」，不改动自动删除策略：
+
+- `clipboard/agent_bridge.rs`：`purge_exports(app_data, older_than_days)` 只扫描
+  `clipboard-exports/` 的直接子目录；跳过符号链接与普通文件，根目录与同级数据目录不动；
+  年龄按目录 mtime（导出写入会刷新 mtime），`0` 表示全部清理、其余 clamp 到 1–3650 天；
+  单个目录删除失败只计 `failed` 并保留，不中断其余清理、不回滚已删目录。
+- 结果结构 `ExportPurgeReport{removed, skipped, failed, bytes}`（camelCase），只回传计数，
+  不把具体导出路径写进界面或日志；`dir_size_no_follow` 迭代统计且不跟随符号链接。
+- 命令 `clipboard_purge_agent_exports(olderThanDays?)`：`spawn_blocking` 执行，默认 7 天；
+  `lib.rs` 注册；`bridge.ts` 增 `clipboardPurgeAgentExports`、`models.ts` 增类型。
+- 设置页「清理 Agent 导出」：保留天数输入（1–365 天）+ 危险操作确认框；成功/部分失败/失败
+  分别提示计数与释放空间，并说明导出包含明文、此操作不自动运行。
+- 测试新增 2 项：0 天清理只删直接子目录（根下普通文件与同级 `clipboard-backups` 保留、
+  字节计数正确）；大保留期保留新导出并计 `skipped`，根目录缺失时返回零结果。
+- 本批验证（MSVC）：`cargo test --lib clipboard::` 292 passed / 0 failed / 1 ignored；
+  `npm run typecheck` 0；`cargo check --lib` 0。
+
+### 6.10 尚未执行（等待后续批次）
 
 - 批次 4c（余项）：旧明文包一次性加密迁移；恢复续跑日志对资产重加密后的版本兼容复核。
 - `preview`/`title`/`source_*`/`file_paths` 加密与“解密后过滤”搜索。
-- Agent 导出授权与审计、目录显式 ACL、真机 Dev 验收与性能基准。
+- Agent 导出授权与审计、自动清理策略与保留期默认值、目录显式 ACL、真机 Dev 验收与性能基准。
 - 本批次未执行：数据库 schema 迁移、Dev 真机走查。
 - 残余风险按 ADR §14「实施偏差与影响」如实登记，不得对外宣称剪贴板历史已全面加密。
