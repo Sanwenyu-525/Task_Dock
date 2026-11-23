@@ -2649,6 +2649,11 @@ pub fn snapshot_links(db: &Db, snapshot_id: &str) -> AppResult<Vec<ClipboardSnap
 
 // ── 粘贴任务审计 ────────────────────────────────────────────
 
+/// 粘贴任务审计行。
+///
+/// 隐私边界（ADR-0012 §3.2，批次 11 复核）：`target_title`/`target_exe`/`message` 是
+/// 粘贴操作元数据，不保存剪贴板正文；`target_title` 可能包含窗口文档名，属于已登记
+/// 残余风险。不要在这里顺手写入条目正文或预览。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PasteJob {
     pub id: String,
@@ -2672,6 +2677,8 @@ pub struct PasteJob {
 }
 
 /// 单个条目的持久化状态。用户可以看到「第几项、什么类型、走到哪一步、是否发过按键」。
+///
+/// `error_message` 只放状态机文案、序号或错误码，不放被粘贴条目正文（批次 11 复核）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PasteItemRow {
     pub job_id: String,

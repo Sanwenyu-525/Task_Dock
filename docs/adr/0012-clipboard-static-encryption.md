@@ -35,6 +35,7 @@ TaskDock 剪贴板历史当前以 SQLite 明文保存正文/HTML/预览，图片
 
 - 加密：`text`、`html`、`preview`、`title`、`file_paths`、`source_app`、`source_title`；图片原图、缩略图、预览缓存文件级加密。
 - 明文保留：`id`、`kind`、`content_hash`、`byte_size`、尺寸、时间戳、计数、收藏/置顶、分组与关联表、`source_kind` 枚举。
+- 粘贴审计表 `clipboard_paste_jobs` / `clipboard_paste_items` 的列（`target_title`、`target_exe`、`message`、`error_message`、`remaining_items`、`uncertain_items`、序号、时间与标志）**不纳入字段加密**：逐列复核确认它们只记录粘贴操作元数据，不写入剪贴板正文；`remaining_items`/`uncertain_items` 只存条目 UUID，`message`/`error_message` 为固定状态文案、序号、错误码或数据库错误，不含正文。`target_title` 来自前台窗口标题，可能包含文档名/网页标题，属于已登记的残余风险；若未来要求连窗口标题一起隐藏，应作为独立字段迁移，不与正文加密混为一谈。
 - 关联关系（任务链接、分组、快照链接）继续依赖 UUID 外键，加密改造不改主键与外键语义。
 
 ### 3.3 备份加密
@@ -138,7 +139,7 @@ TaskDock 剪贴板历史当前以 SQLite 明文保存正文/HTML/预览，图片
    剪贴板/导出/备份/恢复/暂存架与 DB 文件；只递归已存在路径，junction 跳过；模块级单测 +
    独立 crate 验证，启动集成与真机行为列入 Dev 验收。
 
-## 14. 实施状态（2026-11-23，批次 1–10）
+## 14. 实施状态（2026-11-23，批次 1–11）
 
 代码：`src-tauri/src/clipboard/secure.rs`、`secure_migration.rs`、`store.rs` 读写接入、`db::Settings` 新增开关；前端仅同步类型。
 
@@ -163,6 +164,7 @@ TaskDock 剪贴板历史当前以 SQLite 明文保存正文/HTML/预览，图片
 | 剪贴板图片资产备份加密 | 已实现（批次 4c-2） | 密封备份中图片原图/缩略图改写为 `asset_sealed` 分块：逐块 BEK+AES-256-GCM，AAD `tdclbk\|<backup_id>\|asset\|<rel>\|<chunk>\|v1`；文件路径/明文大小/SHA-256 仍随记录保存用于校验，读取时解密后按原 SHA 暂存；明文 `asset` 分块仍兼容旧加密备份与未加密备份 |
 | 跨机恢复可移植 | 已实现（批次 4c-3/6） | 密封导出前把 `text`/`html`/`preview`/`title`/`source_*`/`file_paths` 的本机 CEK 密文解回明文、图片容器解出 PNG 后再封入 BEK；恢复时 `normalize_clipboard_for_restore` 按目标机开关重新加密正文、元数据与图片（图片重写为容器并更新暂存大小/SHA）；`clipboard_crypto_envelope` 列为 `EXCLUDED_SETTINGS`，既不导出也不导入（DPAPI 只对原 Windows 用户有效）；`clipboard_encrypt_history` 并入 `LOCAL_PRIVACY_SETTINGS`，恢复旧备份不会悄悄改变本机加密选择 |
 | 旧格式剪贴板备份导入一次性迁移 | 已实现并验证（批次 10） | `bundle_meta` 对 `clipboard_sealed=false` 且 `totals` 确有剪贴板行的旧包返回 `clipboard_migration_required=true`，恢复确认框提示「原包只读、先读出再按本机 CEK 重加密」；`ReadBackup.clipboard_sealed` 区分来源，`normalize_clipboard_for_restore` 返回迁移条数/资产数，恢复结果写告警；本机开关关闭时明确提示仍为明文；缺少原机 CEK 的跨机旧包 fail-closed |
+| 粘贴审计表列复核 | 已复核（批次 11） | 逐列确认 `clipboard_paste_jobs/items` 不保存剪贴板正文：`remaining_items`/`uncertain_items` 仅 UUID，`message`/`error_message` 为固定文案、序号或错误，`target_title`/`target_exe` 为窗口身份元数据；显式排除字段加密，`target_title` 可能含文档名/网页标题，作为残余风险登记；若需隐藏窗口标题，另立字段迁移 |
 | Agent 导出授权门槛 | 已实现导出前确认（批次 7） | 导出必须先调 `clipboard_export_preview`：只读统计条目/图片/字节/类型与是否含任务上下文，并签发 120 秒、单次使用的 `confirmationToken`；token 绑定目标类型/ID、任务 ID 与预览内容指纹（条目 ID/顺序/标题/预览/来源/路径等，不含正文）。`clipboard_export_for_agent` 强制携带 token，命令层重新计算指纹并消费后才写文件；目标/任务/内容变化或 token 过期均拒绝，拒绝写 `gate=denied` 审计，成功写 `confirmed=1`。UI 用危险确认框明示明文留存风险。导出没有暴露给 Agent API/MCP，因此当前不需要能力白名单；同用户被攻陷的渲染进程仍可先预览再导出，此门槛不是针对该威胁的授权边界。 |
 | Agent 导出审计 | 已实现（批次 5b） | 成功/失败/清理均写 `security_audit_log`（category=`clipboard`，事件 `CLIPBOARD_EXPORT_SUCCEEDED`/`CLIPBOARD_EXPORT_FAILED`/`CLIPBOARD_EXPORT_PURGED`）；明细只含目标类型、条目/图片计数、保留天数或错误码，**不含目录/文件名/正文**；诊断中心新增「剪贴板」分类 |
 | Agent 导出目录手动清理 | 已实现（批次 5a） | `clipboard_purge_agent_exports`：只删 `clipboard-exports/` 直接子目录，按 mtime 保留 N 天（0=全部、默认 7）；跳过符号链接/普通文件，失败保留并计数；返回 `{removed, skipped, failed, bytes}`，不落路径；设置页需危险操作确认 |

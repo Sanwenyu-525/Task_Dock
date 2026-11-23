@@ -13,7 +13,7 @@
 
 - 表：`clipboard_items` 的 `text`、`html`、`preview`、`title`、`source_app`、`source_title`、
   `file_paths`（批次 6 起全部纳入；空字符串保持为空，非空且无 `tdcl1:` 前缀即视为待迁移）。
-- `clipboard_paste_jobs` / `clipboard_paste_items` 中可能含文本的列先逐列复核，纳入或显式排除并记录理由。
+- `clipboard_paste_jobs` / `clipboard_paste_items` 已逐列复核（批次 11）：`target_title`、`target_exe`、`message`、`error_message`、`remaining_items`、`uncertain_items`、序号、时间与标志均不迁移，理由是不含剪贴板正文且审计查询需要；`target_title` 的窗口文档名风险单独登记。
 - 不迁移：分组、组内顺序、任务链接、快照链接、计数、收藏置顶、时间戳、哈希、尺寸、`source_kind`/`title_source` 枚举。
 
 ### 1.2 文件资产

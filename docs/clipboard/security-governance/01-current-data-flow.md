@@ -64,7 +64,7 @@
 | `clipboard_groups` | 否（`name` 可能来自自动生成的截图描述，属低敏元数据） | 分组元数据 |
 | `clipboard_group_items` | 否 | 组内顺序关系 |
 | `clipboard_task_links` | 否 | 任务/条目关联，`target_id` 是 UUID |
-| `clipboard_paste_jobs` / `clipboard_paste_items` | 部分含文本 | `message`、`remaining_items`、`uncertain_items` 为 JSON/文本；粘贴审计原则上不记正文，但需在加密改造时逐列复核 |
+| `clipboard_paste_jobs` / `clipboard_paste_items` | 已复核：明文保留（批次 11） | `target_title`/`target_exe`、`message`/`error_message`、`remaining_items`/`uncertain_items`、序号、时间与标志；均不含剪贴板正文，队列列只存条目 UUID。`target_title` 可能包含文档名/网页标题，属已登记残余风险，不并入正文加密 |
 | `clipboard_snapshot_links` | 否 | 现场快照关联 |
 
 ### 2.4 设置项（`application_settings`）
