@@ -2216,7 +2216,7 @@ export const enUS: Record<MessageKey, string> = {
   "settings.data.fullBackupDone": "Full backup finished (all events and archives): {path}",
   "settings.data.passphraseLabel": "Backup passphrase",
   "settings.data.passphrasePlaceholder": "Optional: 8+ chars, encrypts clipboard section",
-  "settings.data.passphraseNote": "With a passphrase, the clipboard section of the backup (text, groups, paste history) is stored encrypted and the same passphrase is required to restore it. Leave empty to keep the current plaintext bundle format. The passphrase is never stored locally; if you lose it, that backup cannot be restored.",
+  "settings.data.passphraseNote": "With a passphrase, the clipboard section of the backup (text, groups, paste history, image originals and thumbnails) is stored encrypted and the same passphrase or recovery key is required to restore it. Leave empty to keep the current plaintext bundle format. The passphrase is never stored locally; if you lose it, that backup cannot be restored.",
   "settings.data.passphraseTooShort": "Backup passphrase must be at least 8 characters, or left empty",
   "settings.data.sealedNeedsPassphrase": "This backup has an encrypted clipboard section: enter the passphrase or recovery key used when it was created above, then restore.",
   "settings.data.importSealed": "Clipboard section is encrypted: the passphrase entered above will be used for restore.",

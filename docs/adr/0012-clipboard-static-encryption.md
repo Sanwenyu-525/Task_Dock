@@ -133,7 +133,7 @@ TaskDock 剪贴板历史当前以 SQLite 明文保存正文/HTML/预览，图片
 3. 资产加密是逐文件 GCM 封装还是目录级容器；预览缓存纳入哪一层。
 4. 数据目录与剪贴板目录显式 ACL 加固的具体范围与测试方式。
 
-## 14. 实施状态（2026-11-23，批次 1–4c-1）
+## 14. 实施状态（2026-11-23，批次 1–4c-2）
 
 代码：`src-tauri/src/clipboard/secure.rs`、`secure_migration.rs`、`store.rs` 读写接入、`db::Settings` 新增开关；前端仅同步类型。
 
@@ -152,8 +152,9 @@ TaskDock 剪贴板历史当前以 SQLite 明文保存正文/HTML/预览，图片
 | 图片原图/缩略图/预览缓存 | 已实现（批次 2） | 写入加密、读取透明解密；`image_abs_path` 改为按需解出 `transient/` 明文副本供 OCR/另存/外发 |
 | 历史图片资产迁移 | 已实现（批次 3） | 逐文件加密 + 解密往返比对后才落盘；已是密文/缺图跳过；640 预览缓存迁移时清理并按需重建 |
 | 备份 bundle 密钥信封 | 已实现（批次 4a） | `clipboard/backup_crypto.rs`：每次备份独立随机 BEK；口令 slot 走 Argon2id（64 MiB/3/1，参数随信封持久化）+ HKDF 域分离；恢复密钥 slot 为 160-bit Crockford Base32，仅 HKDF 域分离；两 slot 解出同一 BEK；段落 AES-256-GCM，AAD `tdclbk\|<backup_id>\|<section>\|v1`，解封前按 `backup_id` 复算 slot AAD 防拼接 |
-| 备份 bundle 加密 / BEK / 跨设备恢复 | 已实现剪贴板段口令加密（批次 4b） | `write_bundle_sealed` 把剪贴板类表（正文/分组/粘贴记录）合并为单条 `clipboard_sealed` 记录：BEK + Argon2id 口令信封 + AES-256-GCM，AAD 绑定备份 ID；头记录 `clipboard_sealed:true`，无口令时读取明确报「需要备份口令」。**未覆盖**：图片资产仍按原文件字节单独打包（加密开关开启时是 CEK 密文，关闭时是明文 PNG），跨设备恢复剪贴板仍需后续 4c |
+| 备份 bundle 加密 / BEK / 跨设备恢复 | 已实现剪贴板段口令加密（批次 4b） | `write_bundle_sealed` 把剪贴板类表（正文/分组/粘贴记录）合并为单条 `clipboard_sealed` 记录：BEK + Argon2id 口令信封 + AES-256-GCM，AAD 绑定备份 ID；头记录 `clipboard_sealed:true`，无口令时读取明确报「需要备份口令」。图片字节在批次 4c-2 纳入同一 BEK（见下一行） |
 | 恢复密钥导出与消费 | 已实现（批次 4c-1） | 命令 `backup_now_encrypted(full, passphrase, with_recovery?) -> {path, recoveryCode}`；恢复密钥仅返回一次、不落盘；`read_bundle_with_secrets` 与 `import_data(recovery_code?)` 支持「口令优先、密钥兜底」；header `clipboard_recovery_slot` 供界面提示 |
+| 剪贴板图片资产备份加密 | 已实现（批次 4c-2） | 密封备份中图片原图/缩略图改写为 `asset_sealed` 分块：逐块 BEK+AES-256-GCM，AAD `tdclbk\|<backup_id>\|asset\|<rel>\|<chunk>\|v1`；文件路径/明文大小/SHA-256 仍随记录保存用于校验，读取时解密后按原 SHA 暂存；明文 `asset` 分块仍兼容旧加密备份与未加密备份 |
 | Agent 导出授权与审计 | 未实现 | 批次 5 |
 | 目录显式 ACL | 未实现 | 批次 5 |
 
@@ -167,4 +168,4 @@ TaskDock 剪贴板历史当前以 SQLite 明文保存正文/HTML/预览，图片
 6. **性能**：逐行 AEAD + 进程内 CEK 缓存；图片解密在预览路径多一次拷贝，未做基准，批次 5 补 p50/p95 证据。
 7. **未做真机验收**：仅单元/集成测试（含 DPAPI 信封、迁移、WAL、错误密钥、资产往返），未启动 Dev 实例走查 UI。
 8. **备份加密只有原语**：批次 4a 只落地密钥信封与段落加解密（6 项单测），恢复密钥仍只在代码层生成、无导出 UI；bundle 恢复链路接入（4b）前，包含剪贴板内容的备份文件仍是明文。
-9. **备份加密只覆盖剪贴板文本类表**：批次 4b 对剪贴板类表整体加密，但不含图片资产字节（仍按原文件单独打包，加密开关开启时是 CEK 密文、关闭时是明文 PNG）；批次 4c-1 补齐恢复密钥导出/消费 UI，但口令或密钥不落盘，两者都丢失时该备份的剪贴板段不可恢复。
+9. **备份加密覆盖剪贴板文本类表与图片字节**：批次 4b/4c-2 对剪贴板类表和图片原图/缩略图加密，但资产文件名/大小/SHA-256 仍可见；恢复时资产以明文 PNG 提交到数据目录（若目标机开启加密开关，库内引用会指向明文文件，需后续恢复后重加密补齐）；口令或密钥不落盘，两者都丢失时该备份的剪贴板段不可恢复。

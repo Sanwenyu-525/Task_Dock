@@ -6,6 +6,8 @@
 //! - archive：事件归档 JSONL 按 1 MiB 文本块写入，导入时先落暂存目录并校验 SHA-256；
 //! - clipboard_sealed：剪贴板段的 BEK 信封密文（可选，需备份口令才能恢复，见
 //!   `crate::clipboard::backup_crypto`）；同表的行合并为单个记录，不再逐表写 section；
+//! - asset_sealed：密封备份中的剪贴板图片资产分块（BEK 逐块 AEAD，读取时解密后按原
+//!   分块校验 SHA-256 暂存，语义与 `asset` 一致；未密封备份仍写明文 `asset`）；
 //! - integrity：对所有前序行（含换行）的 SHA-256，缺行/截断/篡改一律拒绝。
 //!
 //! 可靠性：
@@ -25,6 +27,7 @@ use rusqlite::types::ValueRef;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
 
 use crate::clipboard::backup_crypto;
 use crate::commands::data::{self, EventRow, RunRow, TaskRow};
@@ -2186,6 +2189,22 @@ pub(crate) fn safe_shelf_rel(rel: &str) -> AppResult<PathBuf> {
     Ok(path.to_path_buf())
 }
 
+/// 密封备份的资产分块：明文大小/摘要用于恢复后校验，内容以 BEK + AEAD 加密。
+#[derive(Serialize)]
+struct SealedAssetChunk<'a> {
+    record: &'static str,
+    path: &'a str,
+    size: u64,
+    sha256: &'a str,
+    chunk: u32,
+    sealed: &'a backup_crypto::SealedSection,
+}
+
+/// 资产分块的 AAD：绑定备份 ID、文件路径与分块序号，防止跨文件/换序拼接。
+fn sealed_asset_aad(backup_id: &str, rel: &str, chunk: u32) -> String {
+    backup_crypto::section_aad(backup_id, &format!("asset|{rel}|{chunk}"))
+}
+
 #[derive(Serialize)]
 struct AssetChunk<'a> {
     record: &'static str,
@@ -2242,6 +2261,56 @@ fn write_asset_unchecked(
             sha256: &sha,
             chunk: 0,
             data: "",
+        })?;
+    }
+    Ok(size)
+}
+
+/// 密封版本：逐块用 BEK 做 AEAD 后写入 `asset_sealed`；文件名、明文大小与 SHA-256
+/// 仍随记录保存，供恢复时校验解密结果，密钥错误或分块被替换一律拒绝。
+fn write_asset_sealed(
+    writer: &mut BundleWriter,
+    root: &Path,
+    rel: &str,
+    bek: &[u8; 32],
+    backup_id: &str,
+) -> AppResult<u64> {
+    safe_asset_rel(rel)?;
+    let abs = root.join(rel);
+    let (size, sha) = hash_file(&abs)?;
+    let mut file = File::open(&abs)?;
+    let mut chunk = 0u32;
+    let mut emitted = false;
+    loop {
+        let mut buf = vec![0u8; ASSET_CHUNK_BYTES];
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        buf.truncate(n);
+        let aad = sealed_asset_aad(backup_id, rel, chunk);
+        let sealed = backup_crypto::seal_section(bek, &aad, &buf)?;
+        writer.line(&SealedAssetChunk {
+            record: "asset_sealed",
+            path: rel,
+            size,
+            sha256: &sha,
+            chunk,
+            sealed: &sealed,
+        })?;
+        chunk += 1;
+        emitted = true;
+    }
+    if !emitted {
+        let aad = sealed_asset_aad(backup_id, rel, 0);
+        let sealed = backup_crypto::seal_section(bek, &aad, &[])?;
+        writer.line(&SealedAssetChunk {
+            record: "asset_sealed",
+            path: rel,
+            size,
+            sha256: &sha,
+            chunk: 0,
+            sealed: &sealed,
         })?;
     }
     Ok(size)
@@ -2460,6 +2529,8 @@ fn write_bundle_inner(
                     .as_ref()
                     .map(|created| created.envelope.has_recovery())
                     .unwrap_or(false),
+                // true 表示剪贴板图片资产也已按 BEK 加密（恢复时自动解密）。
+                "clipboard_assets_sealed": sealed_clipboard.is_some(),
             });
             if let Some(config) = config_value.clone() {
                 if let Some(obj) = header.as_object_mut() {
@@ -2560,7 +2631,19 @@ fn write_bundle_inner(
             }
             if let Some(root) = sources.clipboard_dir {
                 for rel in &asset_paths {
-                    match write_asset(&mut writer, root, rel) {
+                    // 剪贴板段加密时，图片字节也必须在 BEK 下；否则关掉本地加密开关的
+                    // 用户仍会把明文 PNG 带进「加密备份」。
+                    let written = match sealed_clipboard.as_ref() {
+                        Some(created) => write_asset_sealed(
+                            &mut writer,
+                            root,
+                            rel,
+                            &created.bek,
+                            &created.envelope.backup_id,
+                        ),
+                        None => write_asset(&mut writer, root, rel),
+                    };
+                    match written {
                         Ok(size) => {
                             assets += 1;
                             asset_bytes += size;
@@ -2911,6 +2994,80 @@ impl AssetSink {
     }
 }
 
+/// 明文与密封资产记录共用的分块写入：统一做顺序、大小与 SHA-256 校验，
+/// 避免两条读取分支出现不同口径。
+#[allow(clippy::too_many_arguments)]
+fn ingest_asset_chunk(
+    asset_sinks: &mut HashMap<String, AssetSink>,
+    staged_assets: &mut Vec<StagedAsset>,
+    staging_dir: &Path,
+    materialize: bool,
+    rel: &str,
+    size: u64,
+    sha: &str,
+    chunk: u32,
+    bytes: &[u8],
+) -> AppResult<()> {
+    let sink = match asset_sinks.get_mut(rel) {
+        Some(s) if chunk == s.next_chunk => s,
+        Some(_) => {
+            return Err(AppError::Validation(format!(
+                "剪贴板资产 {} 分块顺序错误",
+                rel
+            )))
+        }
+        None => {
+            if chunk != 0 || staged_assets.iter().any(|a| a.rel == rel) {
+                return Err(AppError::Validation(format!(
+                    "剪贴板资产 {} 缺少首块或路径重复",
+                    rel
+                )));
+            }
+            let (dest, file) = if materialize {
+                let dest = staging_dir.join("assets").join(rel);
+                if let Some(parent) = dest.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                let f = File::create(&dest)?;
+                (dest, Some(BufWriter::new(f)))
+            } else {
+                (PathBuf::new(), None)
+            };
+            asset_sinks.insert(
+                rel.to_string(),
+                AssetSink {
+                    rel: rel.to_string(),
+                    path: dest,
+                    expected_size: size,
+                    expected_sha: sha.to_string(),
+                    file,
+                    hasher: Sha256::new(),
+                    next_chunk: 0,
+                    written: 0,
+                },
+            );
+            asset_sinks.get_mut(rel).expect("刚插入")
+        }
+    };
+    if let Some(file) = sink.file.as_mut() {
+        file.write_all(bytes)?;
+    }
+    sink.hasher.update(bytes);
+    sink.written += bytes.len() as u64;
+    sink.next_chunk += 1;
+    if sink.written > sink.expected_size {
+        return Err(AppError::Validation(format!(
+            "剪贴板资产 {} 写入超过声明大小",
+            sink.rel
+        )));
+    }
+    if sink.written == sink.expected_size {
+        let sink = asset_sinks.remove(rel).expect("存在");
+        sink.finish(staged_assets)?;
+    }
+    Ok(())
+}
+
 /// 读取并校验备份；归档与剪贴板资产写入 `staging_dir`（只有对应记录时才创建），
 /// 业务表行按表写入 `staging_dir/rows/`（JSONL），内存中只保留元信息与设置。
 pub fn read_bundle(path: &Path, staging_dir: &Path) -> AppResult<ReadBackup> {
@@ -3124,6 +3281,10 @@ fn read_bundle_impl(
     let mut staged_assets: Vec<StagedAsset> = Vec::new();
     let mut integrity: Option<serde_json::Value> = None;
     let mut sealed_seen = false;
+    // 密封备份的 BEK 与 backup_id：`clipboard_sealed` 必须先于 `asset_sealed` 出现，
+    // 后续资产分块复用同一把密钥，避免每个文件重复走 Argon2 解封。
+    let mut sealed_bek: Option<Zeroizing<[u8; 32]>> = None;
+    let mut sealed_backup_id: Option<String> = None;
     let mut line_no = 0usize;
     let mut line_buf: Vec<u8> = Vec::new();
 
@@ -3375,63 +3536,66 @@ fn read_bundle_impl(
                     .map_err(|_| {
                         AppError::Validation(format!("剪贴板资产 {} 的 Base64 数据非法", rel))
                     })?;
-                let sink = match asset_sinks.get_mut(rel) {
-                    Some(s) if chunk == s.next_chunk => s,
-                    Some(_) => {
-                        return Err(AppError::Validation(format!(
-                            "剪贴板资产 {} 分块顺序错误",
-                            rel
-                        )))
-                    }
-                    None => {
-                        if chunk != 0 || staged_assets.iter().any(|a| a.rel == rel) {
-                            return Err(AppError::Validation(format!(
-                                "剪贴板资产 {} 缺少首块或路径重复",
-                                rel
-                            )));
-                        }
-                        let (dest, file) = if materialize {
-                            let dest = staging_dir.join("assets").join(rel);
-                            if let Some(parent) = dest.parent() {
-                                std::fs::create_dir_all(parent)?;
-                            }
-                            let f = File::create(&dest)?;
-                            (dest, Some(BufWriter::new(f)))
-                        } else {
-                            (PathBuf::new(), None)
-                        };
-                        asset_sinks.insert(
-                            rel.to_string(),
-                            AssetSink {
-                                rel: rel.to_string(),
-                                path: dest,
-                                expected_size: size,
-                                expected_sha: sha.to_string(),
-                                file,
-                                hasher: Sha256::new(),
-                                next_chunk: 0,
-                                written: 0,
-                            },
-                        );
-                        asset_sinks.get_mut(rel).expect("刚插入")
-                    }
-                };
-                if let Some(file) = sink.file.as_mut() {
-                    file.write_all(&bytes)?;
+                ingest_asset_chunk(
+                    &mut asset_sinks,
+                    &mut staged_assets,
+                    staging_dir,
+                    materialize,
+                    rel,
+                    size,
+                    sha,
+                    chunk,
+                    &bytes,
+                )?;
+            }
+            "asset_sealed" => {
+                if header.is_none() {
+                    return Err(AppError::Validation("备份缺少头记录".into()));
                 }
-                sink.hasher.update(&bytes);
-                sink.written += bytes.len() as u64;
-                sink.next_chunk += 1;
-                if sink.written > sink.expected_size {
+                let bek = sealed_bek.as_ref().ok_or_else(|| {
+                    AppError::Validation("备份含加密剪贴板资产，但缺少剪贴板加密记录".into())
+                })?;
+                let backup_id = sealed_backup_id.as_deref().ok_or_else(|| {
+                    AppError::Validation("备份缺少剪贴板加密记录，无法绑定资产密钥".into())
+                })?;
+                let rel = value
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                safe_asset_rel(rel)?;
+                let size = value.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
+                let sha = value
+                    .get("sha256")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                if sha.len() != 64 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
                     return Err(AppError::Validation(format!(
-                        "剪贴板资产 {} 写入超过声明大小",
-                        sink.rel
+                        "剪贴板资产 {} 缺少有效 SHA-256",
+                        rel
                     )));
                 }
-                if sink.written == sink.expected_size {
-                    let sink = asset_sinks.remove(rel).expect("存在");
-                    sink.finish(&mut staged_assets)?;
-                }
+                let chunk = value.get("chunk").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                let sealed: backup_crypto::SealedSection =
+                    serde_json::from_value(value.get("sealed").cloned().unwrap_or_default())
+                        .map_err(|e| {
+                            AppError::Validation(format!(
+                                "剪贴板资产 {} 的加密分块损坏: {}",
+                                rel, e
+                            ))
+                        })?;
+                let aad = sealed_asset_aad(backup_id, rel, chunk);
+                let plain = backup_crypto::open_section(&**bek, &aad, &sealed)?;
+                ingest_asset_chunk(
+                    &mut asset_sinks,
+                    &mut staged_assets,
+                    staging_dir,
+                    materialize,
+                    rel,
+                    size,
+                    sha,
+                    chunk,
+                    &plain,
+                )?;
             }
             "clipboard_sealed" => {
                 if header.is_none() {
@@ -3469,6 +3633,8 @@ fn read_bundle_impl(
                     serde_json::from_slice(&plain).map_err(|e| {
                         AppError::Validation(format!("剪贴板加密段解析失败: {}", e))
                     })?;
+                sealed_backup_id = Some(sealed_in.envelope.backup_id.clone());
+                sealed_bek = Some(bek);
                 std::fs::create_dir_all(rows_dir)?;
                 for entry in payload.tables {
                     let rule = table_rule(&entry.table).ok_or_else(|| {
@@ -3929,6 +4095,7 @@ pub fn bundle_meta(path: &Path) -> Option<serde_json::Value> {
         // 剪贴板段是否加密：true 时恢复必须输入备份口令。
         "clipboard_sealed": value.get("clipboard_sealed").cloned().unwrap_or(serde_json::Value::Bool(false)),
         "clipboard_recovery_slot": value.get("clipboard_recovery_slot").cloned().unwrap_or(serde_json::Value::Bool(false)),
+        "clipboard_assets_sealed": value.get("clipboard_assets_sealed").cloned().unwrap_or(serde_json::Value::Bool(false)),
         "exported_at": value.get("exported_at").cloned().unwrap_or(serde_json::Value::Null),
     }))
 }
@@ -5437,7 +5604,17 @@ mod tests {
         assert!(!raw.contains("SECRET-CLIP-BODY"), "剪贴板正文不应明文落盘");
         assert!(!raw.contains("SECRET-PREVIEW"), "剪贴板预览不应明文落盘");
         assert!(!raw.contains("hash-2"), "剪贴板内容哈希不应明文落盘");
+        let img_b64 = base64::engine::general_purpose::STANDARD
+            .encode(b"\x89PNG\r\n\x1a\nimage-bytes-12345");
+        let thumb_b64 =
+            base64::engine::general_purpose::STANDARD.encode(b"\x89PNG\r\n\x1a\nthumb");
+        assert!(!raw.contains(&img_b64), "剪贴板原图不应以明文 Base64 落盘");
+        assert!(!raw.contains(&thumb_b64), "剪贴板缩略图不应以明文 Base64 落盘");
         assert_eq!(bundle_meta(&target).unwrap()["clipboard_sealed"], true);
+        assert_eq!(
+            bundle_meta(&target).unwrap()["clipboard_assets_sealed"],
+            true
+        );
 
         // 缺口令 → 明确要求口令；错误口令 → 解密失败
         let err = read_bundle(&target, &dir.join("no-secret")).unwrap_err();
@@ -5454,6 +5631,18 @@ mod tests {
         let rows = spilled_rows(&read, "clipboard_items");
         assert_eq!(rows.len(), 2);
         assert!(rows.iter().any(|r| r["text"] == "SECRET-CLIP-BODY"));
+        // 资产分块在内存解密后按明文 SHA-256 校验暂存，恢复提交得到原始 PNG 字节
+        assert_eq!(read.assets.len(), 2);
+        let restored_root = dir.join("clipboard-restored");
+        assert_eq!(commit_assets(&read.assets, &restored_root).unwrap(), 2);
+        assert_eq!(
+            std::fs::read(restored_root.join("images/i1.png")).unwrap(),
+            b"\x89PNG\r\n\x1a\nimage-bytes-12345"
+        );
+        assert_eq!(
+            std::fs::read(restored_root.join("thumbs/i1.png")).unwrap(),
+            b"\x89PNG\r\n\x1a\nthumb"
+        );
         let dst = memdb();
         import_read(&dst, &read).unwrap();
         let count: i64 = dst
@@ -5479,6 +5668,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(bundle_meta(&plain).unwrap()["clipboard_sealed"], false);
+        assert_eq!(
+            bundle_meta(&plain).unwrap()["clipboard_assets_sealed"],
+            false
+        );
         assert!(read_bundle(&plain, &dir.join("plain-read")).is_ok());
         std::fs::remove_dir_all(dir).ok();
     }

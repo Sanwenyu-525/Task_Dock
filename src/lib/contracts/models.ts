@@ -1463,6 +1463,8 @@ export interface BackupMeta {
   clipboard_sealed?: boolean;
   /** 信封是否带恢复密钥槽位：口令丢失时可用一次性恢复密钥恢复。 */
   clipboard_recovery_slot?: boolean;
+  /** 剪贴板图片资产是否已随备份加密：true 时恢复自动解密，备份文件不含明文 PNG。 */
+  clipboard_assets_sealed?: boolean;
 }
 
 /** 加密备份结果：`recovery_code` 只在本次返回中出现一次，需用户自行保管。 */

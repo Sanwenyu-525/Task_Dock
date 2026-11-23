@@ -2198,7 +2198,7 @@ export const zhCN = {
   "settings.data.fullBackupDone": "完整备份完成（全部事件与归档）：{path}",
   "settings.data.passphraseLabel": "备份口令",
   "settings.data.passphrasePlaceholder": "可选：≥8 个字符，加密剪贴板段",
-  "settings.data.passphraseNote": "填写口令后，备份里的剪贴板段（正文、分组、粘贴记录）会加密保存，恢复该备份时必须输入同一口令。留空则与现有备份格式一致；口令不会保存在本机，忘记后无法恢复该备份。",
+  "settings.data.passphraseNote": "填写口令后，备份里的剪贴板段（正文、分组、粘贴记录与图片原图/缩略图）会加密保存，恢复该备份时必须输入同一口令或恢复密钥。留空则与现有备份格式一致；口令不会保存在本机，忘记后无法恢复该备份。",
   "settings.data.passphraseTooShort": "备份口令至少 8 个字符，或留空不使用加密",
   "settings.data.sealedNeedsPassphrase": "该备份的剪贴板段已加密：请先在上方填入创建时使用的备份口令或恢复密钥，再恢复。",
   "settings.data.importSealed": "剪贴板段已加密：恢复时将使用你在上方填入的备份口令。",
