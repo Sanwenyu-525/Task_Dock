@@ -32,6 +32,55 @@ pub struct MigrationReport {
     pub wal_checkpointed: bool,
 }
 
+/// 迁移前安全备份的可核对信息（路径与哈希，不含正文）。
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrationBackup {
+    pub dir: String,
+    pub db_sha256: String,
+    pub db_bytes: i64,
+    pub items: i64,
+    pub assets: i64,
+    pub created_at: String,
+}
+
+/// 带备份保护的迁移结果。
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrationOutcome {
+    pub report: MigrationSummary,
+    pub backup: MigrationBackup,
+    /// 本次加密的历史图片资产数（原图 + 缩略图）。
+    pub assets_encrypted: i64,
+    /// 已是密文或缺失而跳过的资产数。
+    pub assets_skipped: i64,
+    /// 清理掉的 640 预览派生缓存数量（迁移后按需重建为密文）。
+    pub preview_cache_purged: i64,
+}
+
+/// 可序列化的迁移计数（避免把内部结构直接暴露给前端）。
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrationSummary {
+    pub pendingBefore: i64,
+    pub encryptedItems: i64,
+    pub verifiedItems: i64,
+    pub leftovers: i64,
+    pub walCheckpointed: bool,
+}
+
+impl MigrationSummary {
+    fn from_report(r: &MigrationReport) -> Self {
+        Self {
+            pendingBefore: r.pending_before,
+            encryptedItems: r.encrypted_items,
+            verifiedItems: r.verified_items,
+            leftovers: r.leftovers,
+            walCheckpointed: r.wal_checkpointed,
+        }
+    }
+}
+
 fn pending_where() -> &'static str {
     "(text <> '' AND substr(text, 1, 6) <> 'tdcl1:')
      OR (html <> '' AND substr(html, 1, 6) <> 'tdcl1:')"
@@ -165,6 +214,225 @@ pub fn wal_checkpoint(db: &Db) -> AppResult<()> {
     db.with_conn(|conn| {
         conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
         Ok(())
+    })
+}
+
+// ── 带备份保护的整体迁移（批次 3）────────────────────────────
+
+fn sha256_file(path: &std::path::Path) -> AppResult<(String, i64)> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = sha2::Sha256::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut total = 0i64;
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        use sha2::Digest;
+        hasher.update(&buf[..n]);
+        total += n as i64;
+    }
+    use sha2::Digest;
+    Ok((hex_encode(&hasher.finalize()), total))
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        out.push_str(&format!("{b:02x}"));
+    }
+    out
+}
+
+fn count_conn(conn: &rusqlite::Connection, sql: &str) -> AppResult<i64> {
+    Ok(conn.query_row(sql, [], |r| r.get(0))?)
+}
+
+fn copy_dir_files(from: &std::path::Path, to: &std::path::Path) -> AppResult<i64> {
+    if !from.is_dir() {
+        return Ok(0);
+    }
+    std::fs::create_dir_all(to)?;
+    let mut copied = 0i64;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(name) => name,
+            None => continue,
+        };
+        std::fs::copy(&path, to.join(name))?;
+        copied += 1;
+    }
+    Ok(copied)
+}
+
+/// 迁移前安全备份：`VACUUM INTO` 一致性快照 + 资产目录拷贝 + 回读校验。
+///
+/// 回读校验不通过时**不返回备份**，调用方必须中止迁移；任何迁移前的写入都还没发生。
+fn create_backup(db: &Db, root: &std::path::Path) -> AppResult<MigrationBackup> {
+    let data_dir = root.parent().unwrap_or(root);
+    let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%S%.3fZ");
+    let dir = data_dir
+        .join("clipboard-migrate")
+        .join(format!("backup-{stamp}"));
+    std::fs::create_dir_all(&dir)?;
+
+    let db_copy = dir.join("task-dock.db");
+    // VACUUM INTO 生成一致性快照（WAL 内容一并落盘），不修改源库。
+    let copy_path = db_copy.display().to_string();
+    db.with_conn(|conn| {
+        conn.execute("VACUUM INTO ?1", params![copy_path])?;
+        Ok(())
+    })?;
+
+    let assets = copy_dir_files(&root.join("images"), &dir.join("images"))?
+        + copy_dir_files(&root.join("thumbs"), &dir.join("thumbs"))?;
+
+    let (db_sha256, db_bytes) = sha256_file(&db_copy)?;
+    if db_bytes <= 0 || db_sha256.is_empty() {
+        return Err(AppError::Validation("迁移备份快照为空，已中止".into()));
+    }
+
+    // 回读校验：只读打开备份库核对条目/资产计数，避免“备份文件存在但不可用”。
+    let src = db.with_conn(|conn| {
+        Ok((
+            count_conn(conn, "SELECT COUNT(*) FROM clipboard_items")?,
+            count_conn(conn, "SELECT COUNT(*) FROM clipboard_assets")?,
+        ))
+    })?;
+    let conn = rusqlite::Connection::open_with_flags(
+        &db_copy,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )?;
+    let items = count_conn(&conn, "SELECT COUNT(*) FROM clipboard_items")?;
+    let assets_rows = count_conn(&conn, "SELECT COUNT(*) FROM clipboard_assets")?;
+    drop(conn);
+    if (items, assets_rows) != src {
+        return Err(AppError::Validation(format!(
+            "迁移备份校验失败（条目/资产计数不一致：备份 {items}/{assets_rows}，源 {}/{}）",
+            src.0, src.1
+        )));
+    }
+
+    Ok(MigrationBackup {
+        dir: dir.display().to_string(),
+        db_sha256,
+        db_bytes,
+        items,
+        assets: assets_rows.max(assets),
+        created_at: chrono::Utc::now().to_rfc3339(),
+    })
+}
+
+/// 历史图片资产加密：已是密文的跳过；明文加密后**回读解密比对**才落盘。
+fn encrypt_assets(db: &Db, root: &std::path::Path, key: &[u8; 32]) -> AppResult<(i64, i64)> {
+    let rows: Vec<(String, String, String)> = db.with_conn(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT item_id, role, path FROM clipboard_assets
+             WHERE role IN ('image', 'thumb') ORDER BY rowid",
+        )?;
+        let mapped = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in mapped {
+            out.push(row?);
+        }
+        Ok(out)
+    })?;
+
+    let mut encrypted = 0i64;
+    let mut skipped = 0i64;
+    for (item_id, role, rel) in rows {
+        let abs = root.join(&rel);
+        let stored = match std::fs::read(&abs) {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                skipped += 1;
+                continue;
+            }
+        };
+        if secure::is_encrypted_blob(&stored) {
+            skipped += 1;
+            continue;
+        }
+        let aad = secure::item_asset_aad(&item_id, &role);
+        let ciphertext = secure::encrypt_bytes(key, &aad, &stored)?;
+        let back = secure::decrypt_bytes(key, &aad, &ciphertext)?;
+        if back.as_slice() != stored.as_slice() {
+            return Err(AppError::Validation(format!(
+                "图片资产迁移往返校验失败（{rel}），该文件保持明文"
+            )));
+        }
+        let tmp = abs.with_extension("png.tmp");
+        std::fs::write(&tmp, &ciphertext)?;
+        std::fs::rename(&tmp, &abs).inspect_err(|_| {
+            let _ = std::fs::remove_file(&tmp);
+        })?;
+        encrypted += 1;
+    }
+    Ok((encrypted, skipped))
+}
+
+/// 清掉 640 预览派生缓存：迁移后按需重建，避免把明文派生图留在盘上。
+fn purge_preview_caches(root: &std::path::Path) -> i64 {
+    let dir = root.join("thumbs");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return 0;
+    };
+    let mut purged = 0i64;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.contains("-preview-") && entry.path().is_file() {
+            if std::fs::remove_file(entry.path()).is_ok() {
+                purged += 1;
+            }
+        }
+    }
+    purged
+}
+
+/// 整体迁移入口（命令层与测试使用）：先做可核对备份，再加密正文与历史图片。
+///
+/// 顺序保证：备份未通过校验时不做任何加密；正文迁移失败时图片尚未加密；
+/// 全流程幂等，可在任意中断点重跑。
+pub fn encrypt_existing_history_with_backup(
+    db: &Db,
+    root: &std::path::Path,
+) -> AppResult<MigrationOutcome> {
+    let settings = Settings::load(db)?;
+    if !settings.clipboard_encrypt_history {
+        return Err(AppError::Validation(
+            "未开启剪贴板历史加密，拒绝迁移".into(),
+        ));
+    }
+    // 先 checkpoint 一次，让备份快照尽量包含已落盘的写入。
+    let _ = wal_checkpoint(db);
+    let backup = create_backup(db, root)?;
+    let key = secure::cek(db)?;
+
+    let report = encrypt_existing_history(db)?;
+    let (assets_encrypted, assets_skipped) = encrypt_assets(db, root, &key)?;
+    let preview_cache_purged = purge_preview_caches(root);
+    super::store::purge_transient_assets(root);
+    let _ = wal_checkpoint(db);
+
+    Ok(MigrationOutcome {
+        report: MigrationSummary::from_report(&report),
+        backup,
+        assets_encrypted,
+        assets_skipped,
+        preview_cache_purged,
     })
 }
 
@@ -341,8 +609,84 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn plaintext_scan_and_wal_contain_no_sentinel_after_migration() {
+    fn backup_protected_migration_encrypts_text_and_images() {
         let _guard = MIG_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        secure::reset_cache();
+        let tmp = TempRoot::new();
+        let db = Db::open(&tmp.0.join("app.db")).unwrap();
+        let root = tmp.0.join("clipboard");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut s = Settings::default();
+        s.clipboard_encrypt_history = false;
+        let sentinel = "TDCLIP-BK-SENTINEL-2e7c";
+        let text_id = store::record_capture(&db, &root, &text(sentinel), &s)
+            .unwrap()
+            .item
+            .id;
+        let img_id = store::record_capture(&db, &root, &image(), &s)
+            .unwrap()
+            .item
+            .id;
+        let img_rel = format!("images/{img_id}.png");
+        let img_plain = std::fs::read(root.join(&img_rel)).unwrap();
+        assert_eq!(&img_plain[..4], b"\x89PNG", "迁移前图片必须是明文 PNG");
+
+        enable(&db, true);
+        let outcome = encrypt_existing_history_with_backup(&db, &root).unwrap();
+        assert_eq!(outcome.report.encryptedItems, 1);
+        assert_eq!(outcome.report.leftovers, 0);
+        assert_eq!(outcome.assets_encrypted, 2, "原图与缩略图都应加密");
+        // 备份必须先存在且可核对：数据库快照 + 图片副本 + 哈希。
+        let backup = std::path::PathBuf::from(&outcome.backup.dir);
+        assert!(backup.join("task-dock.db").is_file(), "备份库必须存在");
+        assert!(backup.join("images").is_dir(), "备份必须包含图片目录");
+        assert!(!outcome.backup.db_sha256.is_empty());
+        assert_eq!(outcome.backup.items, 2);
+        assert!(outcome.backup.db_bytes > 0);
+
+        // 正文与图片都已变密文，读取仍透明解密。
+        assert!(raw_text(&db, &text_id).starts_with("tdcl1:"));
+        let img_stored = std::fs::read(root.join(&img_rel)).unwrap();
+        assert!(secure::is_encrypted_blob(&img_stored));
+        assert_eq!(store::get_item(&db, &text_id).unwrap().text, sentinel);
+        let png = store::image_png(&db, &root, &img_id).expect("图片应仍可读");
+        assert_eq!(&png[..4], b"\x89PNG");
+
+        // 幂等：重跑不再加密任何内容，已有密文被跳过。
+        let again = encrypt_existing_history_with_backup(&db, &root).unwrap();
+        assert_eq!(again.report.encryptedItems, 0);
+        assert_eq!(again.report.pendingBefore, 0);
+        assert_eq!(again.assets_encrypted, 0);
+        assert!(again.assets_skipped >= 2);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn migration_aborts_before_writes_when_backup_cannot_be_created() {
+        let _guard = MIG_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        secure::reset_cache();
+        let tmp = TempRoot::new();
+        let db = Db::open(&tmp.0.join("app.db")).unwrap();
+        let root = tmp.0.join("clipboard");
+        std::fs::create_dir_all(&root).unwrap();
+        let sentinel = "TDCLIP-ABORT-SENTINEL-55d1";
+        let mut s = Settings::default();
+        s.clipboard_encrypt_history = false;
+        let id = store::record_capture(&db, &root, &text(sentinel), &s)
+            .unwrap()
+            .item
+            .id;
+        // 让备份目录无法创建（同名文件占位）：迁移必须在任何加密写入前中止。
+        std::fs::write(tmp.0.join("clipboard-migrate"), b"not-a-dir").unwrap();
+        enable(&db, true);
+        let err = encrypt_existing_history_with_backup(&db, &root).unwrap_err();
+        assert!(!err.to_string().is_empty());
+        assert_eq!(raw_text(&db, &id), sentinel, "备份失败时不得写入任何密文");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn plaintext_scan_and_wal_contain_no_sentinel_after_migration() {        let _guard = MIG_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         secure::reset_cache();
         let tmp = TempRoot::new();
         let db_path = tmp.0.join("app.db");

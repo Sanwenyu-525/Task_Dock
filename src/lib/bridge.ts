@@ -35,6 +35,7 @@ import type {
   ClipboardGroup,
   ClipboardGroupPage,
   ClipboardStats,
+  ClipboardMigrationOutcome,
   ClipboardView,
   ClipboardFilter,
   ClipboardSourceOption,
@@ -125,6 +126,9 @@ import type {
   PlanningProject,
   PlanningProjectInput,
   PlanningProjectPatch,
+  ProjectRootPatch,
+  ProjectAndPlanOutcome,
+  PlanningPlan,
   PlanningFeature,
   PlanningAgentFeatureLink,
   PlanningFeatureInput,
@@ -794,6 +798,14 @@ export const clipboardGroupItemPosition = (groupId: string, itemId: string) =>
     itemId,
   });
 export const clipboardStats = () => invoke<ClipboardStats>("clipboard_stats");
+/**
+ * 加密现有剪贴板历史（正文 + 历史图片）。
+ *
+ * 后端会先做一次可核对备份（`VACUUM INTO` 快照 + 资产目录拷贝 + 回读计数校验），
+ * 校验失败即中止且不写任何密文；结果返回备份路径/哈希与各类计数，供界面如实展示。
+ */
+export const clipboardEncryptHistoryMigrate = () =>
+  invoke<ClipboardMigrationOutcome>("clipboard_encrypt_history_migrate");
 export const clipboardThumb = (itemId: string) =>
   invoke<string | null>("clipboard_thumb", { itemId });
 /**
@@ -1270,8 +1282,23 @@ export const planningListProjects = (includeArchived?: boolean) =>
   invoke<PlanningProject[]>("planning_list_projects", { includeArchived });
 export const planningCreateProject = (input: PlanningProjectInput) =>
   invoke<PlanningProject>("planning_create_project", { input });
-export const planningUpdateProject = (id: string, patch: PlanningProjectPatch) =>
-  invoke<PlanningProject>("planning_update_project", { id, patch });
+/** 计划聚合写：只改执行状态/排序，必须带计划 revision。 */
+export const planningUpdatePlan = (id: string, patch: PlanningProjectPatch) =>
+  invoke<PlanningPlan>("planning_update_plan", { id, patch });
+/** 项目根聚合写：名称/描述/目标日期/生命周期，必须带项目根 revision。 */
+export const planningUpdateProjectRoot = (id: string, patch: ProjectRootPatch) =>
+  invoke<ProjectAndPlanOutcome>("planning_update_project_root", { id, patch });
+/** 两个聚合同一事务写：任一 revision 冲突整体回滚。 */
+export const planningUpdateProjectAndPlan = (
+  id: string,
+  project: ProjectRootPatch,
+  plan: PlanningProjectPatch,
+) =>
+  invoke<ProjectAndPlanOutcome>("planning_update_project_and_plan", {
+    id,
+    project,
+    plan,
+  });
 export const planningArchiveProject = (id: string, archived: boolean) =>
   invoke<PlanningProject>("planning_archive_project", { id, archived });
 export const planningDeleteProject = (id: string) =>

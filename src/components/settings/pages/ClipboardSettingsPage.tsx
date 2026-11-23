@@ -10,6 +10,7 @@ import { NumberInput, Switch } from "../../ui";
 import SettingsPageLayout from "../SettingsPageLayout";
 import {
   clipboardCleanup,
+  clipboardEncryptHistoryMigrate,
   clipboardProbe,
   clipboardRepairConfig,
   clipboardStats,
@@ -128,8 +129,33 @@ export default function ClipboardSettingsPage() {
     }
   }
 
-  async function onClipCleanup() {
-    setBusyKey("clip-cleanup");
+  /**
+   * 加密现有历史：后端先做可核对备份（失败即中止），再加密正文与历史图片。
+   * 界面只展示计数与备份哈希前缀，不回显正文或密钥。
+   */
+  async function onEncryptHistory() {
+    setBusyKey("clip-encrypt");
+    try {
+      const r = await clipboardEncryptHistoryMigrate();
+      await refreshClipStats();
+      showToast(
+        t("settings.clipboard.encryptDone", {
+          items: r.report.encryptedItems,
+          assets: r.assetsEncrypted,
+          backup: r.backup.dir,
+        }),
+        { kind: "success" },
+      );
+    } catch (e) {
+      showToast(t("settings.clipboard.encryptFailed", { error: errorMessage(e) }), {
+        kind: "error",
+      });
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function onClipCleanup() {    setBusyKey("clip-cleanup");
     try {
       const r = await clipboardCleanup();
       await refreshClipStats();
@@ -429,9 +455,18 @@ export default function ClipboardSettingsPage() {
             {busyKey === "clip-cleanup" ? <RefreshCw size={11} className="spin" /> : <Trash2 size={11} />}{" "}
             {t("settings.clipboard.cleanup")}
           </button>
+          <button
+            className="btn sm"
+            onClick={onEncryptHistory}
+            disabled={busyKey !== null || !settings.clipboard_encrypt_history}
+          >
+            {busyKey === "clip-encrypt" ? <RefreshCw size={11} className="spin" /> : null}
+            {t("settings.clipboard.encryptExisting")}
+          </button>
         </div>
       </div>
       <div className="setting-note">{t("settings.clipboard.cleanupNote")}</div>
+      <div className="setting-note">{t("settings.clipboard.encryptExistingNote")}</div>
     </SettingsPageLayout>
   );
 }

@@ -1756,6 +1756,7 @@ pub fn run() {
             commands::clipboard::clipboard_stats,
             commands::clipboard::clipboard_sources,
             commands::clipboard::clipboard_thumb,
+            commands::clipboard::clipboard_encrypt_history_migrate,
             commands::clipboard::clipboard_preview,
             commands::clipboard::clipboard_image,
             commands::clipboard::clipboard_copy_item,

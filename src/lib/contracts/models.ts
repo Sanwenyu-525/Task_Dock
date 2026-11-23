@@ -649,6 +649,34 @@ export interface ClipboardView {
   total_items: number;
 }
 
+/** 迁移前安全备份的可核对信息（路径与哈希，不含正文）。 */
+export interface ClipboardMigrationBackup {
+  dir: string;
+  dbSha256: string;
+  dbBytes: number;
+  items: number;
+  assets: number;
+  createdAt: string;
+}
+
+/** 加密现有历史的计数结果（与 Rust `MigrationSummary` 对齐）。 */
+export interface ClipboardMigrationSummary {
+  pendingBefore: number;
+  encryptedItems: number;
+  verifiedItems: number;
+  leftovers: number;
+  walCheckpointed: boolean;
+}
+
+/** 加密现有历史的结果：备份信息 + 正文/资产计数 + 预览缓存清理数。 */
+export interface ClipboardMigrationOutcome {
+  report: ClipboardMigrationSummary;
+  backup: ClipboardMigrationBackup;
+  assetsEncrypted: number;
+  assetsSkipped: number;
+  previewCachePurged: number;
+}
+
 /** 列表筛选（后端 ClipboardFilter 为 camelCase）。 */
 export interface ClipboardFilter {
   kind?: string;
@@ -2140,10 +2168,16 @@ export interface PlanningProject {
   sort_order: number;
   created_at: string;
   updated_at: string;
-  /** 乐观并发版本（v37）：MCP 写工具强制校验；UI 路径可选传入 */
+  /** 乐观并发版本（v37）：计划聚合自己的令牌，随计划字段写入 +1 */
   revision?: number;
   /** 所属项目根（workspace_projects.id，ADR-0010）；id 本身是计划 ID。孤儿旧计划为 null。 */
   workspace_project_id?: string | null;
+  /**
+   * 所属项目根的 revision（workspace_projects.revision，v93）。
+   * 与 `revision` 是两个独立聚合的版本令牌：保存名称/描述/目标日期时必须原样回传。
+   * 孤儿旧计划（尚未补链）为 null。
+   */
+  project_revision?: number | null;
   stats: PlanningProjectStats;
 }
 
@@ -2163,15 +2197,44 @@ export interface PlanningProjectInput {
   target_date?: string | null;
 }
 
+/**
+ * 计划聚合补丁：**只允许计划自身字段**。
+ *
+ * 名称/描述/目标日期属于项目根（ADR-0011），必须走 `ProjectRootPatch`；
+ * `expected_revision` 是计划 revision，与项目根 revision 独立。
+ */
 export interface PlanningProjectPatch {
-  name?: string;
-  description?: string;
+  /** 计划执行状态（planning | in_progress | paused | completed） */
   status?: PlanningProjectStatus;
-  /** 三态：undefined = 保持；null = 清除；字符串 = 设置 */
-  target_date?: string | null;
   sort_order?: number;
-  /** 乐观并发（v37）：传入时后端校验，不匹配返回冲突 */
+  /** 计划乐观并发令牌：必填（后端缺失返回 Validation） */
   expected_revision?: number;
+}
+
+/**
+ * 项目根补丁（`workspace_projects`）：名称/类型/描述/目标/目标日期/生命周期。
+ *
+ * `target_date` 三态：undefined = 保持；null = 清除；字符串 = 设置。
+ * `expected_project_revision` 是项目根 revision（不是计划 revision），必填。
+ */
+export interface ProjectRootPatch {
+  name?: string;
+  kind?: string;
+  description?: string;
+  goal?: string;
+  /** 项目生命周期（active | archived） */
+  lifecycle_status?: string;
+  target_date?: string | null;
+  expected_project_revision?: number;
+}
+
+/**
+ * 项目根 + 计划在同一事务内更新的结果。
+ * `project.revision` 是根 revision，`plan.revision` 是计划 revision。
+ */
+export interface ProjectAndPlanOutcome {
+  project: ProjectHubProjectSummary;
+  plan: PlanningPlan;
 }
 
 export interface PlanningStep {
@@ -2426,8 +2489,19 @@ export type AgentAccessData = Record<string, unknown>;
 
 /** MCP 写入成功后主进程广播（v37）：payload camelCase。 */
 export interface PlanningChangedEvent {
-  kind: "project" | "feature" | "step" | "milestone" | "activity" | "task" | "note";
+  kind:
+    | "project"
+    | "plan"
+    | "feature"
+    | "step"
+    | "milestone"
+    | "activity"
+    | "task"
+    | "note";
+  /** 项目根 ID（计划事件也带所属项目根） */
   projectId?: string;
+  /** 计划 ID（kind=plan 时必带）；不得用 projectId 冒充 */
+  planId?: string;
   featureId?: string;
   revision?: number;
 }
@@ -4766,6 +4840,8 @@ export interface ProjectHubProjectSummary {
   activePlanId: string | null;
   createdAt: string;
   updatedAt: string;
+  /** 项目根乐观并发版本（v93）：与计划 revision 独立 */
+  revision: number;
   phaseCount: number;
   taskCount: number;
   completedTaskCount: number;

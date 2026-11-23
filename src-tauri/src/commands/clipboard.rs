@@ -310,6 +310,38 @@ static OCR_QUOTA: Quota = Quota {
     busy: "另一张图片正在识别，请稍后重试",
 };
 
+/// 加密现有剪贴板历史（正文 + 历史图片）：先做可核对备份，再迁移。
+///
+/// 安全约束：
+/// - 备份校验失败直接中止，不写入任何密文；
+/// - 与采集写入共用 `capture_gate` 临界区，迁移期间不接受新的资产/正文写入；
+/// - 幂等：中断后可重跑，已加密的行/资产会被跳过；
+/// - 全过程在阻塞线程池执行，不占用主线程。
+#[tauri::command]
+pub async fn clipboard_encrypt_history_migrate(
+    state: State<'_, Arc<ClipboardRuntime>>,
+) -> AppResult<crate::clipboard::secure_migration::MigrationOutcome> {
+    // `runtime` 返回借用，后台任务需要 'static：先克隆 Arc 再移入阻塞线程。
+    let rt = runtime(&state).clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let gate = rt
+            .capture_gate
+            .lock()
+            .map_err(|_| AppError::Unavailable("剪贴板采集临界区不可用".into()))?;
+        let outcome = crate::clipboard::secure_migration::encrypt_existing_history_with_backup(
+            &rt.db, &rt.root,
+        )?;
+        drop(gate);
+        Ok(outcome)
+    })
+    .await
+    .map_err(|e| {
+        AppError::Io(std::io::Error::other(format!(
+            "剪贴板历史加密后台任务异常结束：{e}"
+        )))
+    })?
+}
+
 /// 图片另存为：把落盘的原始 PNG 写入用户选择的路径，返回写入的字节数。
 ///
 /// **覆盖授权**：系统保存对话框只负责选路径，不构成可验证的覆盖授权。前端在目标
