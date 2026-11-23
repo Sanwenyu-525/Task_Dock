@@ -10,7 +10,7 @@
 //! - 所有写入先做命令层校验，数据库 CHECK/外键做最后兜底；错误信息面向用户可读。
 
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Arc;
 use tauri::State;
@@ -129,7 +129,7 @@ pub struct NovelVolume {
 }
 
 /// 章节列表项：不含正文，避免打开项目时把整本正文全部读入内存。
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct NovelChapterSummary {
     pub id: String,
@@ -405,7 +405,7 @@ fn ensure_novel_project(
 }
 
 /// 仅按章节 ID 操作时，先取所属项目再做类型/状态检查，避免先读出正文再拒绝。
-fn chapter_project_id(conn: &Connection, id: &str) -> AppResult<String> {
+pub(crate) fn chapter_project_id(conn: &Connection, id: &str) -> AppResult<String> {
     conn.query_row(
         "SELECT project_id FROM novel_chapters WHERE id = ?1",
         params![id],
@@ -1026,7 +1026,7 @@ fn read_volume(conn: &Connection, id: &str) -> AppResult<NovelVolume> {
     .ok_or_else(|| AppError::NotFound("卷不存在或已被删除".into()))
 }
 
-fn read_chapter_summary(conn: &Connection, id: &str) -> AppResult<NovelChapterSummary> {
+pub(crate) fn read_chapter_summary(conn: &Connection, id: &str) -> AppResult<NovelChapterSummary> {
     conn.query_row(
         "SELECT id, project_id, volume_id, title, word_count, sort_order, created_at, updated_at
          FROM novel_chapters WHERE id = ?1",
@@ -1037,7 +1037,7 @@ fn read_chapter_summary(conn: &Connection, id: &str) -> AppResult<NovelChapterSu
     .ok_or_else(|| AppError::NotFound("章节不存在或已被删除".into()))
 }
 
-fn read_chapter(conn: &Connection, id: &str) -> AppResult<NovelChapter> {
+pub(crate) fn read_chapter(conn: &Connection, id: &str) -> AppResult<NovelChapter> {
     conn.query_row(
         "SELECT id, project_id, volume_id, title, content, word_count, sort_order,
                 created_at, updated_at
@@ -1332,20 +1332,45 @@ pub fn novel_chapter_save_content_impl(
     id: &str,
     content: String,
 ) -> AppResult<NovelChapterSummary> {
+    db.with_transaction(|conn| novel_chapter_save_content_in_conn(conn, id, content))?;
+    db.with_read(|conn| read_chapter_summary(conn, id))
+}
+
+/// 正文写入的事务内实现（Agent 领域层复用）：调用方必须已处于事务中，
+/// 这样领域层的版本校验、业务写入与 revision 推进才能原子提交。
+///
+/// 返回 `(project_id, saved_at)`：`saved_at` 是本次写入的 `updated_at`，供 revision 使用。
+pub(crate) fn novel_chapter_save_content_in_conn(
+    conn: &rusqlite::Connection,
+    id: &str,
+    content: String,
+) -> AppResult<(String, String)> {
     let content = validate_chapter_body(&content)?;
     let word_count = count_chapter_words(&content);
-    db.with_conn(|conn| {
-        let project_id = chapter_project_id(conn, id)?;
-        ensure_novel_project(conn, &project_id, true)?;
-        conn.execute(
-            "UPDATE novel_chapters
-             SET content = ?2, word_count = ?3, updated_at = ?4
-             WHERE id = ?1",
-            params![id, content, word_count, now_iso()],
-        )?;
-        Ok(())
-    })?;
-    db.with_read(|conn| read_chapter_summary(conn, id))
+    let project_id = chapter_project_id(conn, id)?;
+    ensure_novel_project(conn, &project_id, true)?;
+    let saved_at = now_iso();
+    conn.execute(
+        "UPDATE novel_chapters
+         SET content = ?2, word_count = ?3, updated_at = ?4
+         WHERE id = ?1",
+        params![id, content, word_count, saved_at],
+    )?;
+    Ok((project_id, saved_at))
+}
+
+/// 读取章节当前的业务更新时间（领域层做版本快照与归属校验用）。
+pub(crate) fn novel_chapter_updated_at(
+    conn: &rusqlite::Connection,
+    id: &str,
+) -> AppResult<String> {
+    conn.query_row(
+        "SELECT updated_at FROM novel_chapters WHERE id = ?1",
+        params![id],
+        |r| r.get(0),
+    )
+    .optional()?
+    .ok_or_else(|| AppError::NotFound("章节不存在或已被删除".into()))
 }
 
 pub fn novel_chapter_delete_impl(db: &Db, id: &str) -> AppResult<()> {

@@ -14,7 +14,7 @@
 //!   不伪造已生成产物。
 
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Arc;
 use tauri::State;
@@ -228,7 +228,7 @@ pub struct ComicScene {
     pub updated_at: String,
 }
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct ComicMediaVersion {
     pub id: String,
@@ -486,7 +486,7 @@ fn ensure_comic_project(
     Ok(())
 }
 
-fn owner_project_id(conn: &Connection, table: &str, id: &str) -> AppResult<String> {
+pub(crate) fn owner_project_id(conn: &Connection, table: &str, id: &str) -> AppResult<String> {
     let sql = format!("SELECT project_id FROM {table} WHERE id = ?1");
     conn.query_row(&sql, params![id], |row| row.get(0))
         .optional()?
@@ -1409,7 +1409,7 @@ fn row_to_media(row: &rusqlite::Row<'_>) -> rusqlite::Result<ComicMediaVersion> 
     })
 }
 
-fn read_media(conn: &Connection, id: &str) -> AppResult<ComicMediaVersion> {
+pub(crate) fn read_media(conn: &Connection, id: &str) -> AppResult<ComicMediaVersion> {
     conn.query_row(
         "SELECT id, project_id, shot_id, character_id, scene_id, file_path, media_kind,
                 version_label, status, review_note, source, created_at, updated_at
@@ -1674,60 +1674,93 @@ pub fn comic_media_save_impl(
             MEDIA_IMPORT_STATUSES,
         )?),
     };
-    db.with_conn(|conn| {
-        let project_id = owner_project_id(conn, "comic_media_versions", id)?;
-        ensure_comic_project(conn, &project_id, true)?;
-        let now = now_iso();
-        match status {
-            Some(status) => conn.execute(
-                "UPDATE comic_media_versions
-                 SET version_label = ?2, status = ?3, review_note = ?4, updated_at = ?5
-                 WHERE id = ?1",
-                params![id, version_label, status, review_note, now],
-            )?,
-            None => conn.execute(
-                "UPDATE comic_media_versions
-                 SET version_label = ?2, review_note = ?3, updated_at = ?4
-                 WHERE id = ?1",
-                params![id, version_label, review_note, now],
-            )?,
-        };
-        Ok(())
+    db.with_transaction(|conn| {
+        comic_media_save_in_conn(conn, id, version_label, status, review_note)
     })?;
     db.with_read(|conn| read_media(conn, id))
 }
 
+/// 素材版本元信息写入的事务内实现（Agent 领域层复用）。
+/// 返回 `(project_id, saved_at)`，供领域层做归属校验与 revision 推进。
+pub(crate) fn comic_media_save_in_conn(
+    conn: &rusqlite::Connection,
+    id: &str,
+    version_label: String,
+    status: Option<String>,
+    review_note: String,
+) -> AppResult<(String, String)> {
+    let project_id = owner_project_id(conn, "comic_media_versions", id)?;
+    ensure_comic_project(conn, &project_id, true)?;
+    let now = now_iso();
+    match status {
+        Some(status) => conn.execute(
+            "UPDATE comic_media_versions
+             SET version_label = ?2, status = ?3, review_note = ?4, updated_at = ?5
+             WHERE id = ?1",
+            params![id, version_label, status, review_note, now],
+        )?,
+        None => conn.execute(
+            "UPDATE comic_media_versions
+             SET version_label = ?2, review_note = ?3, updated_at = ?4
+             WHERE id = ?1",
+            params![id, version_label, review_note, now],
+        )?,
+    };
+    Ok((project_id, now))
+}
+
+
 /// 标记采用：同一镜头下其余版本回到候选；未关联镜头的参考素材不能采用。
 pub fn comic_media_adopt_impl(db: &Db, id: &str) -> AppResult<ComicMediaVersion> {
-    db.with_transaction(|conn| {
-        let project_id = owner_project_id(conn, "comic_media_versions", id)?;
-        ensure_comic_project(conn, &project_id, true)?;
-        let shot_id: Option<String> = conn.query_row(
+    db.with_transaction(|conn| comic_media_adopt_in_conn(conn, id))?;
+    db.with_read(|conn| read_media(conn, id))
+}
+
+/// 采用素材版本的事务内实现（Agent 领域层复用）。
+///
+/// 返回 `(project_id, shot_id, saved_at, replaced)`：
+/// `replaced` 是被本次操作从 adopted 降回 candidate 的旧版本及其**变更前**的
+/// `updated_at`；领域层必须对这些资源**一并推进 revision**（文档 §7.4）。
+pub(crate) fn comic_media_adopt_in_conn(
+    conn: &rusqlite::Connection,
+    id: &str,
+) -> AppResult<(String, String, String, Vec<(String, String)>)> {
+    let project_id = owner_project_id(conn, "comic_media_versions", id)?;
+    ensure_comic_project(conn, &project_id, true)?;
+    let shot_id: Option<String> = conn
+        .query_row(
             "SELECT shot_id FROM comic_media_versions WHERE id = ?1",
             params![id],
             |r| r.get(0),
-        ).optional()?
+        )
+        .optional()?
         .ok_or_else(|| AppError::NotFound("素材版本不存在或已被删除".into()))?;
-        let Some(shot_id) = shot_id else {
-            return Err(AppError::Validation(
-                "未关联镜头的参考素材不能标记为采用版本".into(),
-            ));
-        };
-        let now = now_iso();
-        conn.execute(
-            "UPDATE comic_media_versions
-             SET status = 'candidate', updated_at = ?2
-             WHERE shot_id = ?1 AND status = 'adopted' AND id != ?3",
-            params![shot_id, now, id],
+    let Some(shot_id) = shot_id else {
+        return Err(AppError::Validation(
+            "未关联镜头的参考素材不能标记为采用版本".into(),
+        ));
+    };
+    let replaced: Vec<(String, String)> = {
+        let mut stmt = conn.prepare(
+            "SELECT id, updated_at FROM comic_media_versions
+             WHERE shot_id = ?1 AND status = 'adopted' AND id != ?2",
         )?;
-        conn.execute(
-            "UPDATE comic_media_versions
-             SET status = 'adopted', updated_at = ?2 WHERE id = ?1",
-            params![id, now],
-        )?;
-        Ok(())
-    })?;
-    db.with_read(|conn| read_media(conn, id))
+        let rows = stmt.query_map(params![shot_id, id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect::<Result<Vec<(String, String)>, _>>()?
+    };
+    let now = now_iso();
+    conn.execute(
+        "UPDATE comic_media_versions
+         SET status = 'candidate', updated_at = ?2
+         WHERE shot_id = ?1 AND status = 'adopted' AND id != ?3",
+        params![shot_id, now, id],
+    )?;
+    conn.execute(
+        "UPDATE comic_media_versions
+         SET status = 'adopted', updated_at = ?2 WHERE id = ?1",
+        params![id, now],
+    )?;
+    Ok((project_id, shot_id, now, replaced))
 }
 
 pub fn comic_media_delete_impl(db: &Db, id: &str) -> AppResult<()> {

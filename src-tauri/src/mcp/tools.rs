@@ -418,6 +418,8 @@ pub fn tool_defs() -> &'static [ToolDef] {
         defs.extend(crate::mcp::capability_tools::defs());
         // Agent 共享工作空间（v76）：项目状态/计划/知识写/决策/上下文/交接/报告/检索。
         defs.extend(crate::agent_access::mcp_tools::definitions_for_registry());
+        // 专业领域（架构文档 §8.2）：工具静态注册，能力按 projectId 动态返回。
+        defs.extend(crate::agent_access::domain_mcp::definitions_for_registry());
         // 协作中心（v77）：项目上下文/需求/Bug/方案/可视化/原型。
         defs.extend(crate::collab::mcp_tools::definitions_for_registry());
         defs
@@ -824,6 +826,11 @@ fn call(
     let db = ctx.db.as_ref();
     let agent = &ctx.agent;
     // Agent 共享工作空间工具走统一 service 层（授权、版本、审计都在那一层）。
+    if crate::agent_access::domain_mcp::is_owned(name) {
+        return crate::agent_access::domain_mcp::call(ctx, name, args, write_conn).unwrap_or_else(
+            || Err(ToolError::Failed(AppError::NotFound(format!("未知工具 {name}")))),
+        );
+    }
     if crate::agent_access::mcp_tools::is_owned(name) {
         return crate::agent_access::mcp_tools::call(ctx, name, args, write_conn).unwrap_or_else(
             || Err(ToolError::Failed(AppError::NotFound(format!("未知工具 {name}")))),
