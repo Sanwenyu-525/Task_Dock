@@ -1081,8 +1081,22 @@ pub fn restore_bundle(
     // 预检直接读暂存的行文件：事件表全程不整体进内存。
     // 若本机开启剪贴板历史加密，先把备份额里还原成明文再按本机 CEK 重加密，
     // 保证跨机恢复后库内不出现明文、也不残留原机不可解的密文。
-    if let Err(e) = backup::normalize_clipboard_for_restore(db, &mut read) {
-        return abort(data_dir, journal, e);
+    let clipboard_migration = match backup::normalize_clipboard_for_restore(db, &mut read) {
+        Ok(report) => report,
+        Err(e) => return abort(data_dir, journal, e),
+    };
+    if !read.clipboard_sealed && (clipboard_migration.rows > 0 || clipboard_migration.assets > 0) {
+        if clipboard_migration.encrypted {
+            read.warnings.push(format!(
+                "旧格式剪贴板备份（未随包加密）：{} 条记录、{} 个图片资产已按本机 CEK 重新加密后写入；原备份文件未改动。",
+                clipboard_migration.rows, clipboard_migration.assets
+            ));
+        } else {
+            read.warnings.push(
+                "旧格式剪贴板备份（未随包加密）：本机未开启剪贴板历史加密，导入后剪贴板正文与图片仍为明文；建议先在设置中开启加密。"
+                    .into(),
+            );
+        }
     }
     let parsed = match data::validate_bundle(db, &read.data, &read.rows_dir) {
         Ok(parsed) => parsed,

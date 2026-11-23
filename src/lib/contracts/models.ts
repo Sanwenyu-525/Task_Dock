@@ -1488,6 +1488,11 @@ export interface BackupMeta {
   clipboard_recovery_slot?: boolean;
   /** 剪贴板图片资产是否已随备份加密：true 时恢复自动解密，备份文件不含明文 PNG。 */
   clipboard_assets_sealed?: boolean;
+  /**
+   * 旧明文剪贴板备份：恢复时先读出，再按目标机加密设置一次性迁移入库；
+   * 原备份文件不会被改写。为 true 时界面必须提示用户。
+   */
+  clipboard_migration_required?: boolean;
 }
 
 /** 加密备份结果：`recovery_code` 只在本次返回中出现一次，需用户自行保管。 */

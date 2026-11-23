@@ -1305,6 +1305,9 @@ pub struct ReadBackup {
     pub assets: Vec<StagedAsset>,
     /// 新格式 bundle 明确携带扩展模块（剪贴板/工作现场/行动中心）。
     pub extended: bool,
+    /// 来源备份是否已对剪贴板段做 BEK 加密；false 表示旧明文/本机 CEK 形态，
+    /// 导入加密库时必须走 `normalize_clipboard_for_restore` 的一次性迁移。
+    pub clipboard_sealed: bool,
     pub manifest_version: i64,
     /// header 内可选的用户配置（快捷键/语言/微件）；旧备份为 None。
     pub config: Option<crate::user_preferences::BundleConfig>,
@@ -4204,10 +4207,40 @@ fn read_bundle_impl(
         archives: staged,
         assets: staged_assets,
         extended,
+        clipboard_sealed: header
+            .get("clipboard_sealed")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
         manifest_version,
         config,
         warnings: config_warnings,
     })
+}
+
+/// 未密封的备份是否携带剪贴板行：需要提示用户这是一次性明文→本机密文迁移。
+///
+/// 只看头部的全库计数，不解析正文；计数为 0 或缺失时视为没有剪贴板数据，不做误导性提示。
+fn clipboard_legacy_needs_migration(header: &serde_json::Value) -> bool {
+    if header
+        .get("clipboard_sealed")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    let Some(counts) = header.get("totals").and_then(|v| v.as_object()) else {
+        return false;
+    };
+    BACKUP_TABLES
+        .iter()
+        .filter(|rule| rule.class == "clipboard")
+        .any(|rule| {
+            counts
+                .get(rule.table)
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0)
+                > 0
+        })
 }
 
 /// 读取首行元信息（备份列表展示用；不校验整个文件）。
@@ -4235,6 +4268,8 @@ pub fn bundle_meta(path: &Path) -> Option<serde_json::Value> {
         "clipboard_sealed": value.get("clipboard_sealed").cloned().unwrap_or(serde_json::Value::Bool(false)),
         "clipboard_recovery_slot": value.get("clipboard_recovery_slot").cloned().unwrap_or(serde_json::Value::Bool(false)),
         "clipboard_assets_sealed": value.get("clipboard_assets_sealed").cloned().unwrap_or(serde_json::Value::Bool(false)),
+        // 未密封且确有剪贴板行：导入时需要一次性明文→本机密文迁移提示。
+        "clipboard_migration_required": clipboard_legacy_needs_migration(&value),
         "exported_at": value.get("exported_at").cloned().unwrap_or(serde_json::Value::Null),
     }))
 }
@@ -4297,17 +4332,35 @@ pub fn commit_assets(staged: &[StagedAsset], target_root: &Path) -> AppResult<us
     Ok(moved)
 }
 
+/// 旧明文/本机 CEK 备份导入时的归一化结果：只含数量，不含正文。
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ClipboardNormalizeReport {
+    /// 已处理的剪贴板条目行数；字段值是否原本就是明文不影响计数。
+    pub rows: usize,
+    /// 已重写为 CEK 容器的剪贴板图片资产数。
+    pub assets: usize,
+    /// 本机是否开启剪贴板历史加密并实际执行了重加密。
+    pub encrypted: bool,
+}
+
 /// 把备份里的剪贴板正文/图片归一到本机静态加密形态（恢复提交前调用）。
 ///
 /// 本机开关开启时：正文/HTML 按条目 AAD 重新加密，图片重写为 CEK 容器并更新暂存记录的
 /// 大小与 SHA-256，保证计划/日志校验的是最终落盘字节；备份里的旧容密文先按本机 CEK
 /// 解密（跨机无密钥时 fail-closed，明确提示需重新生成可移植备份）。开关关闭时保持原样。
-pub fn normalize_clipboard_for_restore(db: &Db, read: &mut ReadBackup) -> AppResult<()> {
+pub fn normalize_clipboard_for_restore(
+    db: &Db,
+    read: &mut ReadBackup,
+) -> AppResult<ClipboardNormalizeReport> {
     let settings = crate::db::Settings::load(db)?;
     if !settings.clipboard_encrypt_history {
-        return Ok(());
+        return Ok(ClipboardNormalizeReport::default());
     }
     let key = secure::cek(db)?;
+    let mut report = ClipboardNormalizeReport {
+        encrypted: true,
+        ..ClipboardNormalizeReport::default()
+    };
 
     let items_path = read.rows_dir.join("clipboard_items.jsonl");
     if items_path.exists() {
@@ -4324,6 +4377,7 @@ pub fn normalize_clipboard_for_restore(db: &Db, read: &mut ReadBackup) -> AppRes
                 let mut row: serde_json::Value = serde_json::from_str(&line).map_err(|e| {
                     AppError::Validation(format!("剪贴板条目暂存行损坏: {}", e))
                 })?;
+                report.rows += 1;
                 let id = row
                     .get("id")
                     .and_then(|v| v.as_str())
@@ -4412,8 +4466,9 @@ pub fn normalize_clipboard_for_restore(db: &Db, read: &mut ReadBackup) -> AppRes
         hasher.update(&cipher);
         asset.size = cipher.len() as u64;
         asset.sha256 = sha_hex(hasher);
+        report.assets += 1;
     }
-    Ok(())
+    Ok(report)
 }
 
 /// 把单个文件复制到目标（恢复前把将被覆盖的资产/归档留底）。
@@ -6155,6 +6210,11 @@ mod tests {
             Some("correct horse battery"),
         )
         .unwrap();
+        assert!(read.clipboard_sealed, "密封备份必须被识别为 sealed");
+        assert_eq!(
+            bundle_meta(&target).unwrap()["clipboard_migration_required"],
+            false
+        );
         normalize_clipboard_for_restore(&dest, &mut read).unwrap();
 
         // 1) 暂存行已按目标机 CEK 重加密，且解密回原文
@@ -6231,6 +6291,103 @@ mod tests {
         assert_eq!(commit_assets(&read.assets, &restored_root).unwrap(), 2);
         let restored = std::fs::read(restored_root.join("images/i1.png")).unwrap();
         assert!(secure::is_encrypted_blob(&restored));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn unsealed_legacy_bundle_is_migrated_into_encrypted_target() {
+        let dir = temp_dir("legacy-plain-encrypted-target");
+        let root = dir.join("clipboard");
+        let db = memdb();
+        seed_clipboard(&db, &root);
+        db.with_conn(|c| {
+            c.execute(
+                "UPDATE clipboard_items SET text='LEGACY-BODY', preview='legacy-preview', \
+                 title='legacy-title', source_app='legacy-app', source_title='legacy-window', \
+                 file_paths='[\"C:/legacy.txt\"]' WHERE id='i1'",
+                [],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+
+        let source = dir.join("legacy-plain.json");
+        write_bundle(
+            &db,
+            BackupSources {
+                archive_dir: None,
+                clipboard_dir: Some(&root),
+                shelf_dir: None,
+                data_dir: None,
+            },
+            &source,
+            BackupKind::Full,
+        )
+        .unwrap();
+        let meta = bundle_meta(&source).unwrap();
+        assert_eq!(meta["clipboard_sealed"], false);
+        assert_eq!(meta["clipboard_migration_required"], true);
+
+        let dest = memdb();
+        dest.set_setting("clipboard_encrypt_history", serde_json::json!(true))
+            .unwrap();
+        let mut read = read_bundle(&source, &dir.join("dest-read")).unwrap();
+        assert!(!read.clipboard_sealed, "旧包必须被识别为未密封");
+
+        // 旧明文包导入加密目标：正文与图片在提交前完成一次性迁移。
+        let report = normalize_clipboard_for_restore(&dest, &mut read).unwrap();
+        assert!(report.encrypted);
+        assert_eq!(report.rows, 1);
+        assert_eq!(report.assets, 2);
+
+        let rows = spilled_rows(&read, "clipboard_items");
+        for (field, plain) in [
+            ("text", "LEGACY-BODY"),
+            ("preview", "legacy-preview"),
+            ("title", "legacy-title"),
+            ("source_app", "legacy-app"),
+            ("source_title", "legacy-window"),
+            ("file_paths", "[\"C:/legacy.txt\"]"),
+        ] {
+            let stored = rows[0][field].as_str().unwrap();
+            assert!(
+                secure::is_encrypted_field(stored),
+                "旧明文包的 {field} 必须在导入前迁移为密文"
+            );
+            assert_eq!(
+                secure::decrypt_if_encrypted(&secure::item_field_aad("i1", field), stored).unwrap(),
+                plain
+            );
+        }
+
+        let image = read
+            .assets
+            .iter()
+            .find(|a| a.rel == "images/i1.png")
+            .unwrap();
+        let bytes = std::fs::read(&image.path).unwrap();
+        assert!(secure::is_encrypted_blob(&bytes), "旧明文图片必须迁移为 CEK 容器");
+        let plain = secure::decrypt_blob_if_encrypted(
+            &secure::item_asset_aad("i1", "image"),
+            &bytes,
+        )
+        .unwrap();
+        assert_eq!(&plain[..], b"\x89PNG\r\n\x1a\nimage-bytes-12345");
+
+        import_read(&dest, &read).unwrap();
+        let stored: String = dest
+            .with_conn(|c| {
+                c.query_row("SELECT text FROM clipboard_items WHERE id='i1'", [], |r| {
+                    r.get(0)
+                })
+                .map_err(AppError::from)
+            })
+            .unwrap();
+        assert!(secure::is_encrypted_field(&stored), "导入后正文必须保持密文");
+        assert_eq!(
+            secure::decrypt_if_encrypted(&secure::item_field_aad("i1", "text"), &stored).unwrap(),
+            "LEGACY-BODY"
+        );
         std::fs::remove_dir_all(dir).ok();
     }
 

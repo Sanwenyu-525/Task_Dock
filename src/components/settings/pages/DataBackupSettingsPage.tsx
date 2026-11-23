@@ -180,6 +180,11 @@ export default function DataBackupSettingsPage() {
         meta.config_included
           ? t("settings.data.importConfigIncluded")
           : t("settings.data.importConfigAbsent"),
+        meta.clipboard_migration_required
+          ? settings?.clipboard_encrypt_history
+            ? t("settings.data.importLegacyClipboard")
+            : t("settings.data.importLegacyClipboardPlain")
+          : "",
         sealed ? t("settings.data.importSealed") : "",
         sealed && !(typed.length >= 8) && recovery
           ? t("settings.data.importSealedByRecovery")

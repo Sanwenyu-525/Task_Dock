@@ -2232,6 +2232,8 @@ export const enUS: Record<MessageKey, string> = {
   "settings.data.passphraseTooShort": "Backup passphrase must be at least 8 characters, or left empty",
   "settings.data.sealedNeedsPassphrase": "This backup has an encrypted clipboard section: enter the passphrase or recovery key used when it was created above, then restore.",
   "settings.data.importSealed": "Clipboard section is encrypted: the passphrase entered above will be used for restore.",
+  "settings.data.importLegacyClipboard": "Legacy clipboard backup (not encrypted with the bundle): the backup file stays read-only. During restore, text and images are read, then re-encrypted with this device's CEK according to the local clipboard encryption setting before being written to the database. If the backup came from another encrypted device, restore may fail without that device's CEK.",
+  "settings.data.importLegacyClipboardPlain": "Legacy clipboard backup (not encrypted with the bundle): clipboard history encryption is off on this device, so text and images will remain plaintext after restore. Enable encryption first if needed. The backup file itself is not modified.",
   "settings.data.recoveryLabel": "Recovery key",
   "settings.data.recoveryPlaceholder": "Optional: recovery key generated with an encrypted backup",
   "settings.data.withRecovery": "Also generate a recovery key",

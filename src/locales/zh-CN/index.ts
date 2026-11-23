@@ -2214,6 +2214,8 @@ export const zhCN = {
   "settings.data.passphraseTooShort": "备份口令至少 8 个字符，或留空不使用加密",
   "settings.data.sealedNeedsPassphrase": "该备份的剪贴板段已加密：请先在上方填入创建时使用的备份口令或恢复密钥，再恢复。",
   "settings.data.importSealed": "剪贴板段已加密：恢复时将使用你在上方填入的备份口令。",
+  "settings.data.importLegacyClipboard": "旧格式剪贴板备份（未随包加密）：原备份文件保持只读；恢复时会先读出正文与图片，再按本机剪贴板加密设置用 CEK 重新加密写入数据库。若备份来自其他设备且原机已加密，可能因缺少原机 CEK 而失败。",
+  "settings.data.importLegacyClipboardPlain": "旧格式剪贴板备份（未随包加密）：本机未开启剪贴板历史加密，恢复后正文与图片仍为明文；建议先开启加密再恢复。原备份文件不会改动。",
   "settings.data.recoveryLabel": "恢复密钥",
   "settings.data.recoveryPlaceholder": "可选：创建加密备份时生成的恢复密钥",
   "settings.data.withRecovery": "同时生成恢复密钥",

@@ -138,7 +138,7 @@ TaskDock 剪贴板历史当前以 SQLite 明文保存正文/HTML/预览，图片
    剪贴板/导出/备份/恢复/暂存架与 DB 文件；只递归已存在路径，junction 跳过；模块级单测 +
    独立 crate 验证，启动集成与真机行为列入 Dev 验收。
 
-## 14. 实施状态（2026-11-23，批次 1–9）
+## 14. 实施状态（2026-11-23，批次 1–10）
 
 代码：`src-tauri/src/clipboard/secure.rs`、`secure_migration.rs`、`store.rs` 读写接入、`db::Settings` 新增开关；前端仅同步类型。
 
@@ -162,6 +162,7 @@ TaskDock 剪贴板历史当前以 SQLite 明文保存正文/HTML/预览，图片
 | 恢复密钥导出与消费 | 已实现（批次 4c-1） | 命令 `backup_now_encrypted(full, passphrase, with_recovery?) -> {path, recoveryCode}`；恢复密钥仅返回一次、不落盘；`read_bundle_with_secrets` 与 `import_data(recovery_code?)` 支持「口令优先、密钥兜底」；header `clipboard_recovery_slot` 供界面提示 |
 | 剪贴板图片资产备份加密 | 已实现（批次 4c-2） | 密封备份中图片原图/缩略图改写为 `asset_sealed` 分块：逐块 BEK+AES-256-GCM，AAD `tdclbk\|<backup_id>\|asset\|<rel>\|<chunk>\|v1`；文件路径/明文大小/SHA-256 仍随记录保存用于校验，读取时解密后按原 SHA 暂存；明文 `asset` 分块仍兼容旧加密备份与未加密备份 |
 | 跨机恢复可移植 | 已实现（批次 4c-3/6） | 密封导出前把 `text`/`html`/`preview`/`title`/`source_*`/`file_paths` 的本机 CEK 密文解回明文、图片容器解出 PNG 后再封入 BEK；恢复时 `normalize_clipboard_for_restore` 按目标机开关重新加密正文、元数据与图片（图片重写为容器并更新暂存大小/SHA）；`clipboard_crypto_envelope` 列为 `EXCLUDED_SETTINGS`，既不导出也不导入（DPAPI 只对原 Windows 用户有效）；`clipboard_encrypt_history` 并入 `LOCAL_PRIVACY_SETTINGS`，恢复旧备份不会悄悄改变本机加密选择 |
+| 旧格式剪贴板备份导入一次性迁移 | 已实现并验证（批次 10） | `bundle_meta` 对 `clipboard_sealed=false` 且 `totals` 确有剪贴板行的旧包返回 `clipboard_migration_required=true`，恢复确认框提示「原包只读、先读出再按本机 CEK 重加密」；`ReadBackup.clipboard_sealed` 区分来源，`normalize_clipboard_for_restore` 返回迁移条数/资产数，恢复结果写告警；本机开关关闭时明确提示仍为明文；缺少原机 CEK 的跨机旧包 fail-closed |
 | Agent 导出授权门槛 | 已实现导出前确认（批次 7） | 导出必须先调 `clipboard_export_preview`：只读统计条目/图片/字节/类型与是否含任务上下文，并签发 120 秒、单次使用的 `confirmationToken`；token 绑定目标类型/ID、任务 ID 与预览内容指纹（条目 ID/顺序/标题/预览/来源/路径等，不含正文）。`clipboard_export_for_agent` 强制携带 token，命令层重新计算指纹并消费后才写文件；目标/任务/内容变化或 token 过期均拒绝，拒绝写 `gate=denied` 审计，成功写 `confirmed=1`。UI 用危险确认框明示明文留存风险。导出没有暴露给 Agent API/MCP，因此当前不需要能力白名单；同用户被攻陷的渲染进程仍可先预览再导出，此门槛不是针对该威胁的授权边界。 |
 | Agent 导出审计 | 已实现（批次 5b） | 成功/失败/清理均写 `security_audit_log`（category=`clipboard`，事件 `CLIPBOARD_EXPORT_SUCCEEDED`/`CLIPBOARD_EXPORT_FAILED`/`CLIPBOARD_EXPORT_PURGED`）；明细只含目标类型、条目/图片计数、保留天数或错误码，**不含目录/文件名/正文**；诊断中心新增「剪贴板」分类 |
 | Agent 导出目录手动清理 | 已实现（批次 5a） | `clipboard_purge_agent_exports`：只删 `clipboard-exports/` 直接子目录，按 mtime 保留 N 天（0=全部、默认 7）；跳过符号链接/普通文件，失败保留并计数；返回 `{removed, skipped, failed, bytes}`，不落路径；设置页需危险操作确认 |
@@ -172,7 +173,7 @@ TaskDock 剪贴板历史当前以 SQLite 明文保存正文/HTML/预览，图片
 
 1. **搜索与来源覆盖面收窄**：字段加密后无法依赖 SQL LIKE/GROUP BY。条目/分组/来源筛选改为解密后过滤，条目单次最多扫描按当前排序的前 5000 条（`POST_FILTER_SCAN_LIMIT`），分组搜索最多扫描 500 个（`GROUP_SEARCH_SCAN_LIMIT`）；来源下拉聚合也只统计最近 5000 条，超过部分不参与搜索或计数。全局搜索对剪贴板的匹配只覆盖标题/预览/来源/文件路径，不读大正文 `text/html`，因此长文中间片段只能在剪贴板页前 220 字符预览中命中。
 2. **跨机恢复必须走加密备份**：加密库直接拷贝到新机仍不可解（DPAPI 只对原 Windows 用户有效）；未加密或旧版备份的剪贴板正文可能仍带原机 CEK 密文，新机恢复会明确报错。换机请用当前版本的「备份口令」加密备份（正文、元数据与图片在包内为 BEK 保护的明文）。
-3. **恢复路径**：密封备份恢复时按目标机开关重新加密正文、元数据与图片；未加密旧备份仍按原样写回（密文或明文），依赖双读兼容。
+3. **恢复路径**：密封备份恢复时按目标机开关重新加密正文、元数据与图片；未密封的旧格式备份导入时，由 `normalize_clipboard_for_restore` 在验证/写入前一次性解密并按本机 CEK 重加密，原备份文件保持只读；本机开关关闭时保持明文并在恢复结果中显式提示。缺少原机 CEK 的跨机旧包仍 fail-closed。
 4. **明文派生缓存**：`image_abs_path` 为 OCR/另存/外发解出 `transient/<id>-image.png` 明文，生命周期由启动/删除/清空清理；进程崩溃可能短暂残留，启动即清。这是过渡接口，后续批次改为直接消费字节流。
 5. **历史图片与元数据迁移**：开启开关只影响新采集；旧图片是明文 PNG、旧元数据是明文，需执行「加密现有历史」统一迁移。迁移命令已覆盖 `text/html/preview/title/source_app/source_title/file_paths` 与历史图片。
 6. **性能**：逐行 AEAD + 进程内 CEK 缓存；元数据搜索每次最多 5000 行 × 5 字段解密，尚未做 p50/p95 基准与真机走查。
