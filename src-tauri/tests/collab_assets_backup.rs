@@ -309,6 +309,7 @@ fn restore_failure_rolls_back_collab_asset_files() {
                 fail_asset_at: Some(0),
                 ..Default::default()
             },
+            ..Default::default()
         },
     )
     .expect_err("第 0 个资产提交失败必须整体回滚");

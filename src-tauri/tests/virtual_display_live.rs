@@ -16,6 +16,17 @@ fn live_enabled() -> bool {
     std::env::var("TASK_DOCK_VD_LIVE").ok().as_deref() == Some("1")
 }
 
+/// command 层 `vd_start` 需要 `AppHandle` 触发投屏控制栏挂载。
+/// 真机联调使用真实 Tauri 应用句柄；没有事件循环时控制栏会按既有超时降级，
+/// 不影响会话启动、截图与回收的主体断言。
+fn test_app() -> tauri::AppHandle {
+    tauri::Builder::default()
+        .build(tauri::generate_context!())
+        .expect("构建真机联调 AppHandle")
+        .handle()
+        .clone()
+}
+
 fn online_device() -> Option<vd::VdDevice> {
     let list = vd::vd_devices().expect("vd_devices");
     list.devices.into_iter().find(|device| device.state == "device")
@@ -131,6 +142,7 @@ fn live_mirror_and_virtual_session_roundtrip() {
         "设备: model={:?} connection={} transports={}",
         device.model, device.connection, device.transports.len()
     );
+    let app = test_app();
 
     // 可启动应用枚举：com.android.settings 应存在且未被标记为无入口。
     let apps = vd::vd_list_apps(device.serial.clone(), Some(false)).expect("vd_list_apps");
@@ -145,6 +157,7 @@ fn live_mirror_and_virtual_session_roundtrip() {
 
     // 参数注入/非法尺寸在启动前拒绝。
     assert!(vd::vd_start(
+        app.clone(),
         device.serial.clone(),
         "virtual".into(),
         Some("--help".into()),
@@ -154,6 +167,7 @@ fn live_mirror_and_virtual_session_roundtrip() {
     )
     .is_err());
     assert!(vd::vd_start(
+        app.clone(),
         device.serial.clone(),
         "virtual".into(),
         Some("com.android.settings".into()),
@@ -165,6 +179,7 @@ fn live_mirror_and_virtual_session_roundtrip() {
 
     // 屏幕镜像：running → 定位 → 截图 → 关闭。
     let mirror = vd::vd_start(
+        app.clone(),
         device.serial.clone(),
         "mirror".into(),
         None,
@@ -179,6 +194,7 @@ fn live_mirror_and_virtual_session_roundtrip() {
 
     // 同设备重复镜像应被拦截。
     let duplicate = vd::vd_start(
+        app.clone(),
         device.serial.clone(),
         "mirror".into(),
         None,
@@ -198,6 +214,7 @@ fn live_mirror_and_virtual_session_roundtrip() {
 
     // 独立虚拟屏：running → 截图 → 关闭。
     let virtual_session = vd::vd_start(
+        app.clone(),
         device.serial.clone(),
         "virtual".into(),
         Some("com.android.settings".into()),
@@ -234,6 +251,7 @@ fn live_mirror_and_virtual_session_roundtrip() {
         .map(|app| app.package.clone());
     if let Some(package) = second_package {
         let second = vd::vd_start(
+            app.clone(),
             device.serial.clone(),
             "virtual".into(),
             Some(package.clone()),
