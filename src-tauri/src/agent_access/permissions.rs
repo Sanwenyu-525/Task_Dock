@@ -102,6 +102,39 @@ fn require_agent(
     db.with_read(|conn| require_agent_in_conn(conn, row_id, capability, resource_id))
 }
 
+/// 事务内权限校验（架构文档 §6.3）：领域写操作在业务事务内重新验证身份与能力。
+///
+/// 与 `require` **共用同一套判定规则**（同样读 scope / revocation / grant，
+/// 文件导入身份同样只认授权上下文），只是连接由调用方的事务提供，
+/// 避免在 `db.with_transaction` 内再次 `db.with_read` 造成自锁。
+/// 不得把本函数当作第二套权限系统：任何规则修改必须同时反映到 `require`。
+pub fn require_in_conn(
+    conn: &Connection,
+    principal: &Principal,
+    capability: Capability,
+    resource_id: &str,
+) -> AppResult<()> {
+    if principal.read_only && capability.is_write() {
+        return Err(forbidden("当前为只读模式（TASKDOCK_CLI_READONLY=1）"));
+    }
+    match principal.identity {
+        Identity::LocalHuman | Identity::SystemInternal => Ok(()),
+        Identity::RegisteredAgent => {
+            let row_id = principal
+                .agent_row_id
+                .as_deref()
+                .ok_or_else(|| forbidden("缺少 Agent 身份"))?;
+            let scope_resource = match principal.import.as_ref() {
+                Some(grant) if capability_scoped_by_project(capability) => grant.project_id.trim(),
+                Some(_) => "",
+                None => resource_id,
+            };
+            require_agent_in_conn(conn, row_id, capability, scope_resource)
+        }
+        Identity::FileImport => require_file_import_in_conn(conn, principal, capability, resource_id),
+    }
+}
+
 pub(crate) fn require_agent_in_conn(
     conn: &Connection,
     row_id: &str,
@@ -263,6 +296,16 @@ fn require_file_import(
     capability: Capability,
     resource_id: &str,
 ) -> AppResult<()> {
+    db.with_read(|conn| require_file_import_in_conn(conn, principal, capability, resource_id))
+}
+
+/// `require_file_import` 的事务内版本；规则与前者完全一致，共用一份实现。
+fn require_file_import_in_conn(
+    conn: &Connection,
+    principal: &Principal,
+    capability: Capability,
+    resource_id: &str,
+) -> AppResult<()> {
     let Some(grant) = principal.import.as_ref() else {
         return Err(forbidden(
             "文件导入未获授权：请在「能力中心 → Agent 接入 → 文件同步」中授权该目录，或对本次导入人工批准",
@@ -284,13 +327,10 @@ fn require_file_import(
         } else {
             resource_id
         };
-        require_agent(db, agent_row_id, capability, scope_resource)?;
-        db.with_read(|conn| {
-            if is_revoked(conn, agent_row_id)? {
-                return Err(forbidden("导入授权绑定的 Agent 已被撤销"));
-            }
-            Ok(())
-        })?;
+        require_agent_in_conn(conn, agent_row_id, capability, scope_resource)?;
+        if is_revoked(conn, agent_row_id)? {
+            return Err(forbidden("导入授权绑定的 Agent 已被撤销"));
+        }
     }
     // 资源归属**不能**用 `resource_id` 猜：它可能是任务 ID、项目 ID 或空串（创建类）。
     // 归属判定统一由 `check_import_resource_scope` 在持有文档时完成（`sync::import_document`），
@@ -735,6 +775,10 @@ impl FileImportDecision {
 
 /// 导入类型 → 真实写能力。禁止用 TasksWrite 代表所有写权限。
 pub fn resolve_import_capability(kind: &str) -> Option<Capability> {
+    // 领域受限导入（Phase 1）：真实能力是项目写，具体资源归属由领域层校验。
+    if let Some(capability) = super::domain_import::capability(kind) {
+        return Some(capability);
+    }
     Some(match kind {
         "task.create" | "task.update" | "task.complete" => Capability::TasksWrite,
         "knowledge.create" => Capability::KnowledgeWrite,
@@ -1240,6 +1284,15 @@ mod tests {
             resolve_import_capability("report.create"),
             Some(Capability::HandoffsWrite)
         );
+        // 领域受限导入只映射到项目写能力。
+        assert_eq!(
+            resolve_import_capability("novel.chapter.content.update"),
+            Some(Capability::ProjectsWrite)
+        );
+        assert_eq!(
+            resolve_import_capability("comic.media.adopt"),
+            Some(Capability::ProjectsWrite)
+        );
         assert_eq!(resolve_import_capability("unknown.create"), None);
     }
 
@@ -1265,6 +1318,30 @@ mod tests {
         let principal = Principal::file_import("");
         let err = require(&db, &principal, Capability::TasksWrite, "").unwrap_err();
         assert_eq!(crate::agent_access::error_code(&err), "FORBIDDEN");
+    }
+
+    #[test]
+    fn require_in_conn_matches_require_for_untrusted_file_import() {
+        // 事务内版本与外层版本必须给出同一判定：未授权文件导入一律拒绝，
+        // 防止领域写事务绕过文件导入授权门禁。
+        let db = Db::open_in_memory().unwrap();
+        let principal = Principal::file_import("");
+        let outer = require(&db, &principal, Capability::TasksWrite, "p1").unwrap_err();
+        let inner = db
+            .with_read(|conn| require_in_conn(conn, &principal, Capability::TasksWrite, "p1"))
+            .unwrap_err();
+        assert_eq!(
+            crate::agent_access::error_code(&outer),
+            crate::agent_access::error_code(&inner)
+        );
+    }
+
+    #[test]
+    fn require_in_conn_accepts_trusted_local() {
+        let db = Db::open_in_memory().unwrap();
+        let principal = Principal::local(super::super::Source::Cli);
+        db.with_read(|conn| require_in_conn(conn, &principal, Capability::ProjectsWrite, "p1"))
+            .unwrap();
     }
 
     #[test]

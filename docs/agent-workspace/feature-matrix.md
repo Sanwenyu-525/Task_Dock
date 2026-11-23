@@ -24,6 +24,8 @@
 | 版本历史 | 已实现 | 已实现（`revision` 字段 + 冲突错误） | 已实现 | 已实现（导出） | 单表计数器 + updated_at 双校验 |
 | 搜索 | 已实现 | 已实现（`taskdock_search`） | 已实现 | 已实现 | 跨任务/知识/决策 |
 | 同步状态 | 已实现 | 未开放（MCP 不暴露同步写） | 已实现（`/sync/*`） | 已实现 | 文件接口需要明确动作 |
+| 小说章节正文 | 已实现 | 已实现（`taskdock_novel_update_chapter_content`） | 已实现（`PUT .../novel/chapters/{id}/content`） | 受控导入（`novel.chapter.content.update`） | 必须带 `base_revision` |
+| 漫剧素材元信息/采用 | 已实现 | 已实现（`taskdock_comic_save_media_version` / `..._adopt_media_version`） | 已实现（`PUT .../media-versions/{id}`、`POST .../adopt`） | 受控导入（`comic.media.update` / `comic.media.adopt`） | 采用时被替换版本同事务推进 revision |
 | 删除 | **未实现（默认关闭）** | 未实现 | 未实现 | 未实现 | 破坏性能力不在本轮开放 |
 | 远程访问 | 未实现 | 未实现 | 未实现（设置项仅展示为未开放） | 未实现 | 只在 loopback |
 
@@ -32,6 +34,7 @@
 | 能力 | CLI | MCP | REST | 文件导入 |
 |---|---|---|---|---|
 | `projects.read` | ✓ | ✓ | ✓ | ✓ |
+| `projects.write` | ✓ | ✓（领域写操作） | ✓ | 写需 write（领域导入） |
 | `tasks.read` / `tasks.write` | ✓ | ✓ | ✓ | 写需 write |
 | `plans.read` | ✓ | ✓ | ✓ | ✓ |
 | `knowledge.read` / `knowledge.write` | ✓ | ✓ | ✓ | 写需 write |

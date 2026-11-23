@@ -124,6 +124,21 @@ pub const ROUTES: &[(&str, &str, &str)] = &[
     ("GET", "/api/v1/sync/conflicts", "冲突列表（需 projects.read）"),
     ("POST", "/api/v1/sync/conflicts/{id}/resolve", "解决冲突"),
     ("POST", "/api/v1/sync/scan", "立即扫描导入目录"),
+    ("GET", "/api/v1/projects/{id}/domain-manifest", "项目领域能力 Manifest"),
+    ("GET", "/api/v1/projects/{id}/novel/chapters", "小说章节摘要列表"),
+    ("GET", "/api/v1/projects/{id}/novel/chapters/{chapterId}", "单章元信息"),
+    ("GET", "/api/v1/projects/{id}/novel/chapters/{chapterId}/content", "单章正文"),
+    ("PUT", "/api/v1/projects/{id}/novel/chapters/{chapterId}/content", "更新单章正文"),
+    ("GET", "/api/v1/projects/{id}/novel/characters", "小说人物列表"),
+    ("GET", "/api/v1/projects/{id}/novel/worldview", "小说世界观列表"),
+    ("GET", "/api/v1/projects/{id}/novel/refs", "小说章节实体引用列表"),
+    ("GET", "/api/v1/projects/{id}/comic/episodes", "漫剧剧集列表"),
+    ("GET", "/api/v1/projects/{id}/comic/shots", "漫剧镜头列表"),
+    ("GET", "/api/v1/projects/{id}/comic/media-versions", "漫剧素材版本列表"),
+    ("GET", "/api/v1/projects/{id}/comic/characters", "漫剧角色列表"),
+    ("GET", "/api/v1/projects/{id}/comic/scenes", "漫剧场景列表"),
+    ("PUT", "/api/v1/projects/{id}/comic/media-versions/{mediaId}", "更新素材版本元信息"),
+    ("POST", "/api/v1/projects/{id}/comic/media-versions/{mediaId}/adopt", "采用素材版本"),
 ];
 
 /// 真实运行状态。与「配置期望运行」分开：`enabled=true` 不代表正在监听。
@@ -909,7 +924,7 @@ async fn run_claim_execution(
     let guarded = operations::CompositeGuard::new(&claim_guard, &operation_guard);
     let outcome = tokio::time::timeout_at(
         grace_deadline.into(),
-        dispatch(&state, &principal, &method, &path, &query, &body, &guarded),
+        dispatch(&state, &principal, &method, &path, &query, &body, &request_id, &guarded),
     )
     .await;
     match outcome {
@@ -1444,6 +1459,7 @@ async fn handle(req: Request<Incoming>, state: Arc<RestState>) -> Response<Full<
                     &path,
                     &query,
                     &body,
+                    &request_id,
                     &guarded,
                 ),
             )
@@ -1809,6 +1825,7 @@ async fn dispatch<G>(
     path: &str,
     query: &HashMap<String, String>,
     body: &[u8],
+    request_id: &str,
     guard: &G,
 ) -> AppResult<(Value, Option<Page>)>
 where
@@ -1837,6 +1854,11 @@ where
         return Ok((serde_json::to_value(task)?, None));
     }
     let seg = |i: usize| rest.get(i).copied().unwrap_or("");
+    if let Some(result) = super::domain_rest::handle(
+        db, principal, m, rest, query, body, request_id,
+    ) {
+        return result.map(|value| (value, None));
+    }
     match (m, rest) {
         ("GET", ["status"]) => Ok((service::status_snapshot(db, principal)?, None)),
         ("GET", ["manifest"]) => Ok((workspace::manifest(db)?, None)),
@@ -2421,6 +2443,7 @@ mod project_patch_tests {
             path,
             &HashMap::new(),
             serde_json::to_vec(body).expect("序列化").as_slice(),
+            "test-request",
             &store::NoGuard,
         )
         .await?;

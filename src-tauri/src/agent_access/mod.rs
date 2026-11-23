@@ -12,6 +12,11 @@
 
 pub mod cli;
 pub mod commands;
+pub mod domains;
+pub mod domain_cli;
+pub mod domain_import;
+pub mod domain_mcp;
+pub mod domain_rest;
 pub mod context;
 pub mod handoff;
 pub mod mcp_tools;

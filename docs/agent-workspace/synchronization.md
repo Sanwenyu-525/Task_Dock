@@ -115,3 +115,21 @@ scan() 逐文件：
 `watch::status()` 暴露 `running / interval_secs / last_tick_at / last_ok_at / last_error`；
 `sync::status()` 暴露 `pending_imports / conflicts / pending_reviews / last_error`。
 20s 轮询保留为可靠兜底，未引入文件系统事件监听。
+
+### 8.5 领域受限导入（Phase 1）
+
+文件通道只开放三个**更新型**领域操作，默认进入人工审核：
+
+| kind | 必填 payload | 写入语义 |
+|---|---|---|
+| `novel.chapter.content.update` | `chapter_id`、`content` | 覆盖章节正文，推进 `novel.chapter` revision |
+| `comic.media.update` | `media_id`、`version_label`；可选 `status`（`candidate`/`rejected`）、`review_note` | 更新素材元信息；不允许直接写 `adopted` |
+| `comic.media.adopt` | `media_id` | 采用版本；被替换版本在同一事务内推进 revision |
+
+约束：
+
+- 全部为更新类，`base_revision` 必填；不一致进入 `agent_sync_conflicts`，可按 `file` 以当前 revision 重新导入。
+- 项目归属只认数据库真实归属（章节/素材行）；文件声明的 `project_id` 仅做一致性校验，不构成授权依据。
+- 能力映射为 `projects.write`；`trusted` 目录仍要校验导入授权能力集合与真实资源归属，绑定 Agent 时再以其真实授权为准。
+- Markdown：`novel.chapter.content.update` 取 front matter 之后的正文作为 `content`；`comic.media.update` 的正文作为 `review_note`。
+- 单文件仍受 256KiB 上限约束；领域正文/备注不额外放大。

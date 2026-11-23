@@ -22,8 +22,8 @@ use crate::mcp::permissions::Capability;
 
 use super::permissions::{self as perms, FileImportDecision, ImportIdentity};
 use super::{
-    forbidden, handoff, operations, service, store, validation, workspace, Identity, ImportGrant,
-    Principal, MAX_IMPORT_BYTES, MAX_SCAN_FILES,
+    domain_import, forbidden, handoff, operations, service, store, validation, workspace, Identity,
+    ImportGrant, Principal, MAX_IMPORT_BYTES, MAX_SCAN_FILES,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -196,6 +196,20 @@ pub fn parse_external_document(raw: &str, path: &Path) -> AppResult<ParsedDocume
             "handoff_id": front_value(front, "handoff_id"),
             "task_id": task_id,
         }),
+        // 领域受限导入：正文/备注取 Markdown 正文，其余字段只从 front matter 读取。
+        "novel.chapter.content.update" => json!({
+            "chapter_id": front_value(front, "chapter_id").unwrap_or_default(),
+            "content": body,
+        }),
+        "comic.media.update" => json!({
+            "media_id": front_value(front, "media_id").unwrap_or_default(),
+            "version_label": front_value(front, "version_label").unwrap_or_default(),
+            "status": front_value(front, "status"),
+            "review_note": if body.is_empty() { None } else { Some(body) },
+        }),
+        "comic.media.adopt" => json!({
+            "media_id": front_value(front, "media_id").unwrap_or_default(),
+        }),
         _ => json!({ "content": body, "title": title, "task_id": task_id }),
     };
     let envelope = ImportEnvelope {
@@ -237,6 +251,11 @@ pub const KINDS: &[&str] = &[
     "decision.create",
     "handoff.create",
     "report.create",
+    // 领域受限导入（Phase 1）：只开放少量更新型操作，字段与版本要求见
+    // `domain_import::validate_envelope`。
+    "novel.chapter.content.update",
+    "comic.media.update",
+    "comic.media.adopt",
 ];
 
 fn validate_envelope(envelope: &ImportEnvelope) -> AppResult<()> {
@@ -246,6 +265,9 @@ fn validate_envelope(envelope: &ImportEnvelope) -> AppResult<()> {
             KINDS.join("|"),
             envelope.kind
         )));
+    }
+    if domain_import::is_domain_kind(&envelope.kind) {
+        return domain_import::validate_envelope(envelope);
     }
     let payload = envelope
         .payload
@@ -305,6 +327,15 @@ fn payload_strings(doc: &ParsedDocument, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// 本次导入写入的真实资源 ID（审计 / 冲突 / 操作记录共用）。
+fn imported_resource_id(doc: &ParsedDocument) -> String {
+    if domain_import::is_domain_kind(&doc.envelope.kind) {
+        domain_import::resource_id(doc)
+    } else {
+        payload(doc, "task_id").unwrap_or("").to_string()
+    }
+}
+
 /// 文件声明的项目（`envelope.project_id` / `payload.project_id`）。
 ///
 /// **只用于一致性校验与审计，不得用于权限判定**——命名即约束。v81 的
@@ -342,6 +373,10 @@ fn resource_project(
     doc: &ParsedDocument,
     resource_id: &str,
 ) -> AppResult<Option<String>> {
+    // 领域更新类：真实归属来自章节/素材行，文件声明不参与。
+    if domain_import::is_domain_kind(kind) {
+        return domain_import::resource_project(db, kind, doc);
+    }
     let family = kind.split('.').next().unwrap_or(kind);
     let explicit = resource_id.trim();
     // 显式资源 ID 优先，其次才是载荷里的同义字段。
@@ -454,7 +489,7 @@ fn resource_project(
 
 /// 一次导入的**有效归属项目**：权限判定与业务落库都只能用它。
 ///
-/// - 更新类（`task.update` / `task.complete`）：必须有数据库推导出的真实归属；
+/// - 更新类（`task.update` / `task.complete` / 领域更新）：必须有数据库推导出的真实归属；
 ///   查不到 → `forbidden`；文件声明与真实不一致 → `forbidden`；返回真实归属。
 /// - 创建类：授权限定项目 → 返回 `grant.project_id`（声明不一致 → `forbidden`）；
 ///   全局授权 → 用文件声明（`report.create` 由 handoff 推导）。
@@ -468,7 +503,8 @@ pub(crate) fn effective_import_project(
     let scope = grant
         .map(|item| item.project_id.trim().to_string())
         .unwrap_or_default();
-    let is_update = matches!(kind, "task.update" | "task.complete");
+    let is_update = matches!(kind, "task.update" | "task.complete")
+        || domain_import::is_domain_kind(kind);
 
     if is_update {
         let real = non_empty(resource_project(db, kind, doc, "")?);
@@ -614,11 +650,15 @@ pub fn import_document_guarded(
     if let Some(grant) = principal.import.as_ref() {
         perms::check_import_project_scope(grant, &project_id)?;
     }
-    let resource_id = payload(doc, "task_id").unwrap_or("");
-    perms::require(db, principal, capability, resource_id)?;
+    let resource_id = imported_resource_id(doc);
+    perms::require(db, principal, capability, &resource_id)?;
 
     let base = doc.envelope.base_revision;
     match kind {
+        // 领域受限导入：权限/归属/版本/业务写入全部由 `domain_import` 在事务内完成。
+        k if domain_import::is_domain_kind(k) => {
+            domain_import::import_document_guarded(db, principal, doc, &project_id, guard)
+        }
         "task.create" => {
             let input = service::TaskCreateInput {
                 title: payload(doc, "title").unwrap_or_default().to_string(),
@@ -1256,6 +1296,7 @@ pub fn scan(db: &Db, actor: &Principal, row: &workspace::WorkspaceRow) -> AppRes
                 report.imported += 1;
                 report.files.push(rel.clone());
                 report.messages.push(format!("{rel}: {message}"));
+                let written_id = imported_resource_id(&doc);
                 let _ = db.with_conn(|conn| {
                     store::record_sync_event(
                         conn,
@@ -1265,12 +1306,7 @@ pub fn scan(db: &Db, actor: &Principal, row: &workspace::WorkspaceRow) -> AppRes
                             event_kind: &kind,
                             rel_path: &rel,
                             resource_kind: doc.envelope.kind.split('.').next().unwrap_or(""),
-                            resource_id: doc
-                                .envelope
-                                .payload
-                                .get("task_id")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or(""),
+                            resource_id: &written_id,
                             revision: doc.envelope.base_revision,
                             status: "ok",
                             message: &message,
@@ -1298,10 +1334,10 @@ pub fn scan(db: &Db, actor: &Principal, row: &workspace::WorkspaceRow) -> AppRes
                     let result = operations::OperationResult::new()
                         .revision(doc.envelope.base_revision)
                         .detail(detail.clone());
-                    let result = match doc.envelope.payload.get("task_id").and_then(|v| v.as_str())
-                    {
-                        Some(id) => result.resource(&op.resource_kind, id),
-                        None => result,
+                    let result = if written_id.is_empty() {
+                        result
+                    } else {
+                        result.resource(&op.resource_kind, &written_id)
                     };
                     // 事务内已 committed 时 `complete` 返回 None：只追加归档/详情，
                     // 状态保持 committed（业务确实已提交，归档失败不是业务失败）。
@@ -1325,25 +1361,23 @@ pub fn scan(db: &Db, actor: &Principal, row: &workspace::WorkspaceRow) -> AppRes
                     report
                         .messages
                         .push(format!("{rel}: 冲突 {}", err.user_message()));
-                    let current_revision = doc
-                        .envelope
-                        .payload
-                        .get("task_id")
-                        .and_then(|v| v.as_str())
-                        .and_then(|task_id| service::task_version(db, task_id).ok())
-                        .map(|(rev, _)| rev)
-                        .unwrap_or(0);
+                    let current_revision = if domain_import::is_domain_kind(&kind) {
+                        domain_import::current_revision(db, &doc).unwrap_or(0)
+                    } else {
+                        doc.envelope
+                            .payload
+                            .get("task_id")
+                            .and_then(|v| v.as_str())
+                            .and_then(|task_id| service::task_version(db, task_id).ok())
+                            .map(|(rev, _)| rev)
+                            .unwrap_or(0)
+                    };
+                    let conflict_resource = imported_resource_id(&doc);
                     let conflict = store::SyncConflict {
                         id: uuid::Uuid::new_v4().to_string(),
                         rel_path: rel.clone(),
                         resource_kind: kind.clone(),
-                        resource_id: doc
-                            .envelope
-                            .payload
-                            .get("task_id")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string(),
+                        resource_id: conflict_resource,
                         db_revision: current_revision,
                         file_revision: doc.envelope.base_revision.unwrap_or(0),
                         db_hash: String::new(),
@@ -1550,6 +1584,7 @@ pub fn approve_import(
             };
             set_import_request_status(db, &request.id, "imported", &note, &approver.label())?;
             set_decided_hash(db, &request.id, &request.content_hash)?;
+            let written_id = imported_resource_id(&doc);
             let _ = db.with_conn(|conn| {
                 store::record_sync_event(
                     conn,
@@ -1559,12 +1594,7 @@ pub fn approve_import(
                         event_kind: &request.kind,
                         rel_path: &request.rel_path,
                         resource_kind: request.kind.split('.').next().unwrap_or(""),
-                        resource_id: doc
-                            .envelope
-                            .payload
-                            .get("task_id")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or(""),
+                        resource_id: &written_id,
                         revision: doc.envelope.base_revision,
                         status: "ok",
                         message: &format!("人工批准：{message}"),
@@ -1604,9 +1634,10 @@ pub fn approve_import(
                 let result = operations::OperationResult::new()
                     .revision(doc.envelope.base_revision)
                     .detail(detail.clone());
-                let result = match doc.envelope.payload.get("task_id").and_then(|v| v.as_str()) {
-                    Some(id) => result.resource(&op.resource_kind, id),
-                    None => result,
+                let result = if written_id.is_empty() {
+                    result
+                } else {
+                    result.resource(&op.resource_kind, &written_id)
                 };
                 match operations::complete(db, &op.id, &result) {
                     Ok(Some(_)) => {}
@@ -1816,6 +1847,8 @@ pub fn capability_for_conflict(resource_kind: &str) -> AppResult<Capability> {
         "knowledge" => Ok(Capability::KnowledgeWrite),
         "decision" => Ok(Capability::DecisionsWrite),
         "handoff" | "report" => Ok(Capability::HandoffsWrite),
+        // 领域更新类冲突：写入能力是项目写；具体资源归属仍由领域层校验。
+        "novel" | "comic" => Ok(Capability::ProjectsWrite),
         other => Err(validation(format!(
             "冲突资源类型不支持自动解决: {other}"
         ))),
@@ -1872,7 +1905,11 @@ pub fn resolve_conflict(
         )));
     }
     let capability = capability_for_conflict(&conflict.resource_kind)?;
-    perms::require(db, principal, capability, &conflict.resource_id)?;
+    // 领域更新的资源 ID 是章节/素材，不是项目 ID：项目型能力的预检放到
+    // `import_document` 内用真实归属项目完成，避免拿资源 ID 当项目 ID 误拒。
+    if !domain_import::is_domain_kind(&conflict.resource_kind) {
+        perms::require(db, principal, capability, &conflict.resource_id)?;
+    }
     let root = PathBuf::from(&row.root_path);
     let path = root.join(conflict.rel_path.replace('/', std::path::MAIN_SEPARATOR_STR));
     match resolution {
@@ -1905,6 +1942,10 @@ pub fn resolve_conflict(
                 service::fetch_task(db, principal, task_id)?;
                 let current = service::task_version(db, task_id)?.0;
                 doc.envelope.base_revision = Some(current);
+            } else if domain_import::is_domain_kind(&doc.envelope.kind) {
+                // 领域更新：以当前有效 revision 作为 base，等价于「确认接受外部内容」。
+                // 资源已被删除时 `current_revision` 返回 NotFound，不允许变成新建。
+                doc.envelope.base_revision = Some(domain_import::current_revision(db, &doc)?);
             } else if doc.envelope.kind.starts_with("knowledge.") {
                 let id = doc
                     .envelope
@@ -1915,7 +1956,9 @@ pub fn resolve_conflict(
                 service::get_knowledge(db, principal, id)?;
             }
             // 重新检查权限（外部内容可能指向另一个项目/资源）。
-            perms::require(db, principal, capability, &conflict.resource_id)?;
+            if !domain_import::is_domain_kind(&doc.envelope.kind) {
+                perms::require(db, principal, capability, &conflict.resource_id)?;
+            }
             import_document(db, principal, &doc)?;
             if path.exists() {
                 fs::remove_file(&path).map_err(|err| {

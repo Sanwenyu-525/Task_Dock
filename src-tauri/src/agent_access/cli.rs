@@ -17,7 +17,7 @@ use crate::mcp::auth as mcp_auth;
 use crate::mcp::permissions::Capability;
 
 use super::{
-    context, error_code, handoff, operations, permissions as perms, projection, service, store,
+    context, domain_cli, error_code, handoff, operations, permissions as perms, projection, service, store,
     sync as file_sync, workspace, ActorKind, Envelope, Identity, Meta, Page, Principal, Source,
 };
 
@@ -74,8 +74,20 @@ pub const USAGE: &str = r#"Task Dock Agent CLI
   taskdock sync scan
   taskdock sync conflicts
   taskdock sync resolve <conflict_id> --resolution db|file|dismiss
+  taskdock domain manifest --project-id ID
+  taskdock domain ops
+  taskdock novel chapter list|get|content|update-content --project-id ID [--chapter-id ID] [--content ... | --file path] [--expected-revision N]
+  taskdock novel character list --project-id ID [--query KW]
+  taskdock novel worldview list --project-id ID [--kind KIND] [--query KW]
+  taskdock novel ref list --project-id ID [--entity-type TYPE] [--entity-id ID]
+  taskdock comic episode list --project-id ID
+  taskdock comic shot list --project-id ID [--episode-id ID]
+  taskdock comic media list|update|adopt --project-id ID [--shot-id ID] [--media-id ID] [--version-label ...] [--status ...] [--review-note ...] [--expected-revision N]
+  taskdock comic character list --project-id ID
+  taskdock comic scene list --project-id ID
 
 全局:
+  --request-id ID 写操作幂等键（未指定时自动生成）
   --json     stdout 输出统一 JSON 信封
   --fields   a,b,c 只返回指定字段
 "#;
@@ -107,6 +119,9 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ("agent", "registry|activity|handoff|report", "Agent 身份、交接与报告"),
     ("search", "-", "跨类型搜索"),
     ("sync", "status|init|export|scan|conflicts|resolve", "文件同步与冲突"),
+    ("domain", "manifest|ops", "项目领域 Manifest 与操作清单"),
+    ("novel", "chapter|character|worldview|ref", "小说领域：章节/人物/世界观/引用"),
+    ("comic", "episode|shot|media|character|scene", "漫剧领域：剧集/镜头/素材/角色/场景"),
 ];
 
 /// 供帮助输出与诊断使用的命令描述。
@@ -155,7 +170,7 @@ fn validate_cli_arguments(args: &[String]) -> AppResult<()> {
     Ok(())
 }
 
-fn take_flag(args: &mut Vec<String>, name: &str) -> Option<String> {
+pub(crate) fn take_flag(args: &mut Vec<String>, name: &str) -> Option<String> {
     if let Some(pos) = args.iter().position(|a| a == name) {
         args.remove(pos);
         if pos < args.len() {
@@ -224,6 +239,7 @@ fn classify_cli_write(args: &[String]) -> Option<(&'static str, &'static str, St
     let has_subcommand = matches!(
         group,
         "project" | "task" | "plan" | "knowledge" | "decision" | "context" | "agent" | "sync"
+            | "domain" | "novel" | "comic"
     );
     let sub = if has_subcommand {
         args.iter().skip(1).find(|a| !a.starts_with("--"))?.as_str()
@@ -255,6 +271,11 @@ fn classify_cli_write(args: &[String]) -> Option<(&'static str, &'static str, St
         ("sync", "export", _) => ("sync.export", "sync"),
         ("sync", "scan", _) => ("sync.scan", "sync"),
         ("sync", "resolve", _) => ("sync.resolve", "sync"),
+        ("novel", "chapter", Some("update-content")) => {
+            ("novel.chapter.content.update", "novel.chapter")
+        }
+        ("comic", "media", Some("update")) => ("comic.media.update", "comic.media_version"),
+        ("comic", "media", Some("adopt")) => ("comic.media.adopt", "comic.media_version"),
         _ => return None,
     };
     // 失败也要能落到具体资源上：非创建类命令的位置参数就是目标 ID。
@@ -362,7 +383,9 @@ pub fn main_entry(args: Vec<String>) -> i32 {
         ..cli
     };
 
-    let request_id = format!("cli-{}", uuid::Uuid::new_v4().simple());
+    let request_id = take_flag(&mut argv, "--request-id")
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| format!("cli-{}", uuid::Uuid::new_v4().simple()));
     // 写命令才需要租约续租：CLI 是独立进程、执行时长未知（批量知识写入/同步扫描），
     // 超过 90 秒不续租会被桌面端判为 interrupted。进程级共享调度器只创建一个线程，
     // 短操作在首次 tick 前就结束，线程随进程退出。`sweep=false`：CLI 无权替别的进程判死。
@@ -425,7 +448,7 @@ pub fn main_entry(args: Vec<String>) -> i32 {
             .map(|op| op.id.clone())
             .unwrap_or_default(),
     );
-    match execute(&db, &principal, &cli, argv, &operation_guard) {
+    match execute_with_request(&db, &principal, &cli, argv, &request_id, &operation_guard) {
         Ok(outcome) => {
             if let Some(op) = &operation {
                 let mut result = cli_operation_result(&outcome.data, write_kind);
@@ -536,10 +559,21 @@ fn execute(
     db: &Db,
     principal: &Principal,
     cli: &Cli,
-    mut args: Vec<String>,
+    args: Vec<String>,
     guard: &dyn store::WriteGuard,
 ) -> AppResult<Outcome> {
-    let outcome = execute_inner(db, principal, cli, &mut args, guard)?;
+    execute_with_request(db, principal, cli, args, "", guard)
+}
+
+fn execute_with_request(
+    db: &Db,
+    principal: &Principal,
+    cli: &Cli,
+    mut args: Vec<String>,
+    request_id: &str,
+    guard: &dyn store::WriteGuard,
+) -> AppResult<Outcome> {
+    let outcome = execute_inner(db, principal, cli, &mut args, request_id, guard)?;
     validate_cli_arguments(&args)?;
     Ok(outcome)
 }
@@ -549,6 +583,7 @@ fn execute_inner(
     principal: &Principal,
     cli: &Cli,
     args: &mut Vec<String>,
+    request_id: &str,
     guard: &dyn store::WriteGuard,
 ) -> AppResult<Outcome> {
     if args.is_empty() {
@@ -561,6 +596,7 @@ fn execute_inner(
     let has_subcommand = matches!(
         group.as_str(),
         "project" | "task" | "plan" | "knowledge" | "decision" | "context" | "agent" | "sync"
+            | "domain" | "novel" | "comic"
     );
     let sub = if has_subcommand {
         match args.iter().position(|a| !a.starts_with("--")) {
@@ -570,6 +606,14 @@ fn execute_inner(
     } else {
         "list".to_string()
     };
+    if matches!(group.as_str(), "domain" | "novel" | "comic") {
+        let data = domain_cli::execute(db, principal, &group, &sub, args, request_id)?;
+        return Ok(Outcome {
+            human: serde_json::to_string_pretty(&data)?,
+            data,
+            page: None,
+        });
+    }
     match group.as_str() {
         "status" => {
             let data = service::status_snapshot(db, principal)?;

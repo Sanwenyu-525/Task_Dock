@@ -357,7 +357,7 @@ pub fn manifest_value(db: &Db, row: &WorkspaceRow) -> AppResult<Value> {
         "filesystem": {
             "import_dirs": IMPORT_DIRS,
             "envelope": "{\"schema\":\"taskdock.import/1\",\"kind\":\"task.create\",\"base_revision\":0,\"payload\":{...}}",
-            "kinds": ["task.create","task.update","task.complete","knowledge.create","decision.create","handoff.create","report.create"],
+            "kinds": super::sync::KINDS,
             "max_file_bytes": super::MAX_IMPORT_BYTES,
         },
         "cli": {
@@ -372,7 +372,7 @@ pub fn manifest_value(db: &Db, row: &WorkspaceRow) -> AppResult<Value> {
         },
         "permissions": {
             "default": "readonly",
-            "write": "需逐能力授权（tasks.write / knowledge.write / decisions.write / handoffs.write）",
+            "write": "需逐能力授权（tasks.write / knowledge.write / decisions.write / handoffs.write / projects.write）",
             "delete": "未开放",
             "tokens": "仅存 SHA-256，不在日志中输出"
         },
