@@ -130,6 +130,9 @@ button.comic-list-row:hover {
   border-radius: var(--radius-control);
   padding: 10px;
   margin: 0;
+  /* fieldset 的 UA 默认 min-width:min-content：里面出现 nowrap 长路径时会把整栏顶宽，
+     在只设 overflow-y:auto 的详情栏长出横向滚动条。 */
+  min-width: 0;
 }
 
 .comic-check-grid {
@@ -157,4 +160,326 @@ button.comic-list-row:hover {
 .ws-btn-danger.is-armed {
   border-color: var(--ws-error);
   background: color-mix(in srgb, var(--ws-error) 12%, transparent);
+}
+
+/* ── 素材缩略图 / 预览（2026-11-23 第二轮）────────────────────────────── */
+
+.comic-row-with-thumb {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+.comic-row-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+/* 缩略图容器：固定方框 + 细边；图片缺失/解码失败时显示占位图标，不撑高行。 */
+.comic-thumb {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  background: var(--surface-raised);
+  color: var(--text-tertiary);
+}
+
+.comic-thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.comic-compare-toggle {
+  flex: 0 0 auto;
+  padding: 4px 6px;
+}
+
+.comic-compare-toggle.is-on {
+  border-color: var(--border-strong);
+  background: var(--surface-raised);
+  color: var(--text-primary);
+}
+
+.comic-path-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.comic-path-row .ws-path {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+.comic-ref-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.comic-ref-row .ws-path {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+.comic-ref-row .ws-btn {
+  flex: 0 0 auto;
+}
+
+/* 详情/比较的预览舞台：给定高度，让图片预览在框内缩放，不把页面撑成无限高。 */
+.comic-detail-stage,
+.comic-compare-stage {
+  display: flex;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-base);
+  height: clamp(220px, 38vh, 440px);
+}
+
+.comic-compare-stage {
+  height: clamp(180px, 28vh, 320px);
+}
+
+.comic-media-preview {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* 复用文件工作空间的图片预览时补齐它依赖的图标按钮底样式：
+   files.css 只在文件工作空间加载，漫剧页不能假定它存在。 */
+.comic-media-preview .fw-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.comic-media-preview .fw-icon-btn:hover:not(:disabled) {
+  background: var(--surface-overlay);
+  color: var(--text-primary);
+}
+
+.comic-media-preview .fw-icon-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* 比较面板只有半栏宽：隐藏「适应窗口 / 原始比例」文字按钮，只留缩放 ± 与数值，
+   否则 HUD 会折行压住图片（实机验收 run-20261123-133918 截图 05 暴露）。 */
+.comic-compare-stage .fw-preview-hud-btn,
+.comic-compare-stage .fw-preview-hud-sep {
+  display: none;
+}
+
+.comic-preview-placeholder {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 20px;
+  text-align: center;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.comic-preview-placeholder p {
+  margin: 0;
+  max-width: 52ch;
+  line-height: 1.55;
+}
+
+.comic-preview-placeholder[data-tone="error"] {
+  color: var(--ws-error);
+}
+
+/* ── 版本比较 ─────────────────────────────────────────────────────────── */
+
+.comic-compare {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+}
+
+.comic-compare-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.comic-compare-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+}
+
+@container ui-page (max-width: 720px) {
+  .comic-compare-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.comic-compare-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--surface-base);
+}
+
+.comic-compare-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.comic-compare-note {
+  margin: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+/* ── 镜头关联素材（分镜面板只读区）──────────────────────────────────── */
+
+.comic-shot-media {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.comic-shot-media-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.comic-shot-media-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 4px 0;
+}
+
+.comic-shot-media-row .ws-btn {
+  flex: 0 0 auto;
+}
+
+.comic-shot-media-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 0 2px;
+}
+
+.comic-legacy-refs {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border-subtle);
+  min-width: 0;
+}
+
+.comic-legacy-refs .ws-path {
+  overflow-wrap: anywhere;
+}
+
+/* 历史引用里的绝对路径通常很长：单行省略 + 悬停看全路径，避免在列表里断成多行碎字。 */
+.comic-legacy-ref {
+  display: block;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── 剧集镜头统计 ─────────────────────────────────────────────────────── */
+
+.comic-episode-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--surface-base);
+}
+
+.comic-stats-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.comic-stats-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.comic-stats-grid strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.comic-stats-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--surface-raised);
+  overflow: hidden;
+}
+
+.comic-stats-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 160ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .comic-stats-bar > span {
+    transition: none;
+  }
 }

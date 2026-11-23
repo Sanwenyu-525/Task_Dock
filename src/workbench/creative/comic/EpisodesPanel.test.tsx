@@ -21,6 +21,7 @@ const api = vi.hoisted(() => ({
 vi.mock("./ipc", () => api);
 
 import { EpisodesPanel } from "./EpisodesPanel";
+import { buildEpisodeShotStats } from "./shotStats";
 
 const base = {
   projectId: "p1",
@@ -61,10 +62,19 @@ const character = {
   updatedAt: "2026-11-16T09:00:00+00:00",
 };
 
+/** 本集镜头：完成 2 / 进行中 1 / 待办 1（共 4 条），用于派生统计断言。 */
+const shotsOfEpisodeA = [
+  { id: "h1", episodeId: "e1", status: "done" as const },
+  { id: "h2", episodeId: "e1", status: "done" as const },
+  { id: "h3", episodeId: "e1", status: "doing" as const },
+  { id: "h4", episodeId: "e1", status: "todo" as const },
+];
+
 beforeEach(() => {
   vi.clearAllMocks();
   api.comicEpisodeList.mockResolvedValue({ episodes: [episodeA, episodeB] });
   api.comicCharacterList.mockResolvedValue({ characters: [character] });
+  api.comicShotList.mockResolvedValue({ shots: shotsOfEpisodeA });
   api.comicEpisodeSave.mockResolvedValue({ episode: episodeA });
   api.comicEpisodeDelete.mockResolvedValue({ ok: true });
   api.comicEpisodeReorder.mockResolvedValue({ episodes: [episodeA, episodeB] });
@@ -159,5 +169,58 @@ describe("EpisodesPanel", () => {
       expect(screen.getByRole("alert").textContent).toContain("网络异常");
     });
     expect(onNotice).toHaveBeenCalledWith("error", expect.stringContaining("网络异常"));
+  });
+
+  it("按剧集展示派生镜头统计，且不覆盖剧集制作进度", async () => {
+    render(<EpisodesPanel {...base} archived={false} onNotice={vi.fn()} />);
+    await screen.findByText(/第一集/);
+
+    // 列表行给出镜头完成比例（来自真实镜头状态）。
+    expect(screen.getByText(/（完成 50%）/)).toBeTruthy();
+
+    screen.getByText(/第一集/).click();
+    await screen.findByDisplayValue("第一集");
+
+    const stats = screen.getByRole("region", { name: "本集镜头统计" });
+    expect(stats.textContent).toContain("镜头总数");
+    expect(stats.textContent).toContain("4");
+    expect(stats.textContent).toContain("待办");
+    expect(stats.textContent).toContain("进行中");
+    expect(stats.textContent).toContain("阻塞");
+    expect(stats.textContent).toContain("已完成");
+    expect(stats.textContent).toContain("镜头完成比例 50%（2/4）");
+    expect(stats.textContent).toContain("不写入也不覆盖");
+
+    // 剧集自身制作进度仍是用户填写的 30，没有被镜头比例改写。
+    expect((screen.getByLabelText("制作进度") as HTMLInputElement).value).toBe("30");
+  });
+
+  it("镜头统计按剧集分组，未知剧集不计入", () => {
+    const stats = buildEpisodeShotStats([
+      { episodeId: "e1", status: "done" },
+      { episodeId: "e1", status: "done" },
+      { episodeId: "e1", status: "doing" },
+      { episodeId: "e1", status: "todo" },
+      { episodeId: "e2", status: "blocked" },
+      { episodeId: "e2", status: "done" },
+      { episodeId: "", status: "done" },
+    ]);
+
+    expect(stats.get("e1")).toMatchObject({ total: 4, todo: 1, doing: 1, blocked: 0, done: 2 });
+    expect(stats.get("e1")?.doneRatio).toBe(50);
+    expect(stats.get("e2")).toMatchObject({ total: 2, blocked: 1, done: 1 });
+    expect(stats.get("e2")?.doneRatio).toBe(50);
+    expect(stats.size).toBe(2);
+  });
+
+  it("没有镜头的剧集统计为 0，不显示伪造比例", async () => {
+    api.comicShotList.mockResolvedValue({ shots: [] });
+    render(<EpisodesPanel {...base} archived={false} onNotice={vi.fn()} />);
+    await screen.findByText(/第一集/);
+    screen.getByText(/第一集/).click();
+    await screen.findByDisplayValue("第一集");
+
+    const stats = screen.getByRole("region", { name: "本集镜头统计" });
+    expect(stats.textContent).toContain("镜头完成比例 0%（0/0）");
   });
 });

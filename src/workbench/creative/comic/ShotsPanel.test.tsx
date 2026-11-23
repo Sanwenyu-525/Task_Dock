@@ -1,8 +1,11 @@
 /**
  * @vitest-environment jsdom
  */
-//! 漫剧分镜模块（C2）前端测试：镜头列表渲染、选中编辑、归档只读、保存失败可见。
-//! 只 mock 本目录 IPC 包装层，不 mock React/DOM。
+//! 漫剧分镜模块（C2）前端测试。
+//!
+//! 覆盖：镜头列表/编辑/排序入口、归档只读、保存失败可见；
+//! 本轮新增：镜头↔素材版本的正式关联（`shot_id`）在分镜页只读展示、可展开查看，
+//! 历史 `assetRefs`（文件路径）只读兼容且保存时不再提交（后端保留原值）。
 
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -15,9 +18,17 @@ const api = vi.hoisted(() => ({
   comicShotSave: vi.fn(),
   comicShotDelete: vi.fn(),
   comicShotReorder: vi.fn(),
+  comicMediaList: vi.fn(),
+}));
+
+const fs = vi.hoisted(() => ({
+  fsThumbnail: vi.fn(),
+  fsReadBinary: vi.fn(),
+  fsPreviewImage: vi.fn(),
 }));
 
 vi.mock("./ipc", () => api);
+vi.mock("../../../lib/bridge", () => fs);
 
 import { ShotsPanel } from "./ShotsPanel";
 
@@ -90,6 +101,32 @@ const shotA = {
 };
 const shotB = { ...shotA, id: "h2", shotNo: 2, description: "A-镜头2描述" };
 
+const version = {
+  id: "m1",
+  projectId: "p1",
+  shotId: "h1",
+  characterId: null,
+  sceneId: null,
+  filePath: "D:/comic/shot-a1.png",
+  fileExists: true,
+  mediaKind: "image" as const,
+  versionLabel: "v1 线稿",
+  status: "adopted" as const,
+  reviewNote: "构图偏右",
+  source: "imported" as const,
+  createdAt: "2026-11-16T09:00:00+00:00",
+  updatedAt: "2026-11-16T09:00:00+00:00",
+};
+const missingVersion = {
+  ...version,
+  id: "m2",
+  filePath: "D:/comic/gone.png",
+  fileExists: false,
+  versionLabel: "v2 配色",
+  status: "candidate" as const,
+  reviewNote: "",
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   api.comicEpisodeList.mockResolvedValue({ episodes: [episode] });
@@ -99,6 +136,10 @@ beforeEach(() => {
   api.comicShotSave.mockResolvedValue({ shot: shotA });
   api.comicShotDelete.mockResolvedValue({ ok: true });
   api.comicShotReorder.mockResolvedValue({ shots: [shotA, shotB] });
+  api.comicMediaList.mockResolvedValue({ versions: [version, missingVersion] });
+  fs.fsThumbnail.mockResolvedValue(null);
+  fs.fsReadBinary.mockRejectedValue(new Error("读取失败"));
+  fs.fsPreviewImage.mockResolvedValue(null);
 });
 
 afterEach(() => cleanup());
@@ -189,5 +230,76 @@ describe("ShotsPanel", () => {
       expect(screen.getByRole("alert").textContent).toContain("数据库繁忙");
     });
     expect(onNotice).toHaveBeenCalledWith("error", expect.stringContaining("数据库繁忙"));
+  });
+
+  it("展示镜头关联的素材版本（名称/类型/采用状态/缺失），不再要求手填版本 ID", async () => {
+    render(<ShotsPanel {...base} archived={false} onNotice={vi.fn()} />);
+    await screen.findByText(/A-镜头1描述/);
+    screen.getByText(/A-镜头1描述/).click();
+    await screen.findByDisplayValue("A-镜头1描述");
+
+    expect(screen.queryByLabelText(/素材引用/)).toBeNull();
+    expect(screen.getByText(/v1 线稿 · 图片/)).toBeTruthy();
+    expect(screen.getByText(/v2 配色 · 图片/)).toBeTruthy();
+    expect(screen.getAllByText(/采用/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/文件缺失/)).toBeTruthy();
+    // 列表行也给素材数量，便于一眼看出哪些镜头有产物。
+    expect(screen.getByText(/1 个素材版本|2 个素材版本/)).toBeTruthy();
+  });
+
+  it("展开查看关联素材：大图区域 + 修改意见 + 路径", async () => {
+    render(<ShotsPanel {...base} archived={false} onNotice={vi.fn()} />);
+    await screen.findByText(/A-镜头1描述/);
+    screen.getByText(/A-镜头1描述/).click();
+    await screen.findByDisplayValue("A-镜头1描述");
+
+    fireEvent.click(screen.getAllByRole("button", { name: "查看" })[0]);
+
+    expect(screen.getByText(/修改意见：构图偏右/)).toBeTruthy();
+    expect(screen.getByText("D:/comic/shot-a1.png")).toBeTruthy();
+    // 图片加载失败给出可见错误，而不是白屏。
+    expect(await screen.findByText(/系统缩略图管线无法解码该图片/)).toBeTruthy();
+  });
+
+  it("历史 assetRefs（文件路径）只读展示，保存时不再提交", async () => {
+    const legacy = {
+      ...shotA,
+      assetRefs: ["D:/comic/gone.png", "D:/comic/unknown.png"],
+    };
+    api.comicShotList.mockResolvedValue({ shots: [legacy] });
+    // 该版本挂在角色上（不是本镜头），因此历史路径能匹配到版本但不能当作本镜头关联。
+    api.comicMediaList.mockResolvedValue({
+      versions: [version, { ...missingVersion, shotId: null, characterId: "c1" }],
+    });
+    render(<ShotsPanel {...base} archived={false} onNotice={vi.fn()} />);
+
+    await screen.findByText(/A-镜头1描述/);
+    screen.getByText(/A-镜头1描述/).click();
+    await screen.findByDisplayValue("A-镜头1描述");
+
+    expect(screen.getByText(/历史素材引用（只读）/)).toBeTruthy();
+    expect(screen.getByText(/路径已匹配素材版本「v2 配色」/)).toBeTruthy();
+    expect(screen.getByText(/未匹配到素材版本：unknown.png/)).toBeTruthy();
+
+    screen.getByRole("button", { name: "保存镜头" }).click();
+    await waitFor(() => {
+      expect(api.comicShotSave).toHaveBeenCalledWith(
+        expect.objectContaining({ assetRefs: null }),
+      );
+    });
+  });
+
+  it("重新打开（重新挂载）后素材关联仍然一致", async () => {
+    const first = render(<ShotsPanel {...base} archived={false} onNotice={vi.fn()} />);
+    await screen.findByText(/A-镜头1描述/);
+    first.unmount();
+
+    render(<ShotsPanel {...base} archived={false} onNotice={vi.fn()} />);
+    await screen.findByText(/A-镜头1描述/);
+    screen.getByText(/A-镜头1描述/).click();
+    await screen.findByDisplayValue("A-镜头1描述");
+
+    expect(screen.getByText(/v1 线稿 · 图片/)).toBeTruthy();
+    expect(api.comicMediaList).toHaveBeenCalledWith("p1");
   });
 });

@@ -35,6 +35,7 @@ import {
 import { getFwDragState, subscribeFwDrag } from "../../lib/filesWorkspace/interactions";
 import { filterTransferablePaths } from "../../lib/filesWorkspace/transfer";
 import { useLocale } from "../../hooks/useLocale";
+import { peekThumbnail, requestThumbnail } from "./preview/thumbnails";
 import { useFilesWorkspaceStore } from "../../store/useFilesWorkspaceStore";
 
 const LIST_ROW_H = 26;
@@ -96,23 +97,9 @@ interface MarqueeViewportRect {
 
 type ListViewMode = "list" | "grid";
 
-// ── 缩略图（客户端并发 ≤3 + 有界缓存）─────────────────────────────────
-
-const thumbCache = new Map<string, string | null>();
-const THUMB_CACHE_MAX = 300;
-/** 队列上限：快速滚动万级网格时丢弃最旧的未执行任务（未发起 IPC，丢弃安全）。 */
-const THUMB_QUEUE_MAX = 500;
-let thumbInflight = 0;
-const thumbQueue: Array<() => void> = [];
-
-function pumpThumbQueue(): void {
-  while (thumbInflight < 3 && thumbQueue.length) {
-    const job = thumbQueue.shift();
-    if (!job) return;
-    thumbInflight += 1;
-    void job();
-  }
-}
+// ── 缩略图（并发 ≤3 + 有界缓存）───────────────────────────────────────
+// 实现已抽到 `preview/thumbnails.ts`，与漫剧等其它面板共用同一队列与缓存；
+// 这里只保留渲染侧的使用。
 
 // ── 滚动位置会话缓存（会话内内存，不落库）───────────────────────────────
 // 归属键 = 稳定标签 tabId：分栏交换、双栏↔四宫格、最大化/恢复导致窗格重挂载后，
@@ -215,46 +202,8 @@ function thumbCapable(category: string): boolean {
   return category === "image" || category === "video";
 }
 
-function loadThumb(
-  path: string,
-  onLoad: (dataUrl: string | null) => void,
-): () => void {
-  let cancelled = false;
-  const cached = thumbCache.get(path);
-  if (cached !== undefined) {
-    onLoad(cached);
-    return () => {};
-  }
-  const job = () => {
-    import("../../lib/bridge")
-      .then(({ fsThumbnail }) => fsThumbnail(path, 96))
-      .then((dataUrl) => {
-        if (cancelled) return;
-        if (thumbCache.size >= THUMB_CACHE_MAX) {
-          const oldest = thumbCache.keys().next().value;
-          if (oldest !== undefined) thumbCache.delete(oldest);
-        }
-        thumbCache.set(path, dataUrl);
-        onLoad(dataUrl);
-      })
-      .catch(() => {
-        if (!cancelled) onLoad(null);
-      })
-      .finally(() => {
-        thumbInflight -= 1;
-        pumpThumbQueue();
-      });
-  };
-  thumbQueue.push(job);
-  // 队列超限：丢弃最旧的未执行任务（禁积压；已执行任务由 cancelled 标志兜底）。
-  while (thumbQueue.length > THUMB_QUEUE_MAX) {
-    thumbQueue.shift();
-  }
-  pumpThumbQueue();
-  return () => {
-    cancelled = true;
-  };
-}
+/** 缩略图尺寸口径：与 shared-thumbnails 的缓存键一致（列表/网格同一档）。 */
+const THUMB_PX = 96;
 
 // ── 虚拟化范围计算 ──────────────────────────────────────────────────────
 
@@ -366,11 +315,13 @@ const GridCell = memo(function GridCell({
   const visual = fileVisual(entry.category);
   const Icon = visual.icon;
   const [thumb, setThumb] = useState<string | null>(
-    thumbnails && thumbCapable(entry.category) ? (thumbCache.get(path) ?? null) : null,
+    thumbnails && thumbCapable(entry.category)
+      ? (peekThumbnail(path, THUMB_PX) ?? null)
+      : null,
   );
   useEffect(() => {
     if (!thumbnails || !thumbCapable(entry.category)) return;
-    return loadThumb(path, setThumb);
+    return requestThumbnail(path, THUMB_PX, setThumb);
   }, [thumbnails, path, entry.category]);
   return (
     <div

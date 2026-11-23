@@ -1,7 +1,11 @@
 //! 预览状态占位（加载 / 错误 / 不支持）：统一各类型预览的空态视觉，
 //! 避免每个组件各写一套「转圈 / 红字 / 灰字」。
+//!
+//! 样式从 `files.css` 抽到 `preview.css`（2026-11-23）：文件工作空间与漫剧等
+//! 复用预览组件的面板都从这里拿同一份几何，不再各写一套。
 
 import { AlertTriangle, FileQuestion, Loader2 } from "lucide-react";
+import "./preview.css";
 
 export function PreviewLoading({ label }: { label: string }) {
   return (

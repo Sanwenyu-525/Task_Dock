@@ -399,6 +399,37 @@ fn validate_id_list(
     Ok(out)
 }
 
+/// 历史素材引用（`comic_shots.asset_refs_json`）兼容校验。
+///
+/// 该列在历史数据里实际保存**文件绝对路径**（见 `dev-instance` 库 32/32 条命中素材版本
+/// `file_path`），不是素材版本 ID；旧校验按 64 字符截断会让这些镜头无法保存。
+/// 本轮它只作为只读兼容列：新前端不提交、后端不清空，仅当旧客户端显式提交时才按
+/// 「路径或 ID」的宽口径校验后原样保留。
+fn validate_legacy_asset_refs(raw: Option<Vec<String>>) -> AppResult<Option<Vec<String>>> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let mut out = Vec::with_capacity(raw.len());
+    for item in raw {
+        let item = item.trim().to_string();
+        if item.is_empty() {
+            continue;
+        }
+        if item.chars().count() > MAX_PATH_CHARS || item.chars().any(|c| c.is_control()) {
+            return Err(AppError::Validation("素材引用格式非法".into()));
+        }
+        if !out.iter().any(|x| x == &item) {
+            out.push(item);
+        }
+    }
+    if out.len() > MAX_ASSET_REFS {
+        return Err(AppError::Validation(format!(
+            "素材引用最多关联 {MAX_ASSET_REFS} 项"
+        )));
+    }
+    Ok(Some(out))
+}
+
 fn parse_id_array(raw: &str) -> Vec<String> {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
         return Vec::new();
@@ -902,7 +933,10 @@ pub fn comic_shot_save_impl(
         return Err(AppError::Validation("预计时长非法".into()));
     }
     let character_ids = validate_id_list(character_ids, "出场角色", MAX_REF_COUNT)?;
-    let asset_refs = validate_id_list(asset_refs, "素材引用", MAX_ASSET_REFS)?;
+    // `asset_refs_json` 是历史遗留列（实际存的是文件绝对路径，不是素材版本 ID）。
+    // 正式关联已统一为 `comic_media_versions.shot_id`：新前端不再提交该字段，
+    // 因此 `None` 必须「保持原值」，不能写成空数组清空历史引用。
+    let asset_refs = validate_legacy_asset_refs(asset_refs)?;
     let scene_id = match scene_id {
         None => None,
         Some(raw) => {
@@ -915,7 +949,6 @@ pub fn comic_shot_save_impl(
         }
     };
     let character_ids_json = serialize_id_array(&character_ids)?;
-    let asset_refs_json = serialize_id_array(&asset_refs)?;
     let id = id
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
@@ -937,6 +970,11 @@ pub fn comic_shot_save_impl(
                 let no = match shot_no {
                     Some(value) if value > 0 => value,
                     _ => next_shot_no(conn, &episode_id)?,
+                };
+                // 新建镜头没有历史引用：未提交时按空数组落库。
+                let asset_refs_json = match &asset_refs {
+                    Some(refs) => serialize_id_array(refs)?,
+                    None => "[]".to_string(),
                 };
                 let id = uuid::Uuid::new_v4().to_string();
                 conn.execute(
@@ -968,19 +1006,25 @@ pub fn comic_shot_save_impl(
                 Ok::<String, AppError>(id)
             }
             Some(id) => {
-                let existing: Option<(String, i64)> = conn
+                let existing: Option<(String, i64, String)> = conn
                     .query_row(
-                        "SELECT project_id, sort_order FROM comic_shots WHERE id = ?1",
+                        "SELECT project_id, sort_order, asset_refs_json
+                         FROM comic_shots WHERE id = ?1",
                         params![id],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                     )
                     .optional()?;
-                let Some((owner, current_order)) = existing else {
+                let Some((owner, current_order, current_asset_refs)) = existing else {
                     return Err(AppError::NotFound("镜头不存在或已被删除".into()));
                 };
                 if owner != project_id {
                     return Err(AppError::Validation("镜头不属于当前项目".into()));
                 }
+                // 未提交素材引用时沿用原值（历史路径引用只读保留，绝不清空）。
+                let asset_refs_json = match &asset_refs {
+                    Some(refs) => serialize_id_array(refs)?,
+                    None => current_asset_refs,
+                };
                 let order = match sort_order {
                     Some(value) => validate_sort_order(value)?,
                     None => current_order,
@@ -2732,6 +2776,131 @@ mod tests {
         )
         .unwrap();
         assert_eq!(updated.shot_id, Some(own_shot.id.clone()));
+        std::fs::remove_dir_all(&fixture).ok();
+    }
+
+    #[test]
+    fn comic_shot_save_keeps_legacy_asset_refs_when_not_submitted() {
+        let db = Db::open_in_memory().unwrap();
+        let project = create_comic_project(&db, "历史引用兼容漫剧");
+        let episode = comic_episode_save_impl(
+            &db, None, project.id.clone(), None, "第 1 集".into(), "".into(), "".into(),
+            "draft".into(), 0, None, None,
+        )
+        .unwrap();
+        let shot = comic_shot_save_impl(
+            &db, None, project.id.clone(), episode.id.clone(), None, "镜头".into(),
+            None, None, "".into(), "".into(), "".into(), None, "todo".into(), None, "".into(), None,
+        )
+        .unwrap();
+        assert!(shot.asset_refs.is_empty(), "新建镜头默认没有历史引用");
+
+        // 历史数据里的 asset_refs_json 是文件绝对路径（远超旧校验 64 字符上限）。
+        let legacy_path = "D:/one drive/OneDrive/桌面/小说/最后一种打法/资源/漫剧/产出/第一卷/第01集/镜头/S01/视觉稿/S01-U01-R4_keyframe.png";
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE comic_shots SET asset_refs_json = ?2 WHERE id = ?1",
+                params![shot.id, format!(r#"["{}"]"#, legacy_path)],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        // 新前端不再提交该字段：None 必须保留原值，绝不能被写成空数组。
+        let kept = comic_shot_save_impl(
+            &db, Some(shot.id.clone()), project.id.clone(), episode.id.clone(), None,
+            "镜头改名".into(), None, None, "".into(), "".into(), "".into(), None, "todo".into(),
+            None, "".into(), None,
+        )
+        .unwrap();
+        assert_eq!(kept.description, "镜头改名");
+        assert_eq!(kept.asset_refs, vec![legacy_path.to_string()], "历史引用不得被清空");
+
+        let raw: String = db
+            .with_read(|conn| {
+                Ok(conn.query_row(
+                    "SELECT asset_refs_json FROM comic_shots WHERE id = ?1",
+                    params![shot.id],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+        assert!(raw.contains("S01-U01-R4_keyframe.png"), "落库值必须是原路径");
+
+        // 旧客户端显式提交时按「路径或 ID」宽口径接受（不再因长度被拒）。
+        let rewritten = comic_shot_save_impl(
+            &db, Some(shot.id.clone()), project.id.clone(), episode.id.clone(), None,
+            "镜头改名".into(), None, None, "".into(), "".into(), "".into(), None, "todo".into(),
+            Some(vec!["D:/another/very/long/path/that/exceeds/the/old/sixty/four/char/limit/frame.png".into()]),
+            "".into(), None,
+        )
+        .unwrap();
+        assert_eq!(rewritten.asset_refs.len(), 1);
+    }
+
+    #[test]
+    fn comic_media_list_and_adopt_stay_scoped_to_one_shot() {
+        let db = Db::open_in_memory().unwrap();
+        let project = create_comic_project(&db, "采用唯一性漫剧");
+        let episode = comic_episode_save_impl(
+            &db, None, project.id.clone(), None, "第 1 集".into(), "".into(), "".into(),
+            "draft".into(), 0, None, None,
+        )
+        .unwrap();
+        let shot_a = comic_shot_save_impl(
+            &db, None, project.id.clone(), episode.id.clone(), None, "镜头 A".into(),
+            None, None, "".into(), "".into(), "".into(), None, "todo".into(), None, "".into(), None,
+        )
+        .unwrap();
+        let shot_b = comic_shot_save_impl(
+            &db, None, project.id.clone(), episode.id.clone(), None, "镜头 B".into(),
+            None, None, "".into(), "".into(), "".into(), None, "todo".into(), None, "".into(), None,
+        )
+        .unwrap();
+
+        let fixture = temp_dir("v1-adopt-scope");
+        let file_a = write_v1_fixture(&fixture, "a.png", b"A");
+        let file_b = write_v1_fixture(&fixture, "b.png", b"B");
+        let file_c = write_v1_fixture(&fixture, "c.png", b"C");
+        let a1 = comic_media_import_impl(
+            &db, None, project.id.clone(), Some(shot_a.id.clone()), None, None,
+            file_a.to_string_lossy().into(), "image".into(), Some("A-1".into()), None,
+        )
+        .unwrap();
+        let a2 = comic_media_import_impl(
+            &db, None, project.id.clone(), Some(shot_a.id.clone()), None, None,
+            file_b.to_string_lossy().into(), "image".into(), Some("A-2".into()), None,
+        )
+        .unwrap();
+        let b1 = comic_media_import_impl(
+            &db, None, project.id.clone(), Some(shot_b.id.clone()), None, None,
+            file_c.to_string_lossy().into(), "image".into(), Some("B-1".into()), None,
+        )
+        .unwrap();
+
+        comic_media_adopt_impl(&db, &a1.id).unwrap();
+        comic_media_adopt_impl(&db, &a2.id).unwrap();
+        comic_media_adopt_impl(&db, &b1.id).unwrap();
+
+        // 同镜头内采用唯一；不同镜头互不影响。
+        let list_a = comic_media_list_impl(&db, &project.id, Some(shot_a.id.clone())).unwrap();
+        assert_eq!(list_a.iter().filter(|v| v.status == "adopted").count(), 1);
+        assert_eq!(
+            list_a.iter().find(|v| v.status == "adopted").map(|v| v.id.clone()),
+            Some(a2.id.clone())
+        );
+        let list_b = comic_media_list_impl(&db, &project.id, Some(shot_b.id.clone())).unwrap();
+        assert_eq!(list_b.len(), 1);
+        assert_eq!(list_b[0].status, "adopted");
+        assert_eq!(list_b[0].id, b1.id);
+
+        // 未关联镜头的参考素材不能采用。
+        let version_ref = comic_media_import_impl(
+            &db, None, project.id.clone(), None, None, None,
+            file_a.to_string_lossy().into(), "image".into(), Some("参考".into()), None,
+        );
+        assert!(version_ref.is_err(), "三选一目标为空必须拒绝");
+
         std::fs::remove_dir_all(&fixture).ok();
     }
 }

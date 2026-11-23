@@ -43,7 +43,7 @@
 | PW-4 | Profile/Capability 注册中心 | 工作空间 P1-01 | `src/workspace/workspaceProfiles.ts`、`workspaceProfileIcons.ts` | **五类型**导航/首页/能力声明、四态、planned/unavailable 无假按钮、图标 token 有真实映射 | 仅「基础 Profile」：游戏/AI 漫剧/小说无完整专业闭环；布局排序/隐藏无编辑入口（已标 limited） | implemented（基础） | verified（注册中心契约测试） |
 | PW-5 | 页面数据层（代次隔离） | 工作空间 P0-03/P1-02 | `src/workspace/useWorkspaceProjectContext.ts` | 代次、项目归属、写保护、布局解析回退、任务选择器 | 后端分页元数据 | implemented | verified（hook 测试） |
 | PW-6 | 游戏制作闭环 | 工作空间 P1 | 仅事项阶段 | 事项承载关卡/系统阶段 | 资源关联、构建/测试登记、引擎跳转 | not_started | unverified |
-| PW-7 | AI 漫剧闭环 | 工作空间 P1 | 仅事项阶段 | 剧集/镜头用 stage 承载 | 素材/角色库、生成结果导入、版本比较/采用 | not_started | unverified |
+| PW-7 | AI 漫剧闭环 | 工作空间 P1 + 漫剧 C1 | `src/workbench/creative/comic/`、`commands/comic_workspace.rs`（v61 五表） | 剧集与剧本、分镜排序、角色与场景、素材版本与采用；**2026-11-23 第二轮**：镜头↔素材统一为 `comic_media_versions.shot_id`（历史 `asset_refs_json` 只读兼容）、素材缩略图/大图预览、同镜头两版本比较、参考图选择与预览、按剧集派生镜头统计 | AI 生成管线（unavailable）、视频内嵌播放与时间线、像素差异比较、制作看板与 Agent 协作 | implemented | verified（前端 37/37 + Rust `comic_` 用例；原生走查见 `tmp/acceptance/comic-round2/`） |
 | PW-8 | 跨项目资源与产出物关系 | 工作空间 P2 | 无 | 无 | — | not_started | unverified |
 | PW-10 | 小说正文与章节（创作工作台 B1） | 2026-11-16 | v58 迁移、`commands/project_workspace.rs`、`commands/backup.rs`、`src/workspace/workspaceProfiles.ts`、`src/lib/bridge.ts`、`NovelManuscriptPanel.tsx`、`ProjectWorkspacePanel.tsx`、`workspace.css` | v58 卷/章两表三索引；8 个卷/章命令（列表/读取/保存/正文保存/删除）；`manuscript` 模块与 `novel.manuscript` available；卷→章树 + 纯文本编辑器（单章节串行保存、0.9s 防抖、模块/项目离开前 async flush、保存失败阻止离开并保留草稿、实时字数、归档全入口只读、Rust kind/status 门禁） | 富文本/Markdown、版本历史、导入导出、全文搜索；人物/世界观/剧情/伏笔/AI；跨卷拖拽移动；应用关闭握手 | implemented | partially_verified（前端 26/26 通过；Rust 用例已落盘但本轮共享工作树被其他模块编译错误阻塞，已在隔离 worktree 复跑 6/6；原生窗口未逐页走查） | 无 | 原生走查：新建卷/章、自动保存、切换章节、归档只读、备份恢复 |
 
@@ -215,7 +215,7 @@ vite 18.40s；同样早于该并发破坏）。
 |---|---|---|---|---|---|---|
 | A 小说 | `creative-novel-b2` | 人物档案+关系、世界观设定、章节引用、人物/世界观模块 | 29/29（3 文件）+ Rust 9/9 | v59（4 表） | 14 | 命令层通过：Rust 9/9、备份 Full+Quick 往返通过；真机待验 |
 | B 游戏 | `creative-game-g1` | 引擎识别（Unity/Unreal/Godot/自定义+手动指定）、资源关联、构建/测试登记、资源与构建模块 | 10/10 + Rust 9/9 | v60（4 表） | 12 | 命令层通过：Rust 9/9、隔离库 15 项 checks 全 ok；真机待验 |
-| C 漫剧 | `creative-comic-c1` | 剧集（含剧本）、分镜（可排序）、角色与场景、素材版本与采用状态 | 16/16 + Rust 7/7 | v61（5 表） | 21 | 命令层通过：Rust 7/7、全流程往返通过；真机待验 |
+| C 漫剧 | `creative-comic-c1` | 剧集（含剧本）、分镜（可排序）、角色与场景、素材版本与采用状态；2026-11-23 第二轮补镜头↔素材统一、缩略图/大图预览、双版本比较、参考图选择、按集派生镜头统计 | 37/37 + Rust comic 用例 | v61（5 表） | 21 | 命令层通过：Rust comic 用例、全流程往返通过；真机待验（第二轮 Dev 验收证据见 `tmp/acceptance/comic-round2/`） |
 | D 通用 | `creative-general-u1` | 6 模板真实初始化、里程碑与阶段、项目资料关联、真实统计视图 | 21/21 + Rust 15/15 | v62（2 表） | 9 | 命令层通过：Rust 15/15、六模板矩阵与统计对照通过；真机待验 |
 | E 开发 | `creative-development-d1` | 仓库与 Git 风险只读探测、Agent 任务接续（自述完成≠验收通过）、构建/验收追溯 | 7/7 + Rust 9/9 | v63（2 表） | 7 | 命令层通过：Rust 9/9、探测严格只读；真机待验 |
 

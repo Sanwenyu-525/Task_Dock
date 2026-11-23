@@ -1,7 +1,10 @@
 //! 剧集与剧本模块（C1）：剧集列表、编号、标题、简介、剧本正文、状态、进度、
 //! 出场角色关联与排序。归档只读；失败可见 + 可重试；切项目由壳层换 key 重挂。
+//!
+//! 2026-11-23 第二轮：新增「按剧集派生镜头统计」（总数 / 待办 / 进行中 / 阻塞 / 完成 +
+//! 镜头完成比例）。统计只读真实镜头数据，不新增持久化字段，也不覆盖剧集制作进度。
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Select, type SelectOption } from "../../../components/ui";
 import type { CreativeModuleProps } from "../types";
 import {
@@ -10,13 +13,16 @@ import {
   comicEpisodeList,
   comicEpisodeReorder,
   comicEpisodeSave,
+  comicShotList,
 } from "./ipc";
 import {
   EPISODE_STATUS_LABELS,
   type ComicCharacter,
   type ComicEpisode,
+  type ComicShot,
   type EpisodeStatus,
 } from "./types";
+import { buildEpisodeShotStats, EMPTY_EPISODE_STATS } from "./shotStats";
 import { ArchivedBanner, errorText, Field, LoadError } from "./shared";
 
 const STATUS_OPTIONS: SelectOption<EpisodeStatus>[] = (
@@ -46,6 +52,7 @@ const EMPTY_DRAFT: EpisodeDraft = {
 export function EpisodesPanel({ projectId, archived, onNotice }: CreativeModuleProps) {
   const [episodes, setEpisodes] = useState<ComicEpisode[]>([]);
   const [characters, setCharacters] = useState<ComicCharacter[]>([]);
+  const [shots, setShots] = useState<ComicShot[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -62,13 +69,15 @@ export function EpisodesPanel({ projectId, archived, onNotice }: CreativeModuleP
     const token = ++seqRef.current;
     setLoading(true);
     try {
-      const [episodeResult, characterResult] = await Promise.all([
+      const [episodeResult, characterResult, shotResult] = await Promise.all([
         comicEpisodeList(projectId),
         comicCharacterList(projectId),
+        comicShotList(projectId, null),
       ]);
       if (token !== seqRef.current) return;
       setEpisodes(episodeResult.episodes ?? []);
       setCharacters(characterResult.characters ?? []);
+      setShots(shotResult.shots ?? []);
       setLoadError(null);
     } catch (error) {
       if (token !== seqRef.current) return;
@@ -206,6 +215,14 @@ export function EpisodesPanel({ projectId, archived, onNotice }: CreativeModuleP
   const selected = episodes.find((episode) => episode.id === selectedId) ?? null;
   const editorOpen = creating || selected !== null;
 
+  /** 派生统计：只依赖真实镜头数据，不落库、不覆盖剧集进度。 */
+  const shotStats = useMemo(() => buildEpisodeShotStats(shots), [shots]);
+  const selectedStats = selected ? (shotStats.get(selected.id) ?? EMPTY_EPISODE_STATS) : null;
+  const shotRatioSuffix = (episodeId: string) => {
+    const stats = shotStats.get(episodeId);
+    return stats ? `（完成 ${stats.doneRatio}%）` : "";
+  };
+
   return (
     <div className="comic-layout">
       <aside className="comic-pane comic-pane-list" aria-label="剧集列表">
@@ -235,6 +252,7 @@ export function EpisodesPanel({ projectId, archived, onNotice }: CreativeModuleP
                   <span className="ws-meta">
                     {EPISODE_STATUS_LABELS[episode.status]} · 进度 {episode.progress}% ·{" "}
                     {episode.shotCount} 个镜头
+                    {shotRatioSuffix(episode.id)}
                   </span>
                 </button>
                 <span className="comic-row-actions">
@@ -344,6 +362,43 @@ export function EpisodesPanel({ projectId, archived, onNotice }: CreativeModuleP
                 />
               </Field>
             </div>
+
+            {selectedStats && (
+              <section className="comic-episode-stats" aria-label="本集镜头统计">
+                <div className="comic-stats-head">
+                  <span className="comic-field-label">镜头完成情况</span>
+                  <span className="ws-meta">来自本集真实镜头状态</span>
+                </div>
+                <div className="comic-stats-grid">
+                  <span>
+                    镜头总数 <strong>{selectedStats.total}</strong>
+                  </span>
+                  <span>
+                    待办 <strong>{selectedStats.todo}</strong>
+                  </span>
+                  <span>
+                    进行中 <strong>{selectedStats.doing}</strong>
+                  </span>
+                  <span>
+                    阻塞 <strong>{selectedStats.blocked}</strong>
+                  </span>
+                  <span>
+                    已完成 <strong>{selectedStats.done}</strong>
+                  </span>
+                </div>
+                <div
+                  className="comic-stats-bar"
+                  role="img"
+                  aria-label={`镜头完成比例 ${selectedStats.doneRatio}%`}
+                >
+                  <span style={{ width: `${selectedStats.doneRatio}%` }} />
+                </div>
+                <p className="ws-meta">
+                  镜头完成比例 {selectedStats.doneRatio}%（{selectedStats.done}/
+                  {selectedStats.total}）；仅由分镜状态派生，不写入也不覆盖上方「制作进度」。
+                </p>
+              </section>
+            )}
 
             {characters.length > 0 && (
               <fieldset className="comic-check-group">

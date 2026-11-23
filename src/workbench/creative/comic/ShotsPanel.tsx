@@ -1,11 +1,17 @@
 //! 分镜模块（C2）：每集多个镜头，字段含编号、描述、角色、场景、台词、景别、运镜、
-//! 预计时长、状态、素材引用、备注；增删改查 + 排序。归档只读；失败可见 + 可重试。
+//! 预计时长、状态、备注；增删改查 + 排序。归档只读；失败可见 + 可重试。
+//!
+//! 镜头↔素材的唯一正式关联由「素材版本 → 镜头」（`comic_media_versions.shot_id`）维护：
+//! 本面板只**展示**关联结果、按需预览大图，不再要求用户手填素材版本 ID；
+//! 历史 `asset_refs_json`（实际存的是文件路径）按只读兼容展示，保存时不提交也不清空。
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Select, type SelectOption } from "../../../components/ui";
+import { basename } from "../../../lib/filesWorkspace/pathUtils";
 import type { CreativeModuleProps } from "../types";
 import {
   comicCharacterList,
+  comicMediaList,
   comicSceneList,
   comicEpisodeList,
   comicShotDelete,
@@ -14,14 +20,18 @@ import {
   comicShotSave,
 } from "./ipc";
 import {
+  MEDIA_KIND_LABELS,
+  MEDIA_STATUS_LABELS,
   SHOT_STATUS_LABELS,
   type ComicCharacter,
   type ComicEpisode,
+  type ComicMediaVersion,
   type ComicScene,
   type ComicShot,
   type ShotStatus,
 } from "./types";
 import { ArchivedBanner, errorText, Field, LoadError } from "./shared";
+import { MediaPreview, MediaThumb } from "./MediaPreview";
 
 const STATUS_OPTIONS: SelectOption<ShotStatus>[] = (
   Object.keys(SHOT_STATUS_LABELS) as ShotStatus[]
@@ -37,7 +47,6 @@ interface ShotDraft {
   cameraMove: string;
   durationSec: string;
   status: ShotStatus;
-  assetRefs: string;
   note: string;
 }
 
@@ -51,15 +60,15 @@ const EMPTY_DRAFT: ShotDraft = {
   cameraMove: "",
   durationSec: "",
   status: "todo",
-  assetRefs: "",
   note: "",
 };
 
-export function ShotsPanel({ projectId, archived, onNotice }: CreativeModuleProps) {
+export function ShotsPanel({ projectId, archived, onNotice, switchModule }: CreativeModuleProps) {
   const [episodes, setEpisodes] = useState<ComicEpisode[]>([]);
   const [characters, setCharacters] = useState<ComicCharacter[]>([]);
   const [scenes, setScenes] = useState<ComicScene[]>([]);
   const [shots, setShots] = useState<ComicShot[]>([]);
+  const [media, setMedia] = useState<ComicMediaVersion[]>([]);
   const [activeEpisodeId, setActiveEpisodeId] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -70,6 +79,8 @@ export function ShotsPanel({ projectId, archived, onNotice }: CreativeModuleProp
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [deleteArmed, setDeleteArmed] = useState(false);
+  /** 展开查看的素材版本（大图 + 标注 + 修改意见）；null = 未展开。 */
+  const [previewVersionId, setPreviewVersionId] = useState<string | null>(null);
 
   const seqRef = useRef(0);
 
@@ -102,9 +113,14 @@ export function ShotsPanel({ projectId, archived, onNotice }: CreativeModuleProp
       const token = ++seqRef.current;
       setLoading(true);
       try {
-        const result = await comicShotList(projectId, episodeId);
+        // 素材版本是镜头↔素材的正式关联来源：随镜头一起刷新，保证两页数据一致。
+        const [shotResult, mediaResult] = await Promise.all([
+          comicShotList(projectId, episodeId),
+          comicMediaList(projectId),
+        ]);
         if (token !== seqRef.current) return;
-        setShots(result.shots ?? []);
+        setShots(shotResult.shots ?? []);
+        setMedia(mediaResult.versions ?? []);
         setLoadError(null);
       } catch (error) {
         if (token !== seqRef.current) return;
@@ -137,9 +153,9 @@ export function ShotsPanel({ projectId, archived, onNotice }: CreativeModuleProp
       cameraMove: shot.cameraMove,
       durationSec: shot.durationSec > 0 ? String(shot.durationSec) : "",
       status: shot.status,
-      assetRefs: shot.assetRefs.join(", "),
       note: shot.note,
     });
+    setPreviewVersionId(null);
     setSaveError(null);
     setDeleteArmed(false);
   }
@@ -148,6 +164,7 @@ export function ShotsPanel({ projectId, archived, onNotice }: CreativeModuleProp
     setSelectedId(null);
     setCreating(openForCreate);
     setDraft(EMPTY_DRAFT);
+    setPreviewVersionId(null);
     setSaveError(null);
     setDeleteArmed(false);
   }
@@ -187,10 +204,6 @@ export function ShotsPanel({ projectId, archived, onNotice }: CreativeModuleProp
       setSaveError("预计时长必须是不小于 0 的数字");
       return;
     }
-    const assetRefs = draft.assetRefs
-      .split(/[,，;；]/)
-      .map((part) => part.trim())
-      .filter(Boolean);
     // 角色/场景为弱引用：档案被删除后草稿里可能残留失效 ID，保存前按当前清单裁剪，
     // 避免不可见的悬空引用把后端归属校验卡住。
     const knownCharacterIds = new Set(characters.map((character) => character.id));
@@ -215,7 +228,8 @@ export function ShotsPanel({ projectId, archived, onNotice }: CreativeModuleProp
         cameraMove: draft.cameraMove,
         durationSec,
         status: draft.status,
-        assetRefs,
+        // 素材关联只由「素材版本 → 镜头」维护：不提交 assetRefs，后端在 None 时保留历史列原值。
+        assetRefs: null,
         note: draft.note,
       });
       onNotice("ok", selectedId ? "镜头已更新" : `已新建镜头 #${result.shot.shotNo}`);
@@ -279,6 +293,35 @@ export function ShotsPanel({ projectId, archived, onNotice }: CreativeModuleProp
   const selected = shots.find((shot) => shot.id === selectedId) ?? null;
   const editorOpen = creating || selected !== null;
 
+  /** 当前镜头关联的素材版本（正式关联：`shot_id`）。 */
+  const shotMedia = useMemo(
+    () => (selectedId ? media.filter((version) => version.shotId === selectedId) : []),
+    [media, selectedId],
+  );
+  const previewVersion = shotMedia.find((version) => version.id === previewVersionId) ?? null;
+
+  const mediaCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const version of media) {
+      if (!version.shotId) continue;
+      counts.set(version.shotId, (counts.get(version.shotId) ?? 0) + 1);
+    }
+    return counts;
+  }, [media]);
+
+  /**
+   * 历史 `asset_refs_json` 里实际存的是文件路径：按 file_path 匹配素材版本后只读展示，
+   * 已经通过 `shot_id` 关联到本镜头的版本不再重复列出。
+   */
+  const legacyOnlyRefs = useMemo(() => {
+    const refs = selected?.assetRefs ?? [];
+    const linkedIds = new Set(shotMedia.map((version) => version.id));
+    return refs.map((ref) => {
+      const matched = media.find((version) => version.filePath === ref) ?? null;
+      return { ref, matched, duplicated: matched ? linkedIds.has(matched.id) : false };
+    }).filter((item) => !item.duplicated);
+  }, [media, selected, shotMedia]);
+
   return (
     <div className="comic-layout">
       <aside className="comic-pane comic-pane-list" aria-label="镜头列表">
@@ -314,6 +357,7 @@ export function ShotsPanel({ projectId, archived, onNotice }: CreativeModuleProp
                   <span className="ws-meta">
                     {SHOT_STATUS_LABELS[shot.status]} · {sceneName(shot.sceneId)} ·{" "}
                     {shot.durationSec > 0 ? `${shot.durationSec}s` : "时长未定"}
+                    {mediaCounts.get(shot.id) ? ` · ${mediaCounts.get(shot.id)} 个素材版本` : ""}
                   </span>
                 </button>
                 <span className="comic-row-actions">
@@ -467,16 +511,105 @@ export function ShotsPanel({ projectId, archived, onNotice }: CreativeModuleProp
               </fieldset>
             )}
 
-            <Field label="素材引用" htmlFor="comic-shot-assets" hint="素材版本 ID，逗号分隔，可选">
-              <input
-                id="comic-shot-assets"
-                type="text"
-                className="ws-input"
-                disabled={archived || saving}
-                value={draft.assetRefs}
-                onChange={(event) => setDraft({ ...draft, assetRefs: event.target.value })}
-              />
-            </Field>
+            <fieldset className="comic-check-group comic-shot-media">
+              <legend className="comic-field-label">
+                关联素材版本
+                <em className="comic-field-hint">
+                  由「素材与产物」的版本选择关联镜头维护，本页只读展示
+                </em>
+              </legend>
+
+              {!selectedId && (
+                <p className="ws-meta">保存镜头后，到「素材与产物」把版本关联到本镜头即可在此查看。</p>
+              )}
+              {selectedId && shotMedia.length === 0 && (
+                <p className="ws-meta">本镜头还没有关联素材版本。</p>
+              )}
+
+              {shotMedia.length > 0 && (
+                <ul className="ws-list comic-shot-media-list">
+                  {shotMedia.map((version) => (
+                    <li key={version.id}>
+                      <div className="comic-shot-media-row">
+                        <MediaThumb
+                          path={version.filePath}
+                          kind={version.mediaKind}
+                          exists={version.fileExists}
+                          placeholder={version.fileExists ? undefined : "文件缺失"}
+                        />
+                        <span className="comic-row-text">
+                          <span className="comic-row-title">
+                            {version.versionLabel || "未命名版本"} ·{" "}
+                            {MEDIA_KIND_LABELS[version.mediaKind]}
+                          </span>
+                          <span className="ws-meta">
+                            {MEDIA_STATUS_LABELS[version.status]}
+                            {!version.fileExists ? " · 文件缺失" : ""}
+                          </span>
+                        </span>
+                        <button
+                          type="button"
+                          className="ws-btn ws-btn-quiet"
+                          aria-expanded={previewVersionId === version.id}
+                          onClick={() =>
+                            setPreviewVersionId((current) =>
+                              current === version.id ? null : version.id,
+                            )
+                          }
+                        >
+                          {previewVersionId === version.id ? "收起" : "查看"}
+                        </button>
+                      </div>
+                      {previewVersion?.id === version.id && (
+                        <div className="comic-shot-media-detail">
+                          <div className="comic-detail-stage">
+                            <MediaPreview
+                              path={version.filePath}
+                              kind={version.mediaKind}
+                              exists={version.fileExists}
+                              label={version.versionLabel}
+                            />
+                          </div>
+                          <p className="ws-meta">
+                            修改意见：{version.reviewNote || "（未填写）"}
+                          </p>
+                          <p className="ws-meta ws-path">{version.filePath}</p>
+                        </div>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              <div className="ws-form-actions">
+                <button
+                  type="button"
+                  className="ws-btn"
+                  disabled={!selectedId}
+                  onClick={() => switchModule("assets")}
+                >
+                  去素材与产物管理
+                </button>
+              </div>
+
+              {legacyOnlyRefs.length > 0 && (
+                <div className="comic-legacy-refs">
+                  <p className="ws-meta">
+                    历史素材引用（只读）：早期版本把文件路径直接写在该字段，共{" "}
+                    {legacyOnlyRefs.length} 条，不自动迁移也不会被清空。
+                  </p>
+                  <ul className="ws-list">
+                    {legacyOnlyRefs.map((item) => (
+                      <li key={item.ref} className="ws-meta comic-legacy-ref" title={item.ref}>
+                        {item.matched
+                          ? `路径已匹配素材版本「${item.matched.versionLabel || item.matched.id}」，但该版本未关联到本镜头`
+                          : `未匹配到素材版本：${basename(item.ref)}`}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </fieldset>
 
             <Field label="备注" htmlFor="comic-shot-note">
               <textarea

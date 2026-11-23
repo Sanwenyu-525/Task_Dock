@@ -77,7 +77,9 @@ type WorkspaceCapabilityState = "available" | "limited" | "planned" | "unavailab
 并且 `available` 能力都有真实调用链（项目/事项/任务关联/开发项目/Git/Agent 快照），但：
 
 - 游戏类型没有资源索引、构建/测试登记、引擎跳转；
-- AI 漫剧没有素材/角色库、生成结果导入、版本比较与采用；
+- AI 漫剧（2026-11-23 更正）：已有剧集与剧本、分镜（排序）、角色与场景档案、素材版本与采用，
+  镜头↔素材统一为素材版本 `shot_id`；仍缺 AI 生成管线（`comic.generate` unavailable）、
+  视频内嵌播放与时间线、像素差异比较；
 - 小说类型（B1，2026-11-16）已有纯文本正文与卷→章树（`novel.manuscript` available）；
   人物档案与世界观已于 B2 接入并登记为 `limited`（部分路径可用，降级说明见能力清单）；
   AI 创作辅助仍为 `planned`，不可调用；也没有 Markdown/富文本、版本历史与导出；
@@ -496,6 +498,13 @@ src-tauri/src/commands/backup.rs           # BACKUP_TABLES / EXTENDED_TABLES 登
 
 冻结契约写在 `tmp/acceptance/creative-workspaces-v1/contract.md`（含表名、备份
 `restore_order` 分段、命令前缀、验收口径）。
+
+> **2026-11-23 漫剧第二轮口径**：镜头↔素材的唯一正式关联是
+> `comic_media_versions.shot_id`；`comic_shots.asset_refs_json` 是历史列（实测存的是
+> 文件绝对路径，不是素材版本 ID），只读兼容、不迁移也不清空。实测 `dev-instance` 库
+> 32/32 条历史路径都能在同一项目的素材版本 `file_path` 命中，且全部属于同一镜头，
+> 因此无需数据迁移即可安全保留。素材/参考图预览统一走 `fs_thumbnail` /
+> `fs_read_binary` / `fs_preview_image`，不引入 `asset://` 任意路径访问。
 
 ### 12.2 模块注册表：壳层与专业模块的唯一接触面
 
