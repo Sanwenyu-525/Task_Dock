@@ -169,7 +169,25 @@
 - 备份 bundle 加密（BEK/恢复口令）、Agent 导出授权与审计、目录显式 ACL。
 - 真机 Dev 验收与性能基准。
 
-### 6.4 尚未执行（等待后续批次）
+### 6.4 批次 4a（2026-11-23，已实施）
 
+已落地（`src-tauri/src/clipboard/backup_crypto.rs`，仅密钥信封原语，不改 bundle 行为）：
+
+- 每次备份独立随机 BEK，不复用剪贴板 CEK 或保险箱 DEK/KEK。
+- 口令 slot：Argon2id（64 MiB / 3 / 1），盐与参数随信封持久化；HKDF info
+  `taskdock-clipboard/kek/backup-password/v1` 域分离；口令最少 8 字符并做 NFKC 规范化。
+- 恢复密钥 slot：160-bit 随机，Crockford Base32 展示（忽略分隔符/易混字符），
+  HKDF info `taskdock-clipboard/kek/backup-recovery/v1`。
+- 双 slot 解出同一 BEK；信封 AAD 绑定 `backup_id`，解封前复算校验，防跨备份拼接。
+- 段落密文 AES-256-GCM，AAD `tdclbk|<backup_id>|<section>|v1`。
+- 测试 6 项：口令往返与错误口令、恢复密钥往返与异码、双 slot 一致、篡改信封、
+  形状校验（无 slot/未知格式/超版本/短口令）、段落 AAD 绑定。
+
+### 6.5 尚未执行（等待后续批次）
+
+- 批次 4b：bundle 写入/恢复链路接入（清单登记信封、恢复口令输入与错误提示、
+  旧明文包导入策略）、恢复密钥导出 UI。
+- `preview`/`title`/`source_*`/`file_paths` 加密与“解密后过滤”搜索。
+- Agent 导出授权与审计、目录显式 ACL、真机 Dev 验收与性能基准。
 - 本批次未执行：数据库 schema 迁移、依赖变更、Dev 真机走查。
 - 残余风险按 ADR §14「实施偏差与影响」如实登记，不得对外宣称剪贴板历史已全面加密。
