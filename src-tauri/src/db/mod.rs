@@ -3246,6 +3246,9 @@ fn default_clip_group_window() -> u32 {
 fn default_clip_retention() -> u32 {
     30
 }
+fn default_clip_export_retention() -> u32 {
+    7
+}
 fn default_clip_max_items() -> u32 {
     1000
 }
