@@ -1930,7 +1930,9 @@ pub(crate) fn import_parsed_with(
             // 设置：已知键校验后写入（同一事务）；http_token 属本机安全项，不导入
             let now = now_iso();
             for (k, v) in &parsed.settings {
-                if k == "http_token" {
+                if k == "http_token"
+                    || crate::commands::backup::EXCLUDED_SETTINGS.contains(&k.as_str())
+                {
                     continue;
                 }
                 if crate::commands::backup::LOCAL_PRIVACY_SETTINGS.contains(&k.as_str()) {

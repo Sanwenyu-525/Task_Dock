@@ -218,8 +218,8 @@
 - 测试新增 1 项：恢复密钥不落盘、header 标记、缺口令且缺密钥拒绝、错密钥拒绝、正确密钥往返导入、
   口令通道同一备份仍可用、无 slot 的 sealed 备份不能用恢复密钥。
 - 本批验证：`cargo test --lib commands::backup` 31 passed / 1 failed（既有
-  `quick_and_full_bundles_include_all_voice_tables_and_assets` 计数口径缺陷，非本批引入）；
-  `npm run typecheck` 0；`cargo check` 0。
+  `quick_and_full_bundles_include_all_voice_tables_and_assets` 计数口径缺陷，非本批引入；
+  该缺陷已在 4c-3 修正，见 §6.8）；`npm run typecheck` 0；`cargo check` 0。
 
 未落地：图片资产字节仍未纳入口令加密；恢复后的正文未按本机开关重新加密；旧明文包一次性加密
 迁移未做。
@@ -242,9 +242,34 @@
 未落地：恢复时资产仍以明文 PNG 提交（不会按目标机加密开关重新封装）；正文恢复后也未按
 本机开关重新加密；旧明文包一次性加密迁移未做。
 
-### 6.8 尚未执行（等待后续批次）
+### 6.8 批次 4c-3（2026-11-23，已实施）
 
-- 批次 4c（余项）：恢复后按本机开关重新加密正文与资产、旧明文包一次性加密迁移。
+已落地（密封备份真正可跨机恢复，且不破坏同机密钥）：
+
+- 密封导出：`clipboard_items` 的 `text`/`html` 先解掉本机 CEK（`plaintext_item_fields`），
+  图片资产先经 `secure::decrypt_blob_if_encrypted` 解出 PNG，再按 BEK 分块密封；
+  任一字段解不开即整包失败，不产出「口令加密但仍绑原机」的备份。
+- 恢复归一：`backup::normalize_clipboard_for_restore` 在验证/导入前按目标机开关处理：
+  开关开启时正文/HTML 按键目 AAD 重加密、暂存图片重写为 CEK 容器并更新 `StagedAsset`
+  大小/SHA-256（计划与续跑校验的是最终字节）；开关关闭时保持备份原样。
+- 密钥边界：`clipboard_crypto_envelope` 加入 `EXCLUDED_SETTINGS`（不导出、导入跳过），
+  避免 DPAPI 信封覆盖目标机密钥；`clipboard_encrypt_history` 加入
+  `LOCAL_PRIVACY_SETTINGS`，恢复旧备份不会悄悄改变本机加密选择。
+- 测试新增 2 项：加密源导出后包内无 `tdcl1:`/本机容器密文、可解出明文正文与 PNG；
+  明文密封包恢复到开启加密的目标机后，暂存行与图片均为目标机密文、导入后可解回原文。
+- 本批验证（MSVC 工具链，GNU 工具链缺 dlltool）：
+  `cargo test --lib commands::backup` 34 passed / 0 failed；
+  `cargo test --lib commands::restore` 33 passed / 0 failed；`cargo check` 0。
+  其中备份语音包资产与恢复语音资产用例已随计数口径修正转绿。
+
+同时修正既有资产计数口径缺陷：写入端 `counts["assets"]`/`asset_bytes` 过去含暂存架/语音资产，
+读取端却只与剪贴板资产比对，导致含语音包的备份/恢复报「期望 3，实际 2」。现写入端按
+`assets`（剪贴板）/`shelf_assets`/`voice_assets` 分开计数，读取端兼容旧包的合并口径
+（`assets` 等于三类之和时也接受），旧备份仍可恢复。
+
+### 6.9 尚未执行（等待后续批次）
+
+- 批次 4c（余项）：旧明文包一次性加密迁移；恢复续跑日志对资产重加密后的版本兼容复核。
 - `preview`/`title`/`source_*`/`file_paths` 加密与“解密后过滤”搜索。
 - Agent 导出授权与审计、目录显式 ACL、真机 Dev 验收与性能基准。
 - 本批次未执行：数据库 schema 迁移、Dev 真机走查。

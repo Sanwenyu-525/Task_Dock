@@ -1053,7 +1053,7 @@ pub fn restore_bundle(
 
     let t0 = std::time::Instant::now();
     // 1. 读取并做完整性/结构校验（资产、归档与表行写入会话暂存目录）。
-    let read = match backup::read_bundle_with_secrets(
+    let mut read = match backup::read_bundle_with_secrets(
         source,
         &staging,
         options.clipboard_secret.as_deref(),
@@ -1079,6 +1079,11 @@ pub fn restore_bundle(
         );
     }
     // 预检直接读暂存的行文件：事件表全程不整体进内存。
+    // 若本机开启剪贴板历史加密，先把备份额里还原成明文再按本机 CEK 重加密，
+    // 保证跨机恢复后库内不出现明文、也不残留原机不可解的密文。
+    if let Err(e) = backup::normalize_clipboard_for_restore(db, &mut read) {
+        return abort(data_dir, journal, e);
+    }
     let parsed = match data::validate_bundle(db, &read.data, &read.rows_dir) {
         Ok(parsed) => parsed,
         Err(e) => return abort(data_dir, journal, e),

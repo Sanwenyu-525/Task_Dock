@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
-use crate::clipboard::backup_crypto;
+use crate::clipboard::{backup_crypto, secure};
 use crate::commands::data::{self, EventRow, RunRow, TaskRow};
 use crate::db::Db;
 use crate::error::{AppError, AppResult};
@@ -57,14 +57,29 @@ pub const RESTORE_COMMIT_KEY: &str = "restore_commit_id";
 /// 剪贴板段加密记录类型名（需备份口令才能恢复）。
 pub const CLIPBOARD_SEALED_RECORD: &str = "clipboard_sealed";
 /// 本机安全项与恢复内部标记：绝不进入任何导出文件。
-pub const EXCLUDED_SETTINGS: &[&str] = &["http_token", RESTORE_COMMIT_KEY];
+/// - `http_token`：本机服务凭据；
+/// - `restore_commit_id`：恢复内部标记；
+/// - `clipboard_crypto_envelope`：DPAPI 封装的剪贴板 CEK 只对当前 Windows 用户可用，
+///   带进备份既不能跨机解密，还会在恢复时覆盖本机密钥。剪贴板数据已随备份解密/重加密，
+///   恢复必须保留本机现有信封（没有则按开关新建）。
+pub const EXCLUDED_SETTINGS: &[&str] = &[
+    "http_token",
+    RESTORE_COMMIT_KEY,
+    "clipboard_crypto_envelope",
+];
 /// 本机隐私偏好：备份里可以带，但导入/恢复时一律不写回本机。
 ///
 /// 剪贴板记录开关（是否记录、是否暂停）必须留在用户当前的选择上：
 /// 备份里存的是「备份那一刻」的值，用户后来关闭或暂停了记录，
 /// 恢复一份旧备份若把它写回去，就会在用户不知情时重新打开剪贴板采集。
 /// 缺省即开启的语义在这里尤其危险。
-pub const LOCAL_PRIVACY_SETTINGS: &[&str] = &["clipboard_enabled", "clipboard_paused"];
+pub const LOCAL_PRIVACY_SETTINGS: &[&str] = &[
+    "clipboard_enabled",
+    "clipboard_paused",
+    // 历史加密开关同样是本机隐私选择：恢复旧备份不能悄悄关掉（或打开）静态加密，
+    // 否则新采集数据的落盘形态会与用户当前预期不符。
+    "clipboard_encrypt_history",
+];
 /// 设备相关设置：允许导出，但恢复后仍需按本机窗口/自启动状态重新校验。
 pub const DEVICE_SPECIFIC_SETTINGS: &[&str] = &[
     "window_rect",
@@ -2205,6 +2220,32 @@ fn sealed_asset_aad(backup_id: &str, rel: &str, chunk: u32) -> String {
     backup_crypto::section_aad(backup_id, &format!("asset|{rel}|{chunk}"))
 }
 
+/// 密封备份承载的是可移植明文：把行里的 CEK 密文解回明文；解不开就失败，
+/// 不能让「用口令加密的备份」仍然只在原机可读。
+fn plaintext_item_fields(row: &mut serde_json::Value) -> AppResult<()> {
+    let id = row
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    for field in ["text", "html"] {
+        let stored = row
+            .get(field)
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let aad = secure::item_field_aad(&id, field);
+        let plain = secure::decrypt_if_encrypted(&aad, &stored).map_err(|e| {
+            AppError::Validation(format!(
+                "剪贴板条目 {} 的 {} 无法解密为可移植备份：{}",
+                id, field, e
+            ))
+        })?;
+        row[field] = serde_json::Value::String(plain);
+    }
+    Ok(())
+}
+
 #[derive(Serialize)]
 struct AssetChunk<'a> {
     record: &'static str,
@@ -2266,39 +2307,33 @@ fn write_asset_unchecked(
     Ok(size)
 }
 
-/// 密封版本：逐块用 BEK 做 AEAD 后写入 `asset_sealed`；文件名、明文大小与 SHA-256
-/// 仍随记录保存，供恢复时校验解密结果，密钥错误或分块被替换一律拒绝。
+/// 密封版本：对明文资产逐块用 BEK 做 AEAD 后写入 `asset_sealed`；文件名、明文大小与
+/// SHA-256 仍随记录保存，供恢复时校验解密结果，密钥错误或分块被替换一律拒绝。
 fn write_asset_sealed(
     writer: &mut BundleWriter,
-    root: &Path,
     rel: &str,
+    plain: &[u8],
     bek: &[u8; 32],
     backup_id: &str,
 ) -> AppResult<u64> {
     safe_asset_rel(rel)?;
-    let abs = root.join(rel);
-    let (size, sha) = hash_file(&abs)?;
-    let mut file = File::open(&abs)?;
-    let mut chunk = 0u32;
+    let size = plain.len() as u64;
+    let mut hasher = Sha256::new();
+    hasher.update(plain);
+    let sha = sha_hex(hasher);
+    let mut chunks = plain.chunks(ASSET_CHUNK_BYTES).enumerate();
     let mut emitted = false;
-    loop {
-        let mut buf = vec![0u8; ASSET_CHUNK_BYTES];
-        let n = file.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        buf.truncate(n);
-        let aad = sealed_asset_aad(backup_id, rel, chunk);
-        let sealed = backup_crypto::seal_section(bek, &aad, &buf)?;
+    for (chunk, buf) in chunks.by_ref() {
+        let aad = sealed_asset_aad(backup_id, rel, chunk as u32);
+        let sealed = backup_crypto::seal_section(bek, &aad, buf)?;
         writer.line(&SealedAssetChunk {
             record: "asset_sealed",
             path: rel,
             size,
             sha256: &sha,
-            chunk,
+            chunk: chunk as u32,
             sealed: &sealed,
         })?;
-        chunk += 1;
         emitted = true;
     }
     if !emitted {
@@ -2593,6 +2628,15 @@ fn write_bundle_inner(
             }
 
             if let Some(created) = sealed_clipboard.as_ref() {
+                // 密封包要能换机恢复：正文/HTML 在封入 BEK 前必须先解掉本机 CEK。
+                // 解不开（密钥缺失）时直接失败，绝不把不可移植的密文写进备份。
+                for entry in &mut sealed_tables {
+                    if entry.table == "clipboard_items" {
+                        for row in &mut entry.rows {
+                            plaintext_item_fields(row)?;
+                        }
+                    }
+                }
                 // 明文行只在内存里聚合，落盘前整体 AEAD 加密；AAD 绑定备份 ID 与段名。
                 let payload = serde_json::to_vec(&SealedClipboardPayload {
                     tables: sealed_tables,
@@ -2613,34 +2657,57 @@ fn write_bundle_inner(
             // 快速备份只打包被导出条目引用的资产，绝不恢复出无文件的剪贴板行。
             let mut assets = 0usize;
             let mut asset_bytes = 0u64;
-            let mut asset_paths: Vec<String> = Vec::new();
+            let mut asset_rows: Vec<(String, String, String)> = Vec::new();
             {
                 let sql = if kind.is_full() {
-                    "SELECT path FROM clipboard_assets ORDER BY path".to_string()
+                    "SELECT item_id, role, path FROM clipboard_assets ORDER BY path".to_string()
                 } else {
                     format!(
-                        "SELECT path FROM clipboard_assets WHERE item_id IN ({}) ORDER BY path",
+                        "SELECT item_id, role, path FROM clipboard_assets WHERE item_id IN ({}) ORDER BY path",
                         quick_item_sql()
                     )
                 };
                 let mut stmt = tx.prepare(&sql)?;
-                let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+                let rows = stmt.query_map([], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                    ))
+                })?;
                 for row in rows {
-                    asset_paths.push(row?);
+                    asset_rows.push(row?);
                 }
             }
             if let Some(root) = sources.clipboard_dir {
-                for rel in &asset_paths {
-                    // 剪贴板段加密时，图片字节也必须在 BEK 下；否则关掉本地加密开关的
-                    // 用户仍会把明文 PNG 带进「加密备份」。
+                for (item_id, role, rel) in &asset_rows {
+                    // 剪贴板段加密时，图片字节也必须在 BEK 下，且必须是可移植明文：
+                    // 本机 CEK 容器先解出 PNG，再按 BEK 分块密封。
                     let written = match sealed_clipboard.as_ref() {
-                        Some(created) => write_asset_sealed(
-                            &mut writer,
-                            root,
-                            rel,
-                            &created.bek,
-                            &created.envelope.backup_id,
-                        ),
+                        Some(created) => {
+                            let abs = root.join(rel);
+                            let stored = std::fs::read(&abs).map_err(|e| {
+                                AppError::Validation(format!(
+                                    "剪贴板资产缺失或不可读（{}）：{}",
+                                    rel, e
+                                ))
+                            })?;
+                            let aad = secure::item_asset_aad(item_id, role);
+                            let plain = secure::decrypt_blob_if_encrypted(&aad, &stored)
+                                .map_err(|e| {
+                                    AppError::Validation(format!(
+                                        "剪贴板资产 {} 无法解密为可移植备份: {}",
+                                        rel, e
+                                    ))
+                                })?;
+                            write_asset_sealed(
+                                &mut writer,
+                                rel,
+                                &plain,
+                                &created.bek,
+                                &created.envelope.backup_id,
+                            )
+                        }
                         None => write_asset(&mut writer, root, rel),
                     };
                     match written {
@@ -2656,10 +2723,10 @@ fn write_bundle_inner(
                         }
                     }
                 }
-            } else if !asset_paths.is_empty() {
+            } else if !asset_rows.is_empty() {
                 return Err(AppError::Validation(format!(
                     "备份缺少剪贴板资产目录，无法打包 {} 个图片文件",
-                    asset_paths.len()
+                    asset_rows.len()
                 )));
             }
             counts.insert("assets".into(), assets as i64);
@@ -2841,12 +2908,9 @@ fn write_bundle_inner(
             }
             counts.insert("voice_assets".into(), voice_assets.len() as i64);
             counts.insert("voice_asset_bytes".into(), voice_bytes as i64);
-            // 资产总量 = 剪贴板 + 暂存架 + 语音包（读取端按 staged 全量核对）。
-            counts.insert("assets".into(), (assets + shelf_count + voice_assets.len()) as i64);
-            counts.insert(
-                "asset_bytes".into(),
-                (asset_bytes + shelf_bytes_total + voice_bytes) as i64,
-            );
+            // 各命名空间分开计数：暂存架/语音/协作资产有自己的键，读取端按类别核对。
+            counts.insert("assets".into(), assets as i64);
+            counts.insert("asset_bytes".into(), asset_bytes as i64);
 
             let mut archives = 0usize;
             let mut archive_bytes = 0u64;
@@ -3974,8 +4038,12 @@ fn read_bundle_impl(
             }
         }
         // 计数只针对剪贴板资产：暂存架/语音/协作资产各有独立命名空间与独立计数键。
+        // 旧版本写入端曾把三类资产合并进 `assets`/`asset_bytes`（读取端仍按分类核对），
+        // 这里同时接受该历史口径，避免旧备份在升级后被判损坏。
         let advertised = counts.get("assets").and_then(|v| v.as_i64()).unwrap_or(-1);
-        if advertised >= 0 && advertised != clip_assets.len() as i64 {
+        let all_asset_count = (clip_assets.len() + shelf_staged.len() + voice_staged.len()) as i64;
+        if advertised >= 0 && advertised != clip_assets.len() as i64 && advertised != all_asset_count
+        {
             return Err(AppError::Validation(format!(
                 "资产数量与完整性记录不一致：期望 {}，实际 {}",
                 advertised,
@@ -3987,7 +4055,11 @@ fn read_bundle_impl(
             .and_then(|v| v.as_u64())
             .unwrap_or(u64::MAX);
         let actual_bytes: u64 = clip_assets.iter().map(|a| a.size).sum();
-        if advertised_bytes != u64::MAX && advertised_bytes != actual_bytes {
+        let all_asset_bytes: u64 = staged_assets.iter().map(|a| a.size).sum();
+        if advertised_bytes != u64::MAX
+            && advertised_bytes != actual_bytes
+            && advertised_bytes != all_asset_bytes
+        {
             return Err(AppError::Validation(format!(
                 "资产总字节与完整性记录不一致：期望 {}，实际 {}",
                 advertised_bytes, actual_bytes
@@ -4156,6 +4228,117 @@ pub fn commit_assets(staged: &[StagedAsset], target_root: &Path) -> AppResult<us
         moved += 1;
     }
     Ok(moved)
+}
+
+/// 把备份里的剪贴板正文/图片归一到本机静态加密形态（恢复提交前调用）。
+///
+/// 本机开关开启时：正文/HTML 按条目 AAD 重新加密，图片重写为 CEK 容器并更新暂存记录的
+/// 大小与 SHA-256，保证计划/日志校验的是最终落盘字节；备份里的旧容密文先按本机 CEK
+/// 解密（跨机无密钥时 fail-closed，明确提示需重新生成可移植备份）。开关关闭时保持原样。
+pub fn normalize_clipboard_for_restore(db: &Db, read: &mut ReadBackup) -> AppResult<()> {
+    let settings = crate::db::Settings::load(db)?;
+    if !settings.clipboard_encrypt_history {
+        return Ok(());
+    }
+    let key = secure::cek(db)?;
+
+    let items_path = read.rows_dir.join("clipboard_items.jsonl");
+    if items_path.exists() {
+        let tmp = read.rows_dir.join(".clipboard_items.normalized.jsonl");
+        {
+            let file = File::open(&items_path)?;
+            let reader = BufReader::new(file);
+            let mut out = BufWriter::new(File::create(&tmp)?);
+            for line in reader.lines() {
+                let line = line?;
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let mut row: serde_json::Value = serde_json::from_str(&line).map_err(|e| {
+                    AppError::Validation(format!("剪贴板条目暂存行损坏: {}", e))
+                })?;
+                let id = row
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                for field in ["text", "html"] {
+                    let stored = row
+                        .get(field)
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    let aad = secure::item_field_aad(&id, field);
+                    let plain = if secure::is_encrypted_field(&stored) {
+                        secure::decrypt_field(&key, &aad, &stored).map_err(|e| {
+                            AppError::Validation(format!(
+                                "备份中剪贴板条目 {} 的 {} 使用其他设备的密钥加密，无法恢复：{}",
+                                id, field, e
+                            ))
+                        })?
+                    } else {
+                        stored
+                    };
+                    row[field] = serde_json::Value::String(secure::encrypt_field(
+                        &key, &aad, &plain,
+                    )?);
+                }
+                serde_json::to_writer(&mut out, &row).map_err(|e| {
+                    AppError::Validation(format!("剪贴板条目暂存行写回失败: {}", e))
+                })?;
+                out.write_all(b"\n")?;
+            }
+            out.flush()?;
+        }
+        std::fs::remove_file(&items_path)?;
+        std::fs::rename(&tmp, &items_path)?;
+    }
+
+    // 资产行给出 path → (item_id, role)，用于按 AAD 重加密暂存图片。
+    let mut by_rel: HashMap<String, (String, String)> = HashMap::new();
+    for_each_spilled_row(&read.rows_dir, "clipboard_assets", |_, row| {
+        let path = row
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let item_id = row
+            .get("item_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let role = row.get("role").and_then(|v| v.as_str()).unwrap_or_default();
+        if !path.is_empty() && !item_id.is_empty() && !role.is_empty() {
+            by_rel.insert(path.to_string(), (item_id.to_string(), role.to_string()));
+        }
+        Ok(())
+    })?;
+
+    for asset in &mut read.assets {
+        if asset.path.as_os_str().is_empty()
+            || asset.rel.starts_with("shelf/")
+            || asset.rel.starts_with("voice/")
+            || asset.rel.starts_with("collab/")
+        {
+            continue;
+        }
+        let Some((item_id, role)) = by_rel.get(&asset.rel) else {
+            continue;
+        };
+        let stored = std::fs::read(&asset.path)?;
+        let aad = secure::item_asset_aad(item_id, role);
+        let plain = secure::decrypt_blob_if_encrypted(&aad, &stored).map_err(|e| {
+            AppError::Validation(format!(
+                "备份中剪贴板图片 {} 无法解密（可能来自其他设备）：{}",
+                asset.rel, e
+            ))
+        })?;
+        let cipher = secure::encrypt_bytes(&key, &aad, &plain)?;
+        std::fs::write(&asset.path, &cipher)?;
+        let mut hasher = Sha256::new();
+        hasher.update(&cipher);
+        asset.size = cipher.len() as u64;
+        asset.sha256 = sha_hex(hasher);
+    }
+    Ok(())
 }
 
 /// 把单个文件复制到目标（恢复前把将被覆盖的资产/归档留底）。
@@ -5768,6 +5951,164 @@ mod tests {
         assert_eq!(bundle_meta(&plain_sealed).unwrap()["clipboard_recovery_slot"], false);
         assert!(read_bundle_with_secrets(&plain_sealed, &dir.join("no-rc"), None, Some(&recovery))
             .is_err());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn sealed_bundle_exports_portable_plaintext_from_encrypted_source() {
+        let dir = temp_dir("sealed-portable");
+        let root = dir.join("clipboard");
+        let db = memdb();
+        seed_clipboard(&db, &root);
+        db.set_setting("clipboard_encrypt_history", serde_json::json!(true))
+            .unwrap();
+        let key = secure::cek(&db).unwrap();
+        db.with_conn(|c| {
+            let text =
+                secure::encrypt_field(&key, &secure::item_field_aad("i1", "text"), "PORTABLE-BODY")
+                    .unwrap();
+            c.execute(
+                "UPDATE clipboard_items SET text=?1, html=?2 WHERE id='i1'",
+                rusqlite::params![
+                    text,
+                    secure::encrypt_field(&key, &secure::item_field_aad("i1", "html"), "")
+                        .unwrap()
+                ],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        // 原图按真实存储形态写成 CEK 容器
+        let png = b"\x89PNG\r\n\x1a\nimage-bytes-12345";
+        let container =
+            secure::encrypt_bytes(&key, &secure::item_asset_aad("i1", "image"), png).unwrap();
+        std::fs::write(root.join("images/i1.png"), &container).unwrap();
+
+        let target = dir.join("portable.json");
+        write_bundle_sealed(
+            &db,
+            BackupSources {
+                archive_dir: None,
+                clipboard_dir: Some(&root),
+                shelf_dir: None,
+                data_dir: None,
+            },
+            &target,
+            BackupKind::Full,
+            "correct horse battery",
+        )
+        .unwrap();
+        let raw = std::fs::read_to_string(&target).unwrap();
+        assert!(!raw.contains("tdcl1:"), "备份不应保留本机 CEK 字段密文");
+        let container_b64 =
+            base64::engine::general_purpose::STANDARD.encode(&container);
+        assert!(
+            !raw.contains(&container_b64),
+            "备份不应保留本机图片容器密文"
+        );
+        let png_b64 = base64::engine::general_purpose::STANDARD.encode(png);
+        assert!(!raw.contains(&png_b64), "图片字节必须封在 BEK 密文内");
+
+        let read = read_bundle_with_secret(
+            &target,
+            &dir.join("portable-read"),
+            Some("correct horse battery"),
+        )
+        .unwrap();
+        let rows = spilled_rows(&read, "clipboard_items");
+        assert_eq!(rows[0]["text"], "PORTABLE-BODY");
+        assert_eq!(read.assets.len(), 2);
+        assert_eq!(
+            std::fs::read(&read.assets[0].path).unwrap(),
+            b"\x89PNG\r\n\x1a\nimage-bytes-12345"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn sealed_bundle_restores_into_encrypted_target_with_local_reencryption() {
+        let dir = temp_dir("sealed-encrypted-target");
+        let root = dir.join("clipboard");
+        let db = memdb();
+        seed_clipboard(&db, &root);
+        db.with_conn(|c| {
+            c.execute(
+                "UPDATE clipboard_items SET text='PLAIN-RESTORE' WHERE id='i1'",
+                [],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        let target = dir.join("portable.json");
+        write_bundle_sealed(
+            &db,
+            BackupSources {
+                archive_dir: None,
+                clipboard_dir: Some(&root),
+                shelf_dir: None,
+                data_dir: None,
+            },
+            &target,
+            BackupKind::Full,
+            "correct horse battery",
+        )
+        .unwrap();
+
+        let dest = memdb();
+        dest.set_setting("clipboard_encrypt_history", serde_json::json!(true))
+            .unwrap();
+        let mut read = read_bundle_with_secret(
+            &target,
+            &dir.join("dest-read"),
+            Some("correct horse battery"),
+        )
+        .unwrap();
+        normalize_clipboard_for_restore(&dest, &mut read).unwrap();
+
+        // 1) 暂存行已按目标机 CEK 重加密，且解密回原文
+        let rows = spilled_rows(&read, "clipboard_items");
+        let stored = rows[0]["text"].as_str().unwrap();
+        assert!(secure::is_encrypted_field(stored), "恢复暂存行必须已加密");
+        assert_eq!(
+            secure::decrypt_if_encrypted(
+                &secure::item_field_aad("i1", "text"),
+                stored
+            )
+            .unwrap(),
+            "PLAIN-RESTORE"
+        );
+        // 2) 暂存图片已重写为目标机容器，字节可解密回原图
+        let image = read
+            .assets
+            .iter()
+            .find(|a| a.rel == "images/i1.png")
+            .unwrap();
+        let bytes = std::fs::read(&image.path).unwrap();
+        assert!(secure::is_encrypted_blob(&bytes), "恢复暂存图片必须已加密");
+        let plain = secure::decrypt_blob_if_encrypted(
+            &secure::item_asset_aad("i1", "image"),
+            &bytes,
+        )
+        .unwrap();
+        assert_eq!(&plain[..], b"\x89PNG\r\n\x1a\nimage-bytes-12345");
+
+        // 3) 导入目标库后字段保持密文，读取侧可解
+        import_read(&dest, &read).unwrap();
+        let text: String = dest
+            .with_conn(|c| {
+                c.query_row("SELECT text FROM clipboard_items WHERE id='i1'", [], |r| r.get(0))
+                    .map_err(AppError::from)
+            })
+            .unwrap();
+        assert!(secure::is_encrypted_field(&text));
+        assert_eq!(
+            secure::decrypt_if_encrypted(&secure::item_field_aad("i1", "text"), &text).unwrap(),
+            "PLAIN-RESTORE"
+        );
+        let restored_root = dir.join("clipboard-restored");
+        assert_eq!(commit_assets(&read.assets, &restored_root).unwrap(), 2);
+        let restored = std::fs::read(restored_root.join("images/i1.png")).unwrap();
+        assert!(secure::is_encrypted_blob(&restored));
         std::fs::remove_dir_all(dir).ok();
     }
 
