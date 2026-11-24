@@ -43,6 +43,7 @@ Get-Content docs/ARCHITECTURE.md | Select-Object -Skip <起始行减一> -First 
 | 页面弹层定位 | [定位规范](architecture/ui/global-popup-positioning-standard.md)；[审计](architecture/ui/global-popup-positioning-audit.md) 记录实施分类 |
 | 页面按需加载、后台服务生命周期 | [ON_DEMAND_LOADING](ON_DEMAND_LOADING.md) |
 | 文件工作区 | [需求](features/files-workspace.md)、[架构](architecture/files-workspace.md)、[验收](acceptance/files-workspace.md)；按任务选读 |
+| 候选包构建、安装包载荷一致性 | [说明](architecture/candidate-build-payload-consistency.md)；命令 `npm run build:candidate` / `verify:candidate` |
 | 剪贴板 | `docs/clipboard/` 下按安全、架构、测试专题检索；总览在 ARCHITECTURE「智能剪贴板」 |
 | Agent 接入与导航 | [适配器](AGENT_ADAPTERS.md)、[覆盖矩阵](../AGENT_COVERAGE_MATRIX.md)、[导航矩阵](../APP_NAVIGATION_MATRIX.md) |
 | Agent 工作空间 | [模块索引](agent-workspace/README.md)；设计与已实现状态分别核对 |

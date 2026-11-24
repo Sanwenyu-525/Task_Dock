@@ -24,6 +24,8 @@ dist/
 src-tauri/target/
 src-tauri/target-*/
 src-tauri/gen/
+# 候选包构建互斥锁（scripts/build-candidate.mjs）
+/.build-candidate.lock
 
 # Python bytecode cache
 __pycache__/
