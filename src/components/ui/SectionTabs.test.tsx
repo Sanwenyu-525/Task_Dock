@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SectionTabItem } from "./SectionTabs";
 
 import SectionTabs from "./SectionTabs";
+import sectionCss from "./section-navigation.css?raw";
 
 afterEach(cleanup);
 
@@ -127,5 +128,26 @@ describe("SectionTabs", () => {
     );
     expect(screen.getByRole("tab", { name: "上下文" }).getAttribute("tabindex")).toBe("0");
     expect(screen.getByRole("tab", { name: "知识库" }).getAttribute("tabindex")).toBe("-1");
+  });
+
+  it("选中底块由全局滑动指示条承担，指示条不占 tab 语义", () => {
+    renderTabs();
+    const list = screen.getByRole("tablist", { name: "能力中心" });
+    expect(list.getAttribute("data-nav-kind")).toBe("tabs");
+    const pill = list.querySelector(".ui-tab-pill");
+    expect(pill).not.toBeNull();
+    expect(pill!.getAttribute("data-variant")).toBe("raised");
+    expect(pill!.getAttribute("aria-hidden")).toBe("true");
+    // 指示条不是 tab，不会混进 roving tabindex 的候选集合
+    expect(screen.getAllByRole("tab")).toHaveLength(4);
+  });
+
+  it("项自身不再铺选中底色（否则会盖住指示条）", () => {
+    const tabsRule = [...sectionCss.matchAll(/([^{}]+)\{([^{}]*)\}/g)].find((m) =>
+      m[1].includes('[data-nav-kind="tabs"]') && m[1].includes("is-active"),
+    );
+    expect(tabsRule).toBeDefined();
+    expect(tabsRule![2]).toMatch(/background:\s*transparent/);
+    expect(tabsRule![2]).toMatch(/box-shadow:\s*none/);
   });
 });

@@ -1,0 +1,79 @@
+/*
+ * 横向 tab 的公共滑动指示条（2026-11-24）。
+ *
+ * 这里是**动画层**，不定义轨道/项的外观：任何 `role="tablist"` 容器只要
+ *   - 由调用方 `useTabStrip` 挂上 `data-tab-pill="ready"` 与几何变量，
+ *   - 渲染一个 `<span {...pillProps} />`，
+ * 选中底块就会在项之间滑动，而不是瞬时换底色。
+ *
+ * 几何变量（由 useTabStrip 测量写入，单位 px）：
+ *   --ui-tab-pill-x 相对轨道 padding 边的左边
+ *   --ui-tab-pill-y 相对轨道 padding 边的上边
+ *   --ui-tab-pill-w / --ui-tab-pill-h 宽高（跟随项宽度，不假设等宽）
+ *
+ * 轨道自己的选中态必须**只保留文字色**：底色/边框/投影由指示条画。
+ * 否则项自己的底色会盖住指示条，动画就看不见了。
+ */
+
+[data-tab-pill] {
+  position: relative;
+}
+
+/* 指示条在项下层，且不参与命中测试；项统一抬到 z-index 1。 */
+[data-tab-pill="ready"] > :not(.ui-tab-pill) {
+  position: relative;
+  z-index: 1;
+}
+
+.ui-tab-pill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 0;
+  width: var(--ui-tab-pill-w, 0px);
+  height: var(--ui-tab-pill-h, 0px);
+  border-radius: calc(var(--radius-control) - 2px);
+  transform: translate3d(
+    var(--ui-tab-pill-x, 0px),
+    var(--ui-tab-pill-y, 0px),
+    0
+  );
+  /* 首帧测量前不画，避免从左上角滑入。 */
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    transform 180ms cubic-bezier(0.2, 0, 0, 1),
+    width 180ms cubic-bezier(0.2, 0, 0, 1),
+    height 180ms cubic-bezier(0.2, 0, 0, 1),
+    background-color 180ms ease,
+    border-color 180ms ease;
+}
+
+[data-tab-pill="ready"] > .ui-tab-pill {
+  visibility: visible;
+}
+
+/* 抬升面：SectionTabs（内容面板切换）的选中态。 */
+.ui-tab-pill[data-variant="raised"] {
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+
+/* 主题色轻底：如剪贴板侧栏「历史 / 分组」这类窄轨道。 */
+.ui-tab-pill[data-variant="accent"] {
+  background: var(--accent-soft);
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border-subtle));
+}
+
+/* 分段控件色：预留给后续从 `.seg-group` 迁移过来的轨道。 */
+.ui-tab-pill[data-variant="seg"] {
+  background: var(--pill-active-face);
+  box-shadow: var(--pill-active-shadow);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-tab-pill {
+    transition: none;
+  }
+}

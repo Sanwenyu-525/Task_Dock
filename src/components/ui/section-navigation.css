@@ -7,6 +7,7 @@
  */
 
 .section-nav {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 2px;
@@ -59,6 +60,21 @@
   border-color: var(--border-subtle);
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
   font-weight: var(--font-weight-medium, 600);
+}
+
+/* 内容面板切换（SectionTabs）：选中底块改由全局滑动指示条画
+   （useTabStrip + tab-strip.css），项自身只保留文字色与字重，
+   否则项自己的底色会盖住指示条、滑动动画看不见。
+   模块导航（SectionNavigation，aria-current）不走这条规则，保持原选中面。 */
+.section-nav[data-nav-kind="tabs"] .section-nav-item.is-active {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+/* 选中项的 hover 不再铺灰，避免盖住指示条。 */
+.section-nav[data-nav-kind="tabs"] .section-nav-item:not(.is-active):hover {
+  background: var(--surface-hover);
 }
 
 .section-nav-item:disabled {

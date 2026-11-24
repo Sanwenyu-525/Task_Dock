@@ -44,3 +44,10 @@ export {
   type SectionNavItem,
   type SectionNavigationProps,
 } from "./SectionNavigation";
+export {
+  useTabStrip,
+  type TabStripHandle,
+  type TabStripOptions,
+  type TabStripPillProps,
+  type TabStripVariant,
+} from "./useTabStrip";

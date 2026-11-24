@@ -759,14 +759,14 @@ portal 到 body，注册弹层栈 modal 层：Escape 只关灯箱，z 序在抽�
 
 - 布局：`.clip-side-sections` 由纵向堆叠改为两列 grid（`repeat(2, minmax(0, 1fr))`），
   两个入口并排一行，侧栏少占一行高度；文字超出用省略号，计数用 `tabular-nums` 对齐。
-- 选中态：底色与描边改由一条**可滑动的指示条** `.clip-side-indicator` 负责。容器用
-  `--clip-tab-index`（历史 0 / 分组 1）驱动
-  `transform: translateX(calc(var(--clip-tab-index) * (100% + 3px)))`，过渡 180ms
-  `cubic-bezier(.2,0,0,1)`；按钮自身 `background: transparent`（否则会盖住指示条、
-  动画不可见），只有 `.active` 保留文字色；指示条 `pointer-events: none`，不抢点击。
-- 减少动效：`@media (prefers-reduced-motion: reduce)` 内直接 `transition: none`。
-- 回归：新增 `clipboard-page.nav.test.ts` 守卫四条结构约束（两列 grid + 定位基准、
-  指示条位移与过渡、选中按钮不自铺底色、减少动效关过渡），读 CSS 断言避免只改类名。
+- 选中态：底色与描边由**全局滑动指示条**画（`components/ui/useTabStrip` + `components/ui/tab-strip.css`，
+  变体 `accent`），本页不再有 `.clip-side-indicator` / `--clip-tab-index` 之类的私有动画实现；
+  按钮自身 `background: transparent`（否则会盖住指示条、动画不可见），`.active` 只保留文字色；
+  指示条 `pointer-events: none`，不抢点击。
+- 减少动效：全局动画层统一 `@media (prefers-reduced-motion: reduce) { transition: none }`，本页不再重复。
+- 回归：`clipboard-page.nav.test.ts` 守三条结构约束（两列 grid + 定位基准、选中按钮不自铺底色、
+  页面 CSS 里不能再出现第二套指示条/索引变量）；指示条自身的几何与过渡由
+  `src/components/ui/useTabStrip.test.tsx` 守卫。
 
 ### 14.11 分组卡片内图片仍显虚：分辨率边界（2026-11-24）
 

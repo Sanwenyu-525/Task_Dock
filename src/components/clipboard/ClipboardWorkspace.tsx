@@ -64,6 +64,7 @@ import { ConfirmDialog } from "../ui/Dialog";
 import DropdownMenu from "../ui/DropdownMenu";
 import EmptyState from "../ui/EmptyState";
 import SearchField from "../ui/SearchField";
+import { useTabStrip } from "../ui/useTabStrip";
 import ClipboardGroupCard from "./ClipboardGroupCard";
 import ClipboardGroupDetail from "./ClipboardGroupDetail";
 import ClipboardItemCard from "./ClipboardItemCard";
@@ -165,6 +166,11 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
   const view = useClipboardStore((s) => s.view);
   const filters = useClipboardStore((s) => s.filters);
   const section = useClipboardStore((s) => s.section);
+  // 侧栏「历史 / 分组」的选中底块走全局滑动指示条（useTabStrip），
+  // 与 SectionTabs 共用同一套动画与 reduced-motion 处理。
+  const { stripRef: sideTabsRef, pillProps: sideTabsPill } = useTabStrip<HTMLDivElement>(section, {
+    variant: "accent",
+  });
   const searchText = useClipboardStore((s) => s.searchText);
   const loading = useClipboardStore((s) => s.loading);
   const loadingMore = useClipboardStore((s) => s.loadingMore);
@@ -1697,11 +1703,9 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
                 className="clip-side-sections"
                 role="tablist"
                 aria-label="剪贴板视图"
-                // 指示条位置只受当前视图影响：CSS 用这个索引做位移动画，
-                // 切换时不再瞬时换底色。
-                style={{ "--clip-tab-index": section === "groups" ? 1 : 0 } as React.CSSProperties}
+                ref={sideTabsRef}
               >
-                <span className="clip-side-indicator" aria-hidden="true" />
+                <span {...sideTabsPill} />
                 <button
                   role="tab"
                   aria-selected={section === "items"}

@@ -70,6 +70,39 @@ Active（raised 底 + accent 文字 + 1px 内描边 + 轻投影 + 加粗）→
 Focus（focus-ring，仅键盘）→ Disabled（灰字、无底、不可聚焦激活）。
 Loading 属于页面职责（如工作空间 `ws-tab-loading` 指示条），不在导航项内做 spin。
 
+### 3.4 选中底块的滑动动画（全局横向 tab 动画层，2026-11-24）
+
+选中底块不再由项自身绘制，而是由一条**可滑动指示条**画：切换 tab 时底块从旧项滑到
+新项（180ms `cubic-bezier(.2,0,0,1)`），而不是两张底色瞬间互换。
+
+实现分两层，禁止任一使用方再写一套私有动画：
+
+| 层 | 文件 | 职责 |
+|---|---|---|
+| 动画层（全局） | `src/components/ui/tab-strip.css` | `.ui-tab-pill` 的绘制、位移/尺寸过渡、`prefers-reduced-motion` 关闭过渡 |
+| 测量层（全局） | `src/components/ui/useTabStrip.ts` | 量选中项几何 → 写 `--ui-tab-pill-{x,y,w,h}` → 挂 `data-tab-pill="ready"` |
+
+用法（任何 `role="tablist"` 轨道都适用，不限于本规范的两个组件）：
+
+```tsx
+const { stripRef, pillProps } = useTabStrip(activeId, { variant: "raised" });
+<div ref={stripRef} role="tablist" aria-label="…"><span {...pillProps} /> …</div>
+```
+
+约束：
+
+- **不假设等宽**：几何取自选中项真实 `offsetLeft/offsetWidth`，文字长短、图标有无、
+  计数变化都不会错位；容器或项尺寸变化由 `ResizeObserver` 重测。
+- 首帧在 `useLayoutEffect` 里同步定位（`visibility: hidden` 直到测量完成），不会有
+  「从左上角滑入」的入场动画。
+- 使用方的选中态必须**只保留文字色/字重**（`.section-nav[data-nav-kind="tabs"]`
+  已按此收口）；项自己的底色会盖住指示条，动画就看不见了。
+- 指示条 `z-index: 0` + `pointer-events: none`，项统一抬到 `z-index: 1`，不抢点击与焦点。
+- 变体只换外观不换行为：`raised`（SectionTabs 抬升白面）/ `accent`（主题色轻底，
+  如剪贴板侧栏导航）/ `seg`（预留：分段控件色，未来从 `.seg-group` 迁移时使用）。
+- **语义边界不变**：§2 口诀仍成立，分段控件（`.seg-group`）不是内容面板切换，
+  不因为有了动画就改成 tablist；它们要动画时按各自页面迁移并登记。
+
 ## 4. 组件 API
 
 ```tsx
@@ -101,6 +134,8 @@ interface SectionNavigationProps {
 实现约束：
 
 - 两组件共享 `section-navigation.css` 与 `sectionNavKeyboard.ts` 的索引推进函数；键盘行为各自内置。
+- 选中底块不内置私有动画：`SectionTabs` 通过全局 `useTabStrip`（§3.4）绘制，
+  `SectionNavigation` 仍由项自身铺选中面（导航不是横向 tab，不参与滑动）。
 - 轨道 `width: fit-content; max-width: 100%`；**不做全宽拉伸**，右侧操作区（如工作空间「布局」
   按钮）由页面容器（flex + spacer）并排放置，不进入导航组件。
 - `items` 来自页面既有数据结构（如工作空间 `navGroups`/`modules`），组件不做任何业务排序/过滤。
@@ -166,7 +201,7 @@ history / collab / workbench。判定依据 §2 口诀；下表只列命中页�
 | P1 | `diagnostics/DiagnosticsCenterPanel.tsx` 1095-1125 | `diag-tabs`（seg-group）切 runtime/security/performance | 迁移 SectionTabs（与能力中心同型） |
 | P1 | `collection/CollectionPanel.tsx` 42-70 | seg-group 切 inbox/shelf/notes 子页 | 迁移 SectionTabs |
 | P2 | `collab/CollabPanel.tsx` 468-487 | seg-group subtle 切需求/Bug/方案/可视化（aria-pressed 语义不符） | 迁移 SectionTabs 并修正语义 |
-| P2 | `clipboard/ClipboardWorkspace.tsx` 1608-1631 | `clip-side-sections` 侧栏切历史/分组 | 迁移 SectionTabs |
+| P2 | `clipboard/ClipboardWorkspace.tsx` 1608-1631 | `clip-side-sections` 侧栏切历史/分组 | 迁移 SectionTabs；2026-11-24 已接入全局指示条（§3.4），轨道仍是侧栏两列 + 计数徽标，迁移前需让 SectionTabs 支持尾部计数 |
 | P2 | `resource/ResourceManagementPanel.tsx` 288-313 | 垂直栏 + 完整 roving 键盘 | 迁移 SectionTabs 前需评估垂直布局支持（当前组件为横向轨道） |
 | P3 | `files/FilesWorkspacePanel.tsx` 2032-2050 | `fw-source-switch` 文件/回收站整页切换 | 可迁移；也可按「源切换」保留 |
 
@@ -184,4 +219,20 @@ history / collab / workbench。判定依据 §2 口诀；下表只列命中页�
   TaskItem aria-current）：非导航语义。
 
 迁移任一待迁移项时：先跑该面板既有测试，迁移后按 §7 治理规则登记到 §9.1。
+
+## 10. 横向 tab 动画抽全局（2026-11-24）
+
+| 项 | 结果 |
+|---|---|
+| 新增全局动画层 | `src/components/ui/tab-strip.css`（`.ui-tab-pill`，180ms 位移/尺寸过渡 + reduced-motion 关过渡） |
+| 新增全局测量层 | `src/components/ui/useTabStrip.ts`（测量选中项 → 写 `--ui-tab-pill-{x,y,w,h}` → 挂 `data-tab-pill="ready"`；`ResizeObserver` 重测；无选中项时摘标记） |
+| 自动获得动画 | `SectionTabs`（variant `raised`）→ 能力中心、Agent 接入、项目中枢数据来源、项目中枢内部视图四个面板全部生效；轨道加 `data-nav-kind="tabs"` 与选中态收口规则 |
+| 主动接入 | 剪贴板侧栏「历史 / 分组」（variant `accent`）；页面 CSS 删除私有 `.clip-side-indicator` 与 `--clip-tab-index` |
+| 回归 | `useTabStrip.test.tsx`（几何注入验证等宽/不等宽、无选中项、enabled、变体 + CSS 结构守卫）；`SectionTabs.test.tsx` 增加指示条与选中态收口两例；`clipboard-page.nav.test.ts` 守卫「只有一套动画来源」 |
+| 未动 | §9.2/§9.3 登记的 `seg-group` 与编辑器内部 Tab：语义不同，按 §2 口诀逐个迁移，本次不批量改 |
+
+ADR 取舍：没有把指示条做成 `SectionTabs` 内部私有实现，而是独立 hook + CSS 双层，
+原因是后续 `clip-side-sections` 这类「轨道外观不同但动画要一致」的用例必须能复用，
+否则会重新长出第二套私有动画（本次之前的 `.clip-side-indicator` 就是例子）。
+
 

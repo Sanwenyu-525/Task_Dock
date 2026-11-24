@@ -8,9 +8,10 @@
 //! 面板由调用方渲染并保持 ID 关联：
 //!   id={`${idPrefix}-panel-${id}`} role="tabpanel" aria-labelledby={`${idPrefix}-tab-${id}`}
 
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect } from "react";
 import type { ComponentType } from "react";
 import { isNavKey, nextNavIndex } from "./sectionNavKeyboard";
+import { useTabStrip } from "./useTabStrip";
 import "./section-navigation.css";
 
 export interface SectionTabItem<T extends string = string> {
@@ -40,14 +41,18 @@ export default function SectionTabs<T extends string = string>({
   className,
   "aria-label": ariaLabel,
 }: SectionTabsProps<T>) {
-  const listRef = useRef<HTMLDivElement>(null);
+  // 选中底块由全局滑动指示条画（useTabStrip + tab-strip.css），
+  // 轨道本身只保留文字色，两项切换时底块滑过去而不是瞬间换色。
+  const { stripRef, pillProps } = useTabStrip<HTMLDivElement>(activeId, {
+    variant: "raised",
+  });
 
   // 横向溢出时保证选中项可见（窄容器轨道滚动）
   useEffect(() => {
-    listRef.current
+    stripRef.current
       ?.querySelector<HTMLElement>('[aria-selected="true"]')
       ?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  }, [activeId]);
+  }, [activeId, stripRef]);
 
   const onKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLElement>) => {
@@ -72,13 +77,15 @@ export default function SectionTabs<T extends string = string>({
 
   return (
     <div
-      ref={listRef}
+      ref={stripRef}
       role="tablist"
       aria-label={ariaLabel}
       data-size={size}
+      data-nav-kind="tabs"
       className={`section-nav${className ? ` ${className}` : ""}`}
       onKeyDown={onKeyDown}
     >
+      <span {...pillProps} />
       {items.map((item) => {
         const Icon = item.icon;
         const active = item.id === activeId;
