@@ -14,6 +14,7 @@ import type { DropdownMenuItem } from "../ui/DropdownMenu";
 import { useUiStore } from "../../store/useUiStore";
 import type { ShelfGroup, ShelfKind } from "../../lib/bridge";
 import ShelfFilters, { KIND_FILTERS } from "./ShelfFilters";
+import { shelfAddActions } from "./shelfAddActions";
 import "./shelf-ui.css";
 
 export interface ShelfToolbarProps {
@@ -120,39 +121,33 @@ export default function ShelfToolbar({
     });
   };
 
-  const addItems: DropdownMenuItem[] = [
-    { key: "file", label: "添加文件…", onSelect: onPickFiles },
-    { key: "folder", label: "添加文件夹…", onSelect: onPickFolder },
-    { key: "link", label: "添加网页链接…", onSelect: onAddLink },
-    { key: "text", label: "添加文本片段…", onSelect: onAddText },
-    { key: "clip", label: "从剪贴板添加…", onSelect: onAddFromClipboard },
-    {
-      key: "screenshot",
-      label: "暂存剪贴板截图",
-      onSelect: onPasteScreenshot,
-      description: "只保存图片字节；系统截图完成后直接可用",
-    },
-    {
-      key: "mode-label",
-      label: "添加方式",
-      disabled: true,
-      description: "拖入与剪贴板添加同样遵循",
-    },
-    {
-      key: "reference",
-      label: "引用原文件（不复制）",
-      radio: true,
-      checked: !copyOnAdd,
-      onSelect: () => onCopyOnAddChange(false),
-    },
-    {
-      key: "managed",
-      label: "保存副本到托管目录",
-      radio: true,
-      checked: copyOnAdd,
-      onSelect: () => onCopyOnAddChange(true),
-    },
-  ];
+  // 动作清单与列表空白处右键菜单同源（shelfAddActions），这里只负责下拉渲染：
+  // 标题项渲染为禁用项作分组标题，模式项渲染 menuitemradio，其余为普通项。
+  const addItems: DropdownMenuItem[] = shelfAddActions({
+    copyOnAdd,
+    onPickFiles,
+    onPickFolder,
+    onAddLink,
+    onAddText,
+    onAddFromClipboard,
+    onPasteScreenshot,
+    onCopyOnAddChange,
+  }).map((action): DropdownMenuItem =>
+    action.heading
+      ? {
+          key: action.key,
+          label: action.label,
+          description: action.description,
+          disabled: true,
+        }
+      : {
+          key: action.key,
+          label: action.label,
+          description: action.description,
+          ...(action.mode ? { radio: true, checked: action.checked } : {}),
+          onSelect: action.onSelect,
+        },
+  );
 
   const overflowItems: DropdownMenuItem[] = [
     {

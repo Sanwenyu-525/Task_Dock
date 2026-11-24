@@ -848,6 +848,7 @@ Windows 回收站，不新建第二套文件管理或图片存储。
 | 起点 | 行为 | 实现 |
 |---|---|---|
 | 列表/网格空白（含左侧留白、行间距） | 矩形框选 | `src/hooks/useShelfMarquee.ts`（容器 `onPointerDown`） |
+| 列表/网格空白（**右键**） | 「更多添加方式」菜单（与工具栏「添加 ⋯」同源） | `ShelfWorkspace` 容器 `onContextMenu` + `shelfAddActions.ts` |
 | 卡片主体 | Windows OLE 拖出（可拖到其他应用） | `useShelfDragOut`（保持原实现） |
 | 卡片 + **Alt** | 应用内拖入垃圾桶，不进入 OLE | `useShelfInternalDrag.ts`；`useShelfDragOut` 显式忽略 Alt |
 | 勾选框 / 更多菜单 | 切换选择 / 打开菜单 | `data-no-drag` |
@@ -864,6 +865,10 @@ Windows 回收站，不新建第二套文件管理或图片存储。
   取消不提交选择。框选结束 350ms 内的 click 被吞掉，避免清空刚提交的选择。
 - 普通框选替换选择；Ctrl+框选与手势开始时的基准选择做对称差（可增减）。反向拖动、多行、
   列表/网格切换后的坐标都由同一套内容坐标计算；不依赖 HTML5 `draggable`。
+- 空白右键不进入框选手势：打开「更多添加方式」（添加文件/文件夹/链接/文本/剪贴板/截图 +
+  添加方式单选）。动作清单只在 `src/components/shelf/shelfAddActions.ts` 定义一次，工具栏
+  「添加 ⋯」下拉与右键菜单共用同一顺序与文案；卡片右键仍是条目操作菜单，冒泡到列表时按
+  `data-shelf-id` 排除，按钮/输入/链接保留原生行为。
 
 ### 13.2 多选与键盘
 

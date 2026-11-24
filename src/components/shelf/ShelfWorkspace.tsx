@@ -11,11 +11,15 @@
 //! 复制路径/复制文件（CF_HDROP）继续作为键盘可达与失败回退。
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from "react";
+import type {
+  KeyboardEvent as ReactKeyboardEvent,
+  MouseEvent as ReactMouseEvent,
+  ReactNode,
+} from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
-  Clipboard, Copy, CopyCheck, FilterX, FolderInput, HardDrive, Info, Link2, Loader2, Plus, Star,
-  Tag, Trash2, Upload, X,
+  Clipboard, Copy, CopyCheck, FilePlus2, FilterX, FolderInput, FolderPlus, HardDrive,
+  Image as ImageIcon, Info, Link2, Loader2, Plus, Star, Tag, Trash2, Type, Upload, X,
 } from "lucide-react";
 import {
   clipboardCopyText,
@@ -71,7 +75,8 @@ import ShelfToolbar from "./ShelfToolbar";
 import ShelfDetail from "./ShelfDetail";
 import ShelfImageLightbox from "./ShelfImageLightbox";
 import ShelfRecycleDialog from "./ShelfRecycleDialog";
-import ShelfContextMenu from "./ShelfContextMenu";
+import ShelfContextMenu, { type ShelfContextAction } from "./ShelfContextMenu";
+import { shelfAddActions } from "./shelfAddActions";
 import ShelfBatchLinkDialog from "./ShelfBatchLinkDialog";
 import ShelfTagDialog from "./ShelfTagDialog";
 import ShelfDuplicateDialog from "./ShelfDuplicateDialog";
@@ -359,11 +364,13 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
   /** 外部拖拽经过垃圾桶：只在命中时高亮，不影响工具栏布局。 */
   const [externalTrashOver, setExternalTrashOver] = useState(false);
   const trashHitRef = useRef<HTMLDivElement | null>(null);
-  /** 右键菜单：位置 + 本次作用的条目 ID（右键未选中条目时先改为单选）。 */
+  /** 右键菜单：位置 + 本次作用的条目 ID（右键未选中条目时先改为单选）。
+   *  `mode = "add"` 表示列表空白处的「更多添加方式」菜单，不作用于任何条目。 */
   const [contextMenu, setContextMenu] = useState<{
     x: number;
     y: number;
     ids: string[];
+    mode: "items" | "add";
   } | null>(null);
   const selectedIdsRef = useRef(selectedIds);
   selectedIdsRef.current = selectedIds;
@@ -1550,10 +1557,57 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
         selected.includes(item.id) && selected.length > 1 ? selected : [item.id];
       if (!selected.includes(item.id)) selectOnly(item.id);
       setFocusId(item.id);
-      setContextMenu({ x: event.clientX, y: event.clientY, ids });
+      setContextMenu({ x: event.clientX, y: event.clientY, ids, mode: "items" });
     },
     [selectOnly],
   );
+
+  /**
+   * 列表空白处右键：打开与工具栏「更多添加方式」同一套菜单。
+   * 卡片自己的右键菜单优先（卡片事件会冒泡到这里），按钮/输入/链接保持原生行为；
+   * 只有真正的空白（网格行内空位、空态文字区）才拦截。
+   */
+  const openAddContextMenu = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    const target = event.target as Element | null;
+    if (target?.closest?.("[data-shelf-id],button,input,textarea,select,a")) return;
+    event.preventDefault();
+    setContextMenu({ x: event.clientX, y: event.clientY, ids: [], mode: "add" });
+  }, []);
+
+  /** 空白右键菜单项：动作清单与工具栏下拉同源，这里只补图标与单选框样式。 */
+  const addActionsFor = (): ShelfContextAction[] => {
+    const icons: Record<string, ReactNode> = {
+      file: <FilePlus2 size={13} aria-hidden="true" />,
+      folder: <FolderPlus size={13} aria-hidden="true" />,
+      link: <Link2 size={13} aria-hidden="true" />,
+      text: <Type size={13} aria-hidden="true" />,
+      clip: <Clipboard size={13} aria-hidden="true" />,
+      screenshot: <ImageIcon size={13} aria-hidden="true" />,
+    };
+    return shelfAddActions({
+      copyOnAdd,
+      onPickFiles: () => void pickAndAdd(false),
+      onPickFolder: () => void pickAndAdd(true),
+      // 菜单项是「打开该输入」，不跟随工具栏的 toggle：已展开时再次选择不应关掉。
+      onAddLink: () => setLinkOpen(true),
+      onAddText: () => setTextDraft(true),
+      onAddFromClipboard: () => {
+        if (!clipOpen) void toggleClipboardPicker();
+      },
+      onPasteScreenshot: () => void pasteScreenshot(),
+      onCopyOnAddChange: setCopyOnAdd,
+    }).map((action): ShelfContextAction =>
+      action.heading
+        ? { key: action.key, label: action.label, disabled: true, onSelect: () => {} }
+        : {
+            key: action.key,
+            label: action.label,
+            icon: icons[action.key],
+            checked: action.mode ? action.checked : undefined,
+            onSelect: () => action.onSelect?.(),
+          },
+    );
+  };
 
   const onTrashClick = () => {
     if (selectedIdsRef.current.length > 0) {
@@ -2382,6 +2436,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
         ref={listRef}
         tabIndex={0}
         onKeyDown={handleListKeyDown}
+        onContextMenu={openAddContextMenu}
         onPointerDown={(event) => {
           const target = event.target as Element | null;
           if (
@@ -2691,14 +2746,22 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
       />
       <ShelfRulesDialog open={rulesOpen} onClose={() => setRulesOpen(false)} />
 
-      {/* 右键菜单：作用于当前选择集；未选中条目会先改为单选。 */}
+      {/* 右键菜单：卡片/已选集合走条目操作；列表空白处走「更多添加方式」。 */}
       {contextMenu && (
         <ShelfContextMenu
           open
           x={contextMenu.x}
           y={contextMenu.y}
-          label={`条目操作（${contextMenu.ids.length} 项）`}
-          items={contextActionsFor(contextMenu.ids)}
+          label={
+            contextMenu.mode === "add"
+              ? "更多添加方式"
+              : `条目操作（${contextMenu.ids.length} 项）`
+          }
+          items={
+            contextMenu.mode === "add"
+              ? addActionsFor()
+              : contextActionsFor(contextMenu.ids)
+          }
           onClose={() => setContextMenu(null)}
         />
       )}

@@ -500,4 +500,78 @@ describe("右键菜单与键盘", () => {
     // Space 切换当前焦点（b）的选择。
     expect(useShelfStore.getState().selectedIds).toEqual(["a"]);
   });
+
+  it("列表空白处右键打开「更多添加方式」，卡片右键仍是条目操作", async () => {
+    await renderWith([row("a"), row("b")]);
+    const list = screen.getByRole("list", { name: "暂存条目" });
+
+    fireEvent.contextMenu(list, { clientX: 10, clientY: 10 });
+    const addMenu = await screen.findByRole("menu", { name: "更多添加方式" });
+    // 六种添加入口与工具栏下拉同源。
+    for (const label of [
+      "添加文件…",
+      "添加文件夹…",
+      "添加网页链接…",
+      "添加文本片段…",
+      "从剪贴板添加…",
+      "暂存剪贴板截图",
+    ]) {
+      expect(within(addMenu).getByRole("menuitem", { name: label })).toBeTruthy();
+    }
+    // 添加方式分组标题与两个单选都在；默认引用模式（非托管副本）。
+    expect(within(addMenu).getByRole("menuitem", { name: "添加方式" })).toBeTruthy();
+    expect(
+      within(addMenu)
+        .getByRole("menuitem", { name: "引用原文件（不复制）" })
+        .querySelector(".shelf-context-icon.is-radio svg"),
+    ).toBeTruthy();
+    expect(
+      within(addMenu)
+        .getByRole("menuitem", { name: "保存副本到托管目录" })
+        .querySelector(".shelf-context-icon.is-radio svg"),
+    ).toBeNull();
+
+    // 卡片右键冒泡到列表时按 data-shelf-id 排除，不能被空白菜单抢走。
+    fireEvent.contextMenu(document.querySelector<HTMLElement>('[data-shelf-id="a"]')!, {
+      clientX: 20,
+      clientY: 20,
+    });
+    expect(await screen.findByRole("menu", { name: "条目操作（1 项）" })).toBeTruthy();
+    expect(screen.queryByRole("menu", { name: "更多添加方式" })).toBeNull();
+  });
+
+  it("空白右键切换添加方式后，下一次菜单显示新的选中项", async () => {
+    await renderWith([row("a")]);
+    const list = screen.getByRole("list", { name: "暂存条目" });
+
+    fireEvent.contextMenu(list, { clientX: 5, clientY: 5 });
+    const menu = await screen.findByRole("menu", { name: "更多添加方式" });
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "保存副本到托管目录" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("menu", { name: "更多添加方式" })).toBeNull(),
+    );
+
+    fireEvent.contextMenu(list, { clientX: 5, clientY: 5 });
+    const next = await screen.findByRole("menu", { name: "更多添加方式" });
+    expect(
+      within(next)
+        .getByRole("menuitem", { name: "保存副本到托管目录" })
+        .querySelector(".shelf-context-icon.is-radio svg"),
+    ).toBeTruthy();
+    expect(
+      within(next)
+        .getByRole("menuitem", { name: "引用原文件（不复制）" })
+        .querySelector(".shelf-context-icon.is-radio svg"),
+    ).toBeNull();
+  });
+
+  it("空暂存架的空态区域右键同样能打开添加菜单", async () => {
+    api.shelfList.mockResolvedValue({ items: [], total: 0 });
+    api.shelfStats.mockResolvedValue(stats(0));
+    render(<ShelfWorkspace active />);
+
+    const list = await screen.findByRole("list", { name: "暂存条目" });
+    fireEvent.contextMenu(list, { clientX: 5, clientY: 5 });
+    expect(await screen.findByRole("menu", { name: "更多添加方式" })).toBeTruthy();
+  });
 });

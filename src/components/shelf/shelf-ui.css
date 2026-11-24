@@ -896,6 +896,12 @@
   color: inherit;
 }
 
+/* 单选位（添加方式）：未选中项保持同宽空位，文字仍与勾选项对齐。 */
+.shelf-context-icon.is-radio {
+  width: 13px;
+  justify-content: center;
+}
+
 .shelf-context-label {
   flex: 1 1 auto;
   min-width: 0;

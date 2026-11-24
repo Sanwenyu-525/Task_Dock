@@ -8,6 +8,7 @@
 //! 本文件只保留「暂存区特有的视觉与批量动作」。
 
 import type { ReactNode } from "react";
+import { Check } from "lucide-react";
 import PointerMenu from "../ui/PointerMenu";
 
 export interface ShelfContextAction {
@@ -16,6 +17,14 @@ export interface ShelfContextAction {
   icon?: ReactNode;
   danger?: boolean;
   disabled?: boolean;
+  /**
+   * 单选状态（暂存架「添加方式」）：传 undefined 表示普通动作；传 true/false
+   * 表示单选组的一项，图标位改成勾选位（未选中的项保留占位以对齐）。
+   *
+   * 注意：这里仍然渲染 `role="menuitem"` 而不是 `menuitemradio`。PointerMenu
+   * 的方向键导航按 `button[role="menuitem"]` 选取候选，改 role 会让单选项被跳过。
+   */
+  checked?: boolean;
   onSelect: () => void;
 }
 
@@ -61,7 +70,18 @@ export default function ShelfContextMenu({
             onClose();
           }}
         >
-          {item.icon && <span className="shelf-context-icon">{item.icon}</span>}
+          {item.checked !== undefined || item.icon ? (
+            <span
+              className={`shelf-context-icon${item.checked !== undefined ? " is-radio" : ""}`}
+              aria-hidden="true"
+            >
+              {item.checked === undefined ? (
+                item.icon
+              ) : item.checked ? (
+                <Check size={13} strokeWidth={2.5} />
+              ) : null}
+            </span>
+          ) : null}
           <span className="shelf-context-label">{item.label}</span>
         </button>
       ))}
