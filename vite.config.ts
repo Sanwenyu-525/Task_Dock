@@ -2,6 +2,7 @@ import { defineConfig } from "vite";
 import { resolve } from "node:path";
 import react from "@vitejs/plugin-react";
 import { syncPdfjsAssets } from "./scripts/pdfjs-assets.mjs";
+import { bootSplashInline } from "./src/boot/bootSplashInline";
 
 // PDF 预览的 CMap/字体/WASM 必须随包本地提供（禁止 CDN）：配置求值时同步到 public/pdfjs。
 syncPdfjsAssets();
@@ -10,7 +11,9 @@ syncPdfjsAssets();
 const host = process.env.TAURI_DEV_HOST;
 
 export default defineConfig({
-  plugins: [react()],
+  // 启动占位样式单一来源：把 src/boot/bootSplashCss.css 内联进 index.html / workspace.html
+  // 的 <style>（两处只留注入标记）。先于其它插件执行，避免 HTML 处理顺序影响标记位置。
+  plugins: [bootSplashInline(), react()],
   clearScreen: false,
   // 多页入口：index.html（主窗）+ context-menu.html（右键菜单弹窗）
   // + notification.html（六状态桌面通知窗口）+ capture.html（全局快速捕获窗口）

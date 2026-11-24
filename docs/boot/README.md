@@ -159,11 +159,20 @@ Debug 复测见 [原生阴影死锁记录](../development/2026-11-20-startup-sha
 
 ## 9. 启动占位布局契约（2026-11-24）
 
-两个宿主（`index.html` 主窗口 / `workspace.html` 工作台窗口）共用同一份布局样式块，
-夹在 `boot-splash-shared:begin` … `boot-splash-shared:end` 两行注释之间，由
-`src/test/bootSplash.test.ts` 逐字比对锁一致。共享块之外只允许各文件保留自己的 Token 区与
-业务文案（主窗「正在启动…」/工作台「正在恢复工作台…」），不得再出现「一个窗口修了、
-另一个没修」的漂移。
+两个宿主（`index.html` 主窗口 / `workspace.html` 工作台窗口）的启动占位样式**只有一份**：
+`src/boot/bootSplashCss.css`（Token 区 + 布局区）。两个 HTML 的 `<style>` 里只留注入标记
+`/* boot-splash-shared:inject */`，由 `src/boot/bootSplashInline.ts` 的 Vite 插件在 dev 与
+build 的 `transformIndexHtml` 阶段把样式内联进去；产物与「两份手抄样式」逐字等价，但不再有
+两份需要同步的副本（此前 519 行 × 2，靠测试逐字对拍防漂移）。契约由
+`src/test/bootSplash.test.ts` 锁定：HTML 不得再写具体规则、两宿主注入结果必须逐字相同、
+样式本体必须满足下列各条、缺标记直接抛错而不是静默产出无样式占位。
+
+为什么不改成外部样式表 `<link>`：占位必须在 React 与业务样式之前就正确，而「资源加载失败」
+本身就是启动错误分支——那次额外的样式表请求失败会让恢复卡变成无样式文本。为什么不放进
+`styles*.css`：启动阶段不能依赖业务样式文件及其依赖链。
+
+宿主之间只允许文案与 DOM 差异（主窗「正在启动…」/工作台「正在恢复工作台…」），颜色与尺寸
+必须来自同一份变量与规则，不得再出现「一个窗口修了、另一个没修」的漂移。
 
 ### 9.1 安全居中与纵向溢出
 
@@ -202,13 +211,15 @@ Tab 序列包含可滚动详情区与全部按钮。**任何档位都不得隐�
 ### 9.4 骨架屏与动态效果
 
 - `slow` 态骨架屏是**中性布局占位**：无假任务数据、无伪造百分比，只留结构块。主窗与工作台
-  语义一致（工作台此前缺失，本次补齐），颜色走各自的 `--boot-sk-*` Token（浅/深两套），
-  不借用业务 Token。极小窗口可简化骨架屏（≤200px 只留首屏关键行）。
+  语义一致（工作台此前缺失，本次补齐），颜色走同一份 `--boot-sk-*` Token（浅/深两套，**只跟
+  明暗走、不按预设微调**），不借用业务 Token。极小窗口可简化骨架屏（≤200px 只留首屏关键行）。
 - `prefers-reduced-motion: reduce`：spinner 与骨架屏流光 `animation: none`（流光的静态底透出）、
   恢复卡 `boot-rise` 位移取消（用同特异性后置选择器压 `timeout`/`error`），状态切换只留
   颜色/边框的静态反馈。§7 里「3s 减速旋转」的描述已作废。
 
-验收脚本：`tmp/acceptance/boot-home-responsive/boot-splash-shots.mjs`（2 宿主 × 6 尺寸
-（264×112 / 280×140 / 340×280 / 400×380 / 400×560 / 960×600）× 4 状态 × 明暗 = 96 组合，
-截图与诊断 JSON 同目录 `shots/`）。
+验收脚本：`tmp/acceptance/boot-home-responsive/boot-splash-shots.mjs`（从 **dist 构建产物**
+取样式与 DOM 做 fixture，2 宿主 × 6 尺寸（264×112 / 280×140 / 340×280 / 400×380 / 400×560 /
+960×600）× 4 状态 × 明暗 = 96 组合，截图与诊断 JSON 同目录 `shots/`）。源 HTML 已不含具体
+样式，因此 fixture 必须读 `dist/`（脚本会校验 `justify-content: flex-start` 是否存在，缺则报
+「先 npm run build」）。
 

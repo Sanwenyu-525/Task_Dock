@@ -249,8 +249,10 @@
 ### 11.1 判据迁移（只迁首页规则）
 
 - 全部首页页头与卡片标题规则移入 `@container wb-content (max-width: 560px)`，继续复用
-  `.wb-content` 已有的 `container-type: inline-size; container-name: wb-content`，
-  沿用既有 560 阈值（不新增断点，不与 `.wb-home-grid` 的 940/560 档冲突）。
+  `.wb-content` 已有的 `container-type: inline-size; container-name: wb-content`。
+  这处与 `.wb-home-grid` 单列那处是**同一档**（同为 `wb-content ≤560`：一处管页头换行与
+  卡片标题行，一处管列数），改阈值必须两处一起改；不新增断点，也不与 940/560 的六列/单列
+  网格分档冲突（两者同源同档，只是各自负责的组件不同）。
 - 迁移清单：`.wb-home-head`（`flex-wrap: wrap` + `align-items: flex-start`）、
   `.wb-home-head-main`（`flex: 1 1 100%`）、`.wb-home-date`（`order: 2`、`white-space: normal`、
   `line-height: 1.45`、`max-width: 100%`）、`.wb-home-greeting`（24px）、`.wb-panel-head`

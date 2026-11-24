@@ -12,8 +12,14 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { BOOT_SLOW_MS, BOOT_TIMEOUT_MS } from "../boot/bootProtocol";
+import { BOOT_SPLASH_MARKER, injectBootSplashCss, readBootSplashCss } from "../boot/bootSplashInline";
 
 const html = readFileSync(resolve(process.cwd(), "index.html"), "utf8");
+/** 样式本体（单一来源）。CSS 相关断言看它；DOM 断言看源 HTML。
+ *  两宿主的渲染结果由 vite 插件在 dev/build 时内联，见 bootSplashInline.ts。 */
+const bootCssSource = readBootSplashCss();
+/** 注入后的渲染结果：涉及 `#boot-splash[data-state=…]` 这类样式选择器时用它。 */
+const htmlWithStyles = injectBootSplashCss(html, bootCssSource);
 const moduleEntryAt = html.indexOf('src="/src/main.tsx"');
 const watchdogTagAt = html.indexOf('<script src="/boot/boot-watchdog.js">');
 
@@ -56,7 +62,7 @@ describe("index.html 启动体验 V1（协议 §2/§6/§7）", () => {
       expect(html).toContain(`id="${id}"`);
     }
     for (const state of ["boot", "slow", "timeout", "error"]) {
-      expect(html).toContain(`data-state="${state}"`);
+      expect(htmlWithStyles).toContain(`data-state="${state}"`);
     }
   });
 
@@ -96,6 +102,7 @@ describe("启动阈值跨文件同步（协议 §2）", () => {
  * 此前只有 #root，React 未挂载时用户看到纯白窗口（2026-11-17 实测截图）。
  * 这里锁定与主窗口同一份看门狗、同一组恢复入口的静态契约。 */
 const workspaceHtml = readFileSync(resolve(process.cwd(), "workspace.html"), "utf8");
+const workspaceHtmlWithStyles = injectBootSplashCss(workspaceHtml, bootCssSource);
 // 2026-11-19 启动诊断升级：入口由 main.tsx 改为极轻量 bootstrap.ts，
 // 再由 bootstrap 动态 import("./main")。契约锚点随之指向新入口。
 const workspaceModuleAt = workspaceHtml.indexOf(
@@ -120,9 +127,9 @@ describe("workspace.html 工作台启动占位", () => {
 
   it("恢复卡四态可见性由 data-state 驱动（boot/slow/timeout/error）", () => {
     for (const state of ["boot", "slow", "timeout", "error"]) {
-      expect(workspaceHtml).toContain(`data-state="${state}"`);
+      expect(workspaceHtmlWithStyles).toContain(`data-state="${state}"`);
     }
-    expect(workspaceHtml).toContain('#boot-splash[data-state="timeout"] #boot-recovery');
+    expect(workspaceHtmlWithStyles).toContain('#boot-splash[data-state="timeout"] #boot-recovery');
   });
 
   it("主题提示读取器先于占位样式执行，且只接受白名单取值", () => {
@@ -153,38 +160,50 @@ describe("workspace.html 工作台启动占位", () => {
   });
 });
 
-/* ── 2026-11-24 启动体验专项：布局契约（垂直截断 / 短高度 / 两宿主一致） ──
- * jsdom 不能证明布局，这里只锁定「规则本身」：安全居中、可滚动、恢复卡宽度、
- * 四个短高度档位、三操作不被隐藏、长详情有查看通道、reduce 下静态反馈。
- * 真实几何与「按钮是否可点」由 Playwright 在 264×112 … 960×600 六个尺寸 +
- * 明暗两主题取证（tmp/acceptance/boot-home-responsive/）。 */
-const SHARED_BEGIN = "      /* boot-splash-shared:begin";
-const SHARED_END = "      /* boot-splash-shared:end */";
-const sharedBlock = (source: string) => {
-  const begin = source.indexOf(SHARED_BEGIN);
-  const end = source.indexOf(SHARED_END);
-  expect(begin).toBeGreaterThan(-1);
-  expect(end).toBeGreaterThan(begin);
-  return source.slice(begin, end);
-};
+/* ── 2026-11-24 启动体验专项：布局契约（垂直截断 / 短高度 / 两宿主同源） ──
+ * 样式自 2026-11-24 起只有一份 `src/boot/bootSplashCss.css`，由 vite 插件
+ * （`src/boot/bootSplashInline.ts`）在 dev/build 的 transformIndexHtml 阶段内联进两个
+ * 宿主的 `<style>`。因此这里锁定三件事：（a）HTML 里只留注入标记、不再手抄规则；
+ * （b）注入后两宿主拿到逐字相同的样式；（c）样式本体满足布局契约。
+ * jsdom 不能证明布局，真实几何与「按钮是否可点」由 Playwright 在 264×112 … 960×600
+ * 六个尺寸 + 明暗两主题取证（tmp/acceptance/boot-home-responsive/）。 */
 /** 去掉 CSS 注释再断言：契约里的「旧写法」说明会提到被禁止的写法本身。 */
 const stripComments = (css: string) => css.replace(/\/\*[\s\S]*?\*\//g, "");
-const indexShared = sharedBlock(html);
-const workspaceShared = sharedBlock(workspaceHtml);
-const sharedCss = stripComments(indexShared);
+const sharedCss = stripComments(bootCssSource);
+/** 取页面里唯一 <style> 的内容（注入后应等于样式本体）。 */
+const styleBlock = (source: string) => {
+  const blocks = [...source.matchAll(/<style>([\s\S]*?)<\/style>/g)].map((m) => m[1]);
+  expect(blocks, "每个宿主应恰好一个 <style>").toHaveLength(1);
+  return blocks[0];
+};
 
-describe("启动占位布局契约（两宿主一致）", () => {
-  it("共享布局块逐字一致，避免两个窗口的启动界面各自漂移", () => {
-    // 两处必须同步修改：任何一边改了间距/档位，这里先失败。
-    expect(indexShared).toBe(workspaceShared);
-    expect(html.split(SHARED_BEGIN).length - 1).toBe(1);
-    expect(workspaceHtml.split(SHARED_BEGIN).length - 1).toBe(1);
+describe("启动占位样式单一来源（两宿主同源）", () => {
+  it("两个 HTML 只留注入标记，不再各自手抄一份规则", () => {
+    for (const [name, source] of [
+      ["index.html", html],
+      ["workspace.html", workspaceHtml],
+    ] as const) {
+      expect(styleBlock(source), `${name} 的 <style> 应含注入标记`).toContain(BOOT_SPLASH_MARKER);
+      expect(source.split(BOOT_SPLASH_MARKER).length - 1, `${name} 标记应唯一`).toBe(1);
+      // 规则本体不得写回 HTML：否则又变成两份需要手工同步的副本。
+      expect(stripComments(styleBlock(source)), `${name} 不应再写具体规则`).not.toContain("#boot-splash");
+    }
+  });
+
+  it("注入后两宿主拿到逐字相同的样式，缺标记直接抛错（不产出无样式占位）", () => {
+    const indexCss = styleBlock(injectBootSplashCss(html, bootCssSource));
+    const workspaceCss = styleBlock(injectBootSplashCss(workspaceHtml, bootCssSource));
+    expect(indexCss).toBe(workspaceCss);
+    expect(indexCss).toContain(bootCssSource.trim());
+    expect(indexCss).not.toContain(BOOT_SPLASH_MARKER);
+    expect(indexCss).toContain("#boot-splash {");
+    expect(() => injectBootSplashCss("<html><body></body></html>", bootCssSource)).toThrow(/标记/);
   });
 
   it("正常高度视觉居中但不裁剪顶部（auto 外边距 + 顶部对齐 + 纵向滚动）", () => {
     // 只看 #boot-splash 自身的规则：短高度档位里 `.boot-intro` 的
     // justify-content:center 是横向居中，与「纵向安全居中」无关。
-    const splashRule = sharedCss.match(/#boot-splash \{([\s\S]*?)\n      \}/)?.[1] ?? "";
+    const splashRule = sharedCss.match(/#boot-splash \{([\s\S]*?)\n\}/)?.[1] ?? "";
     expect(splashRule).toContain("justify-content: flex-start");
     expect(splashRule).not.toContain("justify-content: center");
     expect(sharedCss).toMatch(/\.boot-stack \{[\s\S]*?margin-block: auto;/);
@@ -248,8 +267,8 @@ describe("工作台启动占位与主窗口同源（slow 骨架屏）", () => {
   it("slow 态有中性骨架屏，不伪造任务数据与进度", () => {
     expect(workspaceHtml).toContain('id="boot-skeleton"');
     expect(workspaceHtml).toContain("boot-sk-row");
-    expect(workspaceShared).toMatch(/#boot-splash\[data-state="slow"\] #boot-skeleton \{ display: flex; \}/);
-    expect(workspaceShared).toMatch(/#boot-splash\[data-state="error"\] #boot-skeleton \{ display: none; \}/);
+    expect(sharedCss).toMatch(/#boot-splash\[data-state="slow"\] #boot-skeleton \{ display: flex; \}/);
+    expect(sharedCss).toMatch(/#boot-splash\[data-state="error"\] #boot-skeleton \{ display: none; \}/);
     // 骨架屏是纯形状层：无文本节点、无百分比。
     const skeleton = workspaceHtml.slice(
       workspaceHtml.indexOf('id="boot-skeleton"'),
@@ -260,18 +279,20 @@ describe("工作台启动占位与主窗口同源（slow 骨架屏）", () => {
   });
 
   it("骨架屏背景层不随恢复卡滚动（fixed 而非 absolute）", () => {
-    expect(workspaceShared).toMatch(/#boot-skeleton \{[\s\S]*?position: fixed;/);
+    expect(sharedCss).toMatch(/#boot-skeleton \{[\s\S]*?position: fixed;/);
   });
 
-  it("骨架屏中性色与主窗口同一组取值（明暗两套，不新增色板）", () => {
+  it("骨架屏中性色只有一套明暗取值，不按预设再开第二套色板", () => {
     for (const token of ["--boot-sk-base", "--boot-sk-card", "--boot-sk-shine"]) {
-      expect(html).toContain(`${token}:`);
-      expect(workspaceHtml).toContain(`${token}:`);
+      // 单一来源：浅色 :root + 深色 [data-theme] + 系统偏好深色 = 3 处，不再按预设重复。
+      expect(bootCssSource.split(`${token}:`).length - 1, `${token} 定义次数`).toBe(3);
     }
-    const light = (source: string) => source.match(/--boot-sk-base: rgba\(35, 40, 64, 0\.08\)/);
-    expect(light(html)).toBeTruthy();
-    expect(light(workspaceHtml)).toBeTruthy();
-    expect(workspaceHtml).toMatch(/--boot-sk-base: rgba\(255, 255, 255, 0\.08\)/);
+    expect(sharedCss).toMatch(/--boot-sk-base: rgba\(35, 40, 64, 0\.08\)/);
+    expect(sharedCss).toMatch(/--boot-sk-base: rgba\(255, 255, 255, 0\.08\)/);
+    // 两宿主经由同一份样式拿到同一组取值。
+    expect(styleBlock(injectBootSplashCss(html, bootCssSource))).toBe(
+      styleBlock(injectBootSplashCss(workspaceHtml, bootCssSource)),
+    );
   });
 });
 

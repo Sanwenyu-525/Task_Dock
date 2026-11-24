@@ -1167,9 +1167,9 @@ body.wb-resizing {
    里导航展开（320）+ 右栏（304）会把中央内容区压到 400 以下，而窗口宽度判据
    根本不命中 —— 问候语被日期胶囊挤成一列、标题与日期挤在同一行互相压盖。
    `.wb-content` 已经是 `container-type: inline-size` / `container-name: wb-content`
-   （见 WorkbenchShell），这里直接复用；断点沿用既有 560px（与 `.wb-home-grid`
-   单列阈值同一口径），不新增第二套。窗口级的顶栏收纳/搜索仍在文件末尾的媒体
-   查询里，不迁移。 */
+   （见 WorkbenchShell），这里直接复用；断点沿用既有 560px——**与下方 `.wb-home-grid`
+   单列那处是同一档**（那处管列数、这里管页头与卡片标题行），不是第二套断点，
+   改阈值必须两处一起改。窗口级的顶栏收纳/搜索仍在文件末尾的媒体查询里，不迁移。 */
 @container wb-content (max-width: 560px) {
   .wb-home-head {
     flex-wrap: wrap;
@@ -2324,6 +2324,8 @@ body.wb-resizing {
     grid-column: span 4;
   }
 }
+/* 首页「窄内容区」档（wb-content ≤560）：与页头/卡片标题那处 `@container` 是**同一档**，
+   不是一个新断点——那处管页头换行与卡片标题行，这里管列数。改阈值必须两处一起改。 */
 @container wb-content (max-width: 560px) {
   .wb-home-grid {
     grid-template-columns: minmax(0, 1fr);
