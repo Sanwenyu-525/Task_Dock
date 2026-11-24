@@ -10,6 +10,7 @@ import userEvent from "@testing-library/user-event";
 const bridge = vi.hoisted(() => ({
   clipboardGroup: vi.fn(),
   clipboardThumb: vi.fn(),
+  clipboardPreview: vi.fn(),
   clipboardImage: vi.fn(),
   clipboardRemoveGroupItem: vi.fn(),
   clipboardMoveGroupItem: vi.fn(),
@@ -95,8 +96,26 @@ function makeGroup(items: ClipboardItem[]): ClipboardGroup {
 
 const noProps = { linkTask: null, askConfirm: vi.fn(), onBack: vi.fn(), onChanged: vi.fn() };
 
+let originalIO: typeof IntersectionObserver | undefined;
+
 beforeEach(() => {
   vi.clearAllMocks();
+  // 双列网格的图片按可视区懒加载：默认视为已进入视口，用例验证「可见后」的渲染。
+  originalIO = globalThis.IntersectionObserver;
+  class ImmediateObserver {
+    constructor(cb: IntersectionObserverCallback) {
+      queueMicrotask(() =>
+        cb([{ isIntersecting: true } as IntersectionObserverEntry], this as unknown as IntersectionObserver),
+      );
+    }
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+    takeRecords(): IntersectionObserverEntry[] {
+      return [];
+    }
+  }
+  globalThis.IntersectionObserver = ImmediateObserver as unknown as typeof IntersectionObserver;
   bridge.clipboardGroup.mockResolvedValue(
     makeGroup([
       makeItem(0, { kind: "image", has_thumb: true, has_image: true, title: "截图 800×600" }),
@@ -104,6 +123,7 @@ beforeEach(() => {
     ]),
   );
   bridge.clipboardThumb.mockResolvedValue("data:image/png;base64,AA==");
+  bridge.clipboardPreview.mockResolvedValue("data:image/png;base64,PV==");
   bridge.clipboardImage.mockResolvedValue("data:image/png;base64,BIG==");
   bridge.clipboardRemoveGroupItem.mockResolvedValue(makeGroup([]));
   bridge.workspaceList.mockResolvedValue([]);
@@ -121,6 +141,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   useSettingsStore.setState({ settings: null });
+  if (originalIO) globalThis.IntersectionObserver = originalIO;
 });
 
 describe("分组详情", () => {
@@ -338,20 +359,36 @@ describe("图片分组的真实缩略图与正文区分", () => {
     });
   }
 
-  it("纯图片分组渲染真实缩略图，尺寸描述不冒充图片正文", async () => {
+  it("纯图片分组按 640 预览渲染，尺寸描述不冒充图片正文", async () => {
     bridge.clipboardGroup.mockResolvedValue(makeGroup([shot("ci-shot-1"), shot("ci-shot-2")]));
     render(<ClipboardGroupDetail groupId="g1" {...noProps} />);
     await screen.findByText("截图集合");
     await waitFor(() => expect(document.querySelector(".clip-group-shots")).toBeTruthy());
 
+    await waitFor(() => expect(document.querySelectorAll("img.clip-shot-img").length).toBe(2));
     const imgs = Array.from(document.querySelectorAll<HTMLImageElement>("img.clip-shot-img"));
-    expect(imgs.length).toBe(2);
+    // 网格卡片按列宽可到 400+ CSS px，192px 缩略图会明显发虚，必须先取 640 预览
     for (const img of imgs) {
-      expect(img.getAttribute("src")).toBe("data:image/png;base64,AA==");
+      await waitFor(() => expect(img.getAttribute("src")).toBe("data:image/png;base64,PV=="));
     }
+    expect(bridge.clipboardThumb).not.toHaveBeenCalledWith("ci-shot-1");
     // 尺寸描述没有变成任何一行文本
     expect(screen.queryByText("图片 1476×1198")).toBeNull();
     expect(document.body.textContent).not.toContain("图片 1476×1198");
+  });
+
+  it("预览缺失时退回 192px 缩略图兜底，不留空白", async () => {
+    bridge.clipboardPreview.mockResolvedValue(null);
+    bridge.clipboardGroup.mockResolvedValue(makeGroup([shot("ci-fallback")]));
+    render(<ClipboardGroupDetail groupId="g1" {...noProps} />);
+    await screen.findByText("截图集合");
+    await waitFor(() => expect(document.querySelector(".clip-group-shots")).toBeTruthy());
+
+    await waitFor(() =>
+      expect(
+        document.querySelector<HTMLImageElement>("img.clip-shot-img")?.getAttribute("src"),
+      ).toBe("data:image/png;base64,AA=="),
+    );
   });
 
   it("图片标题是标题：网格卡片标题区显示自动标题，不回退到尺寸描述", async () => {
@@ -409,8 +446,10 @@ describe("图片分组的真实缩略图与正文区分", () => {
     await waitFor(() => expect(bridge.clipboardImage).toHaveBeenCalledWith("ci-lb-1"));
   });
 
-  it("没有缩略图时显示明确占位，不留空白，也仍可点开灯箱", async () => {
-    bridge.clipboardGroup.mockResolvedValue(makeGroup([shot("ci-nt", { has_thumb: false })]));
+  it("缩略图与原图都缺失时显示明确占位，不留空白，也仍可点开灯箱", async () => {
+    bridge.clipboardGroup.mockResolvedValue(
+      makeGroup([shot("ci-nt", { has_thumb: false, has_image: false })]),
+    );
     render(<ClipboardGroupDetail groupId="g1" {...noProps} />);
     await screen.findByText("截图集合");
     await waitFor(() => expect(document.querySelector(".clip-group-shots")).toBeTruthy());
@@ -421,7 +460,25 @@ describe("图片分组的真实缩略图与正文区分", () => {
     await waitFor(() => expect(screen.getByRole("dialog", { name: "图片大图预览" })).toBeTruthy());
   });
 
-  it("移除一张图片后其余图片不受影响（缩略图与顺序都保持）", async () => {
+  it("只有原图、没有缩略图时网格仍按 640 预览展示", async () => {
+    bridge.clipboardGroup.mockResolvedValue(
+      makeGroup([shot("ci-img-only", { has_thumb: false })]),
+    );
+    render(<ClipboardGroupDetail groupId="g1" {...noProps} />);
+    await screen.findByText("截图集合");
+    await waitFor(() => expect(document.querySelector(".clip-group-shots")).toBeTruthy());
+
+    await waitFor(() =>
+      expect(
+        document.querySelector<HTMLImageElement>("img.clip-shot-img")?.getAttribute("src"),
+      ).toBe("data:image/png;base64,PV=="),
+    );
+    expect(bridge.clipboardPreview).toHaveBeenCalledWith("ci-img-only");
+    // 预览成功路径不补发缩略图
+    expect(bridge.clipboardThumb).not.toHaveBeenCalledWith("ci-img-only");
+  });
+
+  it("移除一张图片后其余图片不受影响（预览与顺序都保持）", async () => {
     const items = [shot("ci-rm-1"), shot("ci-rm-2"), shot("ci-rm-3")];
     bridge.clipboardGroup.mockResolvedValue(makeGroup(items));
     bridge.clipboardRemoveGroupItem.mockResolvedValue(makeGroup([items[0], items[2]]));
@@ -434,11 +491,11 @@ describe("图片分组的真实缩略图与正文区分", () => {
     );
     await waitFor(() => expect(document.querySelector('[data-clip-row="ci-rm-2"]')).toBeNull());
     expect(rowIds()).toEqual(["ci-rm-1", "ci-rm-3"]);
-    // 剩下的两张仍是真实缩略图
+    // 剩下的两张仍是真实预览图（缓存命中，不因离场重排退回占位）
     const imgs = Array.from(document.querySelectorAll<HTMLImageElement>("img.clip-shot-img"));
     expect(imgs.length).toBe(2);
     for (const img of imgs) {
-      expect(img.getAttribute("src")).toBe("data:image/png;base64,AA==");
+      expect(img.getAttribute("src")).toBe("data:image/png;base64,PV==");
     }
   });
 });

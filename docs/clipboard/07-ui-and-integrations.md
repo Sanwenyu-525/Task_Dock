@@ -224,7 +224,10 @@ portal 到 body，注册弹层栈 modal 层：Escape 只关灯箱，z 序在抽�
   `-webkit-line-clamp` 只压布局盒高度，缺了 overflow 时剩余行照样绘制到卡片外，
   表现为“卡片没变高、文字却盖住下一张卡”。长英文、URL、连续字符串靠
   `overflow-wrap: anywhere` 断行，不靠固定高度。原文与复制结果不受影响。
-- 缩略图按需请求并缓存（LRU，最多 240 条，含并发去重）；大图只在详情打开时加载。
+- 图片按用途分档取图（2026-11-24 明确）：列表行/封面/占位用 192px 缩略图
+  （LRU 240 条、并发去重）；卡片主视觉、右栏预览与分组详情双列用 640px 预览
+  （`clipboard_preview`，后端按需生成并落盘缓存，前端 LRU 48 条）；原图只在详情/灯箱
+  打开时加载。缩略图不再用于任何放大展示。
 - 所有复制/粘贴结果使用后端返回的消息，不自行推断“成功”。
 
 ### 删除与离场反馈（2026-11-02）
@@ -737,3 +740,17 @@ portal 到 body，注册弹层栈 modal 层：Escape 只关灯箱，z 序在抽�
   `ClipboardPanel.test.tsx`、`ClipboardWorkspace.scroll.test.tsx`、
   `ClipboardGroupLightbox.test.tsx`、`Media.test.tsx`；真实渲染见
   `docs/clipboard/14-2026-11-19-ui-polish-acceptance.md`。真机链路仍按验收路由单独执行。
+
+### 14.9 分组详情双列图片改用 640 预览（2026-11-24）
+
+- 现象：纯图片分组的双列卡片可达 400+ CSS px（125% 缩放下约 520 设备像素），此前
+  `ShotThumb` 只取 192px 缩略图并铺满卡片，截图文案放大后发虚。
+- 现在：`ShotThumb` 先取 640px 预览（`usePreviewImage` + `ClipboardGroupDetail`），
+  仅在预览缺失/失败或没有原图时才退回 192px 缩略图；顺带覆盖「有原图但没有缩略图」
+  的旧条目——这类条目以前只能显示占位图标。
+- 懒加载与请求纪律沿用 `Media.tsx`：进入视口（240px 余量）才发 IPC；预览就绪或加载中
+  不补发缩略图请求；48 条预览 LRU、在途去重与清空/删除后的缓存失效逻辑不变。卡片外层
+  以 `data-preview-state` 标记 `loading / ready / missing / error`。
+- 回归：`ClipboardGroupDetail.test.tsx` 新增「640 预览」「预览缺失退回缩略图」「只有原图」
+  三例，并让该文件默认用会回调 `isIntersecting` 的 `IntersectionObserver` 桩；
+  `Media.test.tsx`、条目卡片与分组卡片用例保持通过。本轮桌面会话锁定，未做真机截图。

@@ -30,7 +30,7 @@ import { useUiStore } from "../../store/useUiStore";
 import AgentExportPanel from "./AgentExportPanel";
 import ClipboardItemDetail from "./ClipboardItemDetail";
 import ImageLightbox from "./ImageLightbox";
-import { ClipboardThumb, useThumbnail } from "./Media";
+import { ClipboardThumb, useInViewport, usePreviewImage, useThumbnail } from "./Media";
 import PastePanel from "./PastePanel";
 import TaskLinkBar from "./TaskLinkBar";
 import WorkspaceLinkBar from "./WorkspaceLinkBar";
@@ -639,6 +639,7 @@ export default function ClipboardGroupDetail({
                     <>
                       <ShotThumb
                         itemId={item.id}
+                        hasImage={item.has_image}
                         hasThumb={item.has_thumb}
                         label={`查看第 ${i + 1} 张图片大图`}
                         disabled={leaving !== undefined}
@@ -791,30 +792,44 @@ export default function ClipboardGroupDetail({
 }
 
 /**
- * 纯图片分组网格卡片里的缩略图：宽度跟随卡片、保持图片自身宽高比（contain，不拉伸）。
- * 复用 Media 的缩略图 IPC 与缓存；无缩略图时仍可点开灯箱，由灯箱报出真实缺失原因。
+ * 双列网格里的单张图片：优先 640px 预览，192px 缩略图只在预览不可用时兜底。
+ *
+ * 卡片宽度跟随列宽，实测 125% 缩放下约 400+ CSS px / 520 设备像素，直接放大
+ * 192px 缩略图会明显发虚；预览与缩略图都按可视区懒加载，未进入视口不发 IPC。
+ * 预览就绪或加载中都不请求缩略图，避免每张卡片两条图像 IPC。
  */
 function ShotThumb({
   itemId,
+  hasImage,
   hasThumb,
   label,
   disabled,
   onOpen,
 }: {
   itemId: string;
+  hasImage: boolean;
   hasThumb: boolean;
   label: string;
   disabled?: boolean;
   onOpen: () => void;
 }) {
-  const url = useThumbnail(itemId, hasThumb);
+  const [ref, visible] = useInViewport<HTMLButtonElement>();
+  // 没有原图就没有预览可生成，只能直接退到缩略图。
+  const preview = usePreviewImage(itemId, hasImage && visible);
+  const previewReady = preview.state === "ready";
+  const previewPending = hasImage && visible && preview.state === "loading";
+  // 预览就绪或仍在加载时不请求缩略图，避免每张卡片两条图像 IPC。
+  const thumb = useThumbnail(itemId, hasThumb && visible && !previewReady && !previewPending);
+  const src = previewReady ? preview.url : thumb;
   return (
     <button
+      ref={ref}
       type="button"
       className="clip-shot-open"
       disabled={disabled}
       data-tip="点击查看大图"
       aria-label={label}
+      data-preview-state={preview.state}
       onClick={(e) => {
         e.stopPropagation();
         onOpen();
@@ -822,8 +837,8 @@ function ShotThumb({
       // Enter/Space 只在缩略图上生效，不再冒泡触发外层行为
       onKeyDown={(e) => e.stopPropagation()}
     >
-      {url ? (
-        <img className="clip-shot-img" src={url} alt="" loading="lazy" draggable={false} />
+      {src ? (
+        <img className="clip-shot-img" src={src} alt="" loading="lazy" draggable={false} />
       ) : (
         <span className="clip-shot-img clip-shot-placeholder">
           <ImageIcon size={18} />
