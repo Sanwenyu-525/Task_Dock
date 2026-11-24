@@ -470,11 +470,19 @@ Windows 测试二进制本轮通过 `cargo test --lib --no-run`（exit 0，54 wa
 - 日志：`tmp/phase1-domain-tests-final2.log`、`tmp/phase1-agent-access-full-final.log`、
   `tmp/phase1-mcp-tests.log`、`tmp/phase1-project-workspace-tests.log`、
   `tmp/phase1-comic-workspace-tests.log`、`tmp/phase1-lib-full*.log`。
+- 2026-11-24 编译阻塞解除后二次复验：`agent_access::` 304/0（122.70s）、`mcp::` 91/0（26.82s）、
+  `commands::project_workspace::` 13/0（5.02s）、`commands::comic_workspace::` 17/0（9.11s）；
+  `cargo check --lib --tests`、`cargo test --lib --no-run`、`cargo test --tests --no-run` 均 exit 0。
+  全量 3128 条以 8 线程运行 267 条后 `0xc0000005` 异常退出，串行运行因耗时主动停止，
+  仍不能宣称全量通过。日志：`tmp/accept-phase1-*-after-blocker.log`、
+  `tmp/blocker-check-all2.log`、`tmp/accept-phase1-tests-no-run.log`。
 
 ### 18.5 未覆盖
 
 - 未构建正式安装包，未执行 Release 安装/升级/卸载验收；结论只到 Debug 测试二进制。
 - 未执行桌面 UI 视觉走查（320/400 窄窗、DPI、主题）；UI 写入通过命令层真实函数验证，未驱动 Tauri IPC 事件循环。
 - 未做多进程真实并发压测；并发语义由单进程多线程 + SQLite 唯一写连接验证。
-- `cargo check --lib --tests` 本轮被其他 Agent 在途的集成测试 `tests/virtual_display_live.rs`
-  编译错误阻塞（`vd_start` 参数漂移），只报告 `ENVIRONMENT BLOCKED`，不把它算成本任务失败，也不修改该文件。
+- `cargo check --lib --tests` 的阻塞已于 2026-11-24 由测试提交 `f7cd8aa` 解除：
+  `tests/virtual_display_live.rs` 补齐 `AppHandle`，`tests/collab_assets_backup.rs`
+  补齐 `RestoreOptions` 默认字段；解除后 lib 与全部测试目标均可编译。
+- 真机投屏仍未执行：`adb devices` 为空，live 测试只验证未启用时的跳过路径。

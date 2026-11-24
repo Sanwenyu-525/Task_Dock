@@ -316,8 +316,10 @@ IPC、MCP、REST、CLI、文件导入全部调用同一函数；`comic_media_sav
    事件循环和真实窗口。
 3. **多进程并发未压测**：并发测试是单进程多线程 + SQLite 唯一写连接；
    跨进程 CLI/REST/MCP 同时写同一 revision 未做真实压测。
-4. **集成测试编译阻塞**：`tests/virtual_display_live.rs` 属其他 Agent 在途改动，
-   全量 `cargo test` 不能编译；本轮不修改、不代提交。
+4. **集成测试编译阻塞（2026-11-24 已解除）**：`tests/virtual_display_live.rs` 的
+   `vd_start` 参数漂移与 `tests/collab_assets_backup.rs` 的 `RestoreOptions` 新字段，
+   已由测试提交 `f7cd8aa` 修复；`cargo check --lib --tests` 与
+   `cargo test --tests --no-run` 均通过，见 §15。
 5. **文件导入范围**：只支持三种更新型领域操作；不支持删除/创建/批量写入。
 6. **Game / General / Development**：保持 planned，没有空实现注册为 available。
 7. **无 revision 行的历史资源**：首次读 revision=0 是稳定基线；首次 UI 写入才建立 1。
@@ -370,8 +372,64 @@ IPC、MCP、REST、CLI、文件导入全部调用同一函数；`comic_media_sav
 （`vd::vd_start` 参数漂移，10 个 E0061/E0308）；本轮未修改该文件，结论保持
 `ENVIRONMENT BLOCKED`。Rust lib 全量 3128 条本轮未重跑，不能宣称全仓回归通过。
 
+> 更正：以上是该次复验的历史状态。2026-11-24 07:57 后阻塞已由测试提交 `f7cd8aa`
+> 解除，`cargo check --lib --tests` 与 `cargo test --tests --no-run` 均为 exit 0；
+> 解除后的结果见 §15。
+
 复验日志：`tmp/accept-phase1-agent-access.log`、`tmp/accept-phase1-mcp.log`、
 `tmp/accept-phase1-check-lib.log`、`tmp/accept-phase1-check-lib-tests.log`。
 
 复验结论：Novel + Comic Phase 1 的 Agent Access、MCP 与受影响命令层复跑全部通过；
 Release 与桌面 UI 验收仍未执行，边界与 §11、§12 一致。
+
+## 15. 编译阻塞解除与二次复验（2026-11-24）
+
+### 15.1 阻塞根因与修复
+
+两个集成测试的调用契约已落后于产品代码，属于测试侧接口漂移，不是产品逻辑故障：
+
+- `tests/virtual_display_live.rs`：`vd_start` 已新增 `AppHandle` 首参，测试仍按旧的 6 参数调用，
+  产生 10 个 E0061/E0308。修复为构造真实 Tauri `AppHandle` 并在六处调用前传入；
+  注释明确无事件循环时控制栏按既有超时降级，不改变会话启动/截图/回收断言。
+- `tests/collab_assets_backup.rs`：`RestoreOptions` 已新增 `clipboard_secret`、
+  `clipboard_recovery`，测试初始化缺字段。修复为补 `..Default::default()`，不改变
+  故障注入与回滚断言。
+
+修复提交：`f7cd8aa test: 修复虚拟显示联调与备份恢复测试的接口漂移`，仅两个测试文件，
+19 行新增；没有修改产品代码、`build.rs` 或其他 Agent 的 `backup.rs` 在途改动。
+
+### 15.2 解除后的真实结果
+
+| 命令 / 范围 | 结果 | 退出码 |
+|---|---|---|
+| `cargo check --lib --tests` | 通过，54 warnings | 0 |
+| `cargo test --lib --no-run` | 生成 `task_dock_lib-3ba143d4234e1361.exe` | 0 |
+| `cargo test --tests --no-run` | 全部集成测试二进制链接通过 | 0 |
+| `cargo test --test virtual_display_live` | 1 passed（未设置 `TASK_DOCK_VD_LIVE`，按设计跳过） | 0 |
+| `cargo test --test collab_assets_backup restore_failure_rolls_back_collab_asset_files` | 1 passed / 0 failed，1.02s | 0 |
+| `agent_access::` 全量 | 304 passed / 0 failed，122.70s | 0 |
+| `mcp::` | 91 passed / 0 failed，26.82s | 0 |
+| `commands::project_workspace::` | 13 passed / 0 failed，5.02s | 0 |
+| `commands::comic_workspace::` | 17 passed / 0 failed，9.11s | 0 |
+
+真机侧没有连接 Android 设备（`adb devices` 为空），因此 `virtual_display_live` 只验证了
+未启用时的跳过路径；真实 ADB/scrcpy 会话、截图与双虚拟屏仍属于未执行的 Dev 真机验收。
+
+### 15.3 全量 lib 运行边界
+
+尝试 `cargo test --lib --test-threads=8 --skip agent_access::`，完成 267 条后测试进程以
+`0xc0000005 STATUS_ACCESS_VIOLATION` 异常退出；这是全量套件在并发模式下的既有稳定性问题，
+不能记为产品通过。`--test-threads=1` 串行运行启动后进度过慢，本轮主动停止。
+因此 **3128 条 lib 全量仍未完成**；本任务继续以受影响面全量结果作为验收依据，
+不把定向结果冒充全仓通过。
+
+日志：`tmp/blocker-check-all2.log`、`tmp/accept-phase1-tests-no-run.log`、
+`tmp/blocker-live-test.log`、`tmp/blocker-collab-test.log`、
+`tmp/accept-phase1-agent-access-after-blocker.log`、`tmp/accept-phase1-mcp-after-blocker.log`、
+`tmp/accept-phase1-lib-nonagent-after-blocker.log`、`tmp/accept-phase1-lib-nonagent-serial.log`。
+
+### 15.4 二次复验结论
+
+编译阻塞已真实解除：lib 与全部测试目标可编译、集成测试可链接；
+Novel + Comic Phase 1 的 Agent Access、MCP、受影响命令层再次全量通过。
+Release、桌面 UI、真机投屏与 3128 条 lib 全量运行仍未完成，边界不变。
