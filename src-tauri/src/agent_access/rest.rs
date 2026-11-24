@@ -42,7 +42,7 @@ use crate::mcp::auth::{self, McpAgentRow};
 use crate::mcp::permissions::Capability;
 
 use super::{
-    context, domains::{comic, novel}, error_code, handoff, http_status, operations, permissions as perms,
+    context, domains::{comic, development, game, general, novel}, error_code, handoff, http_status, operations, permissions as perms,
     service, store, sync as file_sync, workspace, Envelope, Identity, Meta, Page, Principal, Source,
 };
 
@@ -139,6 +139,20 @@ pub const ROUTES: &[(&str, &str, &str)] = &[
     ("GET", "/api/v1/projects/{id}/comic/scenes", "漫剧场景列表"),
     ("PUT", "/api/v1/projects/{id}/comic/media-versions/{mediaId}", "更新素材版本元信息"),
     ("POST", "/api/v1/projects/{id}/comic/media-versions/{mediaId}/adopt", "采用素材版本"),
+    ("GET", "/api/v1/projects/{id}/game/facts", "游戏已登记引擎事实"),
+    ("GET", "/api/v1/projects/{id}/game/assets", "游戏资源列表"),
+    ("GET", "/api/v1/projects/{id}/game/builds", "游戏构建记录列表"),
+    ("GET", "/api/v1/projects/{id}/game/tests", "游戏测试记录列表"),
+    ("GET", "/api/v1/projects/{id}/general/milestones", "通用工作台里程碑列表"),
+    ("GET", "/api/v1/projects/{id}/general/materials", "通用资料登记列表"),
+    ("GET", "/api/v1/projects/{id}/general/stats", "通用项目统计"),
+    ("GET", "/api/v1/projects/{id}/development/summary", "开发项目摘要"),
+    ("GET", "/api/v1/projects/{id}/development/git-snapshot", "最新已保存 Git 快照"),
+    ("GET", "/api/v1/projects/{id}/development/task-evidence", "任务的开发交接与人工验收证据"),
+    ("POST", "/api/v1/projects/{id}/game/builds", "登记构建结果"),
+    ("POST", "/api/v1/projects/{id}/game/tests", "登记测试结果"),
+    ("POST", "/api/v1/projects/{id}/general/milestones", "创建或更新通用里程碑"),
+    ("POST", "/api/v1/projects/{id}/development/task-links", "关联开发任务与已有证据"),
 ];
 
 /// 真实运行状态。与「配置期望运行」分开：`enabled=true` 不代表正在监听。
@@ -1107,6 +1121,10 @@ fn rebuild_committed_response(
         )?)?),
         "novel.chapter" => novel::rebuild_committed(db, principal, operation_id),
         "comic.media_version" => comic::rebuild_committed(db, principal, operation_id),
+        "game.build" => game::rebuild_committed(db, principal, "game.build.create", operation_id),
+        "game.test" => game::rebuild_committed(db, principal, "game.test.create", operation_id),
+        "general.milestone" => general::rebuild_committed(db, principal, operation_id),
+        "development.task_link" => development::rebuild_committed(db, principal, operation_id),
         other => Err(AppError::Conflict(format!(
             "operation_kind={other} 不是可恢复的创建类操作，禁止重新执行"
         ))),
@@ -1268,8 +1286,36 @@ async fn handle(req: Request<Incoming>, state: Arc<RestState>) -> Response<Full<
     });
 
     let mut claim: Option<IdemClaim> = None;
+    let domain_write = operations::describe_rest_write(method.as_str(), &path)
+        .and_then(|(id, _)| super::domains::find_operation(id));
+    if let Some(operation) = domain_write {
+        let added = matches!(operation.domain,
+            super::domains::DomainKind::Game | super::domains::DomainKind::General | super::domains::DomainKind::Development);
+        if added && idem.is_none() {
+            return fail_response(
+                StatusCode::BAD_REQUEST,
+                &AppError::Validation("领域写入必须提供有效的 Idempotency-Key".into()),
+                &principal, &request_id,
+            );
+        }
+    }
     if let Some((key, row_id, fp)) = &idem {
-        if let Err(err) = authorize_project_task_request(&state.db, &principal, &path, &body) {
+        if let Err(err) = authorize_project_task_request(&state.db, &principal, &path, &body)
+            .and_then(|()| {
+                if let Some(operation) = domain_write {
+                    let project = operations::rest_project_ref(&path)
+                        .ok_or_else(|| AppError::Validation("缺少项目 ID".into()))?;
+                    let input: Value = if operation.id == "development.task_link.create" {
+                        super::domain_rest::parse_sized(operation.id, &body)?
+                    } else {
+                        Value::Null
+                    };
+                    state.db.with_read(|conn| super::domains::policy::authorize_write_replay(
+                        conn, &principal, &project, operation, &input,
+                    ))?;
+                }
+                Ok(())
+            }) {
             let status = StatusCode::from_u16(http_status(error_code(&err)))
                 .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
             return fail_response(status, &err, &principal, &request_id);
@@ -2319,20 +2365,14 @@ where
 }
 
 fn openapi() -> Value {
-    let paths = ROUTES
-        .iter()
-        .map(|(method, path, summary)| {
-            (
-                path.to_string(),
-                json!({
-                    method.to_lowercase(): {
-                        "summary": summary,
-                        "responses": { "200": { "description": "统一 JSON 信封" } }
-                    }
-                }),
-            )
-        })
-        .collect::<serde_json::Map<String, Value>>();
+    let mut paths = serde_json::Map::new();
+    for (method, path, summary) in ROUTES {
+        let methods = paths.entry(*path).or_insert_with(|| json!({}));
+        methods[method.to_lowercase()] = json!({
+            "summary": summary,
+            "responses": { "200": { "description": "统一 JSON 信封" } }
+        });
+    }
     json!({
         "openapi": "3.0.3",
         "info": {

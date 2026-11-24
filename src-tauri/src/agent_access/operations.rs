@@ -1526,6 +1526,13 @@ pub fn describe_rest_write(method: &str, path: &str) -> Option<(&'static str, &'
     let sub_action = tail.get(2).copied().unwrap_or("");
     // 领域写路由（v100）：PUT 章节正文 / PUT 素材版本 / POST 采用素材。
     if collection == "projects" {
+        match (method, tail) {
+            ("POST", ["projects", _, "game", "builds"]) => return Some(("game.build.create", "game.build")),
+            ("POST", ["projects", _, "game", "tests"]) => return Some(("game.test.create", "game.test")),
+            ("POST", ["projects", _, "general", "milestones"]) => return Some(("general.milestone.save", "general.milestone")),
+            ("POST", ["projects", _, "development", "task-links"]) => return Some(("development.task_link.create", "development.task_link")),
+            _ => {}
+        }
         if method == "PUT"
             && tail.get(2) == Some(&"novel")
             && tail.get(3) == Some(&"chapters")

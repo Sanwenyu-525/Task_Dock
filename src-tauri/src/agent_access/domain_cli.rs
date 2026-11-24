@@ -15,7 +15,7 @@ use crate::db::Db;
 use crate::error::{AppError, AppResult};
 
 use super::cli::take_flag;
-use super::domains::{comic, manifest, novel, registry};
+use super::domains::{comic, development, game, general, manifest, novel, registry};
 use super::Principal;
 
 fn to_value<T: Serialize>(value: T) -> AppResult<Value> {
@@ -82,8 +82,88 @@ pub fn execute(
         "domain" => execute_domain(db, principal, sub, args),
         "novel" => execute_novel(db, principal, sub, args, request_id, limit, offset, guard),
         "comic" => execute_comic(db, principal, sub, args, request_id, limit, offset, guard),
+        "game" | "general" | "development" => {
+            let action = take_action(args);
+            let project = required_project(args)?;
+            let page = |items, page| Ok((items, Some(page)));
+            let unpaged = |data| Ok((data, None));
+            match (group, sub, action.as_str()) {
+                ("game", "facts", "get") =>
+                    unpaged(to_value(game::get_facts(db, principal, &project)?)?),
+                ("game", "asset", "list") => {
+                    let (items, info) = game::list_assets(db, principal, &project, limit, offset)?;
+                    page(to_value(items)?, info)
+                }
+                ("game", "build", "list") => {
+                    let (items, info) = game::list_builds(db, principal, &project, limit, offset)?;
+                    page(to_value(items)?, info)
+                }
+                ("game", "test", "list") => {
+                    let (items, info) = game::list_tests(db, principal, &project, limit, offset)?;
+                    page(to_value(items)?, info)
+                }
+                ("general", "milestone", "list") => {
+                    let (items, info) = general::list_milestones(db, principal, &project, limit, offset)?;
+                    page(to_value(items)?, info)
+                }
+                ("general", "material", "list") => {
+                    let (items, info) = general::list_materials(db, principal, &project, limit, offset)?;
+                    page(to_value(items)?, info)
+                }
+                ("general", "stats", "get") =>
+                    unpaged(to_value(general::read_stats(db, principal, &project)?)?),
+                ("development", "summary", "get") =>
+                    unpaged(development::get_summary(db, principal, &project)?),
+                ("development", "git-snapshot", "get") =>
+                    unpaged(development::get_git_snapshot(db, principal, &project)?),
+                ("development", "task-evidence", "list") => {
+                    let task = required(args, "--task-id")?;
+                    let (items, info) =
+                        development::list_task_evidence(db, principal, &project, &task, limit, offset)?;
+                    page(to_value(items)?, info)
+                }
+                ("game", "build", "create") => {
+                    let input = parse_payload(args, "game.build.create")?;
+                    unpaged(to_value(game::create_build_with_request(
+                        db, principal, &project, input, request_id, guard,
+                    )?)?)
+                }
+                ("game", "test", "create") => {
+                    let input = parse_payload(args, "game.test.create")?;
+                    unpaged(to_value(game::create_test_with_request(
+                        db, principal, &project, input, request_id, guard,
+                    )?)?)
+                }
+                ("general", "milestone", "save") => {
+                    let input = parse_payload(args, "general.milestone.save")?;
+                    unpaged(to_value(general::save_milestone_with_request(
+                        db, principal, &project, input, request_id, guard,
+                    )?)?)
+                }
+                ("development", "task-link", "create") => {
+                    let input = parse_payload(args, "development.task_link.create")?;
+                    unpaged(development::create_task_link_with_request(
+                        db, principal, &project, input, request_id, guard,
+                    )?)
+                }
+                _ => Err(usage("未知的领域命令，请用 taskdock help 查看")),
+            }
+        }
         _ => Err(usage("未知的命令组")),
     }
+}
+
+fn parse_payload<T: serde::de::DeserializeOwned>(
+    args: &mut Vec<String>,
+    operation: &str,
+) -> AppResult<T> {
+    let payload = required(args, "--payload")?;
+    if !args.is_empty() {
+        return Err(usage("写命令包含额外参数"));
+    }
+    registry::validate_payload_size(operation, payload.len())?;
+    serde_json::from_str(&payload)
+        .map_err(|_| AppError::Validation("--payload 不符合该操作的 JSON 参数契约".into()))
 }
 
 fn execute_domain(

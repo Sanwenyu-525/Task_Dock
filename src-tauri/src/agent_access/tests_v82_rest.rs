@@ -28,7 +28,7 @@ use super::{Principal, Source};
 /// 进程级串行锁：slot/runtime 是全局单例，多测试并行会互相覆盖。
 static SERIAL: Mutex<()> = Mutex::new(());
 
-fn serial() -> std::sync::MutexGuard<'static, ()> {
+pub(super) fn serial() -> std::sync::MutexGuard<'static, ()> {
     SERIAL.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -44,7 +44,7 @@ fn free_port() -> u16 {
 
 /// 启动 REST 并返回实际端口。整套测试并行运行时端口可能被其它用例瞬间抢走，
 /// 这里对「绑定失败」重试几次；其它错误直接失败。
-fn start_rest(db: &Arc<Db>) -> u16 {
+pub(super) fn start_rest(db: &Arc<Db>) -> u16 {
     for _ in 0..5 {
         let port = free_port();
         match rest::start(db.clone(), port) {
@@ -437,7 +437,7 @@ fn request_head(method_path: &str, token: &str, extra: &[(&str, &str)]) -> Strin
 }
 
 /// 发起一次带 body 的 POST（可带 Idempotency-Key），返回 (状态, 头, 正文)。
-fn post(
+pub(super) fn post(
     port: u16,
     path: &str,
     token: &str,
@@ -460,7 +460,7 @@ fn post(
 }
 
 /// 发起一次 GET（可带自定义头），返回 (状态, 头, 正文)。
-fn get(
+pub(super) fn get(
     port: u16,
     path: &str,
     token: Option<&str>,

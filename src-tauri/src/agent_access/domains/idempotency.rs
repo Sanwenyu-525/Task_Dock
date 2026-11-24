@@ -91,9 +91,8 @@ where
     if request_id.trim().is_empty() {
         return Err(AppError::Validation("requestId 不能为空".into()));
     }
-    let _def = find_operation(operation_id)
+    let def = find_operation(operation_id)
         .ok_or_else(|| AppError::Validation(format!("未注册的领域操作：{operation_id}")))?;
-    let _ = project_id;
     let fp = fingerprint(operation_id, payload);
     let Some(agent_row_id) = principal.agent_row_id.clone() else {
         // 本地人类身份没有 mcp_agents 行，`agent_request_cache.agent_row_id` 外键
@@ -134,6 +133,9 @@ where
             if status_code >= 400 {
                 return Err(AppError::Conflict("缓存的幂等结果不是成功响应".into()));
             }
+            db.with_read(|conn| {
+                super::policy::authorize_write_replay(conn, principal, project_id, def, &payload["input"])
+            })?;
             return serde_json::from_str::<T>(&response_json).map_err(|_| {
                 AppError::Conflict(
                     "IDEMPOTENCY_RECOVERY_REQUIRED: 幂等响应无法解析，请使用新 requestId 重试".into(),
@@ -154,6 +156,7 @@ where
             }
             // 业务已提交、响应未写：只重建，绝不重新执行。
             let recovered = db.with_read(|conn| {
+                super::policy::authorize_write_replay(conn, principal, project_id, def, &payload["input"])?;
                 recover(conn, &operation_kind, &committed_operation_id)
             });
             let value = recovered.map_err(|err| {
@@ -248,9 +251,16 @@ mod tests {
                  VALUES ('ar1','agent-1','','project_rw','2026-01-01','2026-01-01')",
                 [],
             )?;
+            conn.execute(
+                "INSERT INTO workspace_projects (id,name,kind,status,created_at,updated_at)
+                 VALUES ('p1','小说测试','novel','active','2026-01-01','2026-01-01')",
+                [],
+            )?;
             Ok(())
         })
         .unwrap();
+        crate::mcp::permissions::grant(db, "ar1", "projects.write", "").unwrap();
+        crate::mcp::auth::grant_project(db, "ar1", "p1").unwrap();
     }
 
     #[test]

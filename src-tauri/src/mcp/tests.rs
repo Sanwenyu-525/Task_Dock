@@ -602,6 +602,16 @@ fn tool_defs_are_complete_and_unique() {
             .unwrap_or_default();
         let has_rev = req.iter().any(|v| v == "expected_revision");
         let has_updated = req.iter().any(|v| v == "expected_updated_at");
+        if let Some(op) = crate::agent_access::domain_mcp::write_operation(d.name) {
+            assert!(req.iter().any(|v| v == "requestId"), "{} 缺少幂等键", d.name);
+            assert_eq!(
+                has_rev || has_updated,
+                op.revision_required,
+                "{} 的固定并发令牌要求与注册中心不符",
+                d.name
+            );
+            continue;
+        }
         assert!(
             has_rev || has_updated || no_revision_required.contains(&d.name),
             "{} 缺少并发令牌要求",

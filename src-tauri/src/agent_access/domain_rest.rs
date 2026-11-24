@@ -16,7 +16,7 @@ use crate::agent_access::Page;
 use crate::db::Db;
 use crate::error::{AppError, AppResult};
 
-use super::domains::{comic, manifest, novel};
+use super::domains::{comic, development, game, general, manifest, novel, registry};
 use super::Principal;
 
 #[derive(Deserialize)]
@@ -41,6 +41,12 @@ struct AdoptBody {
 
 fn parse<T: for<'de> Deserialize<'de>>(body: &[u8]) -> AppResult<T> {
     serde_json::from_slice(body).map_err(AppError::from)
+}
+
+pub(super) fn parse_sized<T: for<'de> Deserialize<'de>>(operation: &str, body: &[u8]) -> AppResult<T> {
+    registry::validate_payload_size(operation, body.len())?;
+    serde_json::from_slice(body)
+        .map_err(|_| AppError::Validation("请求体不符合该操作的 JSON 参数契约".into()))
 }
 
 fn q<'a>(query: &'a HashMap<String, String>, key: &str) -> Option<&'a str> {
@@ -79,6 +85,20 @@ pub(crate) fn handle(
             | ("GET", ["projects", _, "comic", "scenes"])
             | ("PUT", ["projects", _, "comic", "media-versions", _])
             | ("POST", ["projects", _, "comic", "media-versions", _, "adopt"])
+            | ("GET", ["projects", _, "game", "facts"])
+            | ("GET", ["projects", _, "game", "assets"])
+            | ("GET", ["projects", _, "game", "builds"])
+            | ("GET", ["projects", _, "game", "tests"])
+            | ("GET", ["projects", _, "general", "milestones"])
+            | ("GET", ["projects", _, "general", "materials"])
+            | ("GET", ["projects", _, "general", "stats"])
+            | ("GET", ["projects", _, "development", "summary"])
+            | ("GET", ["projects", _, "development", "git-snapshot"])
+            | ("GET", ["projects", _, "development", "task-evidence"])
+            | ("POST", ["projects", _, "game", "builds"])
+            | ("POST", ["projects", _, "game", "tests"])
+            | ("POST", ["projects", _, "general", "milestones"])
+            | ("POST", ["projects", _, "development", "task-links"])
     );
     if !matched {
         return None;
@@ -88,6 +108,54 @@ pub(crate) fn handle(
         let limit = q_i64(query, "limit");
         let offset = q_i64(query, "offset");
         let value = match (method, rest) {
+            ("GET", ["projects", _, "game", "facts"]) => {
+                (serde_json::to_value(game::get_facts(db, principal, raw_project)?)?, None)
+            },
+            ("GET", ["projects", _, "game", "assets"]) => {
+                let (items, page) = game::list_assets(db, principal, raw_project, limit, offset)?;
+                (serde_json::to_value(items)?, Some(page))
+            },
+            ("GET", ["projects", _, "game", "builds"]) => {
+                let (items, page) = game::list_builds(db, principal, raw_project, limit, offset)?;
+                (serde_json::to_value(items)?, Some(page))
+            },
+            ("GET", ["projects", _, "game", "tests"]) => {
+                let (items, page) = game::list_tests(db, principal, raw_project, limit, offset)?;
+                (serde_json::to_value(items)?, Some(page))
+            },
+            ("GET", ["projects", _, "general", "milestones"]) => {
+                let (items, page) = general::list_milestones(db, principal, raw_project, limit, offset)?;
+                (serde_json::to_value(items)?, Some(page))
+            },
+            ("GET", ["projects", _, "general", "materials"]) => {
+                let (items, page) = general::list_materials(db, principal, raw_project, limit, offset)?;
+                (serde_json::to_value(items)?, Some(page))
+            },
+            ("GET", ["projects", _, "general", "stats"]) => {
+                (serde_json::to_value(general::read_stats(db, principal, raw_project)?)?, None)
+            },
+            ("GET", ["projects", _, "development", "summary"]) => {
+                (serde_json::to_value(development::get_summary(db, principal, raw_project)?)?, None)
+            },
+            ("GET", ["projects", _, "development", "git-snapshot"]) => {
+                (serde_json::to_value(development::get_git_snapshot(db, principal, raw_project)?)?, None)
+            },
+            ("GET", ["projects", _, "development", "task-evidence"]) => {
+                let (items, page) = development::list_task_evidence(db, principal, raw_project, q(query, "task_id").ok_or_else(|| AppError::Validation("缺少 task_id".into()))?, limit, offset)?;
+                (serde_json::to_value(items)?, Some(page))
+            },
+            ("POST", ["projects", _, "game", "builds"]) => {
+                (serde_json::to_value(game::create_build_with_guard(db, principal, raw_project, parse_sized("game.build.create", body)?, guard)?)?, None)
+            },
+            ("POST", ["projects", _, "game", "tests"]) => {
+                (serde_json::to_value(game::create_test_with_guard(db, principal, raw_project, parse_sized("game.test.create", body)?, guard)?)?, None)
+            },
+            ("POST", ["projects", _, "general", "milestones"]) => {
+                (serde_json::to_value(general::save_milestone_with_guard(db, principal, raw_project, parse_sized("general.milestone.save", body)?, guard)?)?, None)
+            },
+            ("POST", ["projects", _, "development", "task-links"]) => {
+                (serde_json::to_value(development::create_task_link_with_guard(db, principal, raw_project, parse_sized("development.task_link.create", body)?, guard)?)?, None)
+            },
             ("GET", ["projects", _, "domain-manifest"]) => {
                 return Ok((
                     serde_json::to_value(manifest::build_for_principal(

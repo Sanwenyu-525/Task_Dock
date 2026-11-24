@@ -10,7 +10,7 @@
 
 use serde_json::{json, Value};
 
-use crate::agent_access::domains::{comic, manifest, novel, registry};
+use crate::agent_access::domains::{comic, development, game, general, manifest, novel, registry};
 use crate::error::{AppError, AppResult};
 use crate::mcp::tools::{
     arg_str, outcome, schema, CallOutcome, ToolCtx, ToolDef, ToolError,
@@ -44,6 +44,20 @@ pub const OP_TOOLS: &[(&str, &str)] = &[
     ("comic.scene.list", "taskdock_comic_list_scenes"),
     ("comic.media.update", "taskdock_comic_save_media_version"),
     ("comic.media.adopt", "taskdock_comic_adopt_media_version"),
+    ("game.facts.get", "taskdock_game_get_facts"),
+    ("game.asset.list", "taskdock_game_list_assets"),
+    ("game.build.list", "taskdock_game_list_builds"),
+    ("game.test.list", "taskdock_game_list_tests"),
+    ("general.milestone.list", "taskdock_general_list_milestones"),
+    ("general.material.list", "taskdock_general_list_materials"),
+    ("general.stats.read", "taskdock_general_get_stats"),
+    ("development.summary.get", "taskdock_development_get_summary"),
+    ("development.git.snapshot.get", "taskdock_development_get_git_snapshot"),
+    ("development.task_evidence.list", "taskdock_development_list_task_evidence"),
+    ("game.build.create", "taskdock_game_create_build"),
+    ("game.test.create", "taskdock_game_create_test"),
+    ("general.milestone.save", "taskdock_general_save_milestone"),
+    ("development.task_link.create", "taskdock_development_create_task_link"),
 ];
 
 fn tool_name(op_id: &str) -> Option<&'static str> {
@@ -58,6 +72,11 @@ fn op_id_of(tool: &str) -> Option<&'static str> {
         .iter()
         .find(|(_, name)| *name == tool)
         .map(|(id, _)| *id)
+}
+
+pub(crate) fn write_operation(tool: &str) -> Option<&'static registry::DomainOperationDef> {
+    registry::find_operation(op_id_of(tool)?)
+        .filter(|op| op.access == registry::OperationAccess::Write)
 }
 
 // ── 精确参数 Schema（每个操作只声明自己接受的字段） ─────────────────
@@ -112,6 +131,13 @@ fn list_props(extra: Value) -> Value {
         props = Value::Object(merged);
     }
     props
+}
+
+fn write_schema(props: Value, required: &[&str]) -> Value {
+    schema(
+        json!({ "project_id": project_prop(), "requestId": request_id_prop(), "input": schema(props, required) }),
+        &["project_id", "requestId", "input"],
+    )
 }
 
 fn schema_for(op_id: &str) -> Option<Value> {
@@ -216,6 +242,64 @@ fn schema_for(op_id: &str) -> Option<Value> {
                 "requestId",
             ],
         ),
+        "game.facts.get" => (json!({"project_id": project_prop()}), &["project_id"]),
+        "game.asset.list" => (list_props(json!({})), &["project_id"]),
+        "game.build.list" => (list_props(json!({})), &["project_id"]),
+        "game.test.list" => (list_props(json!({})), &["project_id"]),
+        "general.milestone.list" => (list_props(json!({})), &["project_id"]),
+        "general.material.list" => (list_props(json!({})), &["project_id"]),
+        "general.stats.read" => (json!({"project_id": project_prop()}), &["project_id"]),
+        "development.summary.get" => (json!({"project_id": project_prop()}), &["project_id"]),
+        "development.git.snapshot.get" => (json!({"project_id": project_prop()}), &["project_id"]),
+        "development.task_evidence.list" => (list_props(json!({"task_id": str_prop("已关联到该项目的任务 ID", 128)})), &["project_id", "task_id"]),
+        "game.build.create" => return Some(write_schema(
+            json!({
+                "target": str_prop("构建目标", 500),
+                "status": enum_prop("登记的构建状态", &["planned", "success", "failed", "canceled", "unknown"]),
+                "engine": str_prop("引擎", 500),
+                "config": str_prop("构建配置", 500),
+                "built_at": str_prop("构建时间（ISO 8601）", 128),
+                "log_summary": str_prop("日志摘要", 2000),
+                "item_id": str_prop("当前项目的事项 ID", 128),
+                "note": str_prop("备注", 2000),
+            }),
+            &["target", "status"],
+        )),
+        "game.test.create" => return Some(write_schema(
+            json!({
+                "title": str_prop("测试标题", 240),
+                "result": enum_prop("登记的测试结果", &["passed", "failed", "blocked", "skipped", "unknown"]),
+                "build_id": str_prop("当前项目的构建 ID", 128),
+                "scope": str_prop("测试范围", 500),
+                "tested_at": str_prop("测试时间（ISO 8601）", 128),
+                "summary": str_prop("结果摘要", 2000),
+                "defect_count": int_prop("缺陷数量", 0, None),
+                "item_id": str_prop("当前项目的事项 ID", 128),
+                "note": str_prop("备注", 2000),
+            }),
+            &["title", "result"],
+        )),
+        "general.milestone.save" => return Some(write_schema(
+            json!({
+                "id": str_prop("更新时提供里程碑 ID，创建时省略", 128),
+                "title": str_prop("里程碑名称", 240),
+                "target_date": str_prop("目标日 YYYY-MM-DD，空串清除", 10),
+                "status": enum_prop("里程碑状态", &["open", "done", "skipped"]),
+                "note": str_prop("备注", 4000),
+                "sort_order": json!({ "type": "integer" }),
+                "expected_revision": int_prop("更新时必填，创建时省略", 0, None),
+            }),
+            &["title"],
+        )),
+        "development.task_link.create" => return Some(write_schema(
+            json!({
+                "task_id": str_prop("已关联到该项目的任务 ID", 128),
+                "handoff_pack_id": str_prop("该任务的开发交接包 ID", 128),
+                "acceptance_record_id": str_prop("该任务的人工验收记录 ID", 128),
+                "note": str_prop("关联备注", 500),
+            }),
+            &["task_id"],
+        )),
         _ => return None,
     };
     Some(schema(props, required))
@@ -272,7 +356,11 @@ fn opt_i64(args: &Value, key: &str) -> Option<i64> {
 }
 
 fn need_request_id(args: &Value) -> AppResult<String> {
-    need(args, "requestId")
+    let id = need(args, "requestId")?;
+    if id.chars().count() > 128 {
+        return Err(AppError::Validation("requestId 超过 128 字符".into()));
+    }
+    Ok(id)
 }
 
 fn principal_of(ctx: &ToolCtx) -> Principal {
@@ -317,6 +405,8 @@ pub(crate) fn call(
             None
         };
         let mut changed = None;
+        let limit = opt_i64(args, "limit");
+        let offset = opt_i64(args, "offset");
 
         let (value, id) = match op {
             "novel.chapter.list" => {
@@ -526,6 +616,73 @@ pub(crate) fn call(
                     revision: Some(new_revision),
                 });
                 (json!({ "media": media, "revision": new_revision }), id)
+            }
+            "game.facts.get" => {
+                (serde_json::to_value(game::get_facts(db, &principal, &raw_project)?)?, raw_project.clone())
+            },
+            "game.asset.list" => {
+                let (items, page) = game::list_assets(db, &principal, &raw_project, limit, offset)?;
+                (page_list(items, page)?, raw_project.clone())
+            },
+            "game.build.list" => {
+                let (items, page) = game::list_builds(db, &principal, &raw_project, limit, offset)?;
+                (page_list(items, page)?, raw_project.clone())
+            },
+            "game.test.list" => {
+                let (items, page) = game::list_tests(db, &principal, &raw_project, limit, offset)?;
+                (page_list(items, page)?, raw_project.clone())
+            },
+            "general.milestone.list" => {
+                let (items, page) = general::list_milestones(db, &principal, &raw_project, limit, offset)?;
+                (page_list(items, page)?, raw_project.clone())
+            },
+            "general.material.list" => {
+                let (items, page) = general::list_materials(db, &principal, &raw_project, limit, offset)?;
+                (page_list(items, page)?, raw_project.clone())
+            },
+            "general.stats.read" => {
+                (serde_json::to_value(general::read_stats(db, &principal, &raw_project)?)?, raw_project.clone())
+            },
+            "development.summary.get" => {
+                (serde_json::to_value(development::get_summary(db, &principal, &raw_project)?)?, raw_project.clone())
+            },
+            "development.git.snapshot.get" => {
+                (serde_json::to_value(development::get_git_snapshot(db, &principal, &raw_project)?)?, raw_project.clone())
+            },
+            "development.task_evidence.list" => {
+                let (items, page) = development::list_task_evidence(db, &principal, &raw_project, &need(args, "task_id")?, limit, offset)?;
+                (page_list(items, page)?, raw_project.clone())
+            },
+            "game.build.create" | "game.test.create" | "general.milestone.save" | "development.task_link.create" => {
+                let conn = conn.ok_or_else(|| AppError::Unavailable("领域写操作缺少事务连接".into()))?;
+                need_request_id(args)?;
+                let input = args.get("input").cloned().ok_or_else(|| AppError::Validation("缺少 input".into()))?;
+                registry::validate_payload_size(op, input.to_string().len())?;
+                let guard = crate::agent_access::store::NoGuard;
+                let value = match op {
+                    "game.build.create" => serde_json::to_value(game::create_build_in_conn(
+                        conn, &principal, &raw_project, serde_json::from_value(input)?, &guard,
+                    )?)?,
+                    "game.test.create" => serde_json::to_value(game::create_test_in_conn(
+                        conn, &principal, &raw_project, serde_json::from_value(input)?, &guard,
+                    )?)?,
+                    "general.milestone.save" => serde_json::to_value(general::save_milestone_in_conn(
+                        conn, &principal, &raw_project, serde_json::from_value(input)?, &guard,
+                    )?)?,
+                    "development.task_link.create" => serde_json::to_value(development::create_task_link_in_conn(
+                        conn, &principal, &raw_project, serde_json::from_value(input)?, &guard,
+                    )?)?,
+                    _ => unreachable!(),
+                };
+                let id = need(&value, "id")?;
+                changed = Some(PlanningChanged {
+                    kind: def.resource_kind,
+                    project_id: Some(need(&value, "projectId")?),
+                    plan_id: None,
+                    feature_id: None,
+                    revision: value.get("revision").and_then(Value::as_i64),
+                });
+                (value, id)
             }
             _ => return Err(AppError::Validation(format!("领域操作未实现：{op}"))),
         };

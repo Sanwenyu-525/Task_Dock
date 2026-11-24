@@ -42,7 +42,7 @@ pub struct DomainManifestOperation {
 pub struct DomainManifest {
     pub schema_version: String,
     pub project: ProjectDomainInfo,
-    /// 领域名称（`novel` / `comic`），用于操作 ID 前缀与能力分组。
+    /// 领域名称，用于操作 ID 前缀与能力分组。
     pub domain: String,
     pub operations: Vec<DomainManifestOperation>,
 }
@@ -162,12 +162,9 @@ mod tests {
         let registered: Vec<&str> = all_operations().iter().map(|op| op.id).collect();
         for domain in DomainKind::ALL {
             let m = build_manifest("p", domain.as_str(), domain, "active");
-            assert!(m.operations.iter().all(|op| registered.contains(&op.id.as_str())));
-            if matches!(domain, DomainKind::Novel | DomainKind::Comic) {
-                assert!(!m.operations.is_empty(), "{} 应有已注册操作", domain.as_str());
-            } else {
-                assert!(m.operations.is_empty(), "{} 不应暴露 planned 能力", domain.as_str());
-            }
+            assert!(!m.operations.is_empty(), "{} 应有已注册操作", domain.as_str());
+            assert!(m.operations.iter().all(|op| registered.contains(&op.id.as_str())
+                && op.id.split('.').next() == Some(domain.as_str())));
         }
     }
 }

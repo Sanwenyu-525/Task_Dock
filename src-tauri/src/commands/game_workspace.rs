@@ -692,20 +692,25 @@ fn row_to_fact(row: &rusqlite::Row<'_>) -> rusqlite::Result<GameProjectFact> {
     })
 }
 
-fn fact_get_impl(db: &Db, project_id: &str) -> AppResult<Option<GameProjectFact>> {
-    db.with_read(|conn| {
-        ensure_game_project(conn, project_id, false)?;
-        let fact = conn
-            .query_row(
-                "SELECT id, project_id, engine, detection_method, engine_version, evidence,
+pub(crate) fn game_project_facts_get_in_conn(
+    conn: &Connection,
+    project_id: &str,
+) -> AppResult<Option<GameProjectFact>> {
+    ensure_game_project(conn, project_id, false)?;
+    let fact = conn
+        .query_row(
+            "SELECT id, project_id, engine, detection_method, engine_version, evidence,
                         created_at, updated_at
                  FROM game_project_facts WHERE project_id = ?1",
-                params![project_id],
-                row_to_fact,
-            )
-            .optional()?;
-        Ok(fact)
-    })
+            params![project_id],
+            row_to_fact,
+        )
+        .optional()?;
+    Ok(fact)
+}
+
+fn fact_get_impl(db: &Db, project_id: &str) -> AppResult<Option<GameProjectFact>> {
+    db.with_read(|conn| game_project_facts_get_in_conn(conn, project_id))
 }
 
 /// 只读扫描项目根目录的真实文件特征；不写库。归档项目也允许扫描查看。
@@ -828,32 +833,65 @@ fn row_to_asset(
     root: Option<&Path>,
     conn: &Connection,
 ) -> rusqlite::Result<GameAsset> {
-    let path: String = row.get("path")?;
-    let item_id: Option<String> = row.get("item_id")?;
-    let path_exists = Path::new(&path).exists();
+    let mut asset = row_to_asset_metadata(row, conn)?;
+    asset.path_exists = Path::new(&asset.path).exists();
     // 相对关系按当前根目录重新计算（根目录可能被修改）。
-    let (relative_path, location) = match Path::new(&path).canonicalize() {
+    let (relative_path, location) = match Path::new(&asset.path).canonicalize() {
         Ok(abs) => rel_and_location(root, &abs),
-        Err(_) => rel_and_location(root, Path::new(&path)),
+        Err(_) => rel_and_location(root, Path::new(&asset.path)),
     };
+    asset.relative_path = relative_path;
+    asset.location = location;
+    Ok(asset)
+}
+
+fn row_to_asset_metadata(
+    row: &rusqlite::Row<'_>,
+    conn: &Connection,
+) -> rusqlite::Result<GameAsset> {
+    let item_id: Option<String> = row.get("item_id")?;
     let item_exists = weak_ref_exists(conn, "workspace_items", item_id.as_deref());
     Ok(GameAsset {
         id: row.get("id")?,
         project_id: row.get("project_id")?,
         kind: row.get("kind")?,
         name: row.get("name")?,
-        path,
-        relative_path,
-        location,
+        path: row.get("path")?,
+        relative_path: row.get("relative_path")?,
+        location: row.get("location")?,
         size_bytes: row.get("size_bytes")?,
         modified_at: row.get("modified_at")?,
         item_id,
         note: row.get("note")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
-        path_exists,
+        path_exists: false,
         item_exists,
     })
+}
+
+/// Agent 分页只读登记元数据，不探测登记路径或访问项目外文件。
+pub(crate) fn game_asset_list_page_in_conn(
+    conn: &Connection,
+    project_id: &str,
+    limit: u32,
+    offset: u32,
+) -> AppResult<(Vec<GameAsset>, u32)> {
+    ensure_game_project(conn, project_id, false)?;
+    let total = conn.query_row(
+        "SELECT COUNT(*) FROM game_assets WHERE project_id = ?1",
+        [project_id],
+        |r| r.get(0),
+    )?;
+    let mut stmt = conn.prepare(
+        "SELECT id, project_id, kind, name, path, relative_path, location, size_bytes,
+                modified_at, item_id, note, created_at, updated_at
+         FROM game_assets WHERE project_id = ?1 ORDER BY created_at, id LIMIT ?2 OFFSET ?3",
+    )?;
+    let rows = stmt.query_map(params![project_id, limit, offset], |r| {
+        row_to_asset_metadata(r, conn)
+    })?;
+    Ok((rows.collect::<Result<Vec<_>, _>>()?, total))
 }
 
 pub fn game_asset_list_impl(db: &Db, project_id: &str) -> AppResult<Vec<GameAsset>> {
@@ -993,11 +1031,19 @@ pub fn game_asset_delete_impl(db: &Db, id: &str) -> AppResult<()> {
 // ── 构建记录 ────────────────────────────────────────────────────────────
 
 fn row_to_build(row: &rusqlite::Row<'_>, conn: &Connection) -> rusqlite::Result<GameBuild> {
+    let mut build = row_to_build_metadata(row, conn)?;
+    build.log_exists = path_exists(&build.log_path);
+    build.artifact_exists = path_exists(&build.artifact_path);
+    Ok(build)
+}
+
+fn row_to_build_metadata(
+    row: &rusqlite::Row<'_>,
+    conn: &Connection,
+) -> rusqlite::Result<GameBuild> {
     let log_path: String = row.get("log_path")?;
     let artifact_path: String = row.get("artifact_path")?;
     let item_id: Option<String> = row.get("item_id")?;
-    let log_exists = path_exists(&log_path);
-    let artifact_exists = path_exists(&artifact_path);
     let item_exists = weak_ref_exists(conn, "workspace_items", item_id.as_deref());
     Ok(GameBuild {
         id: row.get("id")?,
@@ -1015,10 +1061,50 @@ fn row_to_build(row: &rusqlite::Row<'_>, conn: &Connection) -> rusqlite::Result<
         note: row.get("note")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
-        log_exists,
-        artifact_exists,
+        log_exists: false,
+        artifact_exists: false,
         item_exists,
     })
+}
+
+pub(crate) fn game_build_get_in_conn(
+    conn: &Connection,
+    project_id: &str,
+    id: &str,
+) -> AppResult<Option<GameBuild>> {
+    ensure_game_project(conn, project_id, false)?;
+    Ok(conn
+        .query_row(
+            "SELECT id, project_id, target, engine, config, status, built_at, log_path,
+                log_summary, artifact_path, source, item_id, note, created_at, updated_at
+         FROM game_builds WHERE project_id = ?1 AND id = ?2",
+            params![project_id, id],
+            |r| row_to_build_metadata(r, conn),
+        )
+        .optional()?)
+}
+
+pub(crate) fn game_build_list_page_in_conn(
+    conn: &Connection,
+    project_id: &str,
+    limit: u32,
+    offset: u32,
+) -> AppResult<(Vec<GameBuild>, u32)> {
+    ensure_game_project(conn, project_id, false)?;
+    let total = conn.query_row(
+        "SELECT COUNT(*) FROM game_builds WHERE project_id = ?1",
+        [project_id],
+        |r| r.get(0),
+    )?;
+    let mut stmt = conn.prepare(
+        "SELECT id, project_id, target, engine, config, status, built_at, log_path,
+                log_summary, artifact_path, source, item_id, note, created_at, updated_at
+         FROM game_builds WHERE project_id = ?1 ORDER BY built_at DESC, id LIMIT ?2 OFFSET ?3",
+    )?;
+    let rows = stmt.query_map(params![project_id, limit, offset], |r| {
+        row_to_build_metadata(r, conn)
+    })?;
+    Ok((rows.collect::<Result<Vec<_>, _>>()?, total))
 }
 
 pub fn game_build_list_impl(db: &Db, project_id: &str) -> AppResult<Vec<GameBuild>> {
@@ -1057,10 +1143,55 @@ pub fn game_build_save_impl(
     item_id: Option<String>,
     note: Option<String>,
 ) -> AppResult<GameBuild> {
+    let mut saved = db.with_transaction(|conn| {
+        game_build_save_in_conn(
+            conn,
+            id,
+            project_id,
+            target,
+            engine,
+            config,
+            status,
+            built_at,
+            log_path,
+            log_summary,
+            artifact_path,
+            item_id,
+            note,
+            "manual",
+        )
+    })?;
+    saved.log_exists = path_exists(&saved.log_path);
+    saved.artifact_exists = path_exists(&saved.artifact_path);
+    Ok(saved)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn game_build_save_in_conn(
+    conn: &Connection,
+    id: Option<String>,
+    project_id: String,
+    target: String,
+    engine: Option<String>,
+    config: Option<String>,
+    status: String,
+    built_at: Option<String>,
+    log_path: Option<String>,
+    log_summary: Option<String>,
+    artifact_path: Option<String>,
+    item_id: Option<String>,
+    note: Option<String>,
+    source: &str,
+) -> AppResult<GameBuild> {
     let project_id = project_id.trim().to_string();
     let target = validate_text(&target, "构建目标", MAX_TEXT_CHARS, false)?;
     let engine = validate_text(&engine.unwrap_or_default(), "引擎", MAX_TEXT_CHARS, true)?;
-    let config = validate_text(&config.unwrap_or_default(), "构建配置", MAX_TEXT_CHARS, true)?;
+    let config = validate_text(
+        &config.unwrap_or_default(),
+        "构建配置",
+        MAX_TEXT_CHARS,
+        true,
+    )?;
     let status = validate_enum(&status, "构建状态", BUILD_STATUSES)?;
     let log_path = validate_optional_path(log_path, "日志路径")?;
     let artifact_path = validate_optional_path(artifact_path, "产物路径")?;
@@ -1080,15 +1211,13 @@ pub fn game_build_save_impl(
         return Err(AppError::Validation("构建时间含非法控制字符".into()));
     }
 
-    let saved_id = db.with_conn(|conn| {
+    let saved_id = {
         ensure_game_project(conn, &project_id, true)?;
         ensure_item_belongs(conn, &project_id, item_id.as_deref())?;
         let now = now_iso();
-        let source = "manual"; // 本轮只做手动登记，不接入引擎执行器。
+        let source = validate_enum(source, "记录来源", &["manual", "imported"])?;
 
-        let id = id
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
+        let id = id.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
         match id {
             None => {
                 let id = uuid::Uuid::new_v4().to_string();
@@ -1132,19 +1261,19 @@ pub fn game_build_save_impl(
                 Ok(id)
             }
         }
-    })?;
+    }?;
 
-    db.with_read(|conn| {
+    {
         conn.query_row(
             "SELECT id, project_id, target, engine, config, status, built_at, log_path,
                     log_summary, artifact_path, source, item_id, note, created_at, updated_at
              FROM game_builds WHERE id = ?1",
             params![saved_id],
-            |r| row_to_build(r, conn),
+            |r| row_to_build_metadata(r, conn),
         )
         .optional()?
         .ok_or_else(|| AppError::NotFound(format!("构建记录不存在: {saved_id}")))
-    })
+    }
 }
 
 pub fn game_build_delete_impl(db: &Db, id: &str) -> AppResult<()> {
@@ -1191,6 +1320,44 @@ fn row_to_test(row: &rusqlite::Row<'_>, conn: &Connection) -> rusqlite::Result<G
     })
 }
 
+pub(crate) fn game_test_get_in_conn(
+    conn: &Connection,
+    project_id: &str,
+    id: &str,
+) -> AppResult<Option<GameTestRecord>> {
+    ensure_game_project(conn, project_id, false)?;
+    Ok(conn
+        .query_row(
+            "SELECT id, project_id, build_id, title, scope, result, tested_at, summary,
+                defect_count, item_id, note, created_at, updated_at
+         FROM game_tests WHERE project_id = ?1 AND id = ?2",
+            params![project_id, id],
+            |r| row_to_test(r, conn),
+        )
+        .optional()?)
+}
+
+pub(crate) fn game_test_list_page_in_conn(
+    conn: &Connection,
+    project_id: &str,
+    limit: u32,
+    offset: u32,
+) -> AppResult<(Vec<GameTestRecord>, u32)> {
+    ensure_game_project(conn, project_id, false)?;
+    let total = conn.query_row(
+        "SELECT COUNT(*) FROM game_tests WHERE project_id = ?1",
+        [project_id],
+        |r| r.get(0),
+    )?;
+    let mut stmt = conn.prepare(
+        "SELECT id, project_id, build_id, title, scope, result, tested_at, summary,
+                defect_count, item_id, note, created_at, updated_at
+         FROM game_tests WHERE project_id = ?1 ORDER BY tested_at DESC, id LIMIT ?2 OFFSET ?3",
+    )?;
+    let rows = stmt.query_map(params![project_id, limit, offset], |r| row_to_test(r, conn))?;
+    Ok((rows.collect::<Result<Vec<_>, _>>()?, total))
+}
+
 pub fn game_test_list_impl(db: &Db, project_id: &str) -> AppResult<Vec<GameTestRecord>> {
     db.with_read(|conn| {
         ensure_game_project(conn, project_id, false)?;
@@ -1226,12 +1393,50 @@ pub fn game_test_save_impl(
     item_id: Option<String>,
     note: Option<String>,
 ) -> AppResult<GameTestRecord> {
+    db.with_transaction(|conn| {
+        game_test_save_in_conn(
+            conn,
+            id,
+            project_id,
+            build_id,
+            title,
+            scope,
+            result,
+            tested_at,
+            summary,
+            defect_count,
+            item_id,
+            note,
+        )
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn game_test_save_in_conn(
+    conn: &Connection,
+    id: Option<String>,
+    project_id: String,
+    build_id: Option<String>,
+    title: String,
+    scope: Option<String>,
+    result: String,
+    tested_at: Option<String>,
+    summary: Option<String>,
+    defect_count: Option<i64>,
+    item_id: Option<String>,
+    note: Option<String>,
+) -> AppResult<GameTestRecord> {
     let project_id = project_id.trim().to_string();
     let build_id = normalize_optional_id(build_id, "关联构建")?;
     let title = validate_text(&title, "测试标题", MAX_NAME_CHARS, false)?;
     let scope = validate_text(&scope.unwrap_or_default(), "测试范围", MAX_TEXT_CHARS, true)?;
     let result = validate_enum(&result, "测试结果", TEST_RESULTS)?;
-    let summary = validate_text(&summary.unwrap_or_default(), "测试摘要", MAX_NOTE_CHARS, true)?;
+    let summary = validate_text(
+        &summary.unwrap_or_default(),
+        "测试摘要",
+        MAX_NOTE_CHARS,
+        true,
+    )?;
     let item_id = normalize_optional_id(item_id, "关联事项")?;
     let note = validate_text(&note.unwrap_or_default(), "备注", MAX_NOTE_CHARS, true)?;
     let defect_count = defect_count.unwrap_or(0).clamp(0, 100_000);
@@ -1243,15 +1448,13 @@ pub fn game_test_save_impl(
         return Err(AppError::Validation("测试时间含非法控制字符".into()));
     }
 
-    let saved_id = db.with_conn(|conn| {
+    let saved_id = {
         ensure_game_project(conn, &project_id, true)?;
         ensure_build_belongs(conn, &project_id, build_id.as_deref())?;
         ensure_item_belongs(conn, &project_id, item_id.as_deref())?;
         let now = now_iso();
 
-        let id = id
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
+        let id = id.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
         match id {
             None => {
                 let id = uuid::Uuid::new_v4().to_string();
@@ -1295,9 +1498,9 @@ pub fn game_test_save_impl(
                 Ok(id)
             }
         }
-    })?;
+    }?;
 
-    db.with_read(|conn| {
+    {
         conn.query_row(
             "SELECT id, project_id, build_id, title, scope, result, tested_at, summary,
                     defect_count, item_id, note, created_at, updated_at
@@ -1307,7 +1510,7 @@ pub fn game_test_save_impl(
         )
         .optional()?
         .ok_or_else(|| AppError::NotFound(format!("测试记录不存在: {saved_id}")))
-    })
+    }
 }
 
 pub fn game_test_delete_impl(db: &Db, id: &str) -> AppResult<()> {

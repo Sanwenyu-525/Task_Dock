@@ -85,6 +85,17 @@ pub const USAGE: &str = r#"Task Dock Agent CLI
   taskdock comic media list|get|update|adopt --project-id ID [--shot-id ID] [--media-id ID] [--version-label ...] [--status ...] [--review-note ...] [--expected-revision N]
   taskdock comic character list --project-id ID
   taskdock comic scene list --project-id ID
+  taskdock game facts get --project-id ID
+  taskdock game asset list --project-id ID
+  taskdock game build list|create --project-id ID [--payload JSON]
+  taskdock game test list|create --project-id ID [--payload JSON]
+  taskdock general stats get --project-id ID
+  taskdock general milestone list|save --project-id ID [--payload JSON]
+  taskdock general material list --project-id ID
+  taskdock development summary get --project-id ID
+  taskdock development git-snapshot get --project-id ID
+  taskdock development task-evidence list --project-id ID --task-id ID
+  taskdock development task-link create --project-id ID --payload JSON
 
 全局:
   --request-id ID 写操作幂等键（未指定时自动生成）
@@ -122,6 +133,9 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ("domain", "manifest|ops", "项目领域 Manifest 与操作清单"),
     ("novel", "chapter|character|worldview|ref", "小说领域：章节/人物/世界观/引用"),
     ("comic", "episode|shot|media|character|scene", "漫剧领域：剧集/镜头/素材/角色/场景"),
+    ("game", "facts|asset|build|test", "游戏领域：引擎事实、资源、构建与测试"),
+    ("general", "stats|milestone|material", "通用领域：统计、里程碑与资料"),
+    ("development", "summary|git-snapshot|task-evidence|task-link", "开发领域：Git 快照与任务证据"),
 ];
 
 /// 供帮助输出与诊断使用的命令描述。
@@ -247,7 +261,7 @@ fn classify_cli_write(args: &[String]) -> Option<(&'static str, &'static str, St
     let has_subcommand = matches!(
         group,
         "project" | "task" | "plan" | "knowledge" | "decision" | "context" | "agent" | "sync"
-            | "domain" | "novel" | "comic"
+            | "domain" | "novel" | "comic" | "game" | "general" | "development"
     );
     let sub = if has_subcommand {
         args.iter().skip(1).find(|a| !a.starts_with("--"))?.as_str()
@@ -284,6 +298,10 @@ fn classify_cli_write(args: &[String]) -> Option<(&'static str, &'static str, St
         }
         ("comic", "media", Some("update")) => ("comic.media.update", "comic.media_version"),
         ("comic", "media", Some("adopt")) => ("comic.media.adopt", "comic.media_version"),
+        ("game", "build", Some("create")) => ("game.build.create", "game.build"),
+        ("game", "test", Some("create")) => ("game.test.create", "game.test"),
+        ("general", "milestone", Some("save")) => ("general.milestone.save", "general.milestone"),
+        ("development", "task-link", Some("create")) => ("development.task_link.create", "development.task_link"),
         _ => return None,
     };
     // 失败也要能落到具体资源上：领域写入的 ID 来自显式 flag，
@@ -292,6 +310,11 @@ fn classify_cli_write(args: &[String]) -> Option<(&'static str, &'static str, St
         flag_value(args, "--chapter-id").unwrap_or_default()
     } else if action.starts_with("comic.media.") {
         flag_value(args, "--media-id").unwrap_or_default()
+    } else if action == "general.milestone.save" {
+        flag_value(args, "--payload")
+            .and_then(|payload| serde_json::from_str::<Value>(&payload).ok())
+            .and_then(|value| value["id"].as_str().map(str::to_string))
+            .unwrap_or_default()
     } else {
         let id_index = if group == "agent" { 3 } else { 2 };
         if action.ends_with(".create")
@@ -611,7 +634,7 @@ fn execute_inner(
     let has_subcommand = matches!(
         group.as_str(),
         "project" | "task" | "plan" | "knowledge" | "decision" | "context" | "agent" | "sync"
-            | "domain" | "novel" | "comic"
+            | "domain" | "novel" | "comic" | "game" | "general" | "development"
     );
     let sub = if has_subcommand {
         match args.iter().position(|a| !a.starts_with("--")) {
@@ -621,7 +644,7 @@ fn execute_inner(
     } else {
         "list".to_string()
     };
-    if matches!(group.as_str(), "domain" | "novel" | "comic") {
+    if matches!(group.as_str(), "domain" | "novel" | "comic" | "game" | "general" | "development") {
         let (data, page) = domain_cli::execute(
             db,
             principal,

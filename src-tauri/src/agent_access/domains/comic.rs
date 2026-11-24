@@ -423,28 +423,29 @@ pub fn list_characters(
     offset: Option<i64>,
 ) -> AppResult<(Vec<AgentComicCharacter>, Page)> {
     let (limit, offset) = page_window(limit, offset);
-    db.with_read(|conn| {
+    let (project, root) = db.with_read(|conn| {
         let project =
             resolve_authorized_project(conn, principal, project_ref, DomainKind::Comic, false)?;
         let root = project_root(conn, &project)?;
-        let rows: Vec<ComicCharacter> = comic_character_list_impl(db, &project)?;
-        let (rows, page) = paginate(rows, limit, offset);
-        let items = rows
-            .into_iter()
-            .map(|c| AgentComicCharacter {
-                id: c.id,
-                project_id: c.project_id,
-                name: c.name,
-                role: c.role,
-                description: c.description,
-                sort_order: c.sort_order,
-                created_at: c.created_at,
-                updated_at: c.updated_at,
-                reference_image: safe_file_ref(&root, &c.ref_image_path),
-            })
-            .collect();
-        Ok((items, page))
-    })
+        Ok((project, root))
+    })?;
+    let rows: Vec<ComicCharacter> = comic_character_list_impl(db, &project)?;
+    let (rows, page) = paginate(rows, limit, offset);
+    let items = rows
+        .into_iter()
+        .map(|c| AgentComicCharacter {
+            id: c.id,
+            project_id: c.project_id,
+            name: c.name,
+            role: c.role,
+            description: c.description,
+            sort_order: c.sort_order,
+            created_at: c.created_at,
+            updated_at: c.updated_at,
+            reference_image: safe_file_ref(&root, &c.ref_image_path),
+        })
+        .collect();
+    Ok((items, page))
 }
 
 pub fn list_scenes(
@@ -455,27 +456,28 @@ pub fn list_scenes(
     offset: Option<i64>,
 ) -> AppResult<(Vec<AgentComicScene>, Page)> {
     let (limit, offset) = page_window(limit, offset);
-    db.with_read(|conn| {
+    let (project, root) = db.with_read(|conn| {
         let project =
             resolve_authorized_project(conn, principal, project_ref, DomainKind::Comic, false)?;
         let root = project_root(conn, &project)?;
-        let rows: Vec<ComicScene> = comic_scene_list_impl(db, &project)?;
-        let (rows, page) = paginate(rows, limit, offset);
-        let items = rows
-            .into_iter()
-            .map(|s| AgentComicScene {
-                id: s.id,
-                project_id: s.project_id,
-                name: s.name,
-                description: s.description,
-                sort_order: s.sort_order,
-                created_at: s.created_at,
-                updated_at: s.updated_at,
-                reference_image: safe_file_ref(&root, &s.ref_image_path),
-            })
-            .collect();
-        Ok((items, page))
-    })
+        Ok((project, root))
+    })?;
+    let rows: Vec<ComicScene> = comic_scene_list_impl(db, &project)?;
+    let (rows, page) = paginate(rows, limit, offset);
+    let items = rows
+        .into_iter()
+        .map(|s| AgentComicScene {
+            id: s.id,
+            project_id: s.project_id,
+            name: s.name,
+            description: s.description,
+            sort_order: s.sort_order,
+            created_at: s.created_at,
+            updated_at: s.updated_at,
+            reference_image: safe_file_ref(&root, &s.ref_image_path),
+        })
+        .collect();
+    Ok((items, page))
 }
 
 /// 素材版本编辑（REST / 独立调用）：入口守卫 + 唯一业务事务。

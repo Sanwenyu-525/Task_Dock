@@ -14,6 +14,21 @@ use crate::mcp::permissions::Capability;
 use super::registry::DomainKind;
 use crate::agent_access::{permissions, Principal};
 
+pub(crate) fn authorize_write_replay(
+    conn: &Connection,
+    principal: &Principal,
+    project: &str,
+    op: &super::registry::DomainOperationDef,
+    input: &serde_json::Value,
+) -> AppResult<()> {
+    let root = resolve_authorized_project(conn, principal, project, op.domain, true)?;
+    if op.id == "development.task_link.create" {
+        let task = input["task_id"].as_str().unwrap_or("").trim();
+        super::development::require_project_task(conn, principal, &root, task)?;
+    }
+    Ok(())
+}
+
 /// 跨项目资源统一返回的错误：不泄露其他项目资源是否存在（架构文档 §6.4）。
 pub fn resource_access_error() -> AppError {
     AppError::Forbidden("资源不可访问".into())
@@ -22,7 +37,7 @@ pub fn resource_access_error() -> AppError {
 /// 领域统一分页窗口：默认 50，最大 200；offset 负数归零。
 pub fn page_window(limit: Option<i64>, offset: Option<i64>) -> (u32, u32) {
     let limit = limit.unwrap_or(50).clamp(1, 200) as u32;
-    let offset = offset.unwrap_or(0).max(0) as u32;
+    let offset = offset.unwrap_or(0).clamp(0, i64::from(u32::MAX)) as u32;
     (limit, offset)
 }
 

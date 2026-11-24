@@ -145,6 +145,9 @@ static REGISTERED_OPERATIONS: std::sync::LazyLock<Vec<DomainOperationDef>> =
         };
         push(super::novel::OPERATIONS);
         push(super::comic::OPERATIONS);
+        push(super::development::OPERATIONS);
+        push(super::game::OPERATIONS);
+        push(super::general::OPERATIONS);
         all
     });
 
@@ -156,6 +159,15 @@ pub fn all_operations() -> &'static [DomainOperationDef] {
 /// 按操作 ID 精确查找。
 pub fn find_operation(id: &str) -> Option<&'static DomainOperationDef> {
     REGISTERED_OPERATIONS.iter().find(|op| op.id == id)
+}
+
+pub fn validate_payload_size(id: &str, bytes: usize) -> crate::error::AppResult<()> {
+    if let Some(max) = find_operation(id).and_then(|op| op.max_payload_bytes) {
+        if bytes > max {
+            return Err(crate::error::AppError::Validation(format!("业务载荷超过 {max} 字节")));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -206,17 +218,14 @@ mod tests {
     #[test]
     fn registered_operations_are_valid_and_unique() {
         let ops = all_operations();
-        assert!(!ops.is_empty(), "Phase 1 至少注册小说与漫剧操作");
         let mut ids = std::collections::HashSet::new();
         for op in ops {
             op.validate().unwrap_or_else(|err| panic!("{} 非法：{err}", op.id));
             assert!(ids.insert(op.id), "操作 ID 重复：{}", op.id);
         }
-        // 只开放 Phase 1 领域；游戏/通用/开发留待后续阶段。
-        assert!(ops.iter().all(|op| matches!(
-            op.domain,
-            DomainKind::Novel | DomainKind::Comic
-        )));
+        for domain in DomainKind::ALL {
+            assert!(ops.iter().any(|op| op.domain == domain));
+        }
     }
 
     #[test]

@@ -107,7 +107,7 @@
 ## 专业领域 Phase 1（Novel + Comic，2026-11-23）
 
 状态口径：**已实现** = 四入口代码 + 本轮测试；**未开放** = 未注册操作，Manifest 不展示。
-Game / General / Development 保持 `planned`，没有空壳 available 操作。
+本节记录小说与漫剧的首阶段能力。其余三个领域见下节。
 
 ### Novel（7 个操作）
 
@@ -142,4 +142,38 @@ Game / General / Development 保持 `planned`，没有空壳 available 操作。
 | 小说卷/章创建、角色/世界观写入 | 未开放 | 当前只读 + 正文更新；写入仍走 UI |
 | 漫剧剧集/镜头/角色/场景编辑 | 未开放 | 当前只读 + 素材元信息/采用 |
 | 漫剧完整剧本读取 | 未开放 | 列表只返回摘要，剧本需后续独立接口 |
-| Game / General / Development | planned | 无操作注册，Manifest 不展示 |
+
+## 游戏、通用、开发领域（2026-11-24）
+
+REST 路径以 `/api/v1/projects/{id}/` 为前缀，CLI 命令使用 `taskdock` 前缀及
+`--project-id ID`。列表默认 50 条、最多 200 条，支持 offset。
+
+| 操作 | MCP 工具 | REST | CLI |
+|---|---|---|---|
+| `game.facts.get` | `taskdock_game_get_facts` | `GET game/facts` | `game facts get` |
+| `game.asset.list` | `taskdock_game_list_assets` | `GET game/assets` | `game asset list` |
+| `game.build.list` | `taskdock_game_list_builds` | `GET game/builds` | `game build list` |
+| `game.test.list` | `taskdock_game_list_tests` | `GET game/tests` | `game test list` |
+| `general.milestone.list` | `taskdock_general_list_milestones` | `GET general/milestones` | `general milestone list` |
+| `general.material.list` | `taskdock_general_list_materials` | `GET general/materials` | `general material list` |
+| `general.stats.read` | `taskdock_general_get_stats` | `GET general/stats` | `general stats get` |
+| `development.summary.get` | `taskdock_development_get_summary` | `GET development/summary` | `development summary get` |
+| `development.git.snapshot.get` | `taskdock_development_get_git_snapshot` | `GET development/git-snapshot` | `development git-snapshot get` |
+| `development.task_evidence.list` | `taskdock_development_list_task_evidence` | `GET development/task-evidence` | `development task-evidence list` |
+| `game.build.create` | `taskdock_game_create_build` | `POST game/builds` | `game build create` |
+| `game.test.create` | `taskdock_game_create_test` | `POST game/tests` | `game test create` |
+| `general.milestone.save` | `taskdock_general_save_milestone` | `POST general/milestones` | `general milestone save` |
+| `development.task_link.create` | `taskdock_development_create_task_link` | `POST development/task-links` | `development task-link create` |
+
+- **游戏**返回已登记的引擎事实、资源、构建和测试。构建与测试创建由服务端生成 ID，外部登记
+  通过 `verificationStatus=unverified` 表明验证状态。提交测试时可关联当前项目的构建。
+- **通用**保存 `general_milestones`。创建省略 `id` 与 `expected_revision`，更新提供两者。
+  必填 `title`，可选 `target_date`、`status`、`note` 和 `sort_order`。更新省略字段时保留
+  原值与既有任务、事项关联，空字符串可清除日期或备注。资料返回登记元信息。
+- **开发**查询最近一次已保存的 Git 快照，尚无记录时返回 `null`。任务证据操作需要 `task_id`，
+  关联创建还需要 `handoff_pack_id` 或 `acceptance_record_id` 至少一项，可附 `note`。
+  关联回读可核对 `linked`，人工验收结论来自既有记录。
+
+后续能力包括游戏引擎确认及资源写入、通用资料写入、开发实时探测及构建台账查询和关联。
+
+本节的四个写操作也支持[受限 JSON 文件导入](synchronization.md)。列表与详情通过 CLI、MCP、REST 查询。

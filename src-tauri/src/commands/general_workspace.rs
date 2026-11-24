@@ -124,6 +124,37 @@ pub struct GeneralMaterial {
     pub updated_at: String,
 }
 
+/// 资料登记摘要：不解析路径、不探测文件、不读取关联笔记。
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneralMaterialSummary {
+    pub id: String,
+    pub project_id: String,
+    pub kind: String,
+    pub title: String,
+    pub note: String,
+    pub sort_order: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// 项目内聚合计数，不读取关联资源正文或探测文件系统。
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneralStatsSummary {
+    pub total_items: i64,
+    pub todo_items: i64,
+    pub doing_items: i64,
+    pub blocked_items: i64,
+    pub done_items: i64,
+    pub milestones_total: i64,
+    pub milestones_open: i64,
+    pub milestones_done: i64,
+    pub milestones_skipped: i64,
+    pub linked_tasks: i64,
+    pub materials_total: i64,
+}
+
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct GeneralActivityEvent {
@@ -605,25 +636,55 @@ pub fn general_milestone_list_impl(
     project_id: &str,
 ) -> AppResult<GeneralMilestoneList> {
     let milestones = db.with_read(|conn| {
-        ensure_general_project(conn, project_id, false)?;
-        let mut stmt = conn.prepare(
-            "SELECT id, project_id, title, target_date, status, note, sort_order,
+        general_milestone_list_page_in_conn(conn, project_id, MAX_LIST_ROWS as u32, 0)
+            .map(|(rows, _)| rows)
+    })?;
+    Ok(GeneralMilestoneList { milestones })
+}
+
+pub(crate) fn general_milestone_list_page_in_conn(
+    conn: &Connection,
+    project_id: &str,
+    limit: u32,
+    offset: u32,
+) -> AppResult<(Vec<GeneralMilestone>, u32)> {
+    ensure_general_project(conn, project_id, false)?;
+    let total: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM general_milestones WHERE project_id = ?1",
+        params![project_id],
+        |row| row.get(0),
+    )?;
+    let mut stmt = conn.prepare(
+        "SELECT id, project_id, title, target_date, status, note, sort_order,
                     linked_item_id, linked_task_id, created_at, updated_at
              FROM general_milestones
              WHERE project_id = ?1
              ORDER BY sort_order, created_at, id
-             LIMIT ?2",
-        )?;
-        let rows = stmt.query_map(params![project_id, MAX_LIST_ROWS], |row| {
-            row_to_milestone(conn, row)
-        })?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row.map_err(AppError::from)?);
-        }
-        Ok(out)
+             LIMIT ?2 OFFSET ?3",
+    )?;
+    let rows = stmt.query_map(params![project_id, limit.clamp(1, 200), offset], |row| {
+        row_to_milestone(conn, row)
     })?;
-    Ok(GeneralMilestoneList { milestones })
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(AppError::from)?);
+    }
+    Ok((out, total))
+}
+
+pub(crate) fn general_milestone_read_in_conn(
+    conn: &Connection,
+    id: &str,
+) -> AppResult<GeneralMilestone> {
+    conn.query_row(
+        "SELECT id, project_id, title, target_date, status, note, sort_order,
+                linked_item_id, linked_task_id, created_at, updated_at
+         FROM general_milestones WHERE id = ?1",
+        params![id],
+        |row| row_to_milestone(conn, row),
+    )
+    .optional()?
+    .ok_or_else(|| AppError::NotFound("里程碑不存在或已被删除".into()))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -639,6 +700,51 @@ pub fn general_milestone_save_impl(
     linked_task_id: Option<String>,
     sort_order: Option<i64>,
 ) -> AppResult<GeneralMilestoneSaved> {
+    db.with_transaction(|conn| {
+        let before = id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(|id| general_milestone_read_in_conn(conn, id).map(|row| row.updated_at))
+            .transpose()?
+            .unwrap_or_default();
+        let milestone = general_milestone_save_in_conn(
+            conn,
+            id,
+            project_id,
+            title,
+            target_date,
+            status,
+            note,
+            linked_item_id,
+            linked_task_id,
+            sort_order,
+        )?;
+        crate::agent_access::domains::revision::note_ui_write(
+            conn,
+            "general.milestone",
+            &milestone.id,
+            &before,
+            &milestone.updated_at,
+        )?;
+        Ok(GeneralMilestoneSaved { milestone })
+    })
+}
+
+/// UI 与 Agent 共用的业务核心；事务和版本推进由调用方负责。
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn general_milestone_save_in_conn(
+    conn: &Connection,
+    id: Option<String>,
+    project_id: String,
+    title: String,
+    target_date: Option<String>,
+    status: Option<String>,
+    note: Option<String>,
+    linked_item_id: Option<String>,
+    linked_task_id: Option<String>,
+    sort_order: Option<i64>,
+) -> AppResult<GeneralMilestone> {
     let title = validate_text(&title, "里程碑名称", MAX_TITLE_CHARS, false)?;
     let target_date = validate_date(target_date)?;
     let status = match status {
@@ -654,7 +760,12 @@ pub fn general_milestone_save_impl(
             value
         }
     };
-    let note = validate_text(&note.unwrap_or_default(), "里程碑备注", MAX_NOTE_CHARS, true)?;
+    let note = validate_text(
+        &note.unwrap_or_default(),
+        "里程碑备注",
+        MAX_NOTE_CHARS,
+        true,
+    )?;
     let linked_item_id = validate_optional_id(linked_item_id, "关联事项")?;
     let linked_task_id = validate_optional_id(linked_task_id, "关联任务")?;
     let sort_order = sort_order.unwrap_or(0);
@@ -662,11 +773,9 @@ pub fn general_milestone_save_impl(
         return Err(AppError::Validation("排序值超出范围".into()));
     }
     let project_id = project_id.trim().to_string();
-    let id = id
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+    let id = id.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
 
-    let saved_id = db.with_transaction(|conn| {
+    let saved_id = {
         ensure_general_project(conn, &project_id, true)?;
         if let Some(item_id) = &linked_item_id {
             let item_project: Option<String> = conn
@@ -678,9 +787,7 @@ pub fn general_milestone_save_impl(
                 .optional()?;
             match item_project {
                 Some(p) if p == project_id => {}
-                Some(_) => {
-                    return Err(AppError::Validation("关联事项不属于当前项目".into()))
-                }
+                Some(_) => return Err(AppError::Validation("关联事项不属于当前项目".into())),
                 None => return Err(AppError::NotFound("关联事项不存在".into())),
             }
         }
@@ -772,20 +879,8 @@ pub fn general_milestone_save_impl(
                 Ok::<String, AppError>(id)
             }
         }
-    })?;
-
-    db.with_read(|conn| {
-        conn.query_row(
-            "SELECT id, project_id, title, target_date, status, note, sort_order,
-                    linked_item_id, linked_task_id, created_at, updated_at
-             FROM general_milestones WHERE id = ?1",
-            params![saved_id],
-            |row| row_to_milestone(conn, row),
-        )
-        .optional()?
-        .ok_or_else(|| AppError::NotFound(format!("里程碑不存在: {saved_id}")))
-    })
-    .map(|milestone| GeneralMilestoneSaved { milestone })
+    }?;
+    general_milestone_read_in_conn(conn, &saved_id)
 }
 
 pub fn general_milestone_delete_impl(db: &Db, id: &str) -> AppResult<GeneralOk> {
@@ -824,6 +919,39 @@ pub fn general_material_list_impl(
         Ok(out)
     })?;
     Ok(GeneralMaterialList { materials })
+}
+
+/// Agent 使用独立摘要查询，不触发 IPC 详情中的文件/笔记可用性检查。
+pub(crate) fn general_material_summary_page_in_conn(
+    conn: &Connection,
+    project_id: &str,
+    limit: u32,
+    offset: u32,
+) -> AppResult<(Vec<GeneralMaterialSummary>, u32)> {
+    ensure_general_project(conn, project_id, false)?;
+    let total: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM general_materials WHERE project_id = ?1",
+        params![project_id],
+        |row| row.get(0),
+    )?;
+    let mut stmt = conn.prepare(
+        "SELECT id, project_id, kind, title, note, sort_order, created_at, updated_at
+         FROM general_materials WHERE project_id = ?1
+         ORDER BY sort_order, created_at, id LIMIT ?2 OFFSET ?3",
+    )?;
+    let rows = stmt.query_map(params![project_id, limit.clamp(1, 200), offset], |row| {
+        Ok(GeneralMaterialSummary {
+            id: row.get(0)?,
+            project_id: row.get(1)?,
+            kind: row.get(2)?,
+            title: row.get(3)?,
+            note: row.get(4)?,
+            sort_order: row.get(5)?,
+            created_at: row.get(6)?,
+            updated_at: row.get(7)?,
+        })
+    })?;
+    Ok((rows.collect::<rusqlite::Result<Vec<_>>>()?, total))
 }
 
 fn validate_material_path(
@@ -1010,68 +1138,88 @@ fn count_by(conn: &Connection, sql: &str, project_id: &str) -> AppResult<i64> {
     conn.query_row(sql, params![project_id], |r| r.get(0)).map_err(AppError::from)
 }
 
+pub(crate) fn general_stats_summary_in_conn(
+    conn: &Connection,
+    project_id: &str,
+) -> AppResult<GeneralStatsSummary> {
+    ensure_general_project(conn, project_id, false)?;
+    let total_items = count_by(
+        conn,
+        "SELECT COUNT(*) FROM workspace_items WHERE project_id = ?1",
+        project_id,
+    )?;
+    let todo_items = count_by(
+        conn,
+        "SELECT COUNT(*) FROM workspace_items WHERE project_id = ?1 AND status = 'todo'",
+        project_id,
+    )?;
+    let doing_items = count_by(
+        conn,
+        "SELECT COUNT(*) FROM workspace_items WHERE project_id = ?1 AND status = 'doing'",
+        project_id,
+    )?;
+    let blocked_items = count_by(
+        conn,
+        "SELECT COUNT(*) FROM workspace_items WHERE project_id = ?1 AND status = 'blocked'",
+        project_id,
+    )?;
+    let done_items = count_by(
+        conn,
+        "SELECT COUNT(*) FROM workspace_items WHERE project_id = ?1 AND status = 'done'",
+        project_id,
+    )?;
+
+    let milestones_total = count_by(
+        conn,
+        "SELECT COUNT(*) FROM general_milestones WHERE project_id = ?1",
+        project_id,
+    )?;
+    let milestones_open = count_by(
+        conn,
+        "SELECT COUNT(*) FROM general_milestones WHERE project_id = ?1 AND status = 'open'",
+        project_id,
+    )?;
+    let milestones_done = count_by(
+        conn,
+        "SELECT COUNT(*) FROM general_milestones WHERE project_id = ?1 AND status = 'done'",
+        project_id,
+    )?;
+    let milestones_skipped = count_by(
+        conn,
+        "SELECT COUNT(*) FROM general_milestones WHERE project_id = ?1 AND status = 'skipped'",
+        project_id,
+    )?;
+
+    let linked_tasks = count_by(
+        conn,
+        "SELECT COUNT(*) FROM workspace_task_links WHERE project_id = ?1",
+        project_id,
+    )?;
+
+    let materials_total = count_by(
+        conn,
+        "SELECT COUNT(*) FROM general_materials WHERE project_id = ?1",
+        project_id,
+    )?;
+
+    Ok(GeneralStatsSummary {
+        total_items,
+        todo_items,
+        doing_items,
+        blocked_items,
+        done_items,
+        milestones_total,
+        milestones_open,
+        milestones_done,
+        milestones_skipped,
+        linked_tasks,
+        materials_total,
+    })
+}
+
 pub fn general_stats_impl(db: &Db, project_id: &str) -> AppResult<GeneralStatsReport> {
     let stats = db.with_read(|conn| {
-        ensure_general_project(conn, project_id, false)?;
-
-        let total_items = count_by(
-            conn,
-            "SELECT COUNT(*) FROM workspace_items WHERE project_id = ?1",
-            project_id,
-        )?;
-        let todo_items = count_by(
-            conn,
-            "SELECT COUNT(*) FROM workspace_items WHERE project_id = ?1 AND status = 'todo'",
-            project_id,
-        )?;
-        let doing_items = count_by(
-            conn,
-            "SELECT COUNT(*) FROM workspace_items WHERE project_id = ?1 AND status = 'doing'",
-            project_id,
-        )?;
-        let blocked_items = count_by(
-            conn,
-            "SELECT COUNT(*) FROM workspace_items WHERE project_id = ?1 AND status = 'blocked'",
-            project_id,
-        )?;
-        let done_items = count_by(
-            conn,
-            "SELECT COUNT(*) FROM workspace_items WHERE project_id = ?1 AND status = 'done'",
-            project_id,
-        )?;
-
-        let milestones_total = count_by(
-            conn,
-            "SELECT COUNT(*) FROM general_milestones WHERE project_id = ?1",
-            project_id,
-        )?;
-        let milestones_open = count_by(
-            conn,
-            "SELECT COUNT(*) FROM general_milestones WHERE project_id = ?1 AND status = 'open'",
-            project_id,
-        )?;
-        let milestones_done = count_by(
-            conn,
-            "SELECT COUNT(*) FROM general_milestones WHERE project_id = ?1 AND status = 'done'",
-            project_id,
-        )?;
-        let milestones_skipped = count_by(
-            conn,
-            "SELECT COUNT(*) FROM general_milestones WHERE project_id = ?1 AND status = 'skipped'",
-            project_id,
-        )?;
-
-        let linked_tasks = count_by(
-            conn,
-            "SELECT COUNT(*) FROM workspace_task_links WHERE project_id = ?1",
-            project_id,
-        )?;
-
-        let materials_total = count_by(
-            conn,
-            "SELECT COUNT(*) FROM general_materials WHERE project_id = ?1",
-            project_id,
-        )?;
+        let summary = general_stats_summary_in_conn(conn, project_id)?;
 
         // 当前里程碑：状态 open，优先有目标日期且日期最近的，其次最早创建的。
         let current_milestone = conn
@@ -1173,17 +1321,17 @@ pub fn general_stats_impl(db: &Db, project_id: &str) -> AppResult<GeneralStatsRe
         }
 
         Ok(GeneralStats {
-            total_items,
-            todo_items,
-            doing_items,
-            blocked_items,
-            done_items,
-            milestones_total,
-            milestones_open,
-            milestones_done,
-            milestones_skipped,
-            linked_tasks,
-            materials_total,
+            total_items: summary.total_items,
+            todo_items: summary.todo_items,
+            doing_items: summary.doing_items,
+            blocked_items: summary.blocked_items,
+            done_items: summary.done_items,
+            milestones_total: summary.milestones_total,
+            milestones_open: summary.milestones_open,
+            milestones_done: summary.milestones_done,
+            milestones_skipped: summary.milestones_skipped,
+            linked_tasks: summary.linked_tasks,
+            materials_total: summary.materials_total,
             materials_alive,
             current_milestone,
             recent_activity: events,

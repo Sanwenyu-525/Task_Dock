@@ -239,15 +239,10 @@ pub fn list_characters(
     offset: Option<i64>,
 ) -> AppResult<(Vec<NovelCharacter>, Page)> {
     let (limit, offset) = page_window(limit, offset);
-    db.with_read(|conn| {
-        let project =
-            resolve_authorized_project(conn, principal, project_ref, DomainKind::Novel, false)?;
-        Ok(paginate(
-            novel_character_list_impl(db, &project, query)?,
-            limit,
-            offset,
-        ))
-    })
+    let project = db.with_read(|conn| {
+        resolve_authorized_project(conn, principal, project_ref, DomainKind::Novel, false)
+    })?;
+    Ok(paginate(novel_character_list_impl(db, &project, query)?, limit, offset))
 }
 
 pub fn list_worldview(
@@ -260,15 +255,10 @@ pub fn list_worldview(
     offset: Option<i64>,
 ) -> AppResult<(Vec<NovelWorldviewEntry>, Page)> {
     let (limit, offset) = page_window(limit, offset);
-    db.with_read(|conn| {
-        let project =
-            resolve_authorized_project(conn, principal, project_ref, DomainKind::Novel, false)?;
-        Ok(paginate(
-            novel_worldview_list_impl(db, &project, kind, query)?,
-            limit,
-            offset,
-        ))
-    })
+    let project = db.with_read(|conn| {
+        resolve_authorized_project(conn, principal, project_ref, DomainKind::Novel, false)
+    })?;
+    Ok(paginate(novel_worldview_list_impl(db, &project, kind, query)?, limit, offset))
 }
 
 pub fn list_refs(
@@ -281,16 +271,11 @@ pub fn list_refs(
     offset: Option<i64>,
 ) -> AppResult<(Vec<NovelEntityRef>, Page)> {
     let (limit, offset) = page_window(limit, offset);
-    db.with_read(|conn| {
-        let project =
-            resolve_authorized_project(conn, principal, project_ref, DomainKind::Novel, false)?;
-        // Agent 侧暂不按章节筛选，保持原有「按实体」语义（章节筛选只给桌面 UI 用）。
-        Ok(paginate(
-            novel_entity_ref_list_impl(db, &project, entity_type, entity_id, None)?,
-            limit,
-            offset,
-        ))
-    })
+    let project = db.with_read(|conn| {
+        resolve_authorized_project(conn, principal, project_ref, DomainKind::Novel, false)
+    })?;
+    // Agent 侧暂不按章节筛选，保持原有「按实体」语义（章节筛选只给桌面 UI 用）。
+    Ok(paginate(novel_entity_ref_list_impl(db, &project, entity_type, entity_id, None)?, limit, offset))
 }
 
 /// 正文更新（REST / 独立调用）：入口已持有守卫，本函数负责唯一业务事务。

@@ -671,6 +671,26 @@ pub fn dws_task_link_save_impl(
     acceptance_record_id: Option<String>,
     note: Option<String>,
 ) -> AppResult<DwsTaskLink> {
+    db.with_conn(|conn| {
+        dws_task_link_save_in_conn(
+            conn, project_id, task_id, dev_project_id, handoff_pack_id, build_id,
+            acceptance_record_id, note, false,
+        )
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn dws_task_link_save_in_conn(
+    conn: &Connection,
+    project_id: &str,
+    task_id: Option<String>,
+    dev_project_id: Option<String>,
+    handoff_pack_id: Option<String>,
+    build_id: Option<String>,
+    acceptance_record_id: Option<String>,
+    note: Option<String>,
+    create_only: bool,
+) -> AppResult<DwsTaskLink> {
     let project_id = project_id.trim().to_string();
     if project_id.is_empty() {
         return Err(AppError::Validation("project_id 不能为空".into()));
@@ -698,7 +718,7 @@ pub fn dws_task_link_save_impl(
         ));
     }
 
-    db.with_conn(|conn| {
+    {
         ensure_development_project(conn, &project_id, true)?;
 
         // 存在性校验：外键约束之外，弱引用目标缺失也要在写入前如实报错，不挂悬空引用。
@@ -756,6 +776,9 @@ pub fn dws_task_link_save_impl(
 
         let now = now_iso();
         let link_id = match existing {
+            Some(_) if create_only => {
+                return Err(AppError::Conflict("此任务证据关联已存在".into()));
+            }
             Some(id) => {
                 conn.execute(
                     "UPDATE dws_task_links SET note = ?1, updated_at = ?2 WHERE id = ?3",
@@ -807,7 +830,7 @@ pub fn dws_task_link_save_impl(
             },
         )?;
         raw_to_link(conn, raw)
-    })
+    }
 }
 
 pub fn dws_task_link_list_impl(

@@ -172,3 +172,19 @@ Content-Type: application/json
 - 业务提交后响应缓存前崩溃：重试按 operation 指针恢复 `novel.chapter` / `comic.media_version`，
   不重新执行业务，也不推进 revision。
 - 分页字段沿用 `limit` / `offset` / `total` / `has_more` / `next_offset`；默认 50、最大 200。
+
+## 游戏、通用、开发领域端点（2026-11-24）
+
+新增路径与对应操作见[功能矩阵](feature-matrix.md#游戏通用开发领域2026-11-24)。
+GET 列表使用 `limit` / `offset`，任务证据列表额外使用 `task_id`。
+新增 POST 需要有效的 `Idempotency-Key`，业务入参直接放在 JSON 对象中，字段使用 snake_case。
+
+| POST 路径后缀 | 必填业务字段 | 可选业务字段 |
+|---|---|---|
+| `game/builds` | `target`、`status` | `engine`、`config`、`built_at`、`log_summary`、`item_id`、`note` |
+| `game/tests` | `title`、`result` | `build_id`、`scope`、`tested_at`、`summary`、`defect_count`、`item_id`、`note` |
+| `general/milestones` | `title` | `target_date`、`status`、`note`、`sort_order`。更新另需 `id`、`expected_revision` |
+| `development/task-links` | `task_id`，以及 `handoff_pack_id`、`acceptance_record_id` 至少一个 | `note` |
+
+写入响应为统一信封，`data` 为创建或更新的对象。项目授权撤销后拒绝查询或重放。
+现有路径和响应契约保持兼容。

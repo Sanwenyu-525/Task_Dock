@@ -253,9 +253,9 @@ fn manifest_maps_five_kinds_and_separates_comic_kind_from_domain() {
         if domain == "comic" {
             assert_eq!(value["project"]["kind"], "ai_comic");
         }
-        if !matches!(domain, "novel" | "comic") {
-            assert_eq!(value["operations"].as_array().unwrap().len(), 0);
-        }
+        let operations = value["operations"].as_array().unwrap();
+        assert!(!operations.is_empty(), "{kind} 有实际开放的操作");
+        assert!(operations.iter().all(|op| op["id"].as_str().unwrap().split('.').next() == Some(domain)));
     }
 }
 
@@ -273,6 +273,25 @@ fn manifest_operations_match_the_owning_domain_only() {
     for op in novel_manifest.operations.iter().chain(comic_manifest.operations.iter()) {
         assert!(ids.contains(&op.id.as_str()), "Manifest 含未注册操作 {}", op.id);
     }
+}
+
+#[test]
+fn novel_and_comic_reference_reads_do_not_reenter_the_database_lock() {
+    let db = memdb();
+    let novel_project = seed_project(&db, "novel", "active", "");
+    let comic_project = seed_project(&db, "ai_comic", "active", "");
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let principal = Principal::local(Source::Cli);
+        novel::list_characters(&db, &principal, &novel_project, None, None, None).unwrap();
+        novel::list_worldview(&db, &principal, &novel_project, None, None, None, None).unwrap();
+        novel::list_refs(&db, &principal, &novel_project, None, None, None, None).unwrap();
+        comic::list_characters(&db, &principal, &comic_project, None, None).unwrap();
+        comic::list_scenes(&db, &principal, &comic_project, None, None).unwrap();
+        sender.send(()).unwrap();
+    });
+    receiver.recv_timeout(Duration::from_secs(10)).expect("领域读取不能嵌套获取同一数据库锁");
+    worker.join().unwrap();
 }
 
 // ── MCP 写事务：死锁、幂等、Operation、失败回滚 ────────────────────
@@ -929,4 +948,448 @@ fn mcp_comic_adopt_advances_old_and_new_versions() {
     assert_eq!(m1["status"], "candidate");
     assert_eq!(m1["revision"], 2, "被替换版本 revision 也必须推进（adopt 1 → 被替换 2）");
     assert_eq!(items.iter().filter(|m| m["status"] == "adopted").count(), 1);
+}
+
+// ── 五领域续作：真实 MCP、loopback REST 与 CLI 参数映射 ─────────────
+
+struct DomainRestFixture {
+    port: u16,
+    _serial: std::sync::MutexGuard<'static, ()>,
+}
+
+impl DomainRestFixture {
+    fn start(db: &Arc<Db>) -> Self {
+        // 与既有 REST 生命周期测试使用同一把锁，避免进程级 runtime 互相覆盖。
+        let serial = super::tests_v82_rest::serial();
+        let _ = super::rest::stop();
+        Self {
+            port: super::tests_v82_rest::start_rest(db),
+            _serial: serial,
+        }
+    }
+
+    fn post(&self, path: &str, token: &str, input: &Value, key: &str) -> (u16, Value) {
+        let body = serde_json::to_vec(input).unwrap();
+        let (status, _, text) =
+            super::tests_v82_rest::post(self.port, path, token, &body, Some(key));
+        (status, serde_json::from_str(&text).unwrap())
+    }
+
+    fn get(&self, path: &str, token: &str) -> (u16, Value) {
+        let (status, _, text) = super::tests_v82_rest::get(self.port, path, Some(token), &[]);
+        (status, serde_json::from_str(&text).unwrap())
+    }
+}
+
+impl Drop for DomainRestFixture {
+    fn drop(&mut self) {
+        let _ = super::rest::stop();
+    }
+}
+
+fn mcp_permission_denied(ctx: &ToolCtx, tool: &str, args: Value) {
+    match run_tool_call(ctx, tool, &args) {
+        Err(err) => assert_eq!(err.code, crate::mcp::protocol::ERR_FORBIDDEN, "{err:?}"),
+        Ok(value) => {
+            assert_eq!(value["isError"], true, "{value}");
+            let error: Value =
+                serde_json::from_str(value["content"][0]["text"].as_str().unwrap()).unwrap();
+            assert_eq!(error["error"], "PERMISSION_DENIED", "{error}");
+        }
+    }
+}
+
+/// CLI 的业务映射与实际外层 OperationGuard；不启动另一个 CLI 进程。
+#[allow(clippy::too_many_arguments)]
+fn cli_domain_value(
+    db: &Db,
+    principal: &Principal,
+    group: &str,
+    sub: &str,
+    args: Vec<String>,
+    request_id: &str,
+    write: Option<&str>,
+) -> crate::error::AppResult<Value> {
+    let mut cli_principal = principal.clone();
+    cli_principal.source = Source::Cli;
+    let mut args = args;
+    let operation = write.map(|id| {
+        let def = registry::find_operation(id).unwrap();
+        let project = args
+            .windows(2)
+            .find(|pair| pair[0] == "--project-id")
+            .map(|pair| pair[1].as_str())
+            .unwrap_or("");
+        super::operations::try_start(
+            db,
+            &cli_principal,
+            &super::operations::OperationInput {
+                action: def.id,
+                resource_kind: def.resource_kind,
+                resource_id: "",
+                project_id: project,
+                request_id,
+                detail: "",
+            },
+        )
+        .expect("CLI 写入创建唯一操作")
+    });
+    let guard = super::operations::OperationGuard::new(
+        operation
+            .as_ref()
+            .map(|op| op.id.clone())
+            .unwrap_or_default(),
+    );
+    let result = super::domain_cli::execute(
+        db,
+        &cli_principal,
+        group,
+        sub,
+        &mut args,
+        request_id,
+        None,
+        None,
+        &guard,
+    );
+    match result {
+        Ok((value, _page)) => {
+            assert!(args.is_empty(), "CLI 参数必须全部消费: {args:?}");
+            if let Some(operation) = operation {
+                let def = registry::find_operation(write.unwrap()).unwrap();
+                super::operations::complete(
+                    db,
+                    &operation.id,
+                    &super::operations::OperationResult::from_value(def.resource_kind, &value),
+                )?;
+            }
+            Ok(value)
+        }
+        Err(err) => {
+            if let Some(operation) = operation {
+                super::operations::fail(db, &operation.id, &err)?;
+            }
+            Err(err)
+        }
+    }
+}
+
+#[test]
+fn general_three_transports_share_revision_and_deny_revoked_idempotent_replay() {
+    let db = memdb();
+    let project = seed_project(&db, "general", "active", "");
+    let (principal, token) = agent(
+        &db,
+        "general-transports",
+        "project_rw",
+        &["projects.read", "projects.write"],
+        &[&project],
+    );
+    let ctx = ToolCtx {
+        db: db.clone(),
+        agent: agent_row(&db, &token),
+        emit: collector(),
+    };
+    let rest = DomainRestFixture::start(&db);
+    let (status, openapi) = rest.get("/api/v1/openapi.json", &token);
+    assert_eq!(status, 200, "{openapi}");
+    let methods = &openapi["data"]["paths"]["/api/v1/projects/{id}/general/milestones"];
+    assert!(
+        methods.get("get").is_some(),
+        "同路径 GET 不得被 POST 覆盖: {methods}"
+    );
+    assert!(
+        methods.get("post").is_some(),
+        "同路径 POST 必须存在: {methods}"
+    );
+    let mcp_args = json!({
+        "project_id": project, "requestId": "general-mcp-create",
+        "input": {"title": "MCP 创建", "note": "三入口同一资源"},
+    });
+    let created = mcp_ok(&ctx, "taskdock_general_save_milestone", mcp_args.clone());
+    let id = created["id"].as_str().unwrap();
+    assert_eq!(created["revision"], 1);
+    assert_eq!(
+        operations_of(&db, "taskdock_general_save_milestone").len(),
+        1
+    );
+
+    let cli_input = json!({"id": id, "title": "CLI 更新", "expected_revision": 1});
+    let cli_args = vec![
+        "save".into(),
+        "--project-id".into(),
+        project.clone(),
+        "--payload".into(),
+        cli_input.to_string(),
+    ];
+    let cli = cli_domain_value(
+        &db,
+        &principal,
+        "general",
+        "milestone",
+        cli_args.clone(),
+        "general-cli-update",
+        Some("general.milestone.save"),
+    )
+    .unwrap();
+    assert_eq!(cli["id"], id);
+    assert_eq!(cli["revision"], 2);
+    assert_eq!(cli["note"], "三入口同一资源");
+
+    let path = format!("/api/v1/projects/{project}/general/milestones");
+    let rest_input = json!({"id": id, "title": "REST 更新", "expected_revision": 2});
+    let (status, saved) = rest.post(&path, &token, &rest_input, "general-rest-update");
+    assert_eq!(status, 201, "{saved}");
+    assert_eq!(saved["data"]["revision"], 3);
+    let (status, replay) = rest.post(&path, &token, &rest_input, "general-rest-update");
+    assert_eq!(status, 201, "{replay}");
+    assert_eq!(replay["data"], saved["data"]);
+
+    let read = mcp_ok(
+        &ctx,
+        "taskdock_general_list_milestones",
+        json!({"project_id": project}),
+    );
+    assert_eq!(read["items"][0]["title"], "REST 更新");
+    assert_eq!(read["items"][0]["revision"], 3);
+    let cli_read = cli_domain_value(
+        &db,
+        &principal,
+        "general",
+        "milestone",
+        vec!["list".into(), "--project-id".into(), project.clone()],
+        "general-cli-read",
+        None,
+    )
+    .unwrap();
+    assert_eq!(cli_read[0]["revision"], 3);
+    let (status, read) = rest.get(&path, &token);
+    assert_eq!(status, 200, "{read}");
+    assert_eq!(read["data"][0]["revision"], 3);
+    let total: i64 = db
+        .with_read(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM general_milestones WHERE project_id=?1",
+                [&project],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(total, 1, "更新与重放都不能生成第二个里程碑");
+
+    mcp_auth::revoke_project(&db, principal.agent_row_id.as_deref().unwrap(), &project).unwrap();
+    mcp_permission_denied(&ctx, "taskdock_general_save_milestone", mcp_args);
+    let denied = cli_domain_value(
+        &db,
+        &principal,
+        "general",
+        "milestone",
+        cli_args,
+        "general-cli-update",
+        Some("general.milestone.save"),
+    )
+    .unwrap_err();
+    assert_eq!(super::error_code(&denied), "FORBIDDEN");
+    let (status, denied) = rest.post(&path, &token, &rest_input, "general-rest-update");
+    assert_eq!(status, 403, "撤权后同 Key 不能返回缓存成功: {denied}");
+}
+
+#[test]
+fn game_registration_round_trips_across_transports_without_promoting_verification() {
+    let db = memdb();
+    let project = seed_project(&db, "game", "active", "");
+    let (principal, token) = agent(
+        &db,
+        "game-transports",
+        "project_rw",
+        &["projects.read", "projects.write"],
+        &[&project],
+    );
+    let ctx = ToolCtx {
+        db: db.clone(),
+        agent: agent_row(&db, &token),
+        emit: collector(),
+    };
+    let rest = DomainRestFixture::start(&db);
+    let build = mcp_ok(
+        &ctx,
+        "taskdock_game_create_build",
+        json!({
+            "project_id": project, "requestId": "game-build-register",
+            "input": {"target": "Windows", "status": "success", "log_summary": "Agent 登记成功"},
+        }),
+    );
+    assert_eq!(build["verificationStatus"], "unverified");
+    assert_eq!(build["source"], "imported");
+    assert_eq!(build["revision"], 1);
+    assert_eq!(operations_of(&db, "taskdock_game_create_build").len(), 1);
+
+    let path = format!("/api/v1/projects/{project}/game/tests");
+    let input = json!({"build_id": build["id"], "title": "登记回归", "result": "passed"});
+    let (status, test) = rest.post(&path, &token, &input, "game-test-register");
+    assert_eq!(status, 201, "{test}");
+    assert_eq!(test["data"]["verificationStatus"], "unverified");
+    assert_eq!(test["data"]["buildId"], build["id"]);
+    assert_eq!(test["data"]["revision"], 1);
+    let (status, replay) = rest.post(&path, &token, &input, "game-test-register");
+    assert_eq!(status, 201, "{replay}");
+    assert_eq!(replay["data"], test["data"]);
+    assert_eq!(operations_of(&db, "game.test.create").len(), 1);
+
+    for sub in ["build", "test"] {
+        let rows = cli_domain_value(
+            &db,
+            &principal,
+            "game",
+            sub,
+            vec!["list".into(), "--project-id".into(), project.clone()],
+            "game-cli-list",
+            None,
+        )
+        .unwrap();
+        assert_eq!(rows.as_array().unwrap().len(), 1);
+        assert_eq!(rows[0]["verificationStatus"], "unverified");
+    }
+    let denied = mcp_err(
+        &ctx,
+        "taskdock_game_create_build",
+        json!({
+            "project_id": project, "requestId": "game-no-self-verify",
+            "input": {"target": "Windows", "status": "success", "verification_status": "verified"},
+        }),
+    );
+    assert!(denied.get("error").is_some(), "{denied}");
+    let read = mcp_ok(
+        &ctx,
+        "taskdock_game_list_tests",
+        json!({"project_id": project}),
+    );
+    assert_eq!(read["items"][0]["verificationStatus"], "unverified");
+}
+
+#[test]
+fn development_transports_reject_other_task_evidence_and_read_back_real_links() {
+    let db = memdb();
+    let project = seed_project(&db, "development", "active", "");
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO dws_workspace_probes
+             (id, project_id, probed_at, git_status, branch, main_repo_path)
+             VALUES ('probe-1', ?1, '2026-11-24', 'dirty', 'main', 'D:/private/repo')",
+            [&project],
+        )?;
+        for task in ["dev-task-a", "dev-task-b"] {
+            conn.execute(
+                "INSERT INTO tasks (id, title, created_at, updated_at)
+                 VALUES (?1, ?1, '2026-11-24', '2026-11-24')",
+                [task],
+            )?;
+            conn.execute(
+                "INSERT INTO workspace_task_links (project_id, task_id, created_at)
+                 VALUES (?1, ?2, '2026-11-24')",
+                rusqlite::params![project, task],
+            )?;
+            conn.execute(
+                "INSERT INTO dev_handoff_packs
+                 (id, task_id, title, version, content_md, created_at)
+                 VALUES (?1, ?2, '真实交接', 1, '不得出现在证据摘要中的正文', '2026-11-24')",
+                rusqlite::params![format!("pack-{task}"), task],
+            )?;
+            conn.execute(
+                "INSERT INTO dev_acceptance_records
+                 (id, subject_kind, subject_id, verdict, summary, evidence, created_at)
+                 VALUES (?1, 'task', ?2, 'pass', '人工验收', '[]', '2026-11-24')",
+                rusqlite::params![format!("accept-{task}"), task],
+            )?;
+        }
+        Ok(())
+    })
+    .unwrap();
+    let (principal, token) = agent(
+        &db,
+        "development-transports",
+        "project_rw",
+        &["projects.read", "projects.write", "tasks.read"],
+        &[&project],
+    );
+    let ctx = ToolCtx {
+        db: db.clone(),
+        agent: agent_row(&db, &token),
+        emit: collector(),
+    };
+    let rest = DomainRestFixture::start(&db);
+    let snapshot = mcp_ok(
+        &ctx,
+        "taskdock_development_get_git_snapshot",
+        json!({"project_id": project}),
+    );
+    assert_eq!(snapshot["status"], "dirty");
+    assert_eq!(snapshot["branch"], "main");
+    assert!(!snapshot.to_string().contains("D:/private/repo"));
+    let path = format!("/api/v1/projects/{project}/development/task-links");
+    let wrong_pack = json!({"task_id": "dev-task-a", "handoff_pack_id": "pack-dev-task-b"});
+    let (status, denied) = rest.post(&path, &token, &wrong_pack, "dev-wrong-pack");
+    assert_eq!(status, 403, "{denied}");
+    mcp_permission_denied(
+        &ctx,
+        "taskdock_development_create_task_link",
+        json!({
+            "project_id": project, "requestId": "dev-wrong-acceptance",
+            "input": {"task_id": "dev-task-a", "acceptance_record_id": "accept-dev-task-b"},
+        }),
+    );
+
+    let link = mcp_ok(
+        &ctx,
+        "taskdock_development_create_task_link",
+        json!({
+            "project_id": project, "requestId": "dev-link-real-evidence",
+            "input": {"task_id": "dev-task-a", "handoff_pack_id": "pack-dev-task-a",
+                "acceptance_record_id": "accept-dev-task-a", "note": "只关联已有证据"},
+        }),
+    );
+    assert_eq!(link["taskId"], "dev-task-a");
+    let read = cli_domain_value(
+        &db,
+        &principal,
+        "development",
+        "task-evidence",
+        vec![
+            "list".into(),
+            "--project-id".into(),
+            project.clone(),
+            "--task-id".into(),
+            "dev-task-a".into(),
+        ],
+        "dev-cli-evidence",
+        None,
+    )
+    .unwrap();
+    let rows = read.as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|row| row["linked"] == true));
+    assert!(rows
+        .iter()
+        .any(|row| row["kind"] == "acceptance" && row["verdict"] == "pass"));
+    assert!(!read.to_string().contains("不得出现在证据摘要中的正文"));
+    assert!(!read.to_string().contains("dev-task-b"));
+    let read_path =
+        format!("/api/v1/projects/{project}/development/task-evidence?task_id=dev-task-a");
+    let (status, read) = rest.get(&read_path, &token);
+    assert_eq!(status, 200, "{read}");
+    assert_eq!(read["data"].as_array().unwrap().len(), 2);
+    assert!(read["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|row| row["linked"] == true));
+    let count: i64 = db
+        .with_read(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM dws_task_links WHERE project_id=?1",
+                [&project],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(count, 1, "拒绝的跨任务关联不得落库");
 }

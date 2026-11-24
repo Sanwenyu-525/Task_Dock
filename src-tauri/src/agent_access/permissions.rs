@@ -1094,159 +1094,196 @@ pub fn authorize_file_import(
             authorization_id: String::new(),
         });
     };
-    let auth = policy.authorization;
+    let auth = &policy.authorization;
     match auth.mode {
         ImportMode::Off => Ok(FileImportDecision::Rejected {
             reason: "该目录已关闭文件导入".into(),
-            authorization_id: auth.id,
+            authorization_id: auth.id.clone(),
         }),
         ImportMode::Review => Ok(FileImportDecision::NeedsReview {
             reason: "该目录为待审核模式，导入请求等待人工批准".into(),
-            authorization_id: auth.id,
+            authorization_id: auth.id.clone(),
         }),
         ImportMode::Trusted => {
-            if !policy.capabilities.contains(&capability) {
-                return Ok(FileImportDecision::Rejected {
-                    reason: format!(
-                        "目录授权不包含 {}（仅 {}）",
-                        capability.as_str(),
-                        policy
-                            .capabilities
-                            .iter()
-                            .map(|cap| cap.as_str())
-                            .collect::<Vec<_>>()
-                            .join("|")
-                    ),
-                    authorization_id: auth.id,
-                });
-            }
-            // 绑定 Agent：文件自称的身份必须与**绑定 Agent 的真实 agent_id** 一致，
-            // 否则视为冒充。文件自称永远不是认证凭据：这里比的是「自称」与
-            // 「库内登记值」，最终授权仍以该 Agent 的真实授权为准。
-            let bound = match (&auth.agent_row_id, identity) {
-                (Some(row_id), ImportIdentity::BoundAgent { row_id: claimed, .. })
-                    if row_id == claimed => Some(row_id.clone()),
-                (Some(_), ImportIdentity::BoundAgent { agent_id, .. }) => {
-                    return Ok(FileImportDecision::Rejected {
-                        reason: format!(
-                            "该目录绑定的是另一个 Agent，文件不得声明 agent_id={agent_id}"
-                        ),
-                        authorization_id: auth.id,
-                    });
-                }
-                (Some(row_id), ImportIdentity::ClaimedAgent(claimed)) => {
-                    let real = db.with_read(|conn| bound_agent_id(conn, row_id))?;
-                    if !claimed.trim().is_empty() && claimed.trim() != real.trim() {
-                        return Ok(FileImportDecision::Rejected {
-                            reason: format!(
-                                "该目录绑定的是另一个 Agent，文件不得声明 agent_id={claimed}"
-                            ),
-                            authorization_id: auth.id,
-                        });
-                    }
-                    Some(row_id.clone())
-                }
-                (Some(row_id), _) => Some(row_id.clone()),
-                (None, _) => None,
-            };
-            let grant = ImportGrant {
-                authorization_id: auth.id.clone(),
-                capabilities: policy.capabilities.clone(),
-                project_id: auth.project_id.clone(),
-                agent_row_id: bound.clone(),
-                approved_by: "policy".into(),
-            };
-            // 授权限定的项目必须真实存在（fail-closed）：项目被删除后，
-            // 目录授权不得继续放行「写进幽灵项目」的导入。
-            let scope_project = auth.project_id.trim();
-            if !scope_project.is_empty() {
-                let exists =
-                    db.with_read(|conn| Ok(resolve_project_root(conn, scope_project)?.is_some()))?;
-                if !exists {
-                    return Ok(FileImportDecision::Rejected {
-                        reason: format!("导入授权限定的项目 {scope_project} 不存在"),
-                        authorization_id: auth.id,
-                    });
-                }
-            }
-            // 文件声明的项目同样必须真实存在：声明只是「一致性校验」的输入，
-            // 指向不存在的项目意味着这次导入会留下一条悬空归属。
-            let declared = project_id.trim();
-            if !declared.is_empty() {
-                let exists =
-                    db.with_read(|conn| Ok(resolve_project_root(conn, declared)?.is_some()))?;
-                if !exists {
-                    return Ok(FileImportDecision::Rejected {
-                        reason: format!("文件声明的项目 {declared} 不存在"),
-                        authorization_id: auth.id,
-                    });
-                }
-            }
-            // 此处只有「文件声明」可用：声明非空且与授权项目不一致 → 直接拒绝；
-            // 空声明不算越权，真实归属由 `sync::effective_import_project` 在写入前判定
-            // （用声明当归属正是 v81 的绕过点）。
-            // 拒绝必须表达为 `Rejected`（fail-closed 但只影响这一个文件），
-            // 不能把错误抛给整个扫描。
-            if !declared.is_empty() {
-                if let Err(err) = check_import_project_scope(&grant, declared) {
-                    return Ok(FileImportDecision::Rejected {
-                        reason: err.user_message(),
-                        authorization_id: grant.authorization_id.clone(),
-                    });
-                }
-            }
-            let principal = if let Some(row_id) = bound {
-                let agent_id = db.with_read(|conn| {
-                    conn.query_row(
-                        "SELECT agent_id FROM mcp_agents WHERE id = ?1 AND revoked_at IS NULL",
-                        rusqlite::params![row_id],
-                        |r| r.get::<_, String>(0),
-                    )
-                    .optional()
-                    .map_err(AppError::from)
-                })?;
-                // 绑定的 Agent 被撤销/删除 → 明确拒绝本次导入（fail-closed），
-                // 而不是让整个扫描因一行查询失败而中断。
-                let Some(agent_id) = agent_id else {
-                    return Ok(FileImportDecision::Rejected {
-                        reason: "导入授权绑定的 Agent 已不存在或已被撤销".into(),
-                        authorization_id: auth.id,
-                    });
-                };
-                let mut principal = Principal::agent(row_id, agent_id, super::Source::File);
-                principal.import = Some(grant);
-                principal
-            } else {
-                Principal::file_import_granted(grant, identity.claimed_agent_id())
-            };
-            // 绑定 Agent 或受限目录都必须在返回前做一次真实能力校验，避免“授权存在但能力没落库”。
-            // 权限不足 → 只拒绝这一条文件；数据库/IO 等异常仍然向上抛。
-            //
-            // 能力范围**不能**用文件声明的项目 ID：那是「文件自称」，
-            // 不是授权依据。绑定 Agent 走「任意资源范围持有该能力 + scope 可写」的复核，
-            // 资源级（哪个任务 / 哪个知识库）由业务层用真实资源 ID 再校验一次；
-            // 未绑定 Agent 时目录策略的能力集合就是授权上限。
-            let capability_check = match principal.identity {
-                Identity::RegisteredAgent => {
-                    let row_id = principal.agent_row_id.clone().unwrap_or_default();
-                    require_agent_for_import(db, &row_id, capability)
-                }
-                _ => require(db, &principal, capability, ""),
-            };
-            match capability_check {
-                Ok(()) => Ok(FileImportDecision::Allowed(principal)),
-                Err(err @ (AppError::Agent(_) | AppError::Forbidden(_))) => {
-                    Ok(FileImportDecision::Rejected {
-                        reason: err.user_message(),
-                        authorization_id: auth.id,
-                    })
-                }
-                Err(other) => Err(other),
-            }
+            principal_for_import_policy(db, policy, identity, capability, project_id)
         }
     }
 }
 
+/// 与 trusted 共用能力、项目及绑定 Agent 核验；仅批准已绑定项目的领域写入。
+pub(crate) fn explicit_domain_write_principal(
+    db: &Db,
+    workspace_row_id: &str,
+    rel_path: &str,
+    identity: &ImportIdentity,
+    capability: Capability,
+    declared_project: &str,
+    approved_by: &str,
+) -> AppResult<Principal> {
+    let policy = policy_for(db, workspace_row_id, rel_path)?
+        .ok_or_else(|| forbidden("领域写入需要显式绑定项目的目录授权"))?;
+    if policy.authorization.mode == ImportMode::Off
+        || policy.authorization.project_id.trim().is_empty()
+    {
+        return Err(forbidden("领域写入需要显式绑定项目的目录授权"));
+    }
+    match principal_for_import_policy(db, policy, identity, capability, declared_project)? {
+        FileImportDecision::Allowed(mut principal) => {
+            if let Some(grant) = principal.import.as_mut() {
+                grant.approved_by = approved_by.to_string();
+            }
+            Ok(principal)
+        }
+        decision => Err(forbidden(decision.reason())),
+    }
+}
+
+fn principal_for_import_policy(
+    db: &Db,
+    policy: ImportPolicy,
+    identity: &ImportIdentity,
+    capability: Capability,
+    project_id: &str,
+) -> AppResult<FileImportDecision> {
+    let auth = policy.authorization;
+    if !policy.capabilities.contains(&capability) {
+        return Ok(FileImportDecision::Rejected {
+            reason: format!(
+                "目录授权不包含 {}（仅 {}）",
+                capability.as_str(),
+                policy
+                    .capabilities
+                    .iter()
+                    .map(|cap| cap.as_str())
+                    .collect::<Vec<_>>()
+                    .join("|")
+            ),
+            authorization_id: auth.id,
+        });
+    }
+    // 绑定 Agent：文件自称的身份必须与**绑定 Agent 的真实 agent_id** 一致，
+    // 否则视为冒充。文件自称永远不是认证凭据：这里比的是「自称」与
+    // 「库内登记值」，最终授权仍以该 Agent 的真实授权为准。
+    let bound = match (&auth.agent_row_id, identity) {
+        (
+            Some(row_id),
+            ImportIdentity::BoundAgent {
+                row_id: claimed, ..
+            },
+        ) if row_id == claimed => Some(row_id.clone()),
+        (Some(_), ImportIdentity::BoundAgent { agent_id, .. }) => {
+            return Ok(FileImportDecision::Rejected {
+                reason: format!("该目录绑定的是另一个 Agent，文件不得声明 agent_id={agent_id}"),
+                authorization_id: auth.id,
+            });
+        }
+        (Some(row_id), ImportIdentity::ClaimedAgent(claimed)) => {
+            let real = db.with_read(|conn| bound_agent_id(conn, row_id))?;
+            if !claimed.trim().is_empty() && claimed.trim() != real.trim() {
+                return Ok(FileImportDecision::Rejected {
+                    reason: format!("该目录绑定的是另一个 Agent，文件不得声明 agent_id={claimed}"),
+                    authorization_id: auth.id,
+                });
+            }
+            Some(row_id.clone())
+        }
+        (Some(row_id), _) => Some(row_id.clone()),
+        (None, _) => None,
+    };
+    let grant = ImportGrant {
+        authorization_id: auth.id.clone(),
+        capabilities: policy.capabilities.clone(),
+        project_id: auth.project_id.clone(),
+        agent_row_id: bound.clone(),
+        approved_by: "policy".into(),
+    };
+    // 授权限定的项目必须真实存在（fail-closed）：项目被删除后，
+    // 目录授权不得继续放行「写进幽灵项目」的导入。
+    let scope_project = auth.project_id.trim();
+    if !scope_project.is_empty() {
+        let exists =
+            db.with_read(|conn| Ok(resolve_project_root(conn, scope_project)?.is_some()))?;
+        if !exists {
+            return Ok(FileImportDecision::Rejected {
+                reason: format!("导入授权限定的项目 {scope_project} 不存在"),
+                authorization_id: auth.id,
+            });
+        }
+    }
+    // 文件声明的项目同样必须真实存在：声明只是「一致性校验」的输入，
+    // 指向不存在的项目意味着这次导入会留下一条悬空归属。
+    let declared = project_id.trim();
+    if !declared.is_empty() {
+        let exists = db.with_read(|conn| Ok(resolve_project_root(conn, declared)?.is_some()))?;
+        if !exists {
+            return Ok(FileImportDecision::Rejected {
+                reason: format!("文件声明的项目 {declared} 不存在"),
+                authorization_id: auth.id,
+            });
+        }
+    }
+    // 此处只有「文件声明」可用：声明非空且与授权项目不一致 → 直接拒绝；
+    // 空声明不算越权，真实归属由 `sync::effective_import_project` 在写入前判定
+    // （用声明当归属正是 v81 的绕过点）。
+    // 拒绝必须表达为 `Rejected`（fail-closed 但只影响这一个文件），
+    // 不能把错误抛给整个扫描。
+    if !declared.is_empty() {
+        if let Err(err) = check_import_project_scope(&grant, declared) {
+            return Ok(FileImportDecision::Rejected {
+                reason: err.user_message(),
+                authorization_id: grant.authorization_id.clone(),
+            });
+        }
+    }
+    let principal = if let Some(row_id) = bound {
+        let agent_id = db.with_read(|conn| {
+            conn.query_row(
+                "SELECT agent_id FROM mcp_agents WHERE id = ?1 AND revoked_at IS NULL",
+                rusqlite::params![row_id],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(AppError::from)
+        })?;
+        // 绑定的 Agent 被撤销/删除 → 明确拒绝本次导入（fail-closed），
+        // 而不是让整个扫描因一行查询失败而中断。
+        let Some(agent_id) = agent_id else {
+            return Ok(FileImportDecision::Rejected {
+                reason: "导入授权绑定的 Agent 已不存在或已被撤销".into(),
+                authorization_id: auth.id,
+            });
+        };
+        let mut principal = Principal::agent(row_id, agent_id, super::Source::File);
+        principal.import = Some(grant);
+        principal
+    } else {
+        Principal::file_import_granted(grant, identity.claimed_agent_id())
+    };
+    // 绑定 Agent 或受限目录都必须在返回前做一次真实能力校验，避免“授权存在但能力没落库”。
+    // 权限不足 → 只拒绝这一条文件；数据库/IO 等异常仍然向上抛。
+    //
+    // 能力范围**不能**用文件声明的项目 ID：那是「文件自称」，
+    // 不是授权依据。绑定 Agent 走「任意资源范围持有该能力 + scope 可写」的复核，
+    // 资源级（哪个任务 / 哪个知识库）由业务层用真实资源 ID 再校验一次；
+    // 未绑定 Agent 时目录策略的能力集合就是授权上限。
+    let capability_check = match principal.identity {
+        Identity::RegisteredAgent => {
+            let row_id = principal.agent_row_id.clone().unwrap_or_default();
+            require_agent_for_import(db, &row_id, capability)
+        }
+        _ => require(db, &principal, capability, ""),
+    };
+    match capability_check {
+        Ok(()) => Ok(FileImportDecision::Allowed(principal)),
+        Err(err @ (AppError::Agent(_) | AppError::Forbidden(_))) => {
+            Ok(FileImportDecision::Rejected {
+                reason: err.user_message(),
+                authorization_id: auth.id,
+            })
+        }
+        Err(other) => Err(other),
+    }
+}
 /// 人工批准单次导入：构造一次性授权主体（写能力仅限本次操作）。
 pub fn manual_import_grant(capability: Capability, project_id: &str, approved_by: &str) -> ImportGrant {
     ImportGrant {

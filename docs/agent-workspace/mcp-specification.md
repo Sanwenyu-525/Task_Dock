@@ -160,3 +160,10 @@ MCP 客户端 ──stdio──▶ taskdock.exe --mcp-server ──HTTP 127.0.0.
   `projectId` / `planId` / `activePlanId` / `project` / `activePlan` / `workspace` / `provisioningStatus`；
 - 授权：创建者只获得刚创建项目根的 grant（`mcp_agent_grants.project_id` v91 外键指向项目根）；
 - 幂等：`requestId` 命中同一摘要时返回原结果，参数不同返回冲突；审计 entity 指向项目根。
+## 游戏、通用、开发领域工具
+
+`taskdock_get_project_domain_manifest` 返回当前项目的已注册操作。[功能矩阵](feature-matrix.md)
+列出操作 ID 与工具名。新增读取工具使用 `project_id`，列表支持 `limit`、`offset`。
+任务证据列表还需要 `task_id`。新增写入工具使用 `project_id`、`requestId` 和 `input`，
+`input` 的字段与 [REST 请求体](rest-api-specification.md)一致。
+重试时保持 `requestId` 和业务输入一致，工具会按当前授权判定能否重放。

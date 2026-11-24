@@ -1,15 +1,6 @@
-//! Phase 1 领域受限文件导入（架构文档 §8.4）。
-//!
-//! 文件通道只开放**少量、可判定的更新型操作**，不把五个领域的写接口整体搬进目录：
-//! - 只接受已注册的领域操作 ID（`novel.chapter.content.update` / `comic.media.update` /
-//!   `comic.media.adopt`），未知类型在信封校验阶段就拒绝；
-//! - 全部是更新类：**必须**带 `base_revision`，缺失即拒绝（防静默覆盖）；
-//! - 项目归属只用数据库真实归属（章节/素材行），文件声明的 `project_id` 仅做一致性校验；
-//! - 默认人工审核；`trusted` 目录仍要同时满足导入授权能力集合与真实资源归属；
-//! - 单文件大小沿用 `MAX_IMPORT_BYTES`（256KiB），正文/备注不额外放大。
-//!
-//! 业务写入复用 `domains::{novel, comic}` 的事务内核心与既有导入租约守卫，
-//! 不新建第二套幂等/审计：`sync::scan` 的 claim + `WriteGuard` 就是文件通道的幂等来源。
+//! 领域受限文件导入。更新要求 base_revision，创建由服务端生成 ID。
+//! 文件声明只用于一致性校验。游戏、通用、开发写入要求显式绑定项目的目录授权。
+//! 默认人工审核，业务写入复用各领域核心及导入租约守卫。
 
 use serde_json::Value;
 
@@ -18,12 +9,13 @@ use crate::agent_access::{forbidden, permissions as perms, validation, Principal
 use crate::commands::comic_workspace::{
     owner_project_id, read_media, validate_media_meta,
 };
+use crate::commands::general_workspace::general_milestone_read_in_conn;
 use crate::commands::project_workspace::novel_chapter_updated_at;
 use crate::db::Db;
 use crate::error::{AppError, AppResult};
 use crate::mcp::permissions::Capability;
 
-use super::domains::{comic, novel, read_revision_snapshot, DomainKind};
+use super::domains::{comic, development, game, general, novel, read_revision_snapshot, registry, DomainKind};
 use super::sync::{ImportEnvelope, ParsedDocument};
 
 /// 文件通道开放的领域导入类型（与 `sync::KINDS` 保持同步）。
@@ -31,6 +23,10 @@ pub const KINDS: &[&str] = &[
     "novel.chapter.content.update",
     "comic.media.update",
     "comic.media.adopt",
+    "game.build.create",
+    "game.test.create",
+    "general.milestone.save",
+    "development.task_link.create",
 ];
 
 /// 正文上限：与单文件导入上限一致，不再额外放大。
@@ -38,6 +34,10 @@ const MAX_TEXT_BYTES: usize = super::MAX_IMPORT_BYTES as usize;
 
 pub fn is_domain_kind(kind: &str) -> bool {
     KINDS.contains(&kind)
+}
+
+pub fn requires_project_policy(kind: &str) -> bool {
+    matches!(kind, "game.build.create" | "game.test.create" | "general.milestone.save" | "development.task_link.create")
 }
 
 /// 领域导入类型对应的真实写能力（与 `permissions::resolve_import_capability` 共用）。
@@ -49,6 +49,9 @@ pub fn domain_of(kind: &str) -> Option<DomainKind> {
     Some(match kind {
         "novel.chapter.content.update" => DomainKind::Novel,
         "comic.media.update" | "comic.media.adopt" => DomainKind::Comic,
+        "game.build.create" | "game.test.create" => DomainKind::Game,
+        "general.milestone.save" => DomainKind::General,
+        "development.task_link.create" => DomainKind::Development,
         _ => return None,
     })
 }
@@ -101,6 +104,21 @@ pub fn validate_envelope(envelope: &ImportEnvelope) -> AppResult<()> {
         "comic.media.adopt" => {
             require_text(payload, "media_id")?;
         }
+        "general.milestone.save" => {
+            read_general_input(envelope)?;
+            return Ok(());
+        }
+        "game.build.create" | "game.test.create" | "development.task_link.create" => {
+            if envelope.base_revision.is_some() {
+                return Err(validation("创建类导入禁止提供 base_revision"));
+            }
+            match kind {
+                "game.build.create" => { read_payload::<game::CreateBuildInput>(envelope)?; }
+                "game.test.create" => { read_payload::<game::CreateTestInput>(envelope)?; }
+                _ => { read_payload::<development::CreateTaskLinkInput>(envelope)?; }
+            }
+            return Ok(());
+        }
         other => {
             return Err(validation(format!("未支持的领域导入类型: {other}")));
         }
@@ -111,6 +129,27 @@ pub fn validate_envelope(envelope: &ImportEnvelope) -> AppResult<()> {
         ));
     }
     Ok(())
+}
+
+fn read_payload<T: serde::de::DeserializeOwned>(envelope: &ImportEnvelope) -> AppResult<T> {
+    registry::validate_payload_size(&envelope.kind, envelope.payload.to_string().len())?;
+    serde_json::from_value(envelope.payload.clone())
+        .map_err(|_| validation("payload 不符合该领域操作的参数契约"))
+}
+
+fn read_general_input(envelope: &ImportEnvelope) -> AppResult<general::SaveMilestoneInput> {
+    let mut input: general::SaveMilestoneInput = read_payload(envelope)?;
+    if input.expected_revision.is_some() {
+        return Err(validation("里程碑文件版本只使用信封 base_revision"));
+    }
+    match (&input.id, envelope.base_revision) {
+        (None, None) => Ok(input),
+        (Some(id), Some(revision)) if !id.trim().is_empty() && revision >= 0 => {
+            input.expected_revision = Some(revision);
+            Ok(input)
+        }
+        _ => Err(validation("创建里程碑省略 id 与 base_revision，更新需同时提供两者")),
+    }
 }
 
 /// 目标资源的真实项目归属（查不到返回 `None`，不猜、不读文件声明）。
@@ -145,6 +184,7 @@ fn resource_id_of(doc: &ParsedDocument, kind: &str) -> String {
     let key = match kind {
         "novel.chapter.content.update" => "chapter_id",
         "comic.media.update" | "comic.media.adopt" => "media_id",
+        "general.milestone.save" => "id",
         _ => return String::new(),
     };
     doc.envelope
@@ -182,6 +222,13 @@ pub fn current_revision(db: &Db, doc: &ParsedDocument) -> AppResult<i64> {
                 .revision)
             })
         }
+        "general.milestone.save" => {
+            let id = field(doc, "id")?;
+            db.with_read(|conn| {
+                let milestone = general_milestone_read_in_conn(conn, &id)?;
+                Ok(read_revision_snapshot(conn, "general.milestone", &id, &milestone.updated_at)?.revision)
+            })
+        }
         _ => Ok(0),
     }
 }
@@ -199,9 +246,8 @@ pub fn import_document_guarded(
 ) -> AppResult<String> {
     let kind = doc.envelope.kind.as_str();
     domain_of(kind).ok_or_else(|| validation(format!("未支持的领域导入类型: {kind}")))?;
-    let base = doc.envelope.base_revision.ok_or_else(|| {
-        validation("更新类导入必须提供 base_revision（否则视为静默覆盖）")
-    })?;
+    validate_envelope(&doc.envelope)?;
+    let base = doc.envelope.base_revision.unwrap_or(0);
     let project_id = project_id.trim();
     if project_id.is_empty() {
         return Err(forbidden(
@@ -210,6 +256,16 @@ pub fn import_document_guarded(
     }
     // 入口层已判过；服务层不依赖调用方，写入前再验一次能力/身份。
     perms::require(db, principal, Capability::ProjectsWrite, project_id)?;
+
+    if requires_project_policy(kind) {
+        let grant = principal.import.as_ref().ok_or_else(|| forbidden("领域写入缺少项目导入授权"))?;
+        if grant.project_id.trim().is_empty()
+            || grant.project_id.trim() != project_id
+            || grant.authorization_id == "manual-approval"
+        {
+            return Err(forbidden("领域写入需要显式绑定同一项目的目录授权"));
+        }
+    }
 
     let (message, resource_kind, resource_id, revision) = match kind {
         "novel.chapter.content.update" => {
@@ -237,7 +293,7 @@ pub fn import_document_guarded(
                 format!("更新章节 {} 正文（revision {}）", chapter_id, revision),
                 "novel.chapter",
                 chapter_id,
-                revision,
+                Some(revision),
             )
         }
         "comic.media.update" => {
@@ -268,7 +324,7 @@ pub fn import_document_guarded(
                 format!("更新素材版本 {}（revision {}）", media_id, revision),
                 "comic.media_version",
                 media_id,
-                revision,
+                Some(revision),
             )
         }
         "comic.media.adopt" => {
@@ -293,8 +349,43 @@ pub fn import_document_guarded(
                 format!("采用素材版本 {}（revision {}）", media_id, revision),
                 "comic.media_version",
                 media_id,
-                revision,
+                Some(revision),
             )
+        }
+        "game.build.create" => {
+            let input = read_payload(&doc.envelope)?;
+            let row = db.with_transaction(|conn| {
+                guard.check(conn)?;
+                let row = game::create_build_in_conn(conn, principal, project_id, input, guard)?;
+                guard.complete(conn)?;
+                Ok(row)
+            })?;
+            (format!("登记构建 {}（未独立验证，revision {}）", row.id, row.revision),
+                "game.build", row.id, Some(row.revision))
+        }
+        "game.test.create" => {
+            let input = read_payload(&doc.envelope)?;
+            let row = db.with_transaction(|conn| {
+                guard.check(conn)?;
+                let row = game::create_test_in_conn(conn, principal, project_id, input, guard)?;
+                guard.complete(conn)?;
+                Ok(row)
+            })?;
+            (format!("登记测试 {}（未独立验证，revision {}）", row.id, row.revision),
+                "game.test", row.id, Some(row.revision))
+        }
+        "general.milestone.save" => {
+            let input = read_general_input(&doc.envelope)?;
+            let row = general::save_milestone_with_guard(db, principal, project_id, input, guard)?;
+            (format!("保存通用里程碑 {}（revision {}）", row.id, row.revision),
+                "general.milestone", row.id, Some(row.revision))
+        }
+        "development.task_link.create" => {
+            let input = read_payload(&doc.envelope)?;
+            let link = development::create_task_link_with_guard(db, principal, project_id, input, guard)?;
+            let id = link["id"].as_str()
+                .ok_or_else(|| AppError::Unavailable("缺少开发证据关联 ID".into()))?;
+            (format!("关联开发任务证据 {id}"), "development.task_link", id.to_string(), None)
         }
         other => return Err(validation(format!("未支持的领域导入类型: {other}"))),
     };
@@ -311,8 +402,8 @@ pub fn import_document_guarded(
             request_id: "",
             success: true,
             error_code: "",
-            detail: "文件导入：领域受限更新",
-            revision: Some(revision),
+            detail: "文件导入：领域受限写入",
+            revision,
             duration_ms: 0,
         },
     );
@@ -563,7 +654,7 @@ mod tests {
             );
             let op = super::super::domains::find_operation(kind)
                 .unwrap_or_else(|| panic!("注册中心缺少 {kind}"));
-            assert!(op.revision_required, "{kind} 必须要求 base revision");
+            assert_eq!(op.revision_required, !requires_project_policy(kind), "{kind} 的固定 revision 要求不一致");
             assert!(
                 op.interfaces.contains(&super::super::domains::Interface::File),
                 "{kind} 的 Manifest 未声明 file 接口"
@@ -723,5 +814,247 @@ mod tests {
         assert_eq!(fx.media_status("m1"), "candidate");
         assert_eq!(fx.media_revision("m2"), 1);
         assert_eq!(fx.media_revision("m1"), 1, "被替换版本也必须推进 revision");
+    }
+
+    fn game_envelope(kind: &str, project: Option<&str>, payload: Value) -> String {
+        serde_json::json!({
+            "schema": "taskdock.import/1", "kind": kind,
+            "project_id": project, "payload": payload,
+        }).to_string()
+    }
+
+    fn game_build_payload() -> Value {
+        serde_json::json!({"target": "Windows", "status": "success", "note": "登记备注"})
+    }
+
+    fn game_counts(fx: &Fixture) -> (i64, i64) {
+        fx.db.with_read(|conn| Ok((
+            conn.query_row("SELECT COUNT(*) FROM game_builds", [], |r| r.get(0))?,
+            conn.query_row("SELECT COUNT(*) FROM game_tests", [], |r| r.get(0))?,
+        ))).unwrap()
+    }
+
+    #[test]
+    fn game_creation_defaults_to_review_and_approval_cannot_trust_file_project() {
+        let fx = Fixture::new("game-review-default");
+        let project = fx.project("game", "active");
+        let rel = fx.write("build.json", &game_envelope("game.build.create", Some(&project), game_build_payload()));
+        let report = fx.scan();
+        assert_eq!(report.pending_review, 1, "{report:?}");
+        assert_eq!(game_counts(&fx), (0, 0));
+        let request = sync::list_import_requests(&fx.db, Some("pending")).unwrap().into_iter().find(|r| r.rel_path == rel).unwrap();
+        assert!(sync::approve_import(&fx.db, &Principal::local(Source::Ui), &request.id, "批准").is_err());
+        assert_eq!(game_counts(&fx), (0, 0));
+    }
+
+    #[test]
+    fn game_review_approval_uses_bound_project_without_file_declaration() {
+        let fx = Fixture::new("game-review-bound");
+        let project = fx.project("game", "active");
+        fx.policy(permissions::ImportMode::Review, &["projects.write"], &project);
+        fx.write("build.json", &game_envelope("game.build.create", None, game_build_payload()));
+        assert_eq!(fx.scan().pending_review, 1);
+        let request = sync::list_import_requests(&fx.db, Some("pending")).unwrap().remove(0);
+        let result = sync::approve_import(&fx.db, &Principal::local(Source::Ui), &request.id, "确认登记").unwrap();
+        assert!(result.contains("未独立验证"));
+        assert_eq!(game_counts(&fx), (1, 0));
+        let (builds, _) = game::list_builds(&fx.db, &Principal::local(Source::Ui), &project, None, None).unwrap();
+        assert_eq!(builds[0].project_id, project);
+        assert_eq!(builds[0].note, "登记备注");
+        assert_eq!(builds[0].source, "imported");
+        assert_eq!(builds[0].revision, 1);
+        assert_eq!(builds[0].verification_status, "unverified");
+    }
+
+    #[test]
+    fn game_trusted_creation_round_trip_and_same_file_is_imported_once() {
+        let fx = Fixture::new("game-trusted-roundtrip");
+        let project = fx.project("game", "active");
+        fx.policy(permissions::ImportMode::Trusted, &["projects.write"], &project);
+        let raw = game_envelope("game.build.create", None, game_build_payload());
+        fx.write("build.json", &raw);
+        let report = fx.scan();
+        assert_eq!(report.imported, 1, "{report:?}");
+        let (builds, _) = game::list_builds(&fx.db, &Principal::local(Source::Ui), &project, None, None).unwrap();
+        fx.write("build.json", &raw);
+        let duplicate = fx.scan();
+        assert_eq!(duplicate.imported, 0, "{duplicate:?}");
+        assert_eq!(duplicate.skipped, 1, "{duplicate:?}");
+        fx.write("test.json", &game_envelope("game.test.create", Some(&project), serde_json::json!({
+            "build_id": builds[0].id, "title": "首章回归", "result": "passed"
+        })));
+        assert_eq!(fx.scan().imported, 1);
+        assert_eq!(game_counts(&fx), (1, 1));
+        fx.db.with_read(|conn| {
+            let (kind, id, revision, owner): (String, String, i64, String) = conn.query_row(
+                "SELECT resource_kind,resource_id,revision,project_id FROM agent_operations
+                 WHERE action = 'import.create' AND resource_kind = 'game.test' AND status = 'committed'",
+                [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )?;
+            assert_eq!(kind, "game.test");
+            assert!(!id.is_empty());
+            assert_eq!(revision, 1);
+            assert_eq!(owner, project);
+            let source: String = conn.query_row(
+                "SELECT source FROM agent_resource_revisions WHERE resource_kind='game.test' AND resource_id=?1",
+                [&id], |r| r.get(0),
+            )?;
+            assert_eq!(source, "file");
+            let event: (String, i64) = conn.query_row(
+                "SELECT resource_id,revision FROM agent_sync_events WHERE event_kind='game.test.create' AND status='ok'",
+                [], |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            assert_eq!(event, (id, 1));
+            Ok(())
+        }).unwrap();
+    }
+
+    #[test]
+    fn game_creation_rejects_global_grant_wrong_project_wrong_kind_and_archive() {
+        let fx = Fixture::new("game-import-boundaries");
+        let project = fx.project("game", "active");
+        let other = fx.project("game", "active");
+        fx.policy(permissions::ImportMode::Trusted, &["projects.write"], "");
+        fx.write("global.json", &game_envelope("game.build.create", Some(&project), game_build_payload()));
+        assert_eq!(fx.scan().imported, 0);
+        fs::remove_file(fx.root.join("inbox/global.json")).unwrap();
+        fx.policy(permissions::ImportMode::Trusted, &["projects.write"], &project);
+        fx.write("wrong-project.json", &game_envelope("game.build.create", Some(&other), game_build_payload()));
+        assert_eq!(fx.scan().imported, 0);
+        let wrong_kind = fx.project("general", "active");
+        fx.policy(permissions::ImportMode::Trusted, &["projects.write"], &wrong_kind);
+        fx.write("wrong-kind.json", &game_envelope("game.build.create", None, game_build_payload()));
+        assert_eq!(fx.scan().imported, 0);
+        let archived = fx.project("game", "archived");
+        fx.policy(permissions::ImportMode::Trusted, &["projects.write"], &archived);
+        fx.write("archived.json", &game_envelope("game.build.create", None, game_build_payload()));
+        assert_eq!(fx.scan().imported, 0);
+        assert_eq!(game_counts(&fx), (0, 0));
+    }
+
+    #[test]
+    fn game_creation_rejects_base_revision_execution_fields_and_oversized_payload() {
+        let fx = Fixture::new("game-invalid-inputs");
+        let project = fx.project("game", "active");
+        fx.policy(permissions::ImportMode::Trusted, &["projects.write"], &project);
+        let mut base: Value = serde_json::from_str(&game_envelope("game.build.create", Some(&project), game_build_payload())).unwrap();
+        base["base_revision"] = serde_json::json!(0);
+        fx.write("base.json", &base.to_string());
+        let mut execution = game_build_payload();
+        execution["command"] = serde_json::json!("do-not-run");
+        fx.write("execution.json", &game_envelope("game.build.create", Some(&project), execution));
+        let mut oversize = game_build_payload();
+        oversize["note"] = serde_json::json!("x".repeat(game::MAX_CREATE_PAYLOAD_BYTES));
+        fx.write("oversized.json", &game_envelope("game.build.create", Some(&project), oversize));
+        let report = fx.scan();
+        assert_eq!(report.failed, 3, "{report:?}");
+        assert_eq!(report.imported, 0);
+        assert_eq!(game_counts(&fx), (0, 0));
+    }
+
+    #[test]
+    fn game_review_rechecks_bound_agent_identity_capability_and_revocation() {
+        let fx = Fixture::new("game-review-agent");
+        let project = fx.project("game", "active");
+        let agent = crate::mcp::auth::create_agent(&fx.db, "game-file-agent", "文件导入测试").unwrap();
+        crate::mcp::auth::set_agent_scope(&fx.db, &agent.info.id, "project_rw").unwrap();
+        crate::mcp::auth::grant_project(&fx.db, &agent.info.id, &project).unwrap();
+        crate::mcp::permissions::grant(&fx.db, &agent.info.id, "projects.write", "").unwrap();
+        let row = workspace::active(&fx.db).unwrap().unwrap();
+        permissions::upsert_import_authorization(&fx.db, &row.id, "inbox", permissions::ImportMode::Review,
+            Some(&agent.info.id), &["projects.write".to_string()], &project).unwrap();
+        let mut value: Value = serde_json::from_str(&game_envelope("game.build.create", None, game_build_payload())).unwrap();
+        value["agent_id"] = serde_json::json!("impersonated-agent");
+        fx.write("impersonated.json", &value.to_string());
+        assert_eq!(fx.scan().pending_review, 1);
+        let request = sync::list_import_requests(&fx.db, Some("pending")).unwrap().remove(0);
+        assert!(sync::approve_import(&fx.db, &Principal::local(Source::Ui), &request.id, "").is_err());
+        value["agent_id"] = serde_json::json!(agent.info.agent_id);
+        fx.write("valid.json", &value.to_string());
+        assert_eq!(fx.scan().pending_review, 2);
+        let request = sync::list_import_requests(&fx.db, Some("pending")).unwrap().into_iter().find(|r| r.rel_path == "inbox/valid.json").unwrap();
+        sync::approve_import(&fx.db, &Principal::local(Source::Ui), &request.id, "").unwrap();
+        fx.db.with_conn(|conn| {
+            conn.execute("UPDATE mcp_agents SET revoked_at='2026-11-24' WHERE id=?1", [&agent.info.id])?;
+            Ok(())
+        }).unwrap();
+        fx.write("revoked.json", &value.to_string());
+        fx.scan();
+        let request = sync::list_import_requests(&fx.db, Some("pending")).unwrap().into_iter().find(|r| r.rel_path == "inbox/revoked.json").unwrap();
+        assert!(sync::approve_import(&fx.db, &Principal::local(Source::Ui), &request.id, "").is_err());
+        assert_eq!(game_counts(&fx), (1, 0));
+    }
+
+    #[test]
+    fn general_milestone_file_create_update_and_conflict_resolution_use_real_revision() {
+        let fx = Fixture::new("general-file");
+        let project = fx.project("general", "active");
+        fx.policy(permissions::ImportMode::Trusted, &["projects.write"], &project);
+        let principal = Principal::local(Source::Ui);
+        let kind = "general.milestone.save";
+        let mut doc = serde_json::json!({
+            "schema": "taskdock.import/1", "kind": kind, "payload": { "title": "首次登记" }
+        });
+        fx.write("create.json", &doc.to_string());
+        assert_eq!(fx.scan().imported, 1);
+        let (rows, _) = general::list_milestones(&fx.db, &principal, &project, None, None).unwrap();
+        assert_eq!(rows[0].revision, 1);
+        doc["base_revision"] = serde_json::json!(rows[0].revision);
+        doc["payload"] = serde_json::json!({ "id": rows[0].id, "title": "文件更新" });
+        fx.write("update.json", &doc.to_string());
+        assert_eq!(fx.scan().imported, 1);
+        doc["payload"]["title"] = serde_json::json!("人工接受外部版本");
+        fx.write("stale.json", &doc.to_string());
+        assert_eq!(fx.scan().conflicts, 1);
+        let conflict = sync::list_conflicts(&fx.db).unwrap().remove(0);
+        assert_eq!(conflict.resource_id, rows[0].id);
+        assert_eq!(conflict.db_revision, 2);
+        sync::resolve_conflict(&fx.db, &principal, &conflict.id, "file").unwrap();
+        let (final_rows, _) = general::list_milestones(&fx.db, &principal, &project, None, None).unwrap();
+        assert_eq!(final_rows.len(), 1);
+        assert_eq!(final_rows[0].revision, 3);
+        assert_eq!(final_rows[0].title, "人工接受外部版本");
+    }
+
+    #[test]
+    fn development_file_link_requires_bound_agent_with_task_read() {
+        use crate::mcp::{auth, permissions as mcp_permissions};
+
+        let fx = Fixture::new("development-file");
+        let project = fx.project("development", "active");
+        fx.db.with_conn(|conn| {
+            conn.execute("INSERT INTO tasks (id,title,created_at,updated_at)
+                VALUES ('task','验证任务','2026-11-24','2026-11-24')", [])?;
+            conn.execute("INSERT INTO workspace_task_links (project_id,task_id,created_at)
+                VALUES (?1,'task','2026-11-24')", [&project])?;
+            conn.execute("INSERT INTO dev_acceptance_records (id,subject_kind,subject_id,verdict,created_at)
+                VALUES ('acceptance','task','task','pass','2026-11-24')", [])?;
+            Ok(())
+        }).unwrap();
+        fx.policy(permissions::ImportMode::Trusted, &["projects.write"], &project);
+        let doc = serde_json::json!({
+            "schema": "taskdock.import/1", "kind": "development.task_link.create",
+            "payload": { "task_id": "task", "acceptance_record_id": "acceptance" }
+        });
+        fx.write("link.json", &doc.to_string());
+        assert_eq!(fx.scan().imported, 0);
+        let agent = auth::create_agent(&fx.db, "dev-file-agent", "文件关联测试").unwrap();
+        auth::set_agent_scope(&fx.db, &agent.info.id, "project_rw").unwrap();
+        auth::grant_project(&fx.db, &agent.info.id, &project).unwrap();
+        mcp_permissions::grant(&fx.db, &agent.info.id, "projects.write", "").unwrap();
+        let workspace = workspace::active(&fx.db).unwrap().unwrap();
+        permissions::upsert_import_authorization(
+            &fx.db, &workspace.id, "inbox", permissions::ImportMode::Trusted,
+            Some(&agent.info.id), &["projects.write".to_string()], &project,
+        ).unwrap();
+        assert_eq!(fx.scan().imported, 0);
+        mcp_permissions::grant(&fx.db, &agent.info.id, "tasks.read", "task").unwrap();
+        let report = fx.scan();
+        assert_eq!(report.imported, 1, "{report:?}");
+        let (items, _) = development::list_task_evidence(
+            &fx.db, &Principal::local(Source::Ui), &project, "task", None, None,
+        ).unwrap();
+        assert_eq!(items[0]["linked"], true);
+        assert_eq!(items[0]["verdict"], "pass");
     }
 }

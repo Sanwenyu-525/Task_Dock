@@ -163,7 +163,7 @@ taskdock sync resolve <conflict_id> --resolution db|file|dismiss [--json]
 
 ## 6. 错误与并发
 
-- 所有写命令必须给 `--base-revision`（`task create` 除外）；缺失 → `VALIDATION`。
+- 任务更新传 `--base-revision`，领域更新按对应命令提供当前版本。
 - `task get` / `task list` 的 JSON 均返回 `revision`（与 REST/MCP 同一有效版本口径：
   `agent_resource_revisions` 计数器 + 业务 `updated_at`），可直接作为下一次写的 `--base-revision`。
 - 冲突时 stderr 打印当前 revision 与更新时间，退出码 5；脚本可重新 `get` 后重试。
@@ -191,3 +191,14 @@ taskdock project create --name <名称> [--kind general] [--description ...] [--
 - 输出（`--json`）：`{ created, project{id,...}, activePlan{id,...}, workspace{...}, provisioningStatus }`；
 - 幂等：`--request-id` 相同且参数相同返回原结果（`created=false`），参数不同返回 `CONFLICT`；
 - Agent 创建成功后自动获得**该项目根**的授权，不扩大为全局。
+
+## 专业工作空间
+
+`taskdock domain manifest --project-id ID --json` 可查询当前项目的领域能力。
+游戏、通用、开发命令见[功能矩阵](feature-matrix.md)。读取列表用 `--limit` 和 `--offset`。
+新增写命令用 `--payload JSON`，对象字段与 [REST 请求体](rest-api-specification.md)一致。
+注册 Agent 应为每次逻辑写入使用独立的 `--request-id`，遇到超时以原 ID 和原载荷重试。
+
+```powershell
+taskdock general milestone save --project-id <项目ID> --request-id <请求ID> --payload '{"title":"完成首轮评审"}' --json
+```

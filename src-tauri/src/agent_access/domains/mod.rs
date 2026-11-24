@@ -10,6 +10,9 @@
 //! - 不新增第二套身份、权限、版本、幂等、审计系统，全部复用 `agent_access`。
 
 pub mod comic;
+pub mod development;
+pub mod game;
+pub mod general;
 pub mod idempotency;
 pub mod manifest;
 pub mod novel;

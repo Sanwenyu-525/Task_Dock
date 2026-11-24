@@ -118,7 +118,7 @@ scan() 逐文件：
 
 ### 8.5 领域受限导入（Phase 1）
 
-文件通道只开放三个**更新型**领域操作，默认进入人工审核：
+首阶段开放三个更新操作，默认进入人工审核：
 
 | kind | 必填 payload | 写入语义 |
 |---|---|---|
@@ -146,3 +146,19 @@ scan() 逐文件：
 
 导入事务使用 `ImportLeaseGuard` + 领域 `*_in_conn`，与 MCP/CLI/REST 相同业务核心；
 冲突恢复用的 `base_revision` 取**有效 revision**（把 UI 外部修改计入），不拿旧计数器继续冲突。
+
+#### 8.5.2 游戏、通用、开发领域导入（2026-11-24）
+
+以下操作使用 JSON 信封 `taskdock.import/1`。在待审核和可信两种模式下，目录策略都须显式绑定
+项目并授予 `projects.write`。文件声明的 `project_id` 可省略，填写时须与策略一致。开发证据
+关联还要求目录绑定的注册 Agent 对该任务有 `tasks.read`。
+
+| kind | payload | 版本要求 |
+|---|---|---|
+| `game.build.create` | 构建登记字段 | 省略 `base_revision` |
+| `game.test.create` | 测试登记字段 | 省略 `base_revision` |
+| `general.milestone.save` | 里程碑字段 | 创建时省略 `id` 与 `base_revision`，更新时提供 payload 的 `id` 与信封的 `base_revision` |
+| `development.task_link.create` | 任务与交接包或验收记录 ID | 省略 `base_revision` |
+
+业务字段见 [REST 请求体](rest-api-specification.md)。里程碑文件更新统一使用信封版本，冲突处理
+会重新核对命中的项目策略。创建使用服务端 ID，同一路径和内容按既有导入租约去重。
