@@ -150,10 +150,15 @@ export default function ProjectHubPanel({ onOpenPlanning }: ProjectHubPanelProps
   const [domainRefreshToken, setDomainRefreshToken] = useState(0);
   // 刷新按钮等延迟回调需要「最新」projectId，不能捕获点击时的旧值。
   const projectIdRef = useRef<string | null>(projectId);
+  // 手动刷新时保留当前快照：否则 `active` 归零，整块总览（含专业摘要）卸载重建，
+  // 会让同一次刷新重复请求一次领域聚合。
+  const snapshotRef = useRef<ProjectHubSnapshot | null>(null);
+  snapshotRef.current = snapshot;
 
   // 快照加载：代际防乱序 + 归属校验（返回的 project.id 必须等于请求的 projectId）。
   // 每次请求先递增代际并丢弃旧快照；无 id 也递增，让在途旧请求返回时自然失效。
-  const reloadSnapshot = useCallback(async (id: string | null) => {
+  // `keepCurrent` 仅用于手动刷新同一项目：保留旧快照直到新快照落地，避免总览整体重建。
+  const reloadSnapshot = useCallback(async (id: string | null, options?: { keepCurrent?: boolean }) => {
     const seq = ++loadSeq.current;
     if (!id) {
       setSnapshot(null);
@@ -161,7 +166,9 @@ export default function ProjectHubPanel({ onOpenPlanning }: ProjectHubPanelProps
       setError(null);
       return;
     }
-    setSnapshot(null);
+    // 只有「同一个 id 且明确要求保留」才沿用旧快照；切项目必须立刻清空，防止串数据。
+    const keepCurrent = options?.keepCurrent === true && snapshotRef.current?.project.id === id;
+    if (!keepCurrent) setSnapshot(null);
     setLoading(true);
     setError(null);
     try {
@@ -232,14 +239,18 @@ export default function ProjectHubPanel({ onOpenPlanning }: ProjectHubPanelProps
           </strong>
         </div>
         <div className="ph-toolbar-meta">
-          got {projects.length} 个项目 · 阶段 {active?.project.phaseCount ?? 0} · 任务{" "}
+          共 {projects.length} 个项目 · 阶段 {active?.project.phaseCount ?? 0} · 任务{" "}
           {active?.project.taskCount ?? 0}
         </div>
         <button
           className="btn btn-ghost btn-sm"
+          // 刷新期间内容仍可见（keepCurrent），禁用按钮避免重复点击叠加请求。
+          disabled={loading}
           onClick={() => {
             setDomainRefreshToken((n) => n + 1);
-            void refreshProjects().then(() => reloadSnapshot(projectIdRef.current));
+            void refreshProjects().then(() =>
+              reloadSnapshot(projectIdRef.current, { keepCurrent: true }),
+            );
           }}
         >
           刷新

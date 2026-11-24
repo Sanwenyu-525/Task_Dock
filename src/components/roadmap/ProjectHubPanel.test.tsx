@@ -292,6 +292,37 @@ describe("项目中枢面板", () => {
     // 工具栏只读展示当前项目，不再有第二个项目选择器
     expect(screen.queryByLabelText("选择项目")).toBeNull();
     expect(screen.getByText("项目 A", { selector: ".ph-project-name" })).toBeTruthy();
+    // 工具栏计数是中文正式文案，不残留调试用的英文占位
+    expect(screen.getByText(/共 1 个项目 · 阶段 2 · 任务 1/)).toBeTruthy();
+    expect(screen.queryByText(/got\s/)).toBeNull();
+  });
+
+  it("点刷新只多取一次专业摘要：保留当前快照，不因总览重建重复请求", async () => {
+    const user = userEvent.setup();
+    renderHub(makeContext());
+    await screen.findByRole("heading", { name: "项目 A" });
+    await waitFor(() => expect(domainIpc.generalStats).toHaveBeenCalledTimes(1), WAIT);
+
+    // 用 deferred 模拟真实 IPC 延迟：重载在途时若清空快照，整块总览会被卸载重建。
+    const pending = deferred<ProjectHubSnapshot>();
+    bridge.projectHubGetProject.mockImplementationOnce(async () => pending.promise);
+    await user.click(screen.getByRole("button", { name: "刷新" }));
+    await waitFor(() => expect(bridge.projectHubGetProject).toHaveBeenCalledTimes(2), WAIT);
+
+    // 重载在途：旧快照仍可见，不出现整页加载提示；刷新按钮禁用防重复点击
+    expect(screen.getByRole("heading", { name: "项目 A" })).toBeTruthy();
+    expect(screen.queryByText("正在加载项目…")).toBeNull();
+    expect((screen.getByRole("button", { name: "刷新" }) as HTMLButtonElement).disabled).toBe(true);
+
+    await act(async () => {
+      pending.resolve(snapshot("p-a"));
+    });
+    // 等重载链路跑完：修复前卸载重建会多取一次，这里会是 3
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 60));
+    });
+    expect(domainIpc.generalStats).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole("heading", { name: "项目 A" })).toBeTruthy();
   });
 
   it("全局切换项目后快照跟随，迟到的旧响应不覆盖新项目", async () => {
