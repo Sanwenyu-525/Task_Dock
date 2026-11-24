@@ -131,8 +131,8 @@ Settings settled: / Workbench ready:
 ## 7. 已知边界
 
 - 预 React 占位文案为 zh-CN（无 i18n 管道，已知限制）。
-- Edge/WebView2 在 `prefers-reduced-motion: reduce` 下平台级钳制动画时长（实测 0.01ms），
-  spinner 实际静止；CSS 的 3s 减速仅对不钳制的引擎生效。
+- Edge/WebView2 在 `prefers-reduced-motion: reduce` 下平台级钳制动画时长（实测 0.01ms）；
+  CSS 层同样显式停用 spinner 旋转、骨架屏流光与恢复卡位移（见 §9.4），不依赖引擎钳制。
 - 真机（custom-protocol）路径、真实 `diagnostics_record` 落库需按验收路由 C/E 通道人工验证。
 
 ## 8. Dev 冷启动依赖加载（2026-11-19）
@@ -156,3 +156,59 @@ Settings settled: / Workbench ready:
 如果 React 已就绪但原生进程仍无响应，还需核查窗口层。2026-11-20 已确认并修复阴影
 同步持锁重入导致的主线程自锁，影响启动揭示、最小化恢复与热重载；调用栈、修复和真实
 Debug 复测见 [原生阴影死锁记录](../development/2026-11-20-startup-shadow-deadlock.md)。
+
+## 9. 启动占位布局契约（2026-11-24）
+
+两个宿主（`index.html` 主窗口 / `workspace.html` 工作台窗口）共用同一份布局样式块，
+夹在 `boot-splash-shared:begin` … `boot-splash-shared:end` 两行注释之间，由
+`src/test/bootSplash.test.ts` 逐字比对锁一致。共享块之外只允许各文件保留自己的 Token 区与
+业务文案（主窗「正在启动…」/工作台「正在恢复工作台…」），不得再出现「一个窗口修了、
+另一个没修」的漂移。
+
+### 9.1 安全居中与纵向溢出
+
+- `#boot-splash` 用 `position: fixed; inset: 0`（不依赖 `100vh/100dvh`，规避 WebView2 在
+  Windows DPI 缩放下的动态视口口径差异）+ `justify-content: flex-start`。
+- 居中交给内层 `.boot-stack { margin-block: auto }`：内容矮时自动居中；内容高于视口时
+  `auto` 收敛为 0，自动变成**贴顶 + 可滚动**，不再把顶部 Logo/标题裁掉。`padding-block: 6px`
+  保证焦点环不被滚动容器裁切。
+- 滚动：`overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain;
+  scroll-padding-block: 10px`；父级留白 `padding: clamp(10px, 3vmin, 24px)`。
+- 恢复卡 `#boot-recovery { width: 100%; max-width: 420px }`：父级负责左右安全留白，
+  卡片不再用 `calc(100% - 48px)` 重复扣减同一份间距（原先窄窗下二次扣减，卡片宽度被吃成一条）。
+- `#boot-skeleton` 固定在视口垫底（`position: fixed`），不随恢复卡滚动；`error` 态隐藏。
+
+### 9.2 短高度四档（按内容可见性分段，不按「删操作」分段）
+
+| 档位 | 处置 |
+|---|---|
+| ≤430px | 压缩 logo/字号/卡片内距，按钮 `min-height: 30px` |
+| ≤260px | 隐藏纯装饰徽标与数据安全说明；`.boot-card-actions { order: 1 }` 让三个操作紧跟标题；详情限高 44px |
+| ≤200px | 外边距 8px；`.boot-intro` 转横向紧凑一行；骨架屏只留关键行；详情限高 34px |
+| ≤150px | 按钮 `min-height: 24px`，字号 11/标题 12，详情限高 26px |
+
+264×112（窗口点击区下限）实测：卡片 248×94、三个恢复按钮同屏可见、外层 6px 纵向滚动可及、
+Tab 序列包含可滚动详情区与全部按钮。**任何档位都不得隐藏核心操作**（继续等待 / 重新加载 /
+复制诊断信息）。`error` 态只留「重新加载 / 复制诊断信息」属既有状态机语义（fatal 时继续等待
+无意义），不是为省空间的折衷。
+
+### 9.3 长内容与焦点
+
+- `.boot-card-detail` 保留完整错误文本：`max-height: 88px` + `overflow-y: auto` +
+  `overflow-wrap: anywhere`，删除 `-webkit-line-clamp`（长路径/长堆栈必须能读全、能选中复制）。
+- 可滚动区域会进入 Tab 序列，故补 `:focus-visible` 描边，避免 Chromium 默认黑框。
+- 按钮允许换行（`white-space: normal`）、`min-height` 保命中区、`max-width: 100%`。
+
+### 9.4 骨架屏与动态效果
+
+- `slow` 态骨架屏是**中性布局占位**：无假任务数据、无伪造百分比，只留结构块。主窗与工作台
+  语义一致（工作台此前缺失，本次补齐），颜色走各自的 `--boot-sk-*` Token（浅/深两套），
+  不借用业务 Token。极小窗口可简化骨架屏（≤200px 只留首屏关键行）。
+- `prefers-reduced-motion: reduce`：spinner 与骨架屏流光 `animation: none`（流光的静态底透出）、
+  恢复卡 `boot-rise` 位移取消（用同特异性后置选择器压 `timeout`/`error`），状态切换只留
+  颜色/边框的静态反馈。§7 里「3s 减速旋转」的描述已作废。
+
+验收脚本：`tmp/acceptance/boot-home-responsive/boot-splash-shots.mjs`（2 宿主 × 6 尺寸
+（264×112 / 280×140 / 340×280 / 400×380 / 400×560 / 960×600）× 4 状态 × 明暗 = 96 组合，
+截图与诊断 JSON 同目录 `shots/`）。
+

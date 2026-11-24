@@ -12,6 +12,7 @@
 //! - 资源概览用 `shelf_stats` 的真实计数；读取失败时显示不可用，不画假趋势。
 
 import { useEffect, useMemo, useState } from "react";
+import type { FocusEvent, MouseEvent } from "react";
 import {
   ArrowRight,
   CalendarClock,
@@ -42,6 +43,7 @@ import { useActionsStore } from "../store/useActionsStore";
 import { formatLocalizedDate, formatLocalizedDateTime, formatLocalizedRelative } from "../i18n/format";
 import { resolveWorkspaceProfile } from "../workspace/workspaceProfiles";
 import { shelfStats, type ShelfStats, type Task, type WorkspaceProject } from "../lib/bridge";
+import { clearTip, syncTruncatedTip } from "../lib/nameTip";
 import type { WorkbenchRoute } from "../lib/workbenchLayout";
 import type { MessageKey } from "../i18n/messages";
 import { WorkbenchDetailFacts, WorkbenchPageDetail } from "./pageDetail";
@@ -99,6 +101,55 @@ function agentStatusTone(status: string): string {
   return "";
 }
 
+/**
+ * 首页本地时钟：只在整点边界推进一次（跨午夜自然覆盖）。
+ *
+ * 为什么需要：问候语（<12 / <18）、日期文案与「今日重点」筛选都依赖当前时间。
+ * 之前 `now = new Date()` 只在渲染时取一次，而 `focusTasks` 的 useMemo 虽然闭包了
+ * `now` 却只依赖 `tasks`——页面开着跨过午夜后，日期与「今日/逾期」判定会永久停在
+ * 昨天的快照上。这里不轮询：只安排一个到下一个整点的 timeout，卸载即清除；
+ * 每小时一次的重渲染对首页可忽略。
+ */
+function useLocalNow(): Date {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    let timer: number | undefined;
+    const schedule = () => {
+      const current = new Date();
+      const msToNextHour =
+        (60 - current.getMinutes()) * 60_000 -
+        current.getSeconds() * 1_000 -
+        current.getMilliseconds();
+      timer = window.setTimeout(() => {
+        setNow(new Date());
+        schedule();
+      }, Math.max(1_000, msToNextHour));
+    };
+    schedule();
+    return () => window.clearTimeout(timer);
+  }, []);
+  return now;
+}
+
+/**
+ * 名称提示：只有真的被省略号截断时才挂 `data-tip`（值=完整名称）。
+ *
+ * 悬停与键盘（Tab）聚焦都能看到全名；未截断不弹浮层，避免噪声。判定与写入走
+ * `lib/nameTip`，必须在 mouseenter / focus 里同步写入——全局 `TooltipLayer` 的
+ * 冒泡监听才能读到。事件挂在**按钮**上（而不是标题 span），这样键盘聚焦按钮也
+ * 能拿到全名，且不改变原有点击行为。
+ */
+function nameTipProps(selector: string, text: string) {
+  return {
+    onMouseEnter: (event: MouseEvent<HTMLButtonElement>) =>
+      syncTruncatedTip(event.currentTarget, selector, text),
+    onFocus: (event: FocusEvent<HTMLButtonElement>) =>
+      syncTruncatedTip(event.currentTarget, selector, text),
+    onMouseLeave: (event: MouseEvent<HTMLButtonElement>) => clearTip(event.currentTarget),
+    onBlur: (event: FocusEvent<HTMLButtonElement>) => clearTip(event.currentTarget),
+  };
+}
+
 export default function WorkbenchHome({
   projects,
   projectsLoading,
@@ -150,7 +201,7 @@ export default function WorkbenchHome({
   const failed =
     agentSums?.failed ?? snapshot?.runs.filter((r) => r.status === "failed").length ?? 0;
 
-  const now = new Date();
+  const now = useLocalNow();
   const hour = now.getHours();
   const greetingKey: MessageKey =
     hour < 12
@@ -159,12 +210,15 @@ export default function WorkbenchHome({
         ? "workbench.homeGreetingAfternoon"
         : "workbench.homeGreetingEvening";
 
-  const today = now.toLocaleDateString(undefined, {
+  // 日期走 Task Dock 的 i18n 格式化（跟随应用语言），不用系统默认语言。
+  const today = formatLocalizedDate(now, {
     year: "numeric",
     month: "long",
     day: "numeric",
     weekday: "long",
   });
+  // 本地日键：跨午夜后驱动「今日重点」重算（useMemo 不能只依赖 tasks）。
+  const dayKey = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
 
   // 今日重点：今日到期 + 逾期优先，不足 3 条时用最近的待办补位（行内 chip 如实标注）。
   const focusTasks = useMemo(() => {
@@ -179,8 +233,10 @@ export default function WorkbenchHome({
     if (urgent.length >= 3) return urgent.slice(0, 5);
     const rest = withDue.filter((task) => !urgent.includes(task));
     return [...urgent, ...rest].slice(0, 5);
+    // `dayKey` 进依赖：闭包里的 `now` 必须在换日后的首次渲染里重算，
+    // 否则「今日到期」会一直按昨天的日期快照筛选（跨午夜陷阱）。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tasks]);
+  }, [tasks, dayKey]);
 
   // 最近任务：按更新时间倒序（含已完成，状态徽标如实标注）。
   const recentTasks = useMemo(
@@ -237,7 +293,7 @@ export default function WorkbenchHome({
           <span className="wb-home-greeting-icon" aria-hidden="true">
             <Sun size={20} />
           </span>
-          <div>
+          <div className="wb-home-head-text">
             {/* 稳定的页面级标题（供导航/测试锚定）；问候语是主视觉文案。 */}
             <h2 className="sr-only">{t("workbench.home")}</h2>
             <p className="wb-home-greeting" role="presentation">
@@ -248,7 +304,7 @@ export default function WorkbenchHome({
         </div>
         <span className="wb-home-date">
           <CalendarDays size={13} aria-hidden="true" />
-          {today}
+          <span className="wb-home-date-text">{today}</span>
         </span>
       </header>
 
@@ -274,7 +330,12 @@ export default function WorkbenchHome({
                 const chip = dueChip(task.due_at, now);
                 return (
                   <li key={task.id}>
-                    <button type="button" className="wb-row" onClick={() => onNavigate("tasks")}>
+                    <button
+                      type="button"
+                      className="wb-row"
+                      onClick={() => onNavigate("tasks")}
+                      {...nameTipProps(".wb-row-title", task.title)}
+                    >
                       <span className="wb-row-title">{task.title}</span>
                       {(task.priority === 0 || task.priority === 1) && (
                         <span className={`wb-pri-chip is-p${task.priority}`}>P{task.priority}</span>
@@ -315,6 +376,7 @@ export default function WorkbenchHome({
                     type="button"
                     className="wb-pcard"
                     onClick={() => onSelectProjectAndOpen(project.id)}
+                    {...nameTipProps(".wb-pcard-name span", project.name)}
                   >
                     <span className="wb-pcard-name">
                       <span>{project.name}</span>
@@ -352,7 +414,15 @@ export default function WorkbenchHome({
             <ul className="wb-rowlist">
               {recentSessions.map((session) => (
                 <li key={session.id}>
-                  <button type="button" className="wb-agent-row" onClick={() => onNavigate("agents")}>
+                  <button
+                    type="button"
+                    className="wb-agent-row"
+                    onClick={() => onNavigate("agents")}
+                    {...nameTipProps(
+                      ".wb-row-title",
+                      session.title || session.external_id,
+                    )}
+                  >
                     <span className="wb-row-title">{session.title || session.external_id}</span>
                     <span className={`wb-status-chip ${agentStatusTone(session.status)}`.trim()}>
                       {session.status}
@@ -386,6 +456,7 @@ export default function WorkbenchHome({
                     type="button"
                     className={`wb-row${task.status === "completed" ? " is-done" : ""}`}
                     onClick={() => onNavigate("tasks")}
+                    {...nameTipProps(".wb-row-title", task.title)}
                   >
                     <span className="wb-row-title">{task.title}</span>
                     <span className="wb-row-meta">
@@ -481,7 +552,12 @@ export default function WorkbenchHome({
           ) : (
             <div>
               {activeWorkflow && (
-                <button type="button" className="wb-wf-row" onClick={() => onNavigate("workflows")}>
+                <button
+                  type="button"
+                  className="wb-wf-row"
+                  onClick={() => onNavigate("workflows")}
+                  {...nameTipProps(".wb-wf-name", activeWorkflow.name)}
+                >
                   <span className="wb-wf-top">
                     <span className="wb-wf-name">{activeWorkflow.name}</span>
                     <span
@@ -521,6 +597,7 @@ export default function WorkbenchHome({
                   type="button"
                   className="wb-wf-row"
                   onClick={() => onNavigate("workflows")}
+                  {...nameTipProps(".wb-wf-name", workflow.name)}
                 >
                   <span className="wb-wf-top">
                     <span className="wb-wf-name">{workflow.name}</span>

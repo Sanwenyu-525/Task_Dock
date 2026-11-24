@@ -1103,6 +1103,12 @@ body.wb-resizing {
   gap: 11px;
   min-width: 0;
 }
+/* 问候语文字列：允许在内容区变窄时回收宽度（换行在文字内部发生，
+   而不是把整个头部撑宽）。 */
+.wb-home-head-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
 /* 问候语前的图标：与效果图「太阳 + 问候」的主视觉一致，纯装饰不进读屏。 */
 .wb-home-greeting-icon {
   display: inline-flex;
@@ -1133,7 +1139,9 @@ body.wb-resizing {
   font-size: 12px;
   color: var(--text-secondary);
 }
-/* 日期改成胶囊：效果图里日期是右上一个独立控件，不是裸文字。 */
+/* 日期改成胶囊：效果图里日期是右上一个独立控件，不是裸文字。
+   max-width/min-width 让它可被内容区压缩（换行由 .wb-home-date-text 承担），
+   绝不反过来强制撑宽整行。 */
 .wb-home-date {
   display: inline-flex;
   align-items: center;
@@ -1146,6 +1154,70 @@ body.wb-resizing {
   color: var(--text-secondary);
   white-space: nowrap;
   flex: 0 0 auto;
+  max-width: 100%;
+  min-width: 0;
+}
+.wb-home-date-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* ── 首页按**内容容器**宽度响应（2026-11-24） ──
+   这几条原先写在文件末尾「窗口级」的 `@media (max-width: 560px)` 里：同一窗口
+   里导航展开（320）+ 右栏（304）会把中央内容区压到 400 以下，而窗口宽度判据
+   根本不命中 —— 问候语被日期胶囊挤成一列、标题与日期挤在同一行互相压盖。
+   `.wb-content` 已经是 `container-type: inline-size` / `container-name: wb-content`
+   （见 WorkbenchShell），这里直接复用；断点沿用既有 560px（与 `.wb-home-grid`
+   单列阈值同一口径），不新增第二套。窗口级的顶栏收纳/搜索仍在文件末尾的媒体
+   查询里，不迁移。 */
+@container wb-content (max-width: 560px) {
+  .wb-home-head {
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 10px 12px;
+  }
+  /* 问候语独占一行：日期整体下移到第二行，两者不再抢同一行的宽度。 */
+  .wb-home-head-main {
+    flex: 1 1 100%;
+  }
+  .wb-home-date {
+    order: 2;
+    align-self: flex-start;
+    white-space: normal;
+    line-height: 1.45;
+  }
+  .wb-home-greeting {
+    font-size: 24px;
+  }
+  /* 卡片标题行：标题可换行（min-width:0 保证它能收缩而不是把卡片撑破），
+     右侧操作/计数保持完整，必要时整体换到下一行右边。 */
+  .wb-panel-head {
+    flex-wrap: wrap;
+    row-gap: 6px;
+    align-items: flex-start;
+  }
+  .wb-panel-head h3 {
+    flex: 1 1 auto;
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .wb-panel-head h3 > svg {
+    flex: 0 0 auto;
+  }
+  .wb-panel-more,
+  .wb-panel-count {
+    flex: 0 0 auto;
+    margin-left: auto;
+    white-space: nowrap;
+  }
+  /* 窄内容区把卡片内距与首页留白收一档：标题/行内容多拿 ~40px 可用宽。 */
+  .wb-panel {
+    padding: 14px;
+  }
+  .wb-home-slot {
+    padding: 14px 12px 18px;
+  }
 }
 
 .wb-stat-grid {
@@ -2291,6 +2363,9 @@ body.wb-resizing {
   align-items: center;
   gap: 6px;
   margin: 0;
+  /* 标题是弹性项：长标题在窄内容区换行（容器查询里放开 white-space），
+     不把卡片撑破；图标靠 h3 > svg 的 flex:none 保持原尺寸。 */
+  min-width: 0;
   font-size: var(--font-size-card-title);
   line-height: var(--line-height-card-title);
   font-weight: var(--font-weight-card-title);
@@ -2433,7 +2508,9 @@ body.wb-resizing {
 /* 项目卡 */
 .wb-project-cards {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  /* 内容区被导航/右栏压窄时，200px 的固定最小列会把卡片顶出容器（实测 220px
+     内容区溢出 11px）。min(200px, 100%) 让最小列跟随可用宽度，宽屏仍是 200 起。 */
+  grid-template-columns: repeat(auto-fill, minmax(min(200px, 100%), 1fr));
   gap: 8px;
 }
 .wb-pcard {
@@ -3095,33 +3172,9 @@ body.wb-resizing {
     right: 8px;
     margin: 0;
   }
-  .wb-home-head {
-    flex-wrap: wrap;
-    align-items: flex-start;
-  }
-  .wb-home-head-main {
-    flex: 1 1 100%;
-  }
-  .wb-home-date {
-    order: 2;
-  }
-  .wb-home-greeting {
-    font-size: 24px;
-  }
-  .wb-panel-head {
-    flex-wrap: wrap;
-    row-gap: 6px;
-  }
-  .wb-panel-head h3 {
-    flex: 1 1 auto;
-    min-width: 0;
-    white-space: nowrap;
-  }
-  .wb-panel-more {
-    flex: 0 0 auto;
-    margin-left: auto;
-    white-space: nowrap;
-  }
+  /* 首页页头 / 卡片标题行已迁到 `.wb-content` 容器查询（见「首页」段落
+     `@container wb-content (max-width: 560px)`）：窗口宽度不是它们的判据。
+     这里只保留窗口级顶栏收纳、搜索收窄与窗口控制。 */
 }
 
 /* 档位 1（full，≥1100）：搜索字段脱离右侧动作簇，水平中心锚定在窗口 40%。

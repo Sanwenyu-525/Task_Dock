@@ -153,6 +153,149 @@ describe("workspace.html 工作台启动占位", () => {
   });
 });
 
+/* ── 2026-11-24 启动体验专项：布局契约（垂直截断 / 短高度 / 两宿主一致） ──
+ * jsdom 不能证明布局，这里只锁定「规则本身」：安全居中、可滚动、恢复卡宽度、
+ * 四个短高度档位、三操作不被隐藏、长详情有查看通道、reduce 下静态反馈。
+ * 真实几何与「按钮是否可点」由 Playwright 在 264×112 … 960×600 六个尺寸 +
+ * 明暗两主题取证（tmp/acceptance/boot-home-responsive/）。 */
+const SHARED_BEGIN = "      /* boot-splash-shared:begin";
+const SHARED_END = "      /* boot-splash-shared:end */";
+const sharedBlock = (source: string) => {
+  const begin = source.indexOf(SHARED_BEGIN);
+  const end = source.indexOf(SHARED_END);
+  expect(begin).toBeGreaterThan(-1);
+  expect(end).toBeGreaterThan(begin);
+  return source.slice(begin, end);
+};
+/** 去掉 CSS 注释再断言：契约里的「旧写法」说明会提到被禁止的写法本身。 */
+const stripComments = (css: string) => css.replace(/\/\*[\s\S]*?\*\//g, "");
+const indexShared = sharedBlock(html);
+const workspaceShared = sharedBlock(workspaceHtml);
+const sharedCss = stripComments(indexShared);
+
+describe("启动占位布局契约（两宿主一致）", () => {
+  it("共享布局块逐字一致，避免两个窗口的启动界面各自漂移", () => {
+    // 两处必须同步修改：任何一边改了间距/档位，这里先失败。
+    expect(indexShared).toBe(workspaceShared);
+    expect(html.split(SHARED_BEGIN).length - 1).toBe(1);
+    expect(workspaceHtml.split(SHARED_BEGIN).length - 1).toBe(1);
+  });
+
+  it("正常高度视觉居中但不裁剪顶部（auto 外边距 + 顶部对齐 + 纵向滚动）", () => {
+    // 只看 #boot-splash 自身的规则：短高度档位里 `.boot-intro` 的
+    // justify-content:center 是横向居中，与「纵向安全居中」无关。
+    const splashRule = sharedCss.match(/#boot-splash \{([\s\S]*?)\n      \}/)?.[1] ?? "";
+    expect(splashRule).toContain("justify-content: flex-start");
+    expect(splashRule).not.toContain("justify-content: center");
+    expect(sharedCss).toMatch(/\.boot-stack \{[\s\S]*?margin-block: auto;/);
+    expect(splashRule).toContain("overflow-y: auto");
+    expect(sharedCss).toContain("overscroll-behavior: contain");
+  });
+
+  it("恢复卡宽度只由父级 padding 留白，不再重复扣减同一份间距", () => {
+    expect(sharedCss).toMatch(/#boot-recovery \{[\s\S]*?width: 100%;/);
+    expect(sharedCss).toMatch(/#boot-recovery \{[\s\S]*?max-width: 420px;/);
+    expect(sharedCss).not.toMatch(/calc\(100% - /);
+    // 外层左右安全留白仍在（clamp 下限 10px，264 宽窗口也不会贴边）。
+    expect(sharedCss).toContain("padding: clamp(10px, 3vmin, 24px)");
+  });
+
+  it("四个短高度档位覆盖 264×112 下限，且三个恢复操作在所有档位保留", () => {
+    for (const tier of [430, 260, 200, 150]) {
+      expect(sharedCss).toContain(`@media (max-height: ${tier}px)`);
+    }
+    // 短高度只允许隐藏装饰徽标与非核心安全说明，绝不隐藏操作按钮。
+    const shortTiers = sharedCss.split("@media (max-height: 260px)")[1] ?? "";
+    expect(shortTiers).not.toMatch(/\.boot-btn[^{]*\{[^}]*display: none/);
+    expect(shortTiers).not.toMatch(/#boot-wait[^{]*\{[^}]*display: none/);
+    expect(shortTiers).not.toMatch(/#boot-retry[^{]*\{[^}]*display: none/);
+    expect(shortTiers).not.toMatch(/#boot-copy[^{]*\{[^}]*display: none/);
+    // ≤260px 操作紧跟标题（弹性 order），不需要滚动才发现按钮。
+    expect(sharedCss).toMatch(/@media \(max-height: 260px\)[\s\S]*?\.boot-card-actions \{ order: 1;/);
+    // ≤200px 启动位转横向紧凑。
+    expect(sharedCss).toMatch(/@media \(max-height: 200px\)[\s\S]*?\.boot-intro \{[\s\S]*?flex-direction: row;/);
+  });
+
+  it("长错误信息不截断：卡片内可滚动，另有复制诊断通道", () => {
+    expect(sharedCss).toMatch(/\.boot-card-detail \{[\s\S]*?overflow-y: auto;/);
+    expect(sharedCss).toMatch(/\.boot-card-detail \{[\s\S]*?overflow-wrap: anywhere;/);
+    expect(sharedCss).not.toContain("-webkit-line-clamp");
+    // 卡片自身不裁剪，焦点环与长文本都能显示。
+    expect(sharedCss).toMatch(/\.boot-card \{[\s\S]*?overflow: visible;/);
+    expect(sharedCss).toContain("outline-offset: 2px");
+    for (const source of [html, workspaceHtml]) expect(source).toContain('id="boot-copy"');
+  });
+
+  it("按钮可换行且命中区域有下限", () => {
+    expect(sharedCss).toMatch(/\.boot-btn \{[\s\S]*?min-height: 32px;/);
+    expect(sharedCss).toMatch(/\.boot-btn \{[\s\S]*?white-space: normal;/);
+    expect(sharedCss).toMatch(/\.boot-btn \{[\s\S]*?max-width: 100%;/);
+  });
+
+  it("reduce 下无持续旋转/流光/位移：改为静态状态反馈", () => {
+    const reduce = sharedCss.split("@media (prefers-reduced-motion: reduce)")[1] ?? "";
+    expect(reduce).toContain(".boot-spinner");
+    expect(reduce).toMatch(/\.boot-spinner \{\s*animation: none;/);
+    expect(reduce).toMatch(/\.boot-sk-bar::after,[\s\S]*?animation: none;/);
+    // 位移（boot-rise）必须被同特异性的状态选择器压掉。
+    expect(reduce).toMatch(
+      /#boot-splash\[data-state="timeout"\] #boot-recovery,[\s\S]*?animation: none;/,
+    );
+  });
+});
+
+describe("工作台启动占位与主窗口同源（slow 骨架屏）", () => {
+  it("slow 态有中性骨架屏，不伪造任务数据与进度", () => {
+    expect(workspaceHtml).toContain('id="boot-skeleton"');
+    expect(workspaceHtml).toContain("boot-sk-row");
+    expect(workspaceShared).toMatch(/#boot-splash\[data-state="slow"\] #boot-skeleton \{ display: flex; \}/);
+    expect(workspaceShared).toMatch(/#boot-splash\[data-state="error"\] #boot-skeleton \{ display: none; \}/);
+    // 骨架屏是纯形状层：无文本节点、无百分比。
+    const skeleton = workspaceHtml.slice(
+      workspaceHtml.indexOf('id="boot-skeleton"'),
+      workspaceHtml.indexOf('class="boot-stack"'),
+    );
+    expect(skeleton).not.toMatch(/>[^<\s][^<]*</);
+    expect(skeleton).not.toContain("%");
+  });
+
+  it("骨架屏背景层不随恢复卡滚动（fixed 而非 absolute）", () => {
+    expect(workspaceShared).toMatch(/#boot-skeleton \{[\s\S]*?position: fixed;/);
+  });
+
+  it("骨架屏中性色与主窗口同一组取值（明暗两套，不新增色板）", () => {
+    for (const token of ["--boot-sk-base", "--boot-sk-card", "--boot-sk-shine"]) {
+      expect(html).toContain(`${token}:`);
+      expect(workspaceHtml).toContain(`${token}:`);
+    }
+    const light = (source: string) => source.match(/--boot-sk-base: rgba\(35, 40, 64, 0\.08\)/);
+    expect(light(html)).toBeTruthy();
+    expect(light(workspaceHtml)).toBeTruthy();
+    expect(workspaceHtml).toMatch(/--boot-sk-base: rgba\(255, 255, 255, 0\.08\)/);
+  });
+});
+
+describe("启动占位零外部依赖", () => {
+  it("两个宿主都不引用外部样式表：启动界面不依赖应用 CSS/React", () => {
+    for (const [name, source] of [
+      ["index.html", html],
+      ["workspace.html", workspaceHtml],
+    ] as const) {
+      expect(source, `${name} 不应有 <link rel=stylesheet>`).not.toMatch(/<link[^>]+stylesheet/i);
+      expect(source).not.toMatch(/<link[^>]+\.css/i);
+    }
+  });
+
+  it("三个恢复按钮都是显式 type=button，不触发隐式表单提交", () => {
+    for (const id of ["boot-wait", "boot-retry", "boot-copy"]) {
+      expect(html).toContain(`type="button" class="boot-btn`);
+      expect(workspaceHtml).toContain(`type="button" class="boot-btn`);
+      expect(html).toContain(`id="${id}"`);
+      expect(workspaceHtml).toContain(`id="${id}"`);
+    }
+  });
+});
+
 /* ── 启动诊断升级（2026-11-19）：把「模块脚本尚未执行」定位到具体请求 ── */
 const bootstrapSource = readFileSync(
   resolve(process.cwd(), "src/workspace/bootstrap.ts"),

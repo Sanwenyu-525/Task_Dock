@@ -29,33 +29,6 @@
          颜色全部经占位自有 --boot-* 变量：无 data-preset 时中性回退，
          两预设（frosted 淡蓝白磨砂 / dream-gradient 蓝紫粉渐变）× 明暗共 4 组取值，
          显式取值来自 src/styles-themes.css 对应组合的实际 token。 */
-      #boot-splash,
-      #boot-splash * {
-        box-sizing: border-box;
-      }
-      #boot-splash {
-        position: fixed;
-        inset: 0;
-        z-index: 2147483647;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        padding: 24px;
-        background: var(--boot-bg);
-        color: var(--boot-fg);
-        font: 13px/1.5 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
-        transition: opacity 160ms ease;
-      }
-      body {
-        /* 淡出/移除瞬间不露出白底；React 挂载后由应用样式覆盖 */
-        background: var(--boot-bg);
-      }
-      #boot-splash.is-leaving {
-        opacity: 0;
-        pointer-events: none;
-      }
-
       /* ── 占位自有 Token（§7：颜色全部经变量） ──
          中性回退（无 data-preset）：浅色为默认，深色走显式 data-theme 或系统偏好。 */
       :root {
@@ -204,6 +177,58 @@
         }
       }
 
+      /* boot-splash-shared:begin（两宿主逐字一致，src/test/bootSplash.test.ts 锁定）
+         启动占位布局契约（2026-11-24 专项）：
+         ① 正常高度：`.boot-stack` 的 margin-block:auto 吸收剩余空间 → 视觉居中；
+         ② 高度不足：auto 外边距收敛为 0 → 内容贴顶 + 外层纵向滚动，顶部永不被裁；
+         ③ 左右留白只由 #boot-splash 的 padding 提供，恢复卡只写 width:100% + max-width；
+         ④ 高度档位 430/260/200/150 只压缩装饰与非核心说明，三个恢复操作全档位保留。 */
+      #boot-splash,
+      #boot-splash * {
+        box-sizing: border-box;
+      }
+      #boot-splash {
+        /* 视口基准：fixed + inset:0 等于 WebView2 布局视口（已扣滚动条），
+           不依赖 vh/dvh 单位——旧引擎不支持 dvh 时也不存在第二套高度口径。 */
+        position: fixed;
+        inset: 0;
+        z-index: 2147483647;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        /* 顶部对齐 + 子级 auto 外边距 = 可滚动的「安全居中」：
+           justify-content:center 会在内容高于视口时把顶部裁掉。 */
+        justify-content: flex-start;
+        padding: clamp(10px, 3vmin, 24px);
+        background: var(--boot-bg);
+        color: var(--boot-fg);
+        font: 13px/1.5 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+        overflow-x: hidden;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        scroll-padding-block: 10px;
+        transition: opacity 160ms ease;
+      }
+      body {
+        /* 淡出/移除瞬间不露出白底；React 挂载后由应用样式覆盖 */
+        background: var(--boot-bg);
+      }
+      #boot-splash.is-leaving {
+        opacity: 0;
+        pointer-events: none;
+      }
+      /* 居中栈：上下 6px 内边距给 focus-visible 的 2px 外扩环留出空间，
+         焦点环不会被滚动容器边缘裁掉。 */
+      .boot-stack {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: clamp(10px, 2.4vh, 18px);
+        width: 100%;
+        padding-block: 6px;
+        margin-block: auto;
+      }
+
       /* ── 启动位（boot/slow 共用）：logo + 标题 + spinner + 状态行 ── */
       .boot-intro {
         position: relative;
@@ -212,6 +237,7 @@
         flex-direction: column;
         align-items: center;
         gap: 10px;
+        max-width: 100%;
       }
       .boot-logo {
         width: 34px;
@@ -227,6 +253,7 @@
         font-weight: 600;
         letter-spacing: 0.2px;
         color: var(--boot-strong);
+        text-align: center;
       }
       .boot-spinner {
         width: 16px;
@@ -241,13 +268,25 @@
         max-width: min(340px, 100%);
         font-size: 12px;
         text-align: center;
-        overflow-wrap: break-word;
+        overflow-wrap: anywhere;
         opacity: 0.85;
       }
+      /* slow 态启动位浮在骨架屏之上：给一层卡片底，状态文字不压在占位条上
+         （两窗口同一套视觉，避免同一个 slow 态长出两种观感）。 */
+      #boot-splash[data-state="slow"] .boot-intro {
+        padding: 10px 16px;
+        border-radius: 14px;
+        background: var(--boot-surface);
+        border: 1px solid var(--boot-border);
+        box-shadow: var(--boot-shadow);
+      }
 
-      /* ── 工作区骨架屏（slow 背景；timeout 更弱）：中性形状，无假任务名/进度 ── */
+      /* ── 工作区骨架屏（slow 背景；timeout 更弱）：中性形状，无假任务名/进度 ──
+         两宿主共用：工作台窗口同样有 slow 态，缺骨架屏会让同一状态机在两个窗口
+         表现不一致（契约 docs/boot/README.md §2）。 */
       #boot-skeleton {
-        position: absolute;
+        /* fixed 而不是 absolute：骨架屏是背景层，恢复卡滚动时不能跟着滚走。 */
+        position: fixed;
         inset: 0;
         z-index: 1;
         display: none;
@@ -354,20 +393,28 @@
       .boot-sk-row:nth-child(3) .boot-sk-bar::after { animation-delay: 240ms; }
       .boot-sk-row:nth-child(4) .boot-sk-bar::after { animation-delay: 360ms; }
 
-      /* ── 恢复卡（timeout/error 共用，文案由 state 决定；§7） ── */
+      /* ── 恢复卡（timeout/error 共用，文案由 state 决定） ── */
       #boot-recovery {
         position: relative;
         z-index: 3;
         display: none;
-        width: calc(100% - 48px);
+        /* 只声明 100%：左右安全留白由 #boot-splash 的 padding 负责。
+           旧写法 calc(100% - 48px) 在 24px 父内距下把同一份间距扣了两次，
+           400 窗口里卡片只剩约 300 宽。 */
+        width: 100%;
         max-width: 420px;
       }
       .boot-card {
-        padding: 20px;
+        display: flex;
+        flex-direction: column;
+        gap: 9px;
+        padding: 18px 20px 16px;
         border-radius: 16px;
         background: var(--boot-surface);
         border: 1px solid var(--boot-border);
         box-shadow: var(--boot-shadow);
+        /* 不裁剪：焦点环（outline-offset:2）与长文本都必须在卡片内可见 */
+        overflow: visible;
       }
       .boot-card-badge {
         display: flex;
@@ -375,44 +422,52 @@
         justify-content: center;
         width: 26px;
         height: 26px;
-        margin-bottom: 10px;
         border-radius: 9px;
         background: var(--boot-accent-soft);
         color: var(--boot-accent);
         font-size: 14px;
         font-weight: 700;
         line-height: 1;
+        flex: 0 0 auto;
       }
       .boot-card-title {
-        margin: 0 0 8px;
+        margin: 0;
         font-size: 15px;
         font-weight: 600;
+        line-height: 1.35;
         color: var(--boot-strong);
+        overflow-wrap: anywhere;
       }
       .boot-card-detail {
         margin: 0;
-        max-height: 96px;
+        /* 长错误信息不撑破卡片，也不用 line-clamp 丢掉内容：卡片内可滚动读完，
+           「复制诊断信息」另有完整信息通道。 */
+        max-height: 88px;
         font-size: 12.5px;
         line-height: 1.65;
         color: var(--boot-fg);
-        overflow-wrap: break-word;
-        display: -webkit-box;
-        -webkit-box-orient: vertical;
-        -webkit-line-clamp: 4;
-        overflow: hidden;
+        overflow-y: auto;
+        overflow-wrap: anywhere;
+      }
+      .boot-card-detail:focus-visible {
+        /* Chromium 会把可滚动区域放进 Tab 序列（长错误信息因此能用键盘读完），
+           这里给同色系轮廓，避免出现默认黑框。 */
+        outline: 2px solid var(--boot-accent);
+        outline-offset: 1px;
+        border-radius: 4px;
       }
       .boot-card-actions {
         display: flex;
         flex-wrap: wrap;
         gap: 8px;
-        margin-top: 16px;
       }
       .boot-card-safe {
-        margin: 12px 0 0;
+        margin: 0;
         font-size: 11px;
         line-height: 1.6;
         color: var(--boot-fg);
         opacity: 0.85;
+        overflow-wrap: anywhere;
       }
 
       /* ── 按钮：主按钮 accent 渐变底白字，次按钮描边（产品语言） ── */
@@ -421,13 +476,19 @@
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        padding: 7px 14px;
+        min-height: 32px;
+        padding: 6px 14px;
         border-radius: 9px;
         border: 1px solid transparent;
         font-family: inherit;
         font-size: 12.5px;
         font-weight: 600;
         line-height: 1.2;
+        text-align: center;
+        /* 允许合理换行：窄卡片里长文案换行而不是被裁掉 */
+        white-space: normal;
+        overflow-wrap: anywhere;
+        max-width: 100%;
         cursor: pointer;
         transition:
           background-color 140ms ease,
@@ -469,6 +530,7 @@
       }
       #boot-splash[data-state="boot"] .boot-when-boot { display: inline; }
       #boot-splash[data-state="slow"] .boot-when-slow { display: inline; }
+      #boot-splash[data-state="timeout"] .boot-when-slow { display: inline; }
       #boot-splash[data-state="timeout"] .boot-when-timeout { display: inline; }
       #boot-splash[data-state="error"] .boot-when-error { display: inline; }
       #boot-wait,
@@ -486,6 +548,7 @@
         display: flex;
         opacity: 0.32;
       }
+      #boot-splash[data-state="error"] #boot-skeleton { display: none; }
       #boot-splash[data-state="timeout"] #boot-recovery,
       #boot-splash[data-state="error"] #boot-recovery {
         display: block;
@@ -517,32 +580,34 @@
           transform: translateY(0);
         }
       }
+
+      /* ── 减少动态效果（§7；2026-11-24 收紧为「静态状态反馈」） ──
+         reduce 下没有持续旋转、没有骨架屏流光、没有位移动画：状态只由文案与
+         静态形状（缺角圆环、中性色块）表达。 */
       @media (prefers-reduced-motion: reduce) {
         #boot-splash,
-        #boot-skeleton {
+        #boot-skeleton,
+        .boot-btn {
           transition: none;
         }
-        #boot-splash .boot-spinner {
-          animation-duration: 3s; /* 旋转减速（§7） */
+        .boot-spinner {
+          animation: none;
         }
-        #boot-splash .boot-sk-bar::after,
-        #boot-splash .boot-sk-tile::after,
-        #boot-splash .boot-sk-dot::after {
-          animation: none; /* shimmer 完全静止 */
+        .boot-sk-bar::after,
+        .boot-sk-tile::after,
+        .boot-sk-dot::after {
+          animation: none;
+          opacity: 0;
         }
-        #boot-recovery {
+        /* 与状态规则同特异性、后置：压掉 boot-rise 位移 */
+        #boot-splash[data-state="timeout"] #boot-recovery,
+        #boot-splash[data-state="error"] #boot-recovery {
           animation: none;
         }
       }
 
-      /* ── 窄窗（320–400px）：流式收缩，恢复卡不裁切 ── */
+      /* ── 窄窗（≤400px）：卡片与骨架屏跟随收缩，左右留白由容器 padding 负责 ── */
       @media (max-width: 400px) {
-        #boot-splash {
-          padding: 16px;
-        }
-        #boot-recovery {
-          width: calc(100% - 32px);
-        }
         .boot-card {
           padding: 16px;
         }
@@ -560,20 +625,81 @@
         .boot-sk-row {
           padding: 10px 12px;
         }
+        .boot-btn {
+          padding: 6px 12px;
+        }
       }
+
+      /* ── 短高度档位（264×112 是真实可达的窗口下限，不能假设启动窗口够高） ──
+         档位只压缩装饰与非核心说明；三个恢复操作在所有档位都保留，必要时换行
+         或改横向紧凑布局，绝不靠隐藏按钮腾空间。 */
+      @media (max-height: 430px) {
+        .boot-stack { gap: 10px; }
+        .boot-intro { gap: 7px; }
+        .boot-logo { width: 26px; height: 26px; border-radius: 9px; }
+        .boot-title { font-size: 13px; }
+        .boot-spinner { width: 13px; height: 13px; }
+        .boot-status { font-size: 11.5px; }
+        .boot-card { gap: 7px; padding: 14px 16px; border-radius: 14px; }
+        .boot-card-badge { width: 22px; height: 22px; border-radius: 7px; font-size: 12px; }
+        .boot-card-title { font-size: 14px; }
+        .boot-card-detail { font-size: 12px; line-height: 1.55; }
+        .boot-card-safe { font-size: 10.5px; }
+        .boot-btn { min-height: 30px; padding: 5px 12px; }
+      }
+
+      /* 档位 2（≤260px）：徽标让位（纯装饰 aria-hidden），操作紧跟标题 */
+      @media (max-height: 260px) {
+        .boot-card { gap: 6px; padding: 11px 13px 12px; }
+        .boot-card-badge { display: none; }
+        .boot-card-title { font-size: 13.5px; }
+        .boot-card-actions { order: 1; gap: 6px; }
+        .boot-card-detail { order: 2; max-height: 44px; }
+        .boot-card-safe { display: none; }
+        .boot-sk-top { height: 30px; }
+        .boot-sk-tile { width: 30px; height: 24px; border-radius: 8px; }
+      }
+
+      /* 档位 3（≤200px，含 280×140）：启动位转横向紧凑；骨架屏简化 */
+      @media (max-height: 200px) {
+        #boot-splash { padding: 8px; }
+        .boot-stack { gap: 8px; padding-block: 4px; }
+        .boot-intro {
+          flex-direction: row;
+          flex-wrap: wrap;
+          justify-content: center;
+          gap: 8px;
+        }
+        .boot-logo { width: 20px; height: 20px; border-radius: 7px; }
+        .boot-title { font-size: 12px; }
+        .boot-spinner { width: 12px; height: 12px; }
+        .boot-status { font-size: 11px; }
+        #boot-splash[data-state="slow"] .boot-intro { padding: 5px 10px; border-radius: 9px; }
+        .boot-card { gap: 5px; padding: 8px 10px; border-radius: 11px; }
+        .boot-card-title { font-size: 12.5px; }
+        .boot-card-detail { max-height: 34px; font-size: 11px; line-height: 1.45; }
+        .boot-btn { min-height: 26px; padding: 4px 10px; font-size: 11.5px; }
+        #boot-skeleton { gap: 8px; padding: 10px 12px; }
+        .boot-sk-top { height: 24px; gap: 6px; }
+        .boot-sk-list { gap: 8px; }
+        .boot-sk-row { gap: 6px; padding: 8px 10px; }
+        .boot-sk-nav { display: none; }
+        .boot-sk-row:nth-child(3),
+        .boot-sk-row:nth-child(4) { display: none; }
+      }
+
+      /* 档位 4（≤150px，264×112 下限）：按钮再收一档，三个操作同屏可见 */
+      @media (max-height: 150px) {
+        .boot-card-title { font-size: 12px; }
+        .boot-btn { min-height: 24px; padding: 3px 8px; font-size: 11px; }
+        .boot-card-detail { max-height: 26px; }
+        .boot-status { font-size: 10.5px; }
+      }
+      /* boot-splash-shared:end */
     </style>
   </head>
   <body>
     <div id="boot-splash" role="status" aria-live="polite" data-state="boot">
-      <div class="boot-intro">
-        <div class="boot-logo" aria-hidden="true"></div>
-        <div class="boot-title">Task Dock</div>
-        <div class="boot-spinner" aria-hidden="true"></div>
-        <div class="boot-status" id="boot-status">
-          <span class="boot-when-boot">正在启动…</span>
-          <span class="boot-when-slow">正在加载界面组件，首次启动可能需要稍久…</span>
-        </div>
-      </div>
       <div class="boot-skeleton" id="boot-skeleton" aria-hidden="true">
         <div class="boot-sk-top">
           <span class="boot-sk-bar boot-sk-w22"></span>
@@ -611,23 +737,34 @@
           </div>
         </div>
       </div>
-      <div class="boot-recovery" id="boot-recovery">
-        <div class="boot-card">
-          <div class="boot-card-badge" aria-hidden="true">!</div>
-          <div class="boot-card-title">
-            <span class="boot-when-timeout">启动超时</span>
-            <span class="boot-when-error">启动遇到问题</span>
+      <div class="boot-stack">
+        <div class="boot-intro">
+          <div class="boot-logo" aria-hidden="true"></div>
+          <div class="boot-title">Task Dock</div>
+          <div class="boot-spinner" aria-hidden="true"></div>
+          <div class="boot-status" id="boot-status">
+            <span class="boot-when-boot">正在启动…</span>
+            <span class="boot-when-slow">正在加载界面组件，首次启动可能需要稍久…</span>
           </div>
-          <p class="boot-card-detail" id="boot-detail">
-            <span class="boot-when-timeout">界面加载比预期慢。可以继续等待，或重新加载。</span>
-            <span class="boot-when-error">界面加载遇到问题。</span>
-          </p>
-          <div class="boot-card-actions">
-            <button type="button" class="boot-btn boot-btn-primary" id="boot-wait">继续等待</button>
-            <button type="button" class="boot-btn boot-btn-ghost" id="boot-retry">重新加载</button>
-            <button type="button" class="boot-btn boot-btn-ghost" id="boot-copy">复制诊断信息</button>
+        </div>
+        <div class="boot-recovery" id="boot-recovery">
+          <div class="boot-card">
+            <div class="boot-card-badge" aria-hidden="true">!</div>
+            <div class="boot-card-title">
+              <span class="boot-when-timeout">启动超时</span>
+              <span class="boot-when-error">启动遇到问题</span>
+            </div>
+            <p class="boot-card-detail" id="boot-detail">
+              <span class="boot-when-timeout">界面加载比预期慢。可以继续等待，或重新加载。</span>
+              <span class="boot-when-error">界面加载遇到问题。</span>
+            </p>
+            <div class="boot-card-actions">
+              <button type="button" class="boot-btn boot-btn-primary" id="boot-wait">继续等待</button>
+              <button type="button" class="boot-btn boot-btn-ghost" id="boot-retry">重新加载</button>
+              <button type="button" class="boot-btn boot-btn-ghost" id="boot-copy">复制诊断信息</button>
+            </div>
+            <p class="boot-card-safe">你的任务与设置数据保存在本机，继续等待或重新加载都不会造成数据丢失。</p>
           </div>
-          <p class="boot-card-safe">你的任务与设置数据保存在本机，继续等待或重新加载都不会造成数据丢失。</p>
         </div>
       </div>
     </div>

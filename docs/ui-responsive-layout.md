@@ -153,6 +153,10 @@
   中等宽度 38% 侧栏封顶、分隔条键盘操作与宽度记忆；剪贴板页接入三档密度与右栏检查器。
 - **2026-11-20**：统一窗口 chrome 档位事实源（见 §10）；登记 ≤560 图标轨兜底带常量；更正两处
   与实际阈值漂移的注释（未改任何断点数值）。
+- **2026-11-24**：工作台首页页头与卡片标题行改判 `@container wb-content`（见 §11）；窗口级
+  `@media (max-width: 560px)` 中的首页规则迁走，该块只留窗口 chrome；项目卡网格最小列改为
+  `minmax(min(200px, 100%), 1fr)`，修复内容区被压到 220px 时 11px 横向溢出；首页名称省略号
+  接入统一 `data-tip` 提示（§11.3）。
 
 ## 10. 窗口 chrome 档位与顶栏收纳（2026-11-20）
 
@@ -221,8 +225,9 @@
 
 - `@media (max-width: 760px)`：状态栏密度降级（次要文案/磁盘状态隐藏）与创建按钮文案，
   不是窗口档位，不登记进 `WINDOW_TIERS`。
-- `@media (max-width: 560px)` 页头兜底块：服务主窗 400×560 面板（无 `.wb-content` 容器），
-  与工作台图标轨共用同一上界，但语义是页面页头换行兜底。
+- `@media (max-width: 560px)` 窗口级块：**只**服务窗口 chrome（顶栏换行、窗口控制、搜索收纳、
+  标题栏工具）。2026-11-24 起首页页头/卡片标题行不再放在这里，改判 `@container wb-content`
+  （见 §11.1）；该注释此前把「页面页头换行兜底」也归入此块，已随迁移更正。
 - 页面 1440 阅读宽封顶（`.wb-home` / `.wb-project`）、卡片网格降列仍走容器查询；窄内容区
   （`<900px` 容器宽）解除封顶。
 
@@ -233,3 +238,57 @@
   本次只更正注释，**断点数值未改**。
 - 更正注释：`workbench.css` 原注释写「JS compact（<1000px）」；实际阈值是 **`<1100 DIP`**
   （`shouldCollapseWorkbenchDetail` / `WINDOW_TIERS.compact`）。
+
+## 11. 工作台首页：内容区判据与长内容（2026-11-24）
+
+背景缺陷：`.wb-home-head` / `.wb-home-date` / `.wb-home-greeting` / `.wb-panel-head*` 的窄宽
+规则写在文件末尾的窗口级 `@media (max-width: 560px)`。窗口 1100 时 JS 会收起右栏（`compact`），
+导航 + 右栏仍可能把 `.wb-content` 压到 400 左右，而窗口宽度 ≥560 使规则不命中，结果问候语被
+日期胶囊挤成极窄一列、标题与日期在同一行互相压盖。**判据错了，不是规则数值错了。**
+
+### 11.1 判据迁移（只迁首页规则）
+
+- 全部首页页头与卡片标题规则移入 `@container wb-content (max-width: 560px)`，继续复用
+  `.wb-content` 已有的 `container-type: inline-size; container-name: wb-content`，
+  沿用既有 560 阈值（不新增断点，不与 `.wb-home-grid` 的 940/560 档冲突）。
+- 迁移清单：`.wb-home-head`（`flex-wrap: wrap` + `align-items: flex-start`）、
+  `.wb-home-head-main`（`flex: 1 1 100%`）、`.wb-home-date`（`order: 2`、`white-space: normal`、
+  `line-height: 1.45`、`max-width: 100%`）、`.wb-home-greeting`（24px）、`.wb-panel-head`
+  （`flex-wrap: wrap`、`row-gap: 6px`、`align-items: flex-start`）、`.wb-panel-head h3`
+  （`flex: 1 1 auto; min-width: 0; white-space: normal; overflow-wrap: anywhere`）、
+  `.wb-panel-head h3 > svg`（`flex: 0 0 auto`，图标不挤文字）、`.wb-panel-more` /
+  `.wb-panel-count`（`flex: 0 0 auto; margin-left: auto; white-space: nowrap`）、
+  `.wb-panel`（`padding: 14px`）、`.wb-home-slot`（`padding: 14px 12px 18px`）。
+- 新增基础规则：`.wb-home-head-text { flex: 1 1 auto; min-width: 0 }`（文字列可收缩）、
+  `.wb-home-date-text { min-width: 0; overflow-wrap: anywhere }`（长英文日期换行不撑宽）、
+  `.wb-panel-head h3 { min-width: 0 }`。`.wb-home-date` 基础态补 `max-width: 100%; min-width: 0`，
+  日期胶囊永远不会把页面撑宽。
+- **不迁移**：顶栏窗口控制、搜索收纳、「更多」菜单仍按窗口宽度（§10），它们相对窗口定位，
+  与内容容器无关。
+- 网格架构保持不变：`.wb-home-grid`（940px→6 列 / 默认 2 列 / 560px→1 列）与 `.ui-adaptive-grid`
+  原样复用，首页业务组件未重写。
+
+### 11.2 名称省略号的可查看途径
+
+`.wb-row-title` / `.wb-pcard-name` / `.wb-wf-name` 保留省略号，但溢出时接入既有
+`src/lib/nameTip.ts`：`syncTruncatedTip(host, selector, text)` 只在**实际被截断**时写
+`data-tip`，`clearTip` 在 `mouseleave` / `blur` 清除；提示渲染走全局 `TooltipLayer`
+（`data-tip`，350ms 悬停延迟，键盘 Tab 立即显示）。事件挂在行内按钮上而不是内层文字，
+**不改变原有点击行为**（点击仍导航），也不需要固定卡片宽度。中文、长英文、路径与特殊字符
+都按 `overflow-wrap: anywhere` 断行后再判断是否截断。
+
+### 11.3 首页时间与本地化
+
+- 日期不再直接读系统语言：`formatLocalizedDate(now, { year/month/day/weekday })` 走
+  `src/i18n/format.ts`，跟随 Task Dock 的 `taskdock.locale`。
+- `useLocalNow()` 只在跨整点边界时推进一次（单个 `timeout`、卸载清除，不轮询）；`focusTasks`
+  的 `useMemo` 依赖加入 `dayKey`（`YYYY-M-D`），跨午夜后「今天/已逾期」判定随之刷新，
+  不会永久停留在过期快照。
+
+### 11.4 验收口径
+
+窗口 900 且 `nav 320 + detail 400` 使内容区压到 374–400 时：页头两行（问候语独占一行、日期
+下移）、卡片单列、标题不被截断、页面无横向滚动。另覆盖 400 / 800 / 1024 / 1280 / 1600 / 1920
+与英文、深色。脚本 `tmp/acceptance/boot-home-responsive/home-shots.mjs`（13 视图）+
+`home-tooltip.mjs`（截断提示的悬停/键盘两条路径）。jsdom 只能验证 CSS 契约文本，
+列数/换行/是否溢出必须真实浏览器取证。
