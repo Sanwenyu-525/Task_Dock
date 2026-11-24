@@ -20,9 +20,11 @@ interface Props {
   path: string;
   name: string;
   size: number | null;
+  /** 版本键：同一路径被外部改写时重新读取字节并吊销旧 Blob URL。 */
+  revisionKey?: string;
 }
 
-export default function FileImagePreview({ path, name, size }: Props) {
+export default function FileImagePreview({ path, name, size, revisionKey }: Props) {
   const { t } = useLocale();
   const [src, setSrc] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -114,7 +116,7 @@ export default function FileImagePreview({ path, name, size }: Props) {
       activeUrlRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [path, name, size, reloadKey]);
+  }, [path, name, size, revisionKey, reloadKey]);
 
   // Blob 解码失败（不支持的编码/文件损坏）：仅回退一次到 Shell 解码。
   const onImageError = () => {

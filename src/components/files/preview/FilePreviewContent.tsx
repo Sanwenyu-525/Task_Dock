@@ -8,6 +8,7 @@ import { FolderOpen } from "lucide-react";
 import { useLocale } from "../../../hooks/useLocale";
 import ErrorBoundary from "../../ErrorBoundary";
 import type { FilePreviewTarget } from "../../../lib/filesWorkspace/previewSelection";
+import { revisionKey, revisionOf } from "../../../lib/filesWorkspace/previewRevision";
 import { getPreviewKind } from "./previewKind";
 import FileTextPreview from "./FileTextPreview";
 import FileImagePreview from "./FileImagePreview";
@@ -47,27 +48,31 @@ export default function FilePreviewContent({ target, variant = "dialog", onNotic
   }
 
   const kind = getPreviewKind(entry);
-  const common = { path, name, size };
+  // 版本键同时参与组件 key 与各内容组件的 effect 依赖：同一路径的新版本一定重建，
+  // 旧版本（含其媒体 token / PDF 文档 / Blob URL）在重建前由各自 cleanup 释放。
+  const revision = target.revision ?? revisionOf(path, entry);
+  const version = revisionKey(revision);
+  const common = { path, name, size, revisionKey: version };
 
   const body = (() => {
     switch (kind) {
       case "image":
-        return <FileImagePreview key={path} {...common} />;
+        return <FileImagePreview key={version} {...common} />;
       case "text":
-        return <FileTextPreview key={path} {...common} variant={variant} onNotice={onNotice} />;
+        return <FileTextPreview key={version} {...common} variant={variant} onNotice={onNotice} />;
       case "pdf":
-        return <FilePdfPreview key={path} {...common} />;
+        return <FilePdfPreview key={version} {...common} />;
       case "video":
-        return <FileVideoPreview key={path} {...common} />;
+        return <FileVideoPreview key={version} {...common} />;
       case "audio":
-        return <FileAudioPreview key={path} {...common} />;
+        return <FileAudioPreview key={version} {...common} />;
       default:
         return <PreviewUnsupported hint={t("fw.preview.unsupported")} />;
     }
   })();
 
   return (
-    <ErrorBoundary scope="files-preview" variant="compact" resetKey={path} label={t("fw.preview.title")}>
+    <ErrorBoundary scope="files-preview" variant="compact" resetKey={version} label={t("fw.preview.title")}>
       <div className="fw-preview-content" data-kind={kind}>
         {body}
       </div>

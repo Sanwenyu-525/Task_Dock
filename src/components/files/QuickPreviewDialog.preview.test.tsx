@@ -9,6 +9,7 @@
  * 关闭取消、连续开关、选择恢复、输入控件不抢键、50 次媒体切换无泄漏。
  */
 
+import { useState } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FsEntry } from "../../lib/bridge";
@@ -46,6 +47,7 @@ vi.mock("../../lib/bridge", async (importOriginal) => {
 });
 
 import {
+  fsOpen,
   fsPreviewImage,
   fsPreviewMediaUrl,
   fsReadBinary,
@@ -54,12 +56,14 @@ import {
 } from "../../lib/bridge";
 import QuickPreviewDialog, { type PreviewRequest } from "./QuickPreviewDialog";
 import { useFilesWorkspaceStore } from "../../store/useFilesWorkspaceStore";
+import { useUiStore } from "../../store/useUiStore";
 
 const binaryMock = vi.mocked(fsReadBinary);
 const imageMock = vi.mocked(fsPreviewImage);
 const mediaMock = vi.mocked(fsPreviewMediaUrl);
 const textMock = vi.mocked(fsReadText);
 const releaseMock = vi.mocked(fsReleasePreviewUrl);
+const openMock = vi.mocked(fsOpen);
 
 const blobUrl = "blob:taskdock-preview-object-url";
 let createObjectURL: ReturnType<typeof vi.fn>;
@@ -101,6 +105,9 @@ beforeEach(() => {
   mediaMock.mockReset();
   textMock.mockReset();
   releaseMock.mockReset();
+  openMock.mockReset();
+  openMock.mockResolvedValue(undefined);
+  useUiStore.setState({ toasts: [], toast: null });
   pdfMock.getDocument.mockReset();
   clipboardMock.copyText.mockClear();
   createObjectURL = vi.fn(() => blobUrl);
@@ -396,6 +403,35 @@ describe("视频 / 音频", () => {
     expect(el.hasAttribute("controls")).toBe(false);
   });
 
+  it("Escape 关闭且请求置空：正在播放的音频被显式暂停、清源并释放 token 一次", async () => {
+    const pauseSpy = vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => undefined);
+    const loadSpy = vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => undefined);
+    mediaMock.mockResolvedValue("http://taskdock-preview.localhost/tok-close");
+    releaseMock.mockResolvedValue(undefined);
+
+    function Harness() {
+      const [request, setRequest] = useState<PreviewRequest | null>(requestFor("a.mp3", [audio("a.mp3")]));
+      return <QuickPreviewDialog request={request} onClose={() => setRequest(null)} />;
+    }
+
+    render(<Harness />);
+    const el = await waitFor(() => {
+      const node = document.querySelector("audio");
+      expect(node).toBeTruthy();
+      return node as HTMLAudioElement;
+    });
+    fireEvent.play(el);
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(document.querySelector("audio")).toBeNull());
+
+    expect(pauseSpy).toHaveBeenCalled();
+    expect(el.hasAttribute("src")).toBe(false);
+    expect(loadSpy).toHaveBeenCalled();
+    await waitFor(() => expect(releaseMock).toHaveBeenCalledWith("http://taskdock-preview.localhost/tok-close"));
+    expect(releaseMock).toHaveBeenCalledTimes(1);
+  });
+
   it("媒体解码失败显示错误反馈", async () => {
     mediaMock.mockResolvedValue("http://taskdock-preview.localhost/tok-bad");
     releaseMock.mockResolvedValue(undefined);
@@ -566,8 +602,7 @@ describe("竞态与资源生命周期", () => {
     }
   });
 
-  it("连续切换 50 个媒体文件：token 注册数与释放数一致，无重复释放", async () => {
-    releaseMock.mockResolvedValue(undefined);
+  it("连续切换 50 个媒体文件：token 注册数与释放数一致，无重复释放", async () => {    releaseMock.mockResolvedValue(undefined);
     let seq = 0;
     mediaMock.mockImplementation(async () => {
       seq += 1;
@@ -587,5 +622,50 @@ describe("竞态与资源生命周期", () => {
     await waitFor(() => expect(releaseMock).toHaveBeenCalledTimes(50));
     const released = releaseMock.mock.calls.map(([url]) => url);
     expect(new Set(released).size).toBe(50);
+  });
+});
+
+describe("默认程序打开的错误处理", () => {
+  beforeEach(() => {
+    textMock.mockResolvedValue({
+      path: "D:\\a\\b.ts",
+      size: 1,
+      truncated: false,
+      encoding: "UTF-8",
+      content: "x",
+    });
+  });
+
+  it("成功打开：调用 fs_open 且不弹错误", async () => {
+    render(<QuickPreviewDialog request={requestFor("b.ts", [code("b.ts")])} onClose={() => undefined} />);
+    await screen.findByText("x");
+
+    fireEvent.click(screen.getByText("fw.preview.openDefault"));
+    await waitFor(() => expect(openMock).toHaveBeenCalledWith("D:\\a\\b.ts"));
+    expect(useUiStore.getState().toasts).toHaveLength(0);
+  });
+
+  it("失败（文件不存在/权限不足/默认应用启动失败）：可读 toast、弹窗保持可用", async () => {
+    openMock.mockRejectedValue(new Error("拒绝访问"));
+    render(<QuickPreviewDialog request={requestFor("b.ts", [code("b.ts")])} onClose={() => undefined} />);
+    await screen.findByText("x");
+
+    fireEvent.click(screen.getByText("fw.preview.openDefault"));
+    await waitFor(() => expect(useUiStore.getState().toasts.length).toBe(1));
+    expect(useUiStore.getState().toasts[0].message).toContain("fw.preview.openFailed");
+    // 弹窗没有被关闭：内容仍在，且可以继续操作。
+    expect(stagePath()).toBe("D:\\a\\b.ts");
+    expect(screen.getByText("x")).toBeTruthy();
+
+    // 同一错误短时间重复点击不重复提示。
+    fireEvent.click(screen.getByText("fw.preview.openDefault"));
+    await waitFor(() => expect(openMock).toHaveBeenCalledTimes(2));
+    expect(useUiStore.getState().toasts.length).toBe(1);
+
+    // 恢复后重新打开成功，预览仍可正常使用。
+    openMock.mockResolvedValue(undefined);
+    fireEvent.click(screen.getByText("fw.preview.openDefault"));
+    await waitFor(() => expect(openMock).toHaveBeenCalledTimes(3));
+    expect(screen.getByText("x")).toBeTruthy();
   });
 });

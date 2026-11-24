@@ -263,6 +263,14 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* 大小/时间/目录包成一组：面板里整体一行，避免逐项换行只剩一个孤立的分隔点。 */
+.fw-file-head-facts {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
 .fw-file-head-dir,
 .fw-file-head-path {
   min-width: 0;
@@ -292,7 +300,41 @@
 .fw-file-head[data-variant="panel"] .fw-file-head-meta {
   flex-direction: column;
   align-items: flex-start;
-  gap: 1px;
+  gap: 2px;
+}
+
+/* 检查器窄宽（默认 360-520px）：工具栏只留图标 + 收缩搜索框，
+   让「阅读/源码 + 查找 + 字号 + 复制」压到 1-2 行，别把内容区推到下半屏。
+   弹窗（宽）没有 `fw-inspector` 容器，标签与文字照常显示。 */
+@container fw-inspector (max-width: 520px) {
+  .fw-preview-toolbar {
+    gap: 4px;
+    padding: 4px 8px;
+    align-content: flex-start;
+  }
+  .fw-preview-segment-btn {
+    padding: 0 6px;
+  }
+  /* 标签在窄检查器里隐藏：图标 + tooltip 足够，文字留给内容。 */
+  .fw-preview-segment-label,
+  .fw-preview-copy-label {
+    display: none;
+  }
+  .fw-preview-search {
+    flex: 1 1 140px;
+    min-width: 96px;
+    max-width: 320px;
+  }
+  .fw-preview-search-count {
+    font-size: 10px;
+  }
+  .fw-preview-toolbar-group--copy {
+    margin-left: 0;
+  }
+  .fw-preview-text-meta {
+    gap: 4px;
+    padding: 4px 8px;
+  }
 }
 
 /* ══ 预览内容容器 ══════════════════════════════════════════════════════ */

@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   basename,
   breadcrumbSegments,
+  isSameOrChildPath,
   isSubPath,
   joinPath,
   normalizePath,
@@ -40,8 +41,27 @@ describe("joinPath / samePath / isSubPath", () => {
   });
 });
 
-describe("breadcrumbSegments", () => {
-  it("盘符路径分段", () => {
+describe("isSameOrChildPath（路径分量边界）", () => {
+  it("兄弟目录不算子路径：D:\\Projects\\A 不包含 D:\\Projects\\AB", () => {
+    expect(isSameOrChildPath("D:\\Projects\\A", "D:\\Projects\\AB")).toBe(false);
+    expect(isSameOrChildPath("D:\\Projects\\A", "D:\\Projects\\A2\\x.txt")).toBe(false);
+  });
+
+  it("自身与真实子路径都算在内（大小写不敏感）", () => {
+    expect(isSameOrChildPath("D:\\Projects\\A", "D:\\Projects\\A")).toBe(true);
+    expect(isSameOrChildPath("D:\\Projects\\A", "d:\\projects\\a\\sub\\x.txt")).toBe(true);
+  });
+
+  it("盘符根与 UNC 根同样按分量判断", () => {
+    expect(isSameOrChildPath("D:\\", "D:\\a.txt")).toBe(true);
+    expect(isSameOrChildPath("D:\\", "D:\\")).toBe(true);
+    expect(isSameOrChildPath("D:\\", "E:\\a.txt")).toBe(false);
+    expect(isSameOrChildPath("\\\\srv\\share", "\\\\srv\\share\\a.txt")).toBe(true);
+    expect(isSameOrChildPath("\\\\srv\\share", "\\\\srv\\share2\\a.txt")).toBe(false);
+  });
+});
+
+describe("breadcrumbSegments", () => {  it("盘符路径分段", () => {
     const segs = breadcrumbSegments("D:\\Games\\MyGame\\Source");
     expect(segs[0]).toEqual({ name: "D:盘", path: "D:\\" });
     expect(segs.map((s) => s.name)).toEqual(["D:盘", "Games", "MyGame", "Source"]);

@@ -25,7 +25,7 @@ export interface MediaPreviewUrlState {
   reloadKey: number;
 }
 
-export function useMediaPreviewUrl(path: string): MediaPreviewUrlState {
+export function useMediaPreviewUrl(path: string, revisionKey?: string): MediaPreviewUrlState {
   const trackerRef = useRef<PreviewTokenTracker | null>(null);
   if (!trackerRef.current) trackerRef.current = createPreviewTokenTracker();
   const [url, setUrl] = useState<string | null>(null);
@@ -61,7 +61,8 @@ export function useMediaPreviewUrl(path: string): MediaPreviewUrlState {
       cancelled = true;
       releaseMediaToken(tracker, acquired);
     };
-  }, [path, reloadKey]);
+    // `revisionKey` 变化（同路径被外部改写）时先释放上一轮 token，再取新 URL。
+  }, [path, revisionKey, reloadKey]);
 
   const markReady = useCallback(() => setLoading(false), []);
   const markError = useCallback((message: string) => {

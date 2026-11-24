@@ -52,6 +52,19 @@ export function isSubPath(outer: string, inner: string): boolean {
   return i.startsWith(`${o}\\`);
 }
 
+/**
+ * inner 是否等于 outer 或位于其内（按**路径分量**比较，不是字符串前缀）。
+ * `D:\Projects\A` 不包含 `D:\Projects\AB`；盘符根 `D:\` 与 UNC 根同样适用。
+ */
+export function isSameOrChildPath(outer: string, inner: string): boolean {
+  const o = normalizePath(outer).toLowerCase();
+  const i = normalizePath(inner).toLowerCase();
+  if (!o || !i) return false;
+  if (o === i) return true;
+  const base = o.endsWith("\\") ? o : `${o}\\`;
+  return i.startsWith(base);
+}
+
 /** 面包屑分段：[{ name, path }]；根目录至少一段。 */
 export function breadcrumbSegments(raw: string): Array<{ name: string; path: string }> {
   const p = normalizePath(raw);

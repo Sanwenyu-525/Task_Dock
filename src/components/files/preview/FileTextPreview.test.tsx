@@ -205,6 +205,67 @@ describe("CSV 表格视图", () => {
   });
 });
 
+describe("大小写敏感搜索", () => {
+  it("Foo foo FOO：默认忽略大小写 3 条，开关后只 1 条，且不触发读取", async () => {
+    mockText("case.txt", "Foo foo FOO");
+    render(<FileTextPreview path="D:\\a\\case.txt" name="case.txt" size={11} />);
+    await waitFor(() => expect(document.querySelector(".fw-preview-code")).toBeTruthy());
+
+    const input = screen.getByLabelText("fw.preview.find") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "Foo" } });
+    await waitFor(() => expect(document.querySelectorAll(".fw-preview-match")).toHaveLength(3));
+
+    const toggle = screen.getByLabelText("fw.preview.caseSensitive");
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(toggle);
+    await waitFor(() => expect(document.querySelectorAll(".fw-preview-match")).toHaveLength(1));
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
+    expect(document.querySelector(".fw-preview-match.is-active")?.textContent).toBe("Foo");
+
+    fireEvent.click(toggle);
+    await waitFor(() => expect(document.querySelectorAll(".fw-preview-match")).toHaveLength(3));
+    expect(bridgeMocks.fsReadText).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("搜索范围与渲染范围一致（6000 行）", () => {
+  const LINES = Array.from({ length: 6000 }, (_, index) =>
+    index === 99 ? "unique-in-range" : index === 5499 ? "unique-out-of-range" : `line ${index + 1}`,
+  );
+
+  it("未渲染的尾部不参与搜索：无假命中、明确提示范围受限、DOM 有界", async () => {
+    mockText("big.txt", LINES.join("\n"));
+    render(<FileTextPreview path="D:\\a\\big.txt" name="big.txt" size={LINES.join("\n").length} />);
+    await waitFor(() => expect(document.querySelector(".fw-preview-code")).toBeTruthy());
+
+    // 渲染有上限：只有前 5000 行，行号不会出现 5500。
+    expect(document.querySelectorAll(".fw-preview-code-line")).toHaveLength(5000);
+    expect(scroll().textContent).not.toContain("unique-out-of-range");
+
+    fireEvent.change(screen.getByLabelText("fw.preview.find"), { target: { value: "unique-out-of-range" } });
+    await waitFor(() =>
+      expect(document.querySelector(".fw-preview-text-meta")?.textContent).toContain(
+        "fw.preview.searchScopeCapped",
+      ),
+    );
+    // 不显示「命中 1 条」却没有可定位元素：计数必须为 0。
+    expect(document.querySelectorAll(".fw-preview-match")).toHaveLength(0);
+    expect(document.querySelector(".fw-preview-search-count")?.textContent).toBe("fw.preview.noMatch");
+  });
+
+  it("渲染范围内的命中可以真实定位到 DOM 元素", async () => {
+    mockText("big.txt", LINES.join("\n"));
+    render(<FileTextPreview path="D:\\a\\big.txt" name="big.txt" size={LINES.join("\n").length} />);
+    await waitFor(() => expect(document.querySelector(".fw-preview-code")).toBeTruthy());
+
+    fireEvent.change(screen.getByLabelText("fw.preview.find"), { target: { value: "unique-in-range" } });
+    await waitFor(() => expect(document.querySelectorAll(".fw-preview-match")).toHaveLength(1));
+    const mark = document.querySelector(".fw-preview-match.is-active");
+    expect(mark?.getAttribute("data-match-index")).toBe("0");
+    expect(mark?.textContent).toBe("unique-in-range");
+  });
+});
+
 describe("JSON 树形视图", () => {
   it("默认只展开根，可逐层与全部展开/收起", async () => {
     mockText("a.json", '{"a":{"b":1},"c":[7,8]}');

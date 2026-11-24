@@ -3938,3 +3938,23 @@ body.fw-resizing-row * {
   color: var(--text-tertiary);
   font-variant-numeric: tabular-nums;
 }
+
+/* R14.2 快速预览：文件版本变化提示条（只提示，不自动替换当前内容）。 */
+.fw-preview-stale {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  padding: 6px 9px;
+  border: 1px solid var(--status-warning-border, var(--color-warning-border));
+  border-radius: 6px;
+  background: var(--status-warning-soft, var(--color-warning-bg));
+  color: var(--status-warning, var(--color-warning));
+  font-size: 11px;
+}
+
+.fw-preview-stale-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}

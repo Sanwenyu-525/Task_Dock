@@ -37,17 +37,21 @@ export default function FileInfoHeader({ entry, path, variant = "dialog", dir }:
           {ext && !folder ? <span className="fw-file-chip is-quiet">.{ext}</span> : null}
         </div>
         <div className="fw-file-head-meta">
-          <span>{formatSize(entry.size)}</span>
-          <span aria-hidden="true">·</span>
-          <span>{formatModified(entry.modifiedMs)}</span>
-          {variant === "dialog" && dir ? (
-            <>
-              <span aria-hidden="true">·</span>
-              <span className="fw-file-head-dir" title={dir}>
-                {dir}
-              </span>
-            </>
-          ) : null}
+          {/* 大小 · 修改时间（弹窗再追加所在目录）包成一组：面板里整体占一行，
+              不会被逐项换行拆成「大小 / · / 时间」三行、也不会只剩一个孤立的分隔点。 */}
+          <span className="fw-file-head-facts">
+            <span>{formatSize(entry.size)}</span>
+            <span aria-hidden="true">·</span>
+            <span>{formatModified(entry.modifiedMs)}</span>
+            {variant === "dialog" && dir ? (
+              <>
+                <span aria-hidden="true">·</span>
+                <span className="fw-file-head-dir" title={dir}>
+                  {dir}
+                </span>
+              </>
+            ) : null}
+          </span>
           {variant === "panel" ? (
             <span className="fw-file-head-path" title={path}>
               {path}

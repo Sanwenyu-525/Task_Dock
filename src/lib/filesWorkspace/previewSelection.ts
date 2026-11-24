@@ -6,6 +6,7 @@
 
 import type { FsEntry } from "../bridge";
 import { joinPath, samePath } from "./pathUtils";
+import { revisionOf, type PreviewRevision } from "./previewRevision";
 
 export interface FilePreviewTarget {
   paneId: string;
@@ -13,6 +14,8 @@ export interface FilePreviewTarget {
   dir: string;
   name: string;
   size: number | null;
+  /** 选中文件在目录列表中的版本标识：外部改写后 size / mtime 变化即触发重新读取。 */
+  revision: PreviewRevision;
   entry: FsEntry;
 }
 
@@ -52,12 +55,14 @@ export function resolvePreviewSelection(
     (candidate) => candidate.kind !== "dir" && samePath(joinPath(dirPath, candidate.name), wanted),
   );
   if (!entry) return null;
+  const path = joinPath(dirPath, entry.name);
   return {
     paneId,
-    path: joinPath(dirPath, entry.name),
+    path,
     dir: dirPath,
     name: entry.name,
     size: entry.size,
+    revision: revisionOf(path, entry),
     entry,
   };
 }

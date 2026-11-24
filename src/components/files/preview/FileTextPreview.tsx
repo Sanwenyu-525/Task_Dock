@@ -14,6 +14,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   BookOpen,
+  CaseSensitive,
   Check,
   Code2,
   Copy,
@@ -66,6 +67,8 @@ interface Props {
   path: string;
   name: string;
   size: number | null;
+  /** 版本键：同一路径的新版本必须重新读盘（目录轮询但版本未变时不重读）。 */
+  revisionKey?: string;
   /** 面板里空间更窄：工具栏压缩、标题字号下降（不改任何能力）。 */
   variant?: "dialog" | "panel";
   onNotice?: (message: string | null) => void;
@@ -76,9 +79,9 @@ type ViewMode = "reading" | "source";
 const FONT_MIN = 11;
 const FONT_MAX = 20;
 
-export default function FileTextPreview({ path, name, size, variant = "dialog", onNotice }: Props) {
+export default function FileTextPreview({ path, name, size, revisionKey, variant = "dialog", onNotice }: Props) {
   const { t } = useLocale();
-  const { preview, loading, error, retry } = useTextPreview(path);
+  const { preview, loading, error, retry } = useTextPreview(path, revisionKey);
   const ext = extOf(name);
   const markdown = isMarkdownExt(ext);
   const delimited = isDelimitedExt(ext);
@@ -94,6 +97,7 @@ export default function FileTextPreview({ path, name, size, variant = "dialog", 
   const [lineNumbers, setLineNumbers] = useState(true);
   const [fontSize, setFontSize] = useState(12);
   const [query, setQuery] = useState("");
+  const [caseSensitive, setCaseSensitive] = useState(false);
   const [activeMatch, setActiveMatch] = useState(-1);
   const [copyState, setCopyState] = useState<"idle" | "ok" | "fail">("idle");
   const [selectionAvailable, setSelectionAvailable] = useState(false);
@@ -154,12 +158,18 @@ export default function FileTextPreview({ path, name, size, variant = "dialog", 
     [markdown, effectiveMode, visibleContent],
   );
 
-  const search = useMemo(() => findTextMatches(viewContent, query), [viewContent, query]);
+  // 搜索与渲染同口径：只扫描**实际渲染**的文本（超过 `TEXT_RENDER_MAX_LINES`
+  // 时不偷偷扫描未渲染的尾部，否则会出现「计数 1 条但 DOM 里没有可定位命中」）。
+  // 超出渲染预算时在工具栏明示范围受限（见 meta 里的 `searchScopeCapped`）。
+  const search = useMemo(
+    () => findTextMatches(visibleContent, query, { caseSensitive }),
+    [visibleContent, query, caseSensitive],
+  );
 
-  // 查询变化后重新定位到首个命中；清空查询即清除全部高亮。
+  // 查询/大小写/文件变化后重新定位到首个命中；清空查询即清除全部高亮。
   useEffect(() => {
     setActiveMatch(search.matches.length > 0 ? 0 : -1);
-  }, [search.query, search.matches.length]);
+  }, [search]);
 
   // 命中定位：滚动到当前命中（jsdom 无布局时静默跳过）。
   useEffect(() => {
@@ -264,11 +274,14 @@ export default function FileTextPreview({ path, name, size, variant = "dialog", 
               ) : (
                 <ListTree size={12} aria-hidden="true" />
               )}
-              {markdown
-                ? t("fw.preview.md.reading")
-                : delimited
-                  ? t("fw.preview.csv.mode")
-                  : t("fw.preview.json.mode")}
+              {/* 标签在窄检查器里由容器查询隐藏，只留图标 + tooltip，避免工具栏换成两三行。 */}
+              <span className="fw-preview-segment-label">
+                {markdown
+                  ? t("fw.preview.md.reading")
+                  : delimited
+                    ? t("fw.preview.csv.mode")
+                    : t("fw.preview.json.mode")}
+              </span>
             </button>
             <button
               type="button"
@@ -277,7 +290,9 @@ export default function FileTextPreview({ path, name, size, variant = "dialog", 
               onClick={() => setMode("source")}
             >
               <Code2 size={12} aria-hidden="true" />
-              {markdown ? t("fw.preview.md.source") : t("fw.preview.sourceMode")}
+              <span className="fw-preview-segment-label">
+                {markdown ? t("fw.preview.md.source") : t("fw.preview.sourceMode")}
+              </span>
             </button>
           </div>
         )}
@@ -314,13 +329,25 @@ export default function FileTextPreview({ path, name, size, variant = "dialog", 
               }}
             />
             <span className="fw-preview-search-count" aria-live="polite">
-              {search.matches.length > 0
-                ? t("fw.preview.matchCount", {
-                    index: activeMatch + 1,
-                    total: search.matches.length,
-                  })
-                : t("fw.preview.noMatch")}
+              {query.trim().length === 0
+                ? null
+                : search.matches.length > 0
+                  ? t("fw.preview.matchCount", {
+                      index: activeMatch + 1,
+                      total: search.matches.length,
+                    })
+                  : t("fw.preview.noMatch")}
             </span>
+            <button
+              type="button"
+              className={`fw-icon-btn fw-preview-case${caseSensitive ? " is-on" : ""}`}
+              aria-label={t("fw.preview.caseSensitive")}
+              aria-pressed={caseSensitive}
+              data-tip={t("fw.preview.caseSensitiveHint")}
+              onClick={() => setCaseSensitive((value) => !value)}
+            >
+              <CaseSensitive size={14} aria-hidden="true" />
+            </button>
             <button
               type="button"
               className="fw-icon-btn"
@@ -412,13 +439,27 @@ export default function FileTextPreview({ path, name, size, variant = "dialog", 
           >
             <CopyCheck size={12} aria-hidden="true" />
           </button>
-          <button type="button" className="btn sm" onClick={() => void onCopy()}>
+          <button
+            type="button"
+            className="btn sm"
+            aria-label={
+              copyState === "ok"
+                ? t("fw.preview.copied")
+                : copyState === "fail"
+                  ? t("fw.preview.copyFailed")
+                  : t("fw.preview.copy")
+            }
+            data-tip={t("fw.preview.copy")}
+            onClick={() => void onCopy()}
+          >
             {copyState === "ok" ? <Check size={12} aria-hidden="true" /> : <Copy size={12} aria-hidden="true" />}
-            {copyState === "ok"
-              ? t("fw.preview.copied")
-              : copyState === "fail"
-                ? t("fw.preview.copyFailed")
-                : t("fw.preview.copy")}
+            <span className="fw-preview-copy-label">
+              {copyState === "ok"
+                ? t("fw.preview.copied")
+                : copyState === "fail"
+                  ? t("fw.preview.copyFailed")
+                  : t("fw.preview.copy")}
+            </span>
           </button>
         </div>
       </div>
@@ -454,6 +495,11 @@ export default function FileTextPreview({ path, name, size, variant = "dialog", 
         )}
         {showSearch && search.truncated && (
           <span className="fw-preview-chip is-warn">{t("fw.preview.searchTruncated")}</span>
+        )}
+        {showSearch && capped && (
+          <span className="fw-preview-chip is-warn">
+            {t("fw.preview.searchScopeCapped", { limit: TEXT_RENDER_MAX_LINES })}
+          </span>
         )}
       </div>
 

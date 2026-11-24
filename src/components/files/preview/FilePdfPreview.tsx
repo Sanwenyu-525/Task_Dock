@@ -20,9 +20,11 @@ interface Props {
   path: string;
   name: string;
   size: number | null;
+  /** 版本键：同一路径的新版本必须销毁旧文档、重建 loading task。 */
+  revisionKey?: string;
 }
 
-export default function FilePdfPreview({ path, size }: Props) {
+export default function FilePdfPreview({ path, size, revisionKey }: Props) {
   const { t } = useLocale();
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [progress, setProgress] = useState<number | null>(null);
@@ -132,7 +134,7 @@ export default function FilePdfPreview({ path, size }: Props) {
       void loadingTask?.destroy();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [path, size, reloadKey]);
+  }, [path, size, revisionKey, reloadKey]);
 
   // 逐页渲染：只画当前页；页面/尺寸/缩放变化先取消旧任务。
   useEffect(() => {

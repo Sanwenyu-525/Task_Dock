@@ -10,7 +10,15 @@
 //! - 快捷操作：全部调用既有命令（`fs_open` / `fs_reveal` / 暂存架 / 固定目录），
 //!   没有实现的「收藏」不渲染假按钮。
 
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import {
   ClipboardCopy,
   ExternalLink,
@@ -36,6 +44,7 @@ import type {
   FilePreviewTarget,
   PreviewSelectionSummary,
 } from "../../lib/filesWorkspace/previewSelection";
+import { revisionKey, revisionOf } from "../../lib/filesWorkspace/previewRevision";
 import type { MessageKey } from "../../locales/zh-CN";
 import { useFilesWorkspaceStore } from "../../store/useFilesWorkspaceStore";
 import FileInfoHeader from "./preview/FileInfoHeader";
@@ -58,24 +67,26 @@ export interface FilePreviewPaneProps {
 
 const STAT_CACHE_LIMIT = 32;
 
-/** 详细信息缓存：同一路径只查一次（选择来回切换不重复 IPC）。 */
+/**
+ * 详细信息缓存：**按路径 + 版本**（size / modifiedMs）缓存。
+ * 同一路径被外部改写后版本变化 → 缓存键不同 → 重新 `fs_stat`，不会永久返回旧元数据。
+ */
 const statCache = new Map<string, FsStat>();
 
-function cacheKey(path: string): string {
-  return path.toLowerCase();
+function statKey(target: FilePreviewTarget): string {
+  return revisionKey(target.revision);
 }
 
-function readCachedStat(path: string): FsStat | null {
-  const hit = statCache.get(cacheKey(path));
+function readCachedStat(key: string): FsStat | null {
+  const hit = statCache.get(key);
   if (!hit) return null;
   // 触碰即刷新 LRU 顺序。
-  statCache.delete(cacheKey(path));
-  statCache.set(cacheKey(path), hit);
+  statCache.delete(key);
+  statCache.set(key, hit);
   return hit;
 }
 
-function writeCachedStat(stat: FsStat): void {
-  const key = cacheKey(stat.path);
+function writeCachedStat(key: string, stat: FsStat): void {
   statCache.delete(key);
   statCache.set(key, stat);
   while (statCache.size > STAT_CACHE_LIMIT) {
@@ -90,8 +101,7 @@ export function __resetPreviewStatCacheForTests(): void {
   statCache.clear();
 }
 
-const ATTRIBUTE_LABELS = {
-  readonly: "fw.props.attr.readonly",
+const ATTRIBUTE_LABELS = {  readonly: "fw.props.attr.readonly",
   hidden: "fw.props.attr.hidden",
   system: "fw.props.attr.system",
   directory: "fw.props.attr.directory",
@@ -111,6 +121,13 @@ function attributeLabel(code: string): MessageKey | null {
   if (code in ATTRIBUTE_LABELS) return ATTRIBUTE_LABELS[code as AttributeCode];
   return null;
 }
+
+/** 稳定 ID：工具栏按钮的 `aria-controls="fw-preview-pane"` 必须指向真实元素。 */
+const PANE_ID = "fw-preview-pane";
+const TAB_PREVIEW_ID = "fw-preview-tab-preview";
+const TAB_DETAILS_ID = "fw-preview-tab-details";
+const PANEL_PREVIEW_ID = "fw-preview-pane-panel-preview";
+const PANEL_DETAILS_ID = "fw-preview-pane-panel-details";
 
 export default function FilePreviewPane({
   target,
@@ -133,6 +150,33 @@ export default function FilePreviewPane({
   const [statError, setStatError] = useState<string | null>(null);
   const [statAttempt, setStatAttempt] = useState(0);
   const sessionRef = useRef<{ pointerId: number; done: boolean; cleanup: (commit: boolean) => void } | null>(null);
+  const previewTabRef = useRef<HTMLButtonElement>(null);
+  const detailsTabRef = useRef<HTMLButtonElement>(null);
+
+  const selectTab = (next: "preview" | "details", focus = false) => {
+    setTab(next);
+    if (focus) (next === "preview" ? previewTabRef : detailsTabRef).current?.focus();
+  };
+
+  /** WAI-ARIA Tabs Pattern 键盘：方向键循环、Home/End 跳转、Enter/Space 激活。 */
+  const onTabKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const current = event.target as HTMLElement | null;
+    const key = event.key;
+    if (key === "ArrowRight" || key === "ArrowLeft") {
+      event.preventDefault();
+      selectTab(tab === "preview" ? "details" : "preview", true);
+    } else if (key === "Home") {
+      event.preventDefault();
+      selectTab("preview", true);
+    } else if (key === "End") {
+      event.preventDefault();
+      selectTab("details", true);
+    } else if (key === "Enter" || key === " ") {
+      if (current?.getAttribute("role") !== "tab") return;
+      event.preventDefault();
+      selectTab(current.id === TAB_DETAILS_ID ? "details" : "preview", true);
+    }
+  };
 
   const folder = summary.folder;
   const effectiveTarget: FilePreviewTarget | null = useMemo(
@@ -145,12 +189,20 @@ export default function FilePreviewPane({
             dir: "",
             name: folder.name,
             size: folder.entry.size,
+            revision: revisionOf(folder.path, folder.entry),
             entry: folder.entry,
           }
         : null),
     [target, folder],
   );
   const hasContent = effectiveTarget !== null;
+  const inactive = !pageActive;
+  /**
+   * 挂起 = 弹窗已接管该文件，或页面未激活（WorkbenchShell 是 keep 挂载，hidden 不等于卸载）。
+   * 两者都必须卸载内容组件：媒体暂停并释放 token、PDF 取消渲染并销毁文档、图片吊销 Blob URL。
+   * 不用 CSS `display:none` 假装停止，后台不存在仍在播放的媒体。
+   */
+  const contentSuspended = suspended || inactive;
   const effectiveWidth = draftWidth ?? width;
 
   // 切换文件/文件夹回到预览页（详情页不会停留在上一个文件）。
@@ -165,7 +217,7 @@ export default function FilePreviewPane({
       setStatError(null);
       return;
     }
-    const cached = readCachedStat(effectiveTarget.path);
+    const cached = readCachedStat(statKey(effectiveTarget));
     if (cached) {
       setStat(cached);
       setStatError(null);
@@ -175,10 +227,11 @@ export default function FilePreviewPane({
     let cancelled = false;
     setStat(null);
     setStatError(null);
+    const key = statKey(effectiveTarget);
     fsStat([effectiveTarget.path])
       .then(([result]) => {
         if (cancelled || !result) return;
-        writeCachedStat(result);
+        writeCachedStat(key, result);
         setStat(result);
       })
       .catch((cause) => {
@@ -320,11 +373,11 @@ export default function FilePreviewPane({
     : [];
 
   const body = (() => {
-    if (suspended) {
+    if (contentSuspended) {
       return (
         <div className="fw-preview-pane-empty" role="status">
           <Eye size={20} aria-hidden="true" />
-          <p>{t("fw.inspector.suspended")}</p>
+          <p>{inactive ? t("fw.inspector.inactive") : t("fw.inspector.suspended")}</p>
         </div>
       );
     }
@@ -361,48 +414,70 @@ export default function FilePreviewPane({
         </div>
       );
     }
-    if (tab === "details") {
-      return (
-        <div className="fw-preview-pane-details" role="tabpanel" aria-label={t("fw.inspector.tabDetails")}>
-          {statError ? (
-            <div className="fw-preview-pane-details-error" role="alert">
-              <p>{t("fw.inspector.statFailed", { error: statError })}</p>
-              <button
-                type="button"
-                className="btn sm"
-                onClick={() => {
-                  setStatError(null);
-                  setStatAttempt((value) => value + 1);
-                }}
-              >
-                {t("common.retry")}
-              </button>
-            </div>
-          ) : null}
-          <dl className="fw-preview-pane-detail-list">
-            {detailRows.map((row) => (
-              <div key={row.label} className="fw-preview-pane-detail-row">
-                <dt>{row.label}</dt>
-                <dd className={row.mono ? "is-mono" : undefined} title={row.value}>
-                  {row.value}
-                </dd>
-              </div>
-            ))}
-          </dl>
-          {!stat && !statError ? <p className="fw-preview-pane-detail-note">{t("fw.inspector.statLoading")}</p> : null}
-        </div>
-      );
-    }
+    /**
+     * 两个 TabPanel 始终存在，`hidden` 只隐藏非活动页；活动页之外的重型内容不挂载，
+     * 因此保留 ARIA 关系不会重新引入后台播放器 / PDF Worker。
+     */
     return (
-      <div className="fw-preview-pane-preview" role="tabpanel" aria-label={t("fw.inspector.tabPreview")}>
-        <FilePreviewContent
-          target={effectiveTarget}
-          variant="panel"
-          onNotice={(message) => {
-            if (message) onNotice(message, "error");
-          }}
-        />
-      </div>
+      <>
+        <div
+          className="fw-preview-pane-preview"
+          id={PANEL_PREVIEW_ID}
+          role="tabpanel"
+          aria-labelledby={TAB_PREVIEW_ID}
+          hidden={tab !== "preview"}
+          style={tab === "preview" ? undefined : { display: "none" }}
+        >
+          {tab === "preview" ? (
+            <FilePreviewContent
+              target={effectiveTarget}
+              variant="panel"
+              onNotice={(message) => {
+                if (message) onNotice(message, "error");
+              }}
+            />
+          ) : null}
+        </div>
+        <div
+          className="fw-preview-pane-details"
+          id={PANEL_DETAILS_ID}
+          role="tabpanel"
+          aria-labelledby={TAB_DETAILS_ID}
+          hidden={tab !== "details"}
+          style={tab === "details" ? undefined : { display: "none" }}
+        >
+          {tab === "details" ? (
+            <>
+              {statError ? (
+                <div className="fw-preview-pane-details-error" role="alert">
+                  <p>{t("fw.inspector.statFailed", { error: statError })}</p>
+                  <button
+                    type="button"
+                    className="btn sm"
+                    onClick={() => {
+                      setStatError(null);
+                      setStatAttempt((value) => value + 1);
+                    }}
+                  >
+                    {t("common.retry")}
+                  </button>
+                </div>
+              ) : null}
+              <dl className="fw-preview-pane-detail-list">
+                {detailRows.map((row) => (
+                  <div key={row.label} className="fw-preview-pane-detail-row">
+                    <dt>{row.label}</dt>
+                    <dd className={row.mono ? "is-mono" : undefined} title={row.value}>
+                      {row.value}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+              {!stat && !statError ? <p className="fw-preview-pane-detail-note">{t("fw.inspector.statLoading")}</p> : null}
+            </>
+          ) : null}
+        </div>
+      </>
     );
   })();
 
@@ -446,10 +521,12 @@ export default function FilePreviewPane({
         />
       )}
       <aside
+        id={PANE_ID}
         className={`fw-preview-pane${overlay ? " is-overlay" : ""}`}
         style={{ width: overlay ? undefined : effectiveWidth }}
         aria-label={t("fw.inspector.aria")}
         data-open="true"
+        data-active={contentSuspended ? "false" : "true"}
       >
         <header className="fw-preview-pane-head">
           <div className="fw-preview-pane-head-main">
@@ -477,23 +554,36 @@ export default function FilePreviewPane({
           </button>
         </header>
 
-        {hasContent && !suspended && (
-          <div className="fw-preview-pane-tabs" role="tablist" aria-label={t("fw.inspector.tabsAria")}>
+        {hasContent && !contentSuspended && (
+          <div
+            className="fw-preview-pane-tabs"
+            role="tablist"
+            aria-label={t("fw.inspector.tabsAria")}
+            onKeyDown={onTabKeyDown}
+          >
             <button
               type="button"
               role="tab"
+              id={TAB_PREVIEW_ID}
+              ref={previewTabRef}
               aria-selected={tab === "preview"}
+              aria-controls={PANEL_PREVIEW_ID}
+              tabIndex={tab === "preview" ? 0 : -1}
               className={`fw-preview-pane-tab${tab === "preview" ? " is-active" : ""}`}
-              onClick={() => setTab("preview")}
+              onClick={() => selectTab("preview")}
             >
               {t("fw.inspector.tabPreview")}
             </button>
             <button
               type="button"
               role="tab"
+              id={TAB_DETAILS_ID}
+              ref={detailsTabRef}
               aria-selected={tab === "details"}
+              aria-controls={PANEL_DETAILS_ID}
+              tabIndex={tab === "details" ? 0 : -1}
               className={`fw-preview-pane-tab${tab === "details" ? " is-active" : ""}`}
-              onClick={() => setTab("details")}
+              onClick={() => selectTab("details")}
             >
               {t("fw.inspector.tabDetails")}
             </button>

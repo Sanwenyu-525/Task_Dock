@@ -1,16 +1,53 @@
 //! 音频预览：TaskDock 视觉规范的自定义控制条（播放/暂停、进度、音量、时长），
 //! 而不是把浏览器默认 `<audio>` 直接摆进对话框。
+//!
+//! 生命周期：音频元素按媒体 URL 重建；旧元素在卸载时**显式** `pause()`、清空 `src`
+//! 并 `load()` 丢弃缓冲。页面切走/弹窗关闭/文件或版本切换都会卸载本组件，
+//! 不能只靠 DOM 消失或 Rust token 失效来停止已经开始的播放。
 
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type RefObject } from "react";
 import { Music2, Pause, Play, Volume1, Volume2, VolumeX } from "lucide-react";
 import { useLocale } from "../../../hooks/useLocale";
 import { useMediaPreviewUrl } from "./useMediaPreviewUrl";
 import { PreviewError } from "./PreviewState";
+import { stopMediaElement, useStopMediaOnUnmount } from "./mediaLifecycle";
 
 interface Props {
   path: string;
   name: string;
   size: number | null;
+  /** 版本键：同一路径被外部改写时重新取媒体 URL 并释放旧 token。 */
+  revisionKey?: string;
+}
+
+interface AudioElementProps {
+  url: string;
+  elementRef: RefObject<HTMLAudioElement | null>;
+  onReady: () => void;
+  onTime: (current: number) => void;
+  onPlay: () => void;
+  onPause: () => void;
+  onEnded: () => void;
+  onError: (el: HTMLAudioElement) => void;
+}
+
+/** 只负责一个具体 URL 的 `<audio>`：卸载（含 URL 变化）时停止并清源。 */
+function AudioElement({ url, elementRef, onReady, onTime, onPlay, onPause, onEnded, onError }: AudioElementProps) {
+  useStopMediaOnUnmount(elementRef);
+  return (
+    <audio
+      ref={elementRef}
+      className="fw-preview-audio-el"
+      src={url}
+      preload="metadata"
+      onLoadedMetadata={() => onReady()}
+      onTimeUpdate={(e) => onTime(e.currentTarget.currentTime)}
+      onPlay={onPlay}
+      onPause={onPause}
+      onEnded={onEnded}
+      onError={(e) => onError(e.currentTarget)}
+    />
+  );
 }
 
 function clock(seconds: number): string {
@@ -21,9 +58,9 @@ function clock(seconds: number): string {
   return `${mins}:${secs.toString().padStart(2, "0")}`;
 }
 
-export default function FileAudioPreview({ path, name }: Props) {
+export default function FileAudioPreview({ path, name, revisionKey }: Props) {
   const { t } = useLocale();
-  const media = useMediaPreviewUrl(path);
+  const media = useMediaPreviewUrl(path, revisionKey);
   const audioRef = useRef<HTMLAudioElement>(null);
   const [playing, setPlaying] = useState(false);
   const [current, setCurrent] = useState(0);
@@ -38,6 +75,12 @@ export default function FileAudioPreview({ path, name }: Props) {
     setDuration(0);
   }, [media.url]);
 
+  const fail = (el: HTMLAudioElement | null) => {
+    // 播放失败同样必须清掉媒体元素，避免半初始化的解码器继续占用文件。
+    stopMediaElement(el);
+    media.markError(t("fw.preview.playbackFailed"));
+  };
+
   const togglePlay = async () => {
     const audio = audioRef.current;
     if (!audio) return;
@@ -45,7 +88,7 @@ export default function FileAudioPreview({ path, name }: Props) {
       try {
         await audio.play();
       } catch {
-        media.markError(t("fw.preview.playbackFailed"));
+        fail(audio);
       }
     } else {
       audio.pause();
@@ -156,23 +199,22 @@ export default function FileAudioPreview({ path, name }: Props) {
         </div>
       </div>
       {media.url && (
-        <audio
-          ref={audioRef}
-          className="fw-preview-audio-el"
-          src={media.url}
-          preload="metadata"
-          onLoadedMetadata={(e) => {
-            setDuration(e.currentTarget.duration || 0);
+        <AudioElement
+          key={media.url}
+          url={media.url}
+          elementRef={audioRef}
+          onReady={() => {
+            setDuration(audioRef.current?.duration || 0);
             media.markReady();
           }}
-          onTimeUpdate={(e) => setCurrent(e.currentTarget.currentTime)}
+          onTime={setCurrent}
           onPlay={() => setPlaying(true)}
           onPause={() => setPlaying(false)}
           onEnded={() => {
             setPlaying(false);
             setCurrent(0);
           }}
-          onError={() => media.markError(t("fw.preview.playbackFailed"))}
+          onError={(el) => fail(el)}
         />
       )}
     </div>

@@ -15,7 +15,7 @@ export interface TextPreviewState {
   retry: () => void;
 }
 
-export function useTextPreview(path: string): TextPreviewState {
+export function useTextPreview(path: string, revisionKey?: string): TextPreviewState {
   const [preview, setPreview] = useState<FsTextPreview | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -40,7 +40,9 @@ export function useTextPreview(path: string): TextPreviewState {
     return () => {
       cancelled = true;
     };
-  }, [path, attempt]);
+    // `revisionKey` 变化 = 同一路径的新版本（size / mtime 改变），必须重新读盘；
+    // 目录轮询刷新但版本未变时依赖不变，不会每 4 秒读取正文。
+  }, [path, revisionKey, attempt]);
 
   const retry = useCallback(() => setAttempt((value) => value + 1), []);
   return { preview, loading, error, retry };
