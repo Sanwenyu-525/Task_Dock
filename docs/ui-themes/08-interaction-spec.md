@@ -169,6 +169,14 @@ API 细节见 [09-component-api.md](09-component-api.md)。
 - 溢出状态由 `scroll` 事件 + `ResizeObserver` + 渲染后布局 effect 驱动，无轮询/定时器；
   实现见 `src/components/tasks/useViewsOverflow.ts`，遮罩宽度 `VIEW_REVEAL_MARGIN` 与 CSS 必须一致。
 
+**2026-11-24 修订（列表模式固定 3 列）**：任务页列表模式（`.tasks-workspace-layout`）的日期筛选
+改为固定 3 列网格——第一行「全部 / 今日 / 明日」，第二行「本周 / 逾期」与上一行同列对齐，
+工具图标（暂停提醒 / 帮助 / 更多）并入第二行第三列（逾期右侧），不再单独占一行；第三列最小宽
+按工具组 76px 预留，窄到 180px 侧栏也不压字。因此列表模式不再横向滚动、也不出现边缘遮罩，
+上面三条（遮罩 / 入视 / 滚轮映射）作为 `useViewsOverflow` 的既有契约保留，仅在仍为单行滚动的
+宿主生效。左栏内边距同时改为四边对称（`6px 6px 5px`），筛选块 / 快速添加 / 搜索不再贴住卡面
+边框。
+
 
 
 浮层定位统一交给 `@floating-ui/react`（**只做定位这一件事**，不引入整套 UI 框架）：

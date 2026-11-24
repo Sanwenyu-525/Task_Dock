@@ -81,15 +81,43 @@ describe("WorkspaceSplit 卡面归位（workspaceSplit.css）", () => {
 });
 
 describe("任务页卡面归位", () => {
-  it("tasks-workspace.css 持有整列卡面伪元素与列表卡面", () => {
+  it("tasks-workspace.css 只保留整列卡面伪元素，列表不再画第二层卡", () => {
     expect(tasksWorkspaceCss).toContain(".tasks-panel.tasks-workspace-layout::before");
     const before = ruleBody(tasksWorkspaceCss, ".tasks-panel.tasks-workspace-layout::before");
     expect(before).toContain("background: var(--color-bg-surface)");
     expect(before).toContain("border: 1px solid var(--color-border-default)");
 
+    // 2026-11-24：任务行改用全局 `.task-card` 卡面，列表容器退回纯滚动列，
+    // 避免「卡中卡」同用白底（与笔记 / 历史 / 收集箱的列表形态一致）。
     const list = ruleBody(tasksWorkspaceCss, ".tasks-panel.tasks-workspace-layout > .task-list");
-    expect(list).toContain("border: 1px solid var(--color-border-default)");
-    expect(list).toContain("background: var(--color-bg-surface)");
+    expect(list).not.toContain("background: var(--color-bg-surface)");
+    expect(list).not.toContain("border: 1px solid var(--color-border-default)");
+    expect(list).toContain("overflow-y: auto");
+  });
+
+  it("左栏日期筛选是 3 列固定网格，工具落在第二行第三列（逾期右侧）", () => {
+    const toolbar = ruleBody(
+      tasksWorkspaceCss,
+      ".tasks-panel.tasks-workspace-layout .tasks-viewbar",
+    );
+    expect(toolbar).toContain("display: grid");
+    expect(toolbar).toContain(
+      "grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(76px, 1fr)",
+    );
+
+    // 同名模板给日期分段自己：本周 ≡ 全部、逾期 ≡ 今日（两行列边界一致）。
+    const views = ruleBody(tasksWorkspaceCss, ".tasks-panel.tasks-workspace-layout .tasks-views");
+    expect(views).toContain("display: grid");
+    expect(views).toContain(
+      "grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(76px, 1fr)",
+    );
+
+    const actions = ruleBody(
+      tasksWorkspaceCss,
+      ".tasks-panel.tasks-workspace-layout .tasks-viewbar > .tasks-actions",
+    );
+    expect(actions).toContain("grid-column: 3");
+    expect(actions).toContain("grid-row: 2");
   });
 
   it("tasks-layout.css 统计卡是次级面（避免卡中卡同白底）", () => {

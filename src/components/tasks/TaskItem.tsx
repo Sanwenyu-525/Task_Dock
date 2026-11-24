@@ -314,7 +314,8 @@ export default function TaskItem({ task, compact, exiting, exitHeight, selected,
     <div
       ref={rowRef}
       data-task-id={task.id}
-      className={`task-card task-item priority-${task.priority} ${task.status} ${isLeaving ? "leaving" : ""}${selected ? " is-selected" : ""} ${agentOperation.surfaceProps.className ?? ""}`}
+      // 选中态复用全局卡片选中变体（ring + accent 衬底），不再由本页自造左色条。
+      className={`task-card task-item priority-${task.priority} ${task.status} ${isLeaving ? "leaving" : ""}${selected ? " is-selected surface-card--selected" : ""} ${agentOperation.surfaceProps.className ?? ""}`}
       data-agent-op={agentOperation.surfaceProps["data-agent-op"]}
       // 离场期间同时隔离鼠标与键盘：inert 让内部控件不可聚焦/不可点击，
       // aria-hidden 让读屏器不再朗读正在退场的条目；结束后由列表交还焦点。

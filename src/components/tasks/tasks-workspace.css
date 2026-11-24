@@ -47,14 +47,10 @@
   z-index: 1;
 }
 
-/* 左栏里的统计卡改为次级面，避免「卡中卡」都用一个白底。
-   注意统计卡的边框/底色由 tasks-layout.css 的同名规则落值（本文件在
-   tasks-layout 之前加载），此处不再重复声明。 */
-.tasks-panel.tasks-workspace-layout > .task-list {
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-card);
-  background: var(--color-bg-surface);
-}
+/* 2026-11-24：列表不再自己画整块卡面（会与行内卡片形成「卡中卡」双白底），
+   只做滚动容器；每行直接复用全局 `.task-card` 卡面，与笔记/历史/收集箱一致。
+   统计卡的次级面由 tasks-layout.css 的同名规则落值（本文件在 tasks-layout
+   之前加载），此处不重复声明。 */
 
 .tasks-panel.tasks-workspace-layout > .wb-page-header {
   grid-column: 1 / -1;
@@ -62,7 +58,9 @@
 }
 
 /* 左栏独立滚动：统计卡、快速添加、日期/状态筛选和搜索即使在小高度窗口
-   同时存在，也不把任务列表挤到页面外。 */
+   同时存在，也不把任务列表挤到页面外。
+   内边距左右对称（2026-11-24）：原先左侧 0、右侧 4px，筛选块/快速添加/搜索
+   直接贴住左栏卡面边框，圆角被吃掉，看起来像被截断。 */
 .tasks-panel.tasks-workspace-layout > .tasks-head {
   grid-column: 1;
   grid-row: 2;
@@ -70,7 +68,7 @@
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 0 4px 2px 0;
+  padding: 6px 6px 5px;
 }
 
 .tasks-panel.tasks-workspace-layout > .active-reminders {
@@ -85,6 +83,9 @@
   height: auto;
   min-height: 0;
   overflow-y: auto;
+  /* 卡片自带阴影：留 2px 内边距，避免首/末行阴影被滚动容器裁掉。 */
+  padding: 2px 2px 10px;
+  gap: 6px;
 }
 
 /* 分隔条不覆盖内容：8px 网格列 + 中央 2px 线，命中区只在自身列内。 */
@@ -189,20 +190,57 @@
   white-space: normal;
 }
 
-.tasks-panel.tasks-workspace-layout .tasks-viewbar,
-.tasks-panel.tasks-workspace-layout .tasks-filterbar {
-  flex-wrap: wrap;
-  gap: 6px;
+/* 日期视图 + 工具（2026-11-24 对齐需求）：
+   日期筛选固定 3 列网格——第一行「全部/今日/明日」，第二行「本周/逾期」各占
+   与上一行同列的轨道，因此 本周≡全部、逾期≡今日；工具组落到第二行第三列
+   （即逾期右侧），不再单独占一行。
+   第三列最小宽按工具组宽度（3×24 + 2×2 = 76）预留：窄栏时前两列让位、
+   工具不压到「逾期」文字；日期分段自己在同一模板内成网格，两行列边界一致。 */
+.tasks-panel.tasks-workspace-layout .tasks-viewbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(76px, 1fr);
+  align-items: center;
+  gap: 4px;
+}
+
+/* 网格容器里不再需要弹性占位：留空会让网格多出一格并挤掉工具位。 */
+.tasks-panel.tasks-workspace-layout .tasks-viewbar > .flex-spacer {
+  display: none;
 }
 
 .tasks-panel.tasks-workspace-layout .tasks-views {
+  grid-column: 1 / -1;
+  grid-row: 1 / 3;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(76px, 1fr);
+  gap: 2px;
+  padding: 2px;
   width: 100%;
-  flex-wrap: wrap;
+}
+
+/* 需要压过 tasks-layout.css 的 `.tasks-viewbar .seg-group { overflow-x: auto }`：
+   两者同为 3 类特异性、本文件先加载，因此这里多带一级 `.tasks-head`。
+   固定 3 列两行后不再有横向滚动（溢出指示与 12px 遮罩都不适用），同时避免
+   激活药丸的 `--pill-active-shadow` 被滚动容器在轨道边缘裁掉。 */
+.tasks-panel.tasks-workspace-layout .tasks-head .tasks-views {
+  overflow: visible;
 }
 
 .tasks-panel.tasks-workspace-layout .tasks-views .seg-btn {
-  flex: 1 1 calc(33.333% - 4px);
+  width: 100%;
   min-width: 0;
+}
+
+.tasks-panel.tasks-workspace-layout .tasks-viewbar > .tasks-actions {
+  grid-column: 3;
+  grid-row: 2;
+  justify-self: end;
+  align-self: center;
+}
+
+.tasks-panel.tasks-workspace-layout .tasks-filterbar {
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .tasks-panel.tasks-workspace-layout .tasks-filterbar .search-box {
