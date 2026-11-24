@@ -102,6 +102,9 @@ export interface DwsLedgerTask {
   notes: string;
   updatedAt: string;
   checks: DwsLedgerCheck[];
+  /** 记录来源仓库（多仓库聚合时必须能追溯到具体仓库）。 */
+  repoName: string;
+  repoRoot: string;
 }
 
 export interface DwsLedgerArtifact {
@@ -129,6 +132,8 @@ export interface DwsLedgerBuild {
   logPath: string | null;
   artifacts: DwsLedgerArtifact[];
   host: string;
+  repoName: string;
+  repoRoot: string;
 }
 
 export interface DwsLedgerSnapshot {
@@ -139,6 +144,23 @@ export interface DwsLedgerSnapshot {
   tasks: string[];
   note: string;
   createdAt: string | null;
+  repoName: string;
+  repoRoot: string;
+}
+
+/** 一个台账来源：某仓库自己的 `tmp/integration`，或本次手工指定的目录。 */
+export interface DwsLedgerSource {
+  devProjectId: string | null;
+  name: string;
+  repoRoot: string;
+  ledgerDir: string | null;
+  available: boolean;
+  /** 不可用原因，或「部分文件被跳过 / 记录被截断」的如实说明。 */
+  reason: string | null;
+  taskCount: number;
+  snapshotCount: number;
+  buildCount: number;
+  truncated: boolean;
 }
 
 export interface DwsBuildTrace {
@@ -150,6 +172,8 @@ export interface DwsBuildTrace {
   builds: DwsLedgerBuild[];
   links: DwsTaskLink[];
   acceptanceRecords: DevAcceptanceRecord[];
+  /** 本次参与解析的台账来源（可用与不可用都列出，便于排查「为什么没数据」）。 */
+  sources: DwsLedgerSource[];
 }
 
 export interface DwsChangedFile {
@@ -173,7 +197,21 @@ export interface DwsRepoRisk {
   git: DevGitInfo;
   changedFiles: DwsChangedFile[];
   truncated: boolean;
+  /** 改动清单是否真的读到了。false（超时 / git 缺失 / 非仓库）时不得当成「零改动」。 */
+  changedFilesKnown: boolean;
   risks: DwsRiskFlag[];
+}
+
+/** 一条本机探测快照摘要（最多 20 条，不跨机同步、不作为验收依据）。 */
+export interface DwsProbeSnapshot {
+  id: string;
+  probedAt: string;
+  gitStatus: string;
+  branch: string | null;
+  headSha: string | null;
+  dirtyCount: number | null;
+  repoCount: number;
+  truncated: boolean;
 }
 
 export interface DwsGitRisk {
@@ -181,6 +219,8 @@ export interface DwsGitRisk {
   risks: DwsRiskFlag[];
   advice: string;
   persisted: boolean;
+  /** 最近的本机探测快照（最多 5 条）；仅用于核对本次探测，不代表验收历史。 */
+  history: DwsProbeSnapshot[];
 }
 
 /** 验收结论徽标文案（与既有 acceptanceStatus 口径一致）。 */

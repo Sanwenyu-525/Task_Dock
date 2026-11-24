@@ -23,8 +23,6 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
-use std::time::{Duration, Instant};
 use std::sync::Arc;
 use tauri::State;
 
@@ -91,8 +89,8 @@ const CHANGED_FILE_CAP: usize = 50;
 const TRACE_TASK_CAP: usize = 20;
 /// 每个项目保留的探测快照条数上限（超出按时间倒序回收旧快照，避免表无界增长）。
 const PROBE_SNAPSHOT_KEEP: i64 = 20;
-const STEP_TIMEOUT: Duration = Duration::from_secs(2);
-const POLL_INTERVAL: Duration = Duration::from_millis(50);
+/// 探测历史一次返回的条数上限（仅用于核对，不是验收历史）。
+const PROBE_HISTORY_LIMIT: i64 = 5;
 
 /// 公共文件清单（对照 AGENTS.md §4 与 docs/INTEGRATION_BUILD.md）：
 /// 改动落在这些路径上属于跨任务共享枢纽，必须串行协调，不能并行覆盖。
@@ -218,6 +216,10 @@ pub struct DwsLedgerTask {
     pub notes: String,
     pub updated_at: String,
     pub checks: Vec<DwsLedgerCheck>,
+    /// 记录来源仓库名（多仓库聚合时用于区分，不允许出现「来历不明」的记录）。
+    pub repo_name: String,
+    /// 记录来源仓库根目录（手工指定台账时为空）。
+    pub repo_root: String,
 }
 
 #[derive(Serialize, Clone, Debug, Default)]
@@ -249,6 +251,8 @@ pub struct DwsLedgerBuild {
     pub log_path: Option<String>,
     pub artifacts: Vec<DwsLedgerArtifact>,
     pub host: String,
+    pub repo_name: String,
+    pub repo_root: String,
 }
 
 #[derive(Serialize, Clone, Debug, Default)]
@@ -261,6 +265,28 @@ pub struct DwsLedgerSnapshot {
     pub tasks: Vec<String>,
     pub note: String,
     pub created_at: Option<String>,
+    pub repo_name: String,
+    pub repo_root: String,
+}
+
+/// 一个台账来源（一个关联仓库的 `tmp/integration`，或调用方显式指定的目录）。
+///
+/// 多仓库时每仓库各自解析、再按项目关联关系聚合；前端据此说明「这条记录来自
+/// 哪个仓库」，而不是把所有仓库的台账混成一团。
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct DwsLedgerSource {
+    pub dev_project_id: Option<String>,
+    pub name: String,
+    pub repo_root: String,
+    pub ledger_dir: Option<String>,
+    pub available: bool,
+    /// 不可用原因，或「部分文件被跳过 / 记录被截断」的如实说明。
+    pub reason: Option<String>,
+    pub task_count: usize,
+    pub snapshot_count: usize,
+    pub build_count: usize,
+    pub truncated: bool,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -274,6 +300,8 @@ pub struct DwsBuildTrace {
     pub builds: Vec<DwsLedgerBuild>,
     pub links: Vec<DwsTaskLink>,
     pub acceptance_records: Vec<dev::DevAcceptanceRecord>,
+    /// 本次参与解析的全部台账来源（可用与不可用都列出，便于排查「为什么没数据」）。
+    pub sources: Vec<DwsLedgerSource>,
 }
 
 // ── Git 风险探测模型 ────────────────────────────────────────────────────
@@ -306,7 +334,29 @@ pub struct DwsRepoRisk {
     pub git: DevGitInfo,
     pub changed_files: Vec<DwsChangedFile>,
     pub truncated: bool,
+    /// 改动清单是否真的读到了。`false`（超时 / git 缺失 / 非仓库）时前端不得
+    /// 把空清单当成「零改动」展示。
+    pub changed_files_known: bool,
     pub risks: Vec<DwsRiskFlag>,
+}
+
+/// 一条本机探测快照的摘要（`dws_workspace_probes` 只保留最近 20 条）。
+///
+/// 定位：**本机瞬时观测数据**，用于核对「上次探测看到了什么」，不是跨机同步的
+/// 历史记录，也不能作为验收依据。前端必须按此口径展示，不得宣称「完整历史」。
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct DwsProbeSnapshot {
+    pub id: String,
+    pub probed_at: String,
+    pub git_status: String,
+    pub branch: Option<String>,
+    pub head_sha: Option<String>,
+    pub dirty_count: Option<i64>,
+    /// 快照收录的仓库数（v63 新写入格式才有；旧行回退为 0 = 未知）。
+    pub repo_count: usize,
+    /// 快照里是否有仓库的改动清单被截断。
+    pub truncated: bool,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -317,6 +367,8 @@ pub struct DwsGitRisk {
     pub advice: String,
     /// 本次结果是否写入了本机瞬时快照表（归档项目不落库）。
     pub persisted: bool,
+    /// 最近的本机探测快照（最多 5 条，按时间倒序）；仅用于核对，不是验收历史。
+    pub history: Vec<DwsProbeSnapshot>,
 }
 
 // ── 命令响应包装 ──────────────────────────────────────────────────────
@@ -509,17 +561,35 @@ fn list_links_impl(
 
 // ── E1：开发项目关联摘要 ──────────────────────────────────────────────
 
-fn dev_project_refs(
-    conn: &Connection,
-    project_id: &str,
-    weak_dev_project_id: &Option<String>,
-) -> AppResult<Vec<DwsDevProjectRef>> {
+/// 关联到本开发项目的一个开发仓库（**只含库内事实**，不做 Git 探测）。
+///
+/// 拆出这一层是为了让「摘要」「风险探测」「台账解析」共用同一份仓库清单，
+/// 同时避免重复探测：摘要需要分支摘要，风险探测需要逐文件改动，各取所需。
+#[derive(Clone, Debug)]
+struct DwsDevProjectBase {
+    dev_project_id: String,
+    name: String,
+    root_path: String,
+    note: String,
+    link_origin: String,
+}
+
+fn dev_project_bases(conn: &Connection, project_id: &str) -> AppResult<Vec<DwsDevProjectBase>> {
+    let weak: Option<String> = conn
+        .query_row(
+            "SELECT dev_project_id FROM workspace_projects WHERE id = ?1",
+            params![project_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten();
+
     // 收集 (dev_project_id, link_origin)，按 ID 去重，weak_ref 优先。
     let mut collected: Vec<(String, String)> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    if let Some(id) = weak_dev_project_id {
+    if let Some(id) = weak {
         if !id.is_empty() && seen.insert(id.clone()) {
-            collected.push((id.clone(), "weak_ref".to_string()));
+            collected.push((id, "weak_ref".to_string()));
         }
     }
     let mut stmt = conn.prepare(
@@ -549,9 +619,23 @@ fn dev_project_refs(
             // 弱引用目标已删除：保留占位行，exists=false，不伪造名称/路径。
             None => (id.clone(), String::new(), String::new()),
         };
-        let exists = !root_path.is_empty() && Path::new(&root_path).is_dir();
+        out.push(DwsDevProjectBase {
+            dev_project_id: id,
+            name,
+            root_path,
+            note,
+            link_origin: origin,
+        });
+    }
+    Ok(out)
+}
+
+fn dev_project_refs(conn: &Connection, project_id: &str) -> AppResult<Vec<DwsDevProjectRef>> {
+    let mut out = Vec::new();
+    for base in dev_project_bases(conn, project_id)? {
+        let exists = !base.root_path.is_empty() && Path::new(&base.root_path).is_dir();
         let git = if exists {
-            git::probe(&root_path)
+            git::probe(&base.root_path)
         } else {
             DevGitInfo {
                 status: DevGitStatus::PathMissing,
@@ -565,12 +649,12 @@ fn dev_project_refs(
             }
         };
         out.push(DwsDevProjectRef {
-            dev_project_id: id,
-            name,
-            root_path,
+            dev_project_id: base.dev_project_id,
+            name: base.name,
+            root_path: base.root_path,
             exists,
-            note,
-            link_origin: origin,
+            note: base.note,
+            link_origin: base.link_origin,
             git,
         });
     }
@@ -644,7 +728,7 @@ pub fn dws_development_summary_impl(db: &Db, project_id: &str) -> AppResult<DwsD
             .optional()?;
         let (name, weak_dev_project_id) =
             row.ok_or_else(|| AppError::NotFound(format!("工作空间项目不存在: {project_id}")))?;
-        let dev_projects = dev_project_refs(conn, project_id, &weak_dev_project_id)?;
+        let dev_projects = dev_project_refs(conn, project_id)?;
         let tasks = task_refs(conn, project_id)?;
         Ok(DwsDevelopmentSummary {
             project_id: project_id.to_string(),
@@ -869,6 +953,29 @@ pub fn dws_task_link_delete_impl(db: &Db, project_id: &str, link_id: &str) -> Ap
 
 // ── E2：Agent 任务接续（交接包 / 轮次候选 / 验收记录）──────────────────
 
+/// 任务是否落在当前开发项目的工作范围内。
+///
+/// 两个来源合并判定，缺一不可：
+/// - `workspace_task_links`：项目 ↔ 任务的既有关联（通用「任务关联」模块写入）；
+/// - `dws_task_links.task_id`：本面板手工关联（仓库 / 交接包 / 构建 / 验收记录）。
+///
+/// 只认**项目级关系**：`tasks` 表里存在该任务只是全局事实，任何项目都能查到，
+/// 不能据此授权读取别项目的交接包与验收记录。任务实体被删除后关联仍在（弱引用），
+/// 因此这里不以 `tasks` 是否存在为前提，历史交接数据不会因此丢失。
+fn task_in_project_scope(conn: &Connection, project_id: &str, task_id: &str) -> AppResult<bool> {
+    let linked: bool = conn.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM workspace_task_links WHERE project_id = ?1 AND task_id = ?2
+         ) OR EXISTS(
+             SELECT 1 FROM dws_task_links
+             WHERE project_id = ?1 AND task_id = ?2 AND task_id <> ''
+         )",
+        params![project_id, task_id],
+        |r| r.get(0),
+    )?;
+    Ok(linked)
+}
+
 pub fn dws_task_handoff_impl(db: &Db, project_id: &str, task_id: &str) -> AppResult<DwsTaskHandoff> {
     let project_id = project_id.trim();
     let task_id = task_id.trim();
@@ -878,10 +985,17 @@ pub fn dws_task_handoff_impl(db: &Db, project_id: &str, task_id: &str) -> AppRes
     if task_id.is_empty() {
         return Err(AppError::Validation("task_id 不能为空".into()));
     }
-    // 门禁与任务标题先在自己的读连接上取；dev_workbench 实现内部另开读连接，
+    // 门禁与项目级范围校验先在自己的读连接上取；dev_workbench 实现内部另开读连接，
     // 不在本闭包内嵌套调用，避免内存库（无读池）重复锁写 mutex 自锁。
     let task_row: Option<(String, String)> = db.with_read(|conn| {
         ensure_development_project(conn, project_id, false)?;
+        // 未关联当前项目的任务一律拒绝：不读取任何交接包 / 轮次 / 验收记录，
+        // 也不回显标题，避免把别项目的任务事实泄漏给当前项目。
+        if !task_in_project_scope(conn, project_id, task_id)? {
+            return Err(AppError::NotFound(format!(
+                "任务 {task_id} 未关联到当前开发项目，无法读取接续记录"
+            )));
+        }
         Ok(conn
             .query_row(
                 "SELECT title, status FROM tasks WHERE id = ?1",
@@ -921,33 +1035,260 @@ pub fn dws_task_handoff_impl(db: &Db, project_id: &str, task_id: &str) -> AppRes
 }
 
 // ── E3：构建与验收追溯（只读解析集成台账）─────────────────────────────
+//
+// ## 路径解析原则（多项目隔离）
+// 1. 台账**必须能追溯到当前开发项目**：默认取该项目每个关联仓库的
+//    `<dev_projects.root_path>/tmp/integration`；
+// 2. 绝不使用进程 CWD 向上查找——那正是「不同项目读到同一份台账」的根源；
+// 3. 项目 A 没有台账时不会回退去读项目 B 的台账：各自解析、各自为空；
+// 4. `TASK_DOCK_INTEGRATION_DIR` 只在「它位于某个已关联仓库根目录之内」时才对
+//    该仓库生效，否则忽略，避免环境变量成为跨项目串数据的入口；
+// 5. 调用方显式传入的 `ledgerDir` 是本次调用的显式配置，只作用于当前项目。
 
-fn resolve_ledger_dir(explicit: Option<String>) -> (Option<PathBuf>, Option<String>) {
-    if let Some(dir) = trim_optional(explicit) {
-        let p = PathBuf::from(&dir);
-        if p.is_dir() {
-            return (Some(p), None);
-        }
-        return (None, Some(format!("指定的台账目录不存在: {dir}")));
+/// 单个台账 JSON 文件字节上限（超过直接拒绝，不解析半截内容）。
+const MAX_LEDGER_JSON_BYTES: u64 = 512 * 1024;
+/// 单次追溯全部 JSON 读取的字节预算（多仓库累计）。
+const MAX_LEDGER_TOTAL_BYTES: u64 = 8 * 1024 * 1024;
+/// 单个台账目录最多扫描的条目数（防止超大目录拖住 UI）。
+const MAX_LEDGER_DIR_ENTRIES: usize = 500;
+/// 每类台账记录上限（超出按时间倒序截断并标记 truncated）。
+const MAX_LEDGER_TASKS: usize = 200;
+const MAX_LEDGER_SNAPSHOTS: usize = 100;
+const MAX_LEDGER_BUILDS: usize = 200;
+
+/// 台账记录的归属（哪个仓库的台账读出来的）。
+#[derive(Clone, Debug)]
+struct LedgerOwner {
+    dev_project_id: Option<String>,
+    name: String,
+    root: String,
+}
+
+#[derive(Clone, Debug)]
+struct LedgerLocation {
+    dir: Option<PathBuf>,
+    reason: Option<String>,
+}
+
+/// 环境变量绑定的台账目录：只有当它位于该仓库根目录之内才生效。
+fn env_ledger_for(repo_canon: &Path) -> Option<PathBuf> {
+    let raw = std::env::var_os("TASK_DOCK_INTEGRATION_DIR")?;
+    let p = PathBuf::from(raw);
+    let canon = std::fs::canonicalize(&p).ok()?;
+    if canon.starts_with(repo_canon) {
+        Some(canon)
+    } else {
+        None
     }
-    if let Some(dir) = std::env::var_os("TASK_DOCK_INTEGRATION_DIR") {
-        let p = PathBuf::from(dir);
-        if p.is_dir() {
-            return (Some(p), None);
+}
+
+/// 解析单个仓库的台账位置；没有可用台账时给出可理解的原因（不伪造空数据）。
+fn ledger_for_repo(root_path: &str, explicit: Option<&Path>) -> LedgerLocation {
+    if let Some(dir) = explicit {
+        return LedgerLocation {
+            dir: Some(dir.to_path_buf()),
+            reason: None,
+        };
+    }
+    let trimmed = root_path.trim();
+    if trimmed.is_empty() {
+        return LedgerLocation {
+            dir: None,
+            reason: Some("未关联开发仓库，无法定位仓库内的 tmp/integration 台账".to_string()),
+        };
+    }
+    let root = Path::new(trimmed);
+    if !root.is_dir() {
+        return LedgerLocation {
+            dir: None,
+            reason: Some(format!("仓库目录不存在或已失效，未解析台账：{trimmed}")),
+        };
+    }
+    let repo_canon = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    if let Some(dir) = env_ledger_for(&repo_canon) {
+        return LedgerLocation {
+            dir: Some(dir),
+            reason: None,
+        };
+    }
+    let candidate = repo_canon.join("tmp").join("integration");
+    if candidate.is_dir() {
+        LedgerLocation {
+            dir: Some(candidate),
+            reason: None,
+        }
+    } else {
+        LedgerLocation {
+            dir: None,
+            reason: Some("仓库下没有 tmp/integration 台账目录".to_string()),
         }
     }
-    let Ok(cwd) = std::env::current_dir() else {
-        return (None, Some("无法确定当前工作目录".into()));
+}
+
+/// 规范化显式指定的台账目录：必须存在且为目录，返回规范化路径或原因。
+fn normalize_explicit_ledger(explicit: &str) -> Result<PathBuf, String> {
+    let p = PathBuf::from(explicit);
+    if !p.exists() {
+        return Err(format!("指定的台账目录不存在: {explicit}"));
+    }
+    if !p.is_dir() {
+        return Err(format!("指定的台账路径不是目录: {explicit}"));
+    }
+    std::fs::canonicalize(&p).map_err(|e| format!("台账目录无法规范化: {e}"))
+}
+
+/// 台账读取的跳过 / 损坏统计：既用于提示，也用于「不伪造空数据」。
+#[derive(Default, Clone, Debug)]
+struct LedgerIssues {
+    scanned: usize,
+    invalid: usize,
+    skipped: usize,
+    truncated: bool,
+    first_reason: Option<String>,
+}
+
+impl LedgerIssues {
+    fn skip(&mut self, reason: String) {
+        self.skipped += 1;
+        if self.first_reason.is_none() {
+            self.first_reason = Some(reason);
+        }
+    }
+
+    fn invalid(&mut self, reason: String) {
+        self.invalid += 1;
+        if self.first_reason.is_none() {
+            self.first_reason = Some(reason);
+        }
+    }
+
+    fn reason(&self) -> Option<String> {
+        let mut parts: Vec<String> = Vec::new();
+        if self.invalid > 0 {
+            parts.push(format!("{} 个台账文件 JSON 无法解析", self.invalid));
+        }
+        if self.skipped > 0 {
+            parts.push(format!("{} 个文件因类型/体积/路径/预算限制被跳过", self.skipped));
+        }
+        if self.truncated {
+            parts.push("记录数超过上限，已截断".to_string());
+        }
+        if parts.is_empty() {
+            None
+        } else {
+            let mut s = parts.join("；");
+            if let Some(first) = &self.first_reason {
+                s.push_str(&format!("（首个原因：{first}）"));
+            }
+            Some(s)
+        }
+    }
+}
+
+enum LedgerReadError {
+    /// 主动跳过：符号链接 / 非普通文件 / 超出体积 / 越界 / 预算不足。
+    Skipped(String),
+    /// 内容损坏：JSON 解析失败。
+    Invalid(String),
+}
+
+/// 读取单个台账 JSON：类型、体积、越界与总预算全部有硬限制。
+///
+/// `dir_canon` 是台账目录的规范化路径，用于拒绝目录越界（含被替换成指向外面
+/// 的符号链接）。预算按实际读到的字节扣减。
+fn read_json_entry(
+    path: &Path,
+    dir_canon: &Path,
+    budget: &mut u64,
+) -> Result<serde_json::Value, LedgerReadError> {
+    let meta = std::fs::symlink_metadata(path)
+        .map_err(|e| LedgerReadError::Skipped(format!("无法读取文件元数据: {e}")))?;
+    if meta.file_type().is_symlink() {
+        return Err(LedgerReadError::Skipped("符号链接不读取".to_string()));
+    }
+    if !meta.is_file() {
+        return Err(LedgerReadError::Skipped("不是普通文件".to_string()));
+    }
+    if meta.len() > MAX_LEDGER_JSON_BYTES {
+        return Err(LedgerReadError::Skipped(format!(
+            "单文件超过 {} KiB 上限",
+            MAX_LEDGER_JSON_BYTES / 1024
+        )));
+    }
+    let canon = std::fs::canonicalize(path)
+        .map_err(|e| LedgerReadError::Skipped(format!("路径无法规范化: {e}")))?;
+    if !canon.starts_with(dir_canon) {
+        return Err(LedgerReadError::Skipped(
+            "路径越出台账目录，拒绝读取".to_string(),
+        ));
+    }
+    if meta.len() > *budget {
+        return Err(LedgerReadError::Skipped(
+            "本次读取字节预算已用尽".to_string(),
+        ));
+    }
+    let bytes = std::fs::read(&canon)
+        .map_err(|e| LedgerReadError::Skipped(format!("读取失败: {e}")))?;
+    if bytes.len() as u64 > MAX_LEDGER_JSON_BYTES {
+        return Err(LedgerReadError::Skipped(
+            "实际内容超过单文件上限".to_string(),
+        ));
+    }
+    *budget = budget.saturating_sub(bytes.len() as u64);
+    serde_json::from_slice(&bytes)
+        .map_err(|e| LedgerReadError::Invalid(format!("JSON 无法解析: {e}")))
+}
+
+/// 枚举目录下的 `.json` 文件（按文件名排序，保证多次读取顺序稳定）。
+fn scan_json_files(dir: &Path) -> (Vec<PathBuf>, bool) {
+    let mut files = Vec::new();
+    let mut truncated = false;
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return (files, false);
     };
-    let mut cur: Option<&Path> = Some(&cwd);
-    while let Some(dir) = cur {
-        let candidate = dir.join("tmp").join("integration");
-        if candidate.is_dir() {
-            return (Some(candidate), None);
+    for e in entries.flatten() {
+        if files.len() >= MAX_LEDGER_DIR_ENTRIES {
+            truncated = true;
+            break;
         }
-        cur = dir.parent();
+        let p = e.path();
+        let is_json = p
+            .extension()
+            .and_then(|x| x.to_str())
+            .map(|x| x.eq_ignore_ascii_case("json"))
+            .unwrap_or(false);
+        if !is_json {
+            continue;
+        }
+        files.push(p);
     }
-    (None, Some("未找到集成台账目录（tmp/integration）".into()))
+    files.sort();
+    (files, truncated)
+}
+
+/// 枚举 `builds/` 下的构建目录（每个目录内含 `build.json`）。
+fn scan_build_dirs(dir: &Path) -> (Vec<PathBuf>, bool) {
+    let mut dirs = Vec::new();
+    let mut truncated = false;
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return (dirs, false);
+    };
+    for e in entries.flatten() {
+        if dirs.len() >= MAX_LEDGER_DIR_ENTRIES {
+            truncated = true;
+            break;
+        }
+        let p = e.path();
+        // 符号链接目录不跟进：避免把仓库外的目录当成台账内容。
+        match std::fs::symlink_metadata(&p) {
+            Ok(meta) if meta.file_type().is_dir() && !meta.file_type().is_symlink() => {
+                dirs.push(p)
+            }
+            _ => continue,
+        }
+    }
+    dirs.sort();
+    (dirs, truncated)
 }
 
 fn json_string(v: &serde_json::Value, key: &str) -> Option<String> {
@@ -962,23 +1303,46 @@ fn json_bool(v: &serde_json::Value, key: &str) -> Option<bool> {
     v.get(key).and_then(|x| x.as_bool())
 }
 
-fn read_json_file(path: &Path) -> Option<serde_json::Value> {
-    let text = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&text).ok()
+fn json_string_array(v: &serde_json::Value, key: &str) -> Vec<String> {
+    v.get(key)
+        .and_then(|x| x.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
-fn parse_ledger_tasks(root: &Path) -> Vec<DwsLedgerTask> {
+fn parse_ledger_tasks(
+    root: &Path,
+    owner: &LedgerOwner,
+    budget: &mut u64,
+) -> (Vec<DwsLedgerTask>, LedgerIssues) {
     let dir = root.join("tasks");
-    let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return out;
+    let (files, dir_truncated) = scan_json_files(&dir);
+    let mut issues = LedgerIssues {
+        truncated: dir_truncated,
+        ..Default::default()
     };
-    for e in entries.flatten() {
-        let p = e.path();
-        if p.extension().and_then(|x| x.to_str()) != Some("json") {
-            continue;
+    let mut out = Vec::new();
+    for p in files {
+        issues.scanned += 1;
+        if out.len() >= MAX_LEDGER_TASKS {
+            issues.truncated = true;
+            break;
         }
-        let Some(v) = read_json_file(&p) else { continue };
+        let v = match read_json_entry(&p, root, budget) {
+            Ok(v) => v,
+            Err(LedgerReadError::Skipped(r)) => {
+                issues.skip(r);
+                continue;
+            }
+            Err(LedgerReadError::Invalid(r)) => {
+                issues.invalid(r);
+                continue;
+            }
+        };
         let checks = v
             .get("checks")
             .and_then(|x| x.as_array())
@@ -993,88 +1357,101 @@ fn parse_ledger_tasks(root: &Path) -> Vec<DwsLedgerTask> {
                     .collect()
             })
             .unwrap_or_default();
-        let paths = v
-            .get("paths")
-            .and_then(|x| x.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
-                    .collect()
-            })
-            .unwrap_or_default();
         out.push(DwsLedgerTask {
             id: json_string(&v, "id").unwrap_or_default(),
             module: json_string(&v, "module").unwrap_or_default(),
             owner: json_string(&v, "owner").unwrap_or_default(),
             status: json_string(&v, "status").unwrap_or_default(),
-            paths,
+            paths: json_string_array(&v, "paths"),
             snapshot: json_string(&v, "snapshot"),
             build_id: json_string(&v, "build"),
             acceptance: json_string(&v, "acceptance"),
             notes: json_string(&v, "notes").unwrap_or_default(),
             updated_at: json_string(&v, "updatedAt").unwrap_or_default(),
             checks,
+            repo_name: owner.name.clone(),
+            repo_root: owner.root.clone(),
         });
     }
     out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-    out
+    (out, issues)
 }
 
-fn parse_ledger_snapshots(root: &Path) -> Vec<DwsLedgerSnapshot> {
+fn parse_ledger_snapshots(
+    root: &Path,
+    owner: &LedgerOwner,
+    budget: &mut u64,
+) -> (Vec<DwsLedgerSnapshot>, LedgerIssues) {
     let dir = root.join("snapshots");
-    let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return out;
+    let (files, dir_truncated) = scan_json_files(&dir);
+    let mut issues = LedgerIssues {
+        truncated: dir_truncated,
+        ..Default::default()
     };
-    for e in entries.flatten() {
-        let p = e.path();
-        if p.extension().and_then(|x| x.to_str()) != Some("json") {
-            continue;
+    let mut out = Vec::new();
+    for p in files {
+        issues.scanned += 1;
+        if out.len() >= MAX_LEDGER_SNAPSHOTS {
+            issues.truncated = true;
+            break;
         }
-        let Some(v) = read_json_file(&p) else { continue };
-        let tasks = v
-            .get("tasks")
-            .and_then(|x| x.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let v = match read_json_entry(&p, root, budget) {
+            Ok(v) => v,
+            Err(LedgerReadError::Skipped(r)) => {
+                issues.skip(r);
+                continue;
+            }
+            Err(LedgerReadError::Invalid(r)) => {
+                issues.invalid(r);
+                continue;
+            }
+        };
         out.push(DwsLedgerSnapshot {
             id: json_string(&v, "id").unwrap_or_default(),
             branch: json_string(&v, "branch"),
             base: json_string(&v, "base"),
             commit: json_string(&v, "commit"),
-            tasks,
+            tasks: json_string_array(&v, "tasks"),
             note: json_string(&v, "note").unwrap_or_default(),
             created_at: json_string(&v, "createdAt"),
+            repo_name: owner.name.clone(),
+            repo_root: owner.root.clone(),
         });
     }
-    out
+    // 前端按 createdAt 倒序展示，后端也统一排序，避免依赖文件系统顺序。
+    out.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    (out, issues)
 }
 
-fn parse_ledger_builds(root: &Path) -> Vec<DwsLedgerBuild> {
+fn parse_ledger_builds(
+    root: &Path,
+    owner: &LedgerOwner,
+    budget: &mut u64,
+) -> (Vec<DwsLedgerBuild>, LedgerIssues) {
     let dir = root.join("builds");
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return Vec::new();
+    let (dirs, dir_truncated) = scan_build_dirs(&dir);
+    let mut issues = LedgerIssues {
+        truncated: dir_truncated,
+        ..Default::default()
     };
     let mut out = Vec::new();
-    for e in entries.flatten() {
-        let d = e.path();
-        if !d.is_dir() {
-            continue;
+    for d in dirs {
+        issues.scanned += 1;
+        if out.len() >= MAX_LEDGER_BUILDS {
+            issues.truncated = true;
+            break;
         }
-        let Some(v) = read_json_file(&d.join("build.json")) else { continue };
-        let tasks = v
-            .get("tasks")
-            .and_then(|x| x.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let v = match read_json_entry(&d.join("build.json"), root, budget) {
+            Ok(v) => v,
+            Err(LedgerReadError::Skipped(r)) => {
+                issues.skip(r);
+                continue;
+            }
+            Err(LedgerReadError::Invalid(r)) => {
+                issues.invalid(r);
+                continue;
+            }
+        };
         let artifacts = v
             .get("artifacts")
             .and_then(|x| x.as_array())
@@ -1103,14 +1480,16 @@ fn parse_ledger_builds(root: &Path) -> Vec<DwsLedgerBuild> {
             started_at: json_string(&v, "startedAt"),
             finished_at: json_string(&v, "finishedAt"),
             duration_ms: json_i64(&v, "durationMs"),
-            tasks,
+            tasks: json_string_array(&v, "tasks"),
             log_path: json_string(&v, "logPath"),
             artifacts,
             host: json_string(&v, "host").unwrap_or_default(),
+            repo_name: owner.name.clone(),
+            repo_root: owner.root.clone(),
         });
     }
     out.sort_by(|a, b| b.started_at.cmp(&a.started_at));
-    out
+    (out, issues)
 }
 
 pub fn dws_build_trace_impl(
@@ -1122,14 +1501,15 @@ pub fn dws_build_trace_impl(
     if project_id.is_empty() {
         return Err(AppError::Validation("project_id 不能为空".into()));
     }
-    let (ledger_root, ledger_reason) = resolve_ledger_dir(ledger_dir);
 
     let mut links: Vec<DwsTaskLink> = Vec::new();
     let mut trace_task_ids: Vec<String> = Vec::new();
+    let mut bases: Vec<DwsDevProjectBase> = Vec::new();
 
     db.with_read(|conn| {
         ensure_development_project(conn, project_id, false)?;
         links = list_links_impl(conn, project_id, None)?;
+        bases = dev_project_bases(conn, project_id)?;
 
         let mut stmt = conn.prepare(
             "SELECT task_id FROM workspace_task_links WHERE project_id = ?1",
@@ -1164,24 +1544,154 @@ pub fn dws_build_trace_impl(
     acceptance_records.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     acceptance_records.truncate(100);
 
-    let (tasks, snapshots, builds) = match &ledger_root {
-        Some(root) => (
-            parse_ledger_tasks(root),
-            parse_ledger_snapshots(root),
-            parse_ledger_builds(root),
-        ),
-        None => (Vec::new(), Vec::new(), Vec::new()),
+    // 台账来源：显式目录（本次调用显式配置）> 每个关联仓库自己的 tmp/integration。
+    let mut out_sources: Vec<DwsLedgerSource> = Vec::new();
+    let mut tasks: Vec<DwsLedgerTask> = Vec::new();
+    let mut snapshots: Vec<DwsLedgerSnapshot> = Vec::new();
+    let mut builds: Vec<DwsLedgerBuild> = Vec::new();
+    let mut budget = MAX_LEDGER_TOTAL_BYTES;
+    let mut first_root: Option<String> = None;
+    let mut unavailable_reasons: Vec<String> = Vec::new();
+
+    let explicit = trim_optional(ledger_dir);
+    let explicit_dir = match explicit.as_deref().map(normalize_explicit_ledger) {
+        Some(Ok(path)) => Some(path),
+        Some(Err(reason)) => {
+            // 显式配置无效：如实返回不可用，不静默回退到仓库或 CWD 的台账。
+            unavailable_reasons.push(reason);
+            None
+        }
+        None => None,
+    };
+
+    if explicit.as_deref().is_some() && explicit_dir.is_none() {
+        // 显式目录无效：不解析任何来源，避免用「别的台账」冒充本次请求。
+    } else if explicit_dir.is_none() && bases.is_empty() {
+        unavailable_reasons.push(
+            "该项目尚未关联开发仓库，无法定位仓库内的 tmp/integration 台账".to_string(),
+        );
+    } else {
+        // 目标来源列表：(owner, location)。
+        let targets: Vec<(LedgerOwner, LedgerLocation)> = match &explicit_dir {
+            Some(dir) => vec![(
+                LedgerOwner {
+                    dev_project_id: None,
+                    name: "手工指定台账".to_string(),
+                    root: String::new(),
+                },
+                LedgerLocation {
+                    dir: Some(dir.clone()),
+                    reason: None,
+                },
+            )],
+            None => bases
+                .iter()
+                .map(|b| {
+                    (
+                        LedgerOwner {
+                            dev_project_id: Some(b.dev_project_id.clone()),
+                            name: b.name.clone(),
+                            root: b.root_path.clone(),
+                        },
+                        ledger_for_repo(&b.root_path, None),
+                    )
+                })
+                .collect(),
+        };
+
+        for (owner, loc) in targets {
+            let mut source = DwsLedgerSource {
+                dev_project_id: owner.dev_project_id.clone(),
+                name: owner.name.clone(),
+                repo_root: owner.root.clone(),
+                ledger_dir: None,
+                available: false,
+                reason: None,
+                task_count: 0,
+                snapshot_count: 0,
+                build_count: 0,
+                truncated: false,
+            };
+            match loc.dir {
+                Some(dir) => {
+                    let dir_text = dir.to_string_lossy().to_string();
+                    if first_root.is_none() {
+                        first_root = Some(dir_text.clone());
+                    }
+                    source.available = true;
+                    source.ledger_dir = Some(dir_text);
+                    let (t, ti) = parse_ledger_tasks(&dir, &owner, &mut budget);
+                    let (s, si) = parse_ledger_snapshots(&dir, &owner, &mut budget);
+                    let (b, bi) = parse_ledger_builds(&dir, &owner, &mut budget);
+                    source.task_count = t.len();
+                    source.snapshot_count = s.len();
+                    source.build_count = b.len();
+                    source.truncated = ti.truncated || si.truncated || bi.truncated;
+                    let mut reasons: Vec<String> = Vec::new();
+                    for issue in [ti.reason(), si.reason(), bi.reason()] {
+                        if let Some(r) = issue {
+                            reasons.push(r);
+                        }
+                    }
+                    source.reason = if reasons.is_empty() {
+                        None
+                    } else {
+                        Some(reasons.join("；"))
+                    };
+                    tasks.extend(t);
+                    snapshots.extend(s);
+                    builds.extend(b);
+                }
+                None => {
+                    let reason = loc
+                        .reason
+                        .unwrap_or_else(|| "台账目录不可用（原因未知）".to_string());
+                    unavailable_reasons.push(format!("{}：{}", owner.name, reason));
+                    source.reason = Some(reason);
+                }
+            }
+            out_sources.push(source);
+        }
+    }
+
+    // 全局上限：多仓库聚合后总量仍需封顶，并如实标记截断。
+    let mut aggregate_truncated = false;
+    if tasks.len() > MAX_LEDGER_TASKS {
+        tasks.truncate(MAX_LEDGER_TASKS);
+        aggregate_truncated = true;
+    }
+    if snapshots.len() > MAX_LEDGER_SNAPSHOTS {
+        snapshots.truncate(MAX_LEDGER_SNAPSHOTS);
+        aggregate_truncated = true;
+    }
+    if builds.len() > MAX_LEDGER_BUILDS {
+        builds.truncate(MAX_LEDGER_BUILDS);
+        aggregate_truncated = true;
+    }
+
+    let ledger_available = out_sources.iter().any(|s| s.available);
+    let ledger_reason = if ledger_available {
+        if aggregate_truncated {
+            Some("多仓库台账记录总量超过上限，已按时间倒序截断".to_string())
+        } else {
+            None
+        }
+    } else if unavailable_reasons.is_empty() {
+        Some("未找到可用的集成台账目录".to_string())
+    } else {
+        Some(unavailable_reasons.join("；"))
     };
 
     Ok(DwsBuildTrace {
-        ledger_available: ledger_root.is_some(),
-        ledger_root: ledger_root.map(|p| p.to_string_lossy().to_string()),
+        ledger_available,
+        ledger_root: first_root,
         ledger_reason,
         tasks,
         snapshots,
         builds,
         links,
         acceptance_records,
+        sources: out_sources,
     })
 }
 
@@ -1197,48 +1707,27 @@ fn git_status_code(status: DevGitStatus) -> &'static str {
     }
 }
 
-/// 有界只读执行 `git -C <root> <args>`；失败/超时返回 None，不 panic、不写仓库。
-fn run_git_readonly(root: &str, args: &[&str]) -> Option<(bool, String)> {
-    let mut cmd = crate::winproc::hidden("git");
-    cmd.args(["-C", root]);
-    cmd.args(args);
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
-    let mut child = cmd.spawn().ok()?;
-    let started = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => {
-                let out = child.wait_with_output().ok()?;
-                return Some((
-                    out.status.success(),
-                    String::from_utf8_lossy(&out.stdout).to_string(),
-                ));
-            }
-            Ok(None) => {
-                if started.elapsed() >= STEP_TIMEOUT {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return None;
-                }
-                std::thread::sleep(POLL_INTERVAL);
-            }
-            Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-        }
+/// status 读取失败的风险码：失败形态必须能被用户看见，不能表现为「零改动」。
+fn git_read_error_code(err: git::GitReadError) -> &'static str {
+    match err {
+        git::GitReadError::Timeout => "git_status_timeout",
+        git::GitReadError::SpawnNotFound => "git_status_unavailable",
+        git::GitReadError::CommandFailed => "git_status_failed",
+        git::GitReadError::Io => "git_status_failed",
     }
 }
 
-/// 剥离 git porcelain 对含特殊字符路径加的外层双引号（与 `devwork::git::unquote` 口径一致）。
-fn unquote_git_path(raw: &str) -> String {
-    let s = raw.trim();
-    if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
-        s[1..s.len() - 1].to_string()
-    } else {
-        s.to_string()
+fn git_read_error_message(err: git::GitReadError) -> &'static str {
+    match err {
+        git::GitReadError::Timeout => {
+            "本次 git status 读取超时（2s），改动文件清单未读取完成——这不代表没有改动，请重试或稍后人工核对。"
+        }
+        git::GitReadError::SpawnNotFound => {
+            "git 不可用，未能读取改动文件清单；这不代表没有改动。"
+        }
+        git::GitReadError::CommandFailed | git::GitReadError::Io => {
+            "git status 执行失败，未能读取改动文件清单；这不代表没有改动。"
+        }
     }
 }
 
@@ -1250,25 +1739,6 @@ fn is_conflict_status(status: &str) -> bool {
     matches!((first, second), (Some('U'), _) | (Some(_), Some('U')))
         || status == "AA"
         || status == "DD"
-}
-
-/// 解析 `git status --porcelain` 单行：XY 状态 + 路径（重命名取新路径）。
-fn parse_porcelain_line(line: &str) -> Option<(String, String)> {
-    let line = line.trim_end();
-    if line.len() < 4 {
-        return None;
-    }
-    let status = line[0..2].to_string();
-    let path = line[3..].trim_start();
-    // 重命名/复制：`old -> new`，只保留新路径。
-    let path = match path.split_once(" -> ") {
-        Some((_, new)) => unquote_git_path(new),
-        None => unquote_git_path(path),
-    };
-    if path.is_empty() {
-        return None;
-    }
-    Some((status, path))
 }
 
 fn top_group(path: &str) -> String {
@@ -1293,6 +1763,120 @@ fn path_overlaps(declared: &str, changed: &str) -> bool {
     d == c || c.starts_with(&format!("{d}/")) || d.starts_with(&format!("{c}/"))
 }
 
+/// 探测快照里一个仓库的完整事实（v63 新写入格式）。
+///
+/// 旧格式（`changed_files_json` 存裸数组）没有仓库归属：多仓库时代只能看到
+/// 「合并后的改动」，无法判断来自哪个仓库——这正是本次修复的动机。
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+struct DwsProbeRepoSnapshot {
+    dev_project_id: Option<String>,
+    name: String,
+    root_path: String,
+    exists: bool,
+    git_status: String,
+    branch: Option<String>,
+    detached: bool,
+    head_sha: Option<String>,
+    dirty_count: Option<i64>,
+    is_worktree: bool,
+    main_repo_path: Option<String>,
+    changed_files: Vec<DwsChangedFile>,
+    truncated: bool,
+    changed_files_known: bool,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+struct DwsProbePayload {
+    /// 1 = 仓库级快照（本次起写入）；旧行是裸数组，读取时按未知处理。
+    version: u32,
+    repos: Vec<DwsProbeRepoSnapshot>,
+}
+
+impl DwsProbeRepoSnapshot {
+    fn from_risk(repo: &DwsRepoRisk) -> Self {
+        DwsProbeRepoSnapshot {
+            dev_project_id: repo.dev_project_id.clone(),
+            name: repo.name.clone(),
+            root_path: repo.root_path.clone(),
+            exists: repo.exists,
+            git_status: git_status_code(repo.git.status).to_string(),
+            branch: repo.git.branch.clone(),
+            detached: repo.git.detached,
+            head_sha: repo.git.head_sha.clone(),
+            dirty_count: repo.git.dirty_count,
+            is_worktree: repo.git.is_worktree,
+            main_repo_path: repo.git.main_repo_path.clone(),
+            changed_files: repo.changed_files.clone(),
+            truncated: repo.truncated,
+            changed_files_known: repo.changed_files_known,
+        }
+    }
+}
+
+/// 从快照 JSON 里提取 (仓库数, 是否有截断)。旧格式没有仓库归属，返回 0（未知）。
+fn summarize_probe_payload(raw: &str) -> (usize, bool) {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return (0, false);
+    };
+    if let Some(repos) = v.get("repos").and_then(|x| x.as_array()) {
+        let truncated = repos
+            .iter()
+            .any(|r| json_bool(r, "truncated").unwrap_or(false));
+        return (repos.len(), truncated);
+    }
+    (0, false)
+}
+
+/// 读取本项目最近的本机探测快照（只读、限量）。
+///
+/// 定位说明：这是**本机瞬时观测留痕**，最多保留 20 条，不跨机同步、不参与验收。
+/// 之所以补这个读取：快照表此前只写不读，多仓库时又只存第一个仓库的 Git 元数据，
+/// 用户无法核对「上次探测到底看到了什么」。
+fn probe_history_impl(db: &Db, project_id: &str, limit: i64) -> AppResult<Vec<DwsProbeSnapshot>> {
+    db.with_read(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT id, probed_at, git_status, branch, head_sha, dirty_count, changed_files_json
+             FROM dws_workspace_probes
+             WHERE project_id = ?1
+             ORDER BY probed_at DESC, rowid DESC
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(
+            params![project_id, limit.clamp(1, PROBE_SNAPSHOT_KEEP)],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                    r.get::<_, Option<String>>(4)?,
+                    r.get::<_, Option<i64>>(5)?,
+                    r.get::<_, String>(6)?,
+                ))
+            },
+        )?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, probed_at, git_status, branch, head_sha, dirty_count, payload) =
+                row.map_err(AppError::from)?;
+            let (repo_count, truncated) = summarize_probe_payload(&payload);
+            out.push(DwsProbeSnapshot {
+                id,
+                probed_at,
+                git_status,
+                branch,
+                head_sha,
+                dirty_count,
+                repo_count,
+                truncated,
+            });
+        }
+        Ok(out)
+    })
+}
+
 pub fn dws_git_risk_probe_impl(
     db: &Db,
     project_id: &str,
@@ -1303,24 +1887,36 @@ pub fn dws_git_risk_probe_impl(
         return Err(AppError::Validation("project_id 不能为空".into()));
     }
 
-    let summary = dws_development_summary_impl(db, project_id)?;
-    let archived = summary.archived;
+    let (archived, bases) = db.with_read(|conn| {
+        let (_, status) = ensure_development_project(conn, project_id, false)?;
+        Ok((status != "active", dev_project_bases(conn, project_id)?))
+    })?;
 
-    // 台账任务声明路径（用于跨任务重叠提示；台账不可用时为空，不伪造重叠）。
-    let ledger_tasks = match resolve_ledger_dir(ledger_dir) {
-        (Some(root), _) => parse_ledger_tasks(&root),
-        (None, _) => Vec::new(),
-    };
+    // 显式台账目录只作用于本次调用；无效则忽略（记录原因，绝不回退读别的项目台账）。
+    let explicit_dir = trim_optional(ledger_dir).and_then(|d| normalize_explicit_ledger(&d).ok());
+    let mut ledger_budget = MAX_LEDGER_TOTAL_BYTES;
 
     let mut repos: Vec<DwsRepoRisk> = Vec::new();
     let mut aggregated: Vec<DwsRiskFlag> = Vec::new();
 
-    for repo in &summary.dev_projects {
+    for repo in &bases {
         let mut risks: Vec<DwsRiskFlag> = Vec::new();
         let mut changed_files: Vec<DwsChangedFile> = Vec::new();
         let mut truncated = false;
+        let mut changed_files_known = false;
+        let mut info = DevGitInfo {
+            status: DevGitStatus::PathMissing,
+            branch: None,
+            detached: false,
+            is_worktree: false,
+            main_repo_path: None,
+            head_sha: None,
+            dirty_count: None,
+            probed_at: now_iso(),
+        };
 
-        if !repo.exists {
+        let exists = !repo.root_path.is_empty() && Path::new(&repo.root_path).is_dir();
+        if !exists {
             risks.push(DwsRiskFlag {
                 level: "warn".into(),
                 code: "path_missing".into(),
@@ -1328,7 +1924,12 @@ pub fn dws_git_risk_probe_impl(
                 files: vec![],
             });
         } else {
-            let info = &repo.git;
+            // 一次探测同时得到 Git 摘要与改动条目：不再重复执行 `git status`，
+            // 也避免两次读取之间工作树已变化导致「计数与清单不一致」。
+            let probe = git::probe_detailed(&repo.root_path, CHANGED_FILE_CAP);
+            info = probe.info;
+            truncated = probe.status_truncated;
+            let info = &info;
             match info.status {
                 DevGitStatus::NotARepo => {
                     risks.push(DwsRiskFlag {
@@ -1377,29 +1978,45 @@ pub fn dws_git_risk_probe_impl(
                 });
             }
 
-            // 只读取改动文件清单（porcelain），限量聚合。
-            // `-uall` 展开未跟踪目录为逐文件条目：默认折叠会把整个新目录记成一条
-            // `?? dir/`，丢失文件级公共文件 / 跨任务重叠判定所需路径。
-            if let Some((true, stdout)) =
-                run_git_readonly(&repo.root_path, &["status", "--porcelain", "-uall"])
-            {
-                for line in stdout.lines() {
-                    if line.trim().is_empty() {
-                        continue;
-                    }
-                    if changed_files.len() >= CHANGED_FILE_CAP {
-                        truncated = true;
-                        break;
-                    }
-                    if let Some((status, path)) = parse_porcelain_line(line) {
-                        changed_files.push(DwsChangedFile {
-                            path: path.clone(),
-                            status,
-                            group: top_group(&path),
-                        });
+            // 改动文件清单：与上面的摘要来自同一次 `status -z -uall` 读取。
+            // 读取失败（超时 / git 缺失 / 退出码异常）必须单独报风险：
+            // 「没读到」不等于「没有改动」，不能表现为零改动。
+            match probe.status_error {
+                Some(err) => {
+                    risks.push(DwsRiskFlag {
+                        level: "warn".into(),
+                        code: git_read_error_code(err).into(),
+                        message: git_read_error_message(err).into(),
+                        files: vec![],
+                    });
+                }
+                None => {
+                    changed_files_known = true;
+                    if let Some(entries) = &probe.status_entries {
+                        for e in entries {
+                            changed_files.push(DwsChangedFile {
+                                path: e.path.clone(),
+                                status: e.status.clone(),
+                                group: top_group(&e.path),
+                            });
+                        }
                     }
                 }
             }
+
+            // 跨任务重叠的对照范围**只限本仓库自己的台账**：多仓库项目里，
+            // 绝不能拿 A 项目的任务声明去判定 B 项目的改动是否重叠。
+            let ledger_tasks = match ledger_for_repo(&repo.root_path, explicit_dir.as_deref()).dir {
+                Some(dir) => {
+                    let owner = LedgerOwner {
+                        dev_project_id: Some(repo.dev_project_id.clone()),
+                        name: repo.name.clone(),
+                        root: repo.root_path.clone(),
+                    };
+                    parse_ledger_tasks(&dir, &owner, &mut ledger_budget).0
+                }
+                None => Vec::new(),
+            };
 
             // 公共文件触碰风险。
             let public_touched: Vec<String> = changed_files
@@ -1464,14 +2081,17 @@ pub fn dws_git_risk_probe_impl(
                 });
             }
 
-            let dirty = info.dirty_count.unwrap_or(0);
-            if dirty > 0 {
-                risks.push(DwsRiskFlag {
-                    level: "info".into(),
-                    code: "dirty_tree".into(),
-                    message: format!("工作区有 {} 处未提交改动。", dirty),
-                    files: vec![],
-                });
+            // 没读到 dirty 计数（超时 / git 缺失）时不得声称「0 处改动」，
+            // 对应失败已在上面的 git_status_* 风险里如实报出。
+            if let Some(dirty) = info.dirty_count {
+                if dirty > 0 {
+                    risks.push(DwsRiskFlag {
+                        level: "info".into(),
+                        code: "dirty_tree".into(),
+                        message: format!("工作区有 {} 处未提交改动。", dirty),
+                        files: vec![],
+                    });
+                }
             }
         }
 
@@ -1480,10 +2100,11 @@ pub fn dws_git_risk_probe_impl(
             dev_project_id: Some(repo.dev_project_id.clone()),
             name: repo.name.clone(),
             root_path: repo.root_path.clone(),
-            exists: repo.exists,
-            git: repo.git.clone(),
+            exists,
+            git: info.clone(),
             changed_files,
             truncated,
+            changed_files_known,
             risks,
         });
     }
@@ -1492,15 +2113,17 @@ pub fn dws_git_risk_probe_impl(
         .to_string();
 
     // 本机瞬时快照：仅 active 项目落库；归档项目只当次返回，不写表。
+    // `changed_files_json` 存**仓库级快照**（v1：{"version":1,"repos":[...]}），
+    // 让多仓库项目也能追溯「这条改动来自哪个仓库」，而不是只留第一仓库的元数据。
     let persisted = if !archived {
         db.with_conn(|conn| {
             let id = uuid::Uuid::new_v4().to_string();
-            let all_changed: Vec<&DwsChangedFile> =
-                repos.iter().flat_map(|r| r.changed_files.iter()).collect();
-            let changed_json =
-                serde_json::to_string(&all_changed).unwrap_or_else(|_| "[]".into());
-            let risks_json =
-                serde_json::to_string(&aggregated).unwrap_or_else(|_| "{}".into());
+            let payload = DwsProbePayload {
+                version: 1,
+                repos: repos.iter().map(DwsProbeRepoSnapshot::from_risk).collect(),
+            };
+            let changed_json = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".into());
+            let risks_json = serde_json::to_string(&aggregated).unwrap_or_else(|_| "[]".into());
             let first = repos.first();
             // 回收旧快照：每个项目只保留最近 PROBE_SNAPSHOT_KEEP 条，避免表无界增长。
             conn.execute(
@@ -1543,11 +2166,26 @@ pub fn dws_git_risk_probe_impl(
         false
     };
 
+    // 历史读取失败不掩盖：加一条事实提示，而不是静默返回空数组。
+    let history = match probe_history_impl(db, project_id, PROBE_HISTORY_LIMIT) {
+        Ok(h) => h,
+        Err(_) => {
+            aggregated.push(DwsRiskFlag {
+                level: "info".into(),
+                code: "probe_history_unreadable".into(),
+                message: "读取本机探测快照历史失败；本次探测结果不受影响。".into(),
+                files: vec![],
+            });
+            Vec::new()
+        }
+    };
+
     Ok(DwsGitRisk {
         repos,
         risks: aggregated,
         advice,
         persisted,
+        history,
     })
 }
 
@@ -2254,5 +2892,506 @@ mod tests {
         assert!(!repo_risk.exists);
         assert_eq!(repo_risk.git.status, DevGitStatus::PathMissing);
         assert!(repo_risk.risks.iter().any(|r| r.code == "path_missing"));
+    }
+
+    // ── D1 修复：项目隔离 / 台账隔离 / 资源上限 / 探测快照 ──────────────
+
+    fn insert_project(db: &Db, id: &str, name: &str, status: &str, now: &str) {
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO workspace_projects (id, name, kind, status, root_path, dev_project_id, note, created_at, updated_at)
+                 VALUES (?1, ?2, 'development', ?3, '', NULL, '', ?4, ?4)",
+                rusqlite::params![id, name, status, now],
+            )
+            .map_err(AppError::from)?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+    }
+
+    fn insert_dev_project(db: &Db, id: &str, name: &str, root: &str, now: &str) {
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO dev_projects (id, name, root_path, note, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, '', ?4, ?4)",
+                rusqlite::params![id, name, root, now],
+            )
+            .map_err(AppError::from)?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+    }
+
+    fn insert_task(db: &Db, id: &str, title: &str, now: &str) {
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO tasks (id, title, status, priority, created_at, updated_at)
+                 VALUES (?1, ?2, 'pending', 1, ?3, ?3)",
+                rusqlite::params![id, title, now],
+            )
+            .map_err(AppError::from)?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+    }
+
+    fn link_workspace_task(db: &Db, project_id: &str, task_id: &str, now: &str) {
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO workspace_task_links (project_id, task_id, created_at)
+                 VALUES (?1, ?2, ?3)",
+                rusqlite::params![project_id, task_id, now],
+            )
+            .map_err(AppError::from)?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+    }
+
+    /// 在仓库根下写一份项目级台账：`<root>/tmp/integration/{tasks,builds}`。
+    fn write_ledger(root: &Path, task_id: &str, build_id: &str, declared: &[&str]) -> std::path::PathBuf {
+        let ledger = root.join("tmp").join("integration");
+        std::fs::create_dir_all(ledger.join("tasks")).unwrap();
+        std::fs::create_dir_all(ledger.join("builds").join(build_id)).unwrap();
+        let task = serde_json::json!({
+            "id": task_id,
+            "module": "src/x",
+            "owner": "agent",
+            "status": "developing",
+            "paths": declared,
+            "updatedAt": "2026-11-16T00:00:00Z",
+            "checks": []
+        });
+        std::fs::write(
+            ledger.join("tasks").join(format!("{task_id}.json")),
+            serde_json::to_vec(&task).unwrap(),
+        )
+        .unwrap();
+        let build = serde_json::json!({
+            "id": build_id,
+            "status": "succeeded",
+            "exitCode": 0,
+            "platform": "windows",
+            "config": "release",
+            "startedAt": "2026-11-16T01:00:00Z"
+        });
+        std::fs::write(
+            ledger.join("builds").join(build_id).join("build.json"),
+            serde_json::to_vec(&build).unwrap(),
+        )
+        .unwrap();
+        ledger
+    }
+
+    #[test]
+    fn handoff_rejects_tasks_outside_project_scope_and_keeps_weak_ref_history() {
+        let db = Db::open_in_memory().unwrap();
+        let now = now_iso();
+        let (pa, parch, pg, _dev) = seed_projects(&db, &now);
+
+        // 第二个开发项目 B + 任务 T2（当前只关联 A）。
+        insert_project(&db, "proj-b", "开发 B", "active", &now);
+        insert_task(&db, "task-2", "任务 T2", &now);
+        link_workspace_task(&db, &pa, "task-2", &now);
+
+        // T2 的既有交接包与人工验收记录（dev_workbench 按 task_id 全局存放）。
+        dev::dev_handoff_save_impl(
+            &db,
+            Some("task-2".into()),
+            "T2 交接".into(),
+            "# c".into(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        dev::dev_acceptance_record_create_impl(
+            &db,
+            "task".into(),
+            "task-2".into(),
+            "fail".into(),
+            "未通过".into(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        // A：T2 属于本项目范围 → 正常读取。
+        let a = dws_task_handoff_impl(&db, &pa, "task-2").unwrap();
+        assert_eq!(a.packs.len(), 1);
+        assert_eq!(a.acceptance_record_count, 1);
+        assert_eq!(a.task_title.as_deref(), Some("任务 T2"));
+
+        // B：T2 未关联 B → 拒绝读取（不能只凭 tasks 表里存在就放行）。
+        let err = dws_task_handoff_impl(&db, "proj-b", "task-2").unwrap_err();
+        assert_eq!(err.code(), "NOT_FOUND");
+        // B 读 A 独有的 task-1 同样拒绝，不因为「任务存在」而越权。
+        let err = dws_task_handoff_impl(&db, "proj-b", "task-1").unwrap_err();
+        assert_eq!(err.code(), "NOT_FOUND");
+
+        // 明确的共享任务策略：B 显式关联 T2 后才允许读取同一份历史。
+        dws_task_link_save_impl(
+            &db,
+            "proj-b",
+            Some("task-2".into()),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let b = dws_task_handoff_impl(&db, "proj-b", "task-2").unwrap();
+        assert_eq!(b.packs.len(), 1);
+        assert_eq!(b.acceptance_record_count, 1);
+
+        // 归档项目：既有关联仍可只读（历史不因归档丢失），写入仍被拒绝。
+        link_workspace_task(&db, &parch, "task-1", &now);
+        let arch = dws_task_handoff_impl(&db, &parch, "task-1").unwrap();
+        assert_eq!(arch.task_id, "task-1");
+        let err = dws_task_link_save_impl(
+            &db, &parch, Some("task-1".into()), None, None, None, None, None,
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "VALIDATION_ERROR");
+
+        // 任务实体已删除（弱引用）但关联仍在：保留历史，不报错也不丢记录。
+        // `dws_task_links.task_id` 是弱引用（无外键），正是为「任务实体消失后仍留痕」设计；
+        // `workspace_task_links.task_id` 有外键，不能用来表达这种历史。
+        dws_task_link_save_impl(
+            &db,
+            &pa,
+            Some("task-ghost".into()),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let ghost = dws_task_handoff_impl(&db, &pa, "task-ghost").unwrap();
+        assert_eq!(ghost.task_id, "task-ghost");
+        assert!(ghost.task_title.is_none());
+        assert!(ghost.packs.is_empty());
+
+        // 非 development 项目仍然拒绝。
+        let err = dws_task_handoff_impl(&db, &pg, "task-1").unwrap_err();
+        assert_eq!(err.code(), "VALIDATION_ERROR");
+    }
+
+    #[test]
+    fn ledger_isolation_between_two_development_projects() {
+        let db = Db::open_in_memory().unwrap();
+        let now = now_iso();
+        let root_a = temp_dir("iso-a");
+        let root_b = temp_dir("iso-b");
+        insert_project(&db, "proj-a", "项目 A", "active", &now);
+        insert_project(&db, "proj-b", "项目 B", "active", &now);
+        insert_dev_project(&db, "dev-a", "仓库 A", &root_a.to_string_lossy(), &now);
+        insert_dev_project(&db, "dev-b", "仓库 B", &root_b.to_string_lossy(), &now);
+        insert_task(&db, "task-a", "任务 A", &now);
+        insert_task(&db, "task-b", "任务 B", &now);
+        dws_task_link_save_impl(
+            &db, "proj-a", Some("task-a".into()), Some("dev-a".into()), None, None, None, None,
+        )
+        .unwrap();
+        dws_task_link_save_impl(
+            &db, "proj-b", Some("task-b".into()), Some("dev-b".into()), None, None, None, None,
+        )
+        .unwrap();
+
+        // 仓库里还没有台账：如实不可用，且不因为别的项目有台账就拿来充数。
+        let before = dws_build_trace_impl(&db, "proj-a", None).unwrap();
+        assert!(!before.ledger_available);
+        assert_eq!(before.sources.len(), 1);
+        assert!(!before.sources[0].available);
+        assert!(before.tasks.is_empty() && before.builds.is_empty());
+        let reason = before.ledger_reason.clone().unwrap_or_default();
+        assert!(reason.contains("tmp/integration"), "{reason}");
+
+        // 两个仓库各自的项目级台账。
+        write_ledger(&root_a, "task-a", "bld-a", &["src/a.ts"]);
+        write_ledger(&root_b, "task-b", "bld-b", &["shared.ts"]);
+
+        let a = dws_build_trace_impl(&db, "proj-a", None).unwrap();
+        assert!(a.ledger_available);
+        assert_eq!(a.sources.len(), 1);
+        assert_eq!(a.sources[0].name, "仓库 A");
+        assert_eq!(a.sources[0].dev_project_id.as_deref(), Some("dev-a"));
+        let dir = a.sources[0].ledger_dir.clone().unwrap_or_default();
+        assert!(
+            Path::new(&dir).ends_with(Path::new("tmp").join("integration")),
+            "台账必须来自该仓库自己的 tmp/integration: {dir}"
+        );
+        assert_eq!(a.tasks.len(), 1);
+        assert_eq!(a.tasks[0].id, "task-a");
+        assert_eq!(a.tasks[0].repo_name, "仓库 A");
+        assert_eq!(a.tasks[0].repo_root, root_a.to_string_lossy());
+        assert_eq!(a.builds.len(), 1);
+        assert_eq!(a.builds[0].id, "bld-a");
+        assert_eq!(a.builds[0].repo_name, "仓库 A");
+        // 严格不掺入另一个项目的数据。
+        assert!(a.tasks.iter().all(|t| t.id != "task-b"));
+        assert!(a.builds.iter().all(|b| b.id != "bld-b"));
+        assert!(!a.tasks.iter().any(|t| t.repo_name == "仓库 B"));
+
+        let b = dws_build_trace_impl(&db, "proj-b", None).unwrap();
+        assert!(b.ledger_available);
+        assert_eq!(b.tasks.len(), 1);
+        assert_eq!(b.tasks[0].id, "task-b");
+        assert_eq!(b.tasks[0].repo_name, "仓库 B");
+        assert_eq!(b.builds.len(), 1);
+        assert_eq!(b.builds[0].id, "bld-b");
+        assert!(b.tasks.iter().all(|t| t.id != "task-a"));
+        assert!(b.builds.iter().all(|x| x.id != "bld-a"));
+
+        // 显式目录无效：如实不可用，绝不回退去读仓库（更不会读另一个项目）的台账。
+        let bad =
+            dws_build_trace_impl(&db, "proj-a", Some("Z:/no/such/ledger-d1".into())).unwrap();
+        assert!(!bad.ledger_available);
+        assert!(bad.tasks.is_empty() && bad.builds.is_empty());
+        assert!(bad.sources.is_empty());
+        assert!(bad.ledger_reason.clone().unwrap_or_default().contains("不存在"));
+
+        let _ = std::fs::remove_dir_all(&root_a);
+        let _ = std::fs::remove_dir_all(&root_b);
+    }
+
+    #[test]
+    fn ledger_enforces_size_count_and_type_limits() {
+        let db = Db::open_in_memory().unwrap();
+        let now = now_iso();
+        insert_project(&db, "proj-lim", "限额项目", "active", &now);
+        insert_dev_project(&db, "dev-lim", "限额仓库", "", &now);
+        dws_task_link_save_impl(
+            &db, "proj-lim", None, Some("dev-lim".into()), None, None, None, None,
+        )
+        .unwrap();
+        let ok_task = serde_json::json!({
+            "id": "task-ok", "module": "m", "owner": "o", "status": "ready",
+            "paths": ["a.ts"], "updatedAt": "2026-11-16T00:00:00Z", "checks": []
+        });
+
+        // 1) 非普通文件（目录伪装成 .json）被类型检查拒绝。
+        let typed = temp_dir("limit-type");
+        std::fs::create_dir_all(typed.join("tasks").join("dir.json")).unwrap();
+        std::fs::write(
+            typed.join("tasks").join("ok.json"),
+            serde_json::to_vec(&ok_task).unwrap(),
+        )
+        .unwrap();
+        let t = dws_build_trace_impl(&db, "proj-lim", Some(typed.to_string_lossy().to_string()))
+            .unwrap();
+        assert_eq!(t.tasks.len(), 1);
+        assert!(t.sources[0]
+            .reason
+            .clone()
+            .unwrap_or_default()
+            .contains("不是普通文件"));
+
+        // 2) 损坏 JSON 跳过并如实说明，不当作空数据。
+        let broken = temp_dir("limit-broken");
+        std::fs::create_dir_all(broken.join("tasks")).unwrap();
+        std::fs::write(broken.join("tasks").join("broken.json"), b"{not-json").unwrap();
+        std::fs::write(
+            broken.join("tasks").join("ok.json"),
+            serde_json::to_vec(&ok_task).unwrap(),
+        )
+        .unwrap();
+        let t = dws_build_trace_impl(&db, "proj-lim", Some(broken.to_string_lossy().to_string()))
+            .unwrap();
+        assert_eq!(t.tasks.len(), 1);
+        assert!(t.sources[0]
+            .reason
+            .clone()
+            .unwrap_or_default()
+            .contains("JSON 无法解析"));
+
+        // 3) 单文件超过 512 KiB 上限：跳过，不读进内存解析。
+        let big = temp_dir("limit-big");
+        std::fs::create_dir_all(big.join("tasks")).unwrap();
+        let pad = "x".repeat(MAX_LEDGER_JSON_BYTES as usize + 1024);
+        std::fs::write(
+            big.join("tasks").join("big.json"),
+            format!("{{\"id\":\"big\",\"pad\":\"{pad}\"}}").as_bytes(),
+        )
+        .unwrap();
+        std::fs::write(
+            big.join("tasks").join("ok.json"),
+            serde_json::to_vec(&ok_task).unwrap(),
+        )
+        .unwrap();
+        let t = dws_build_trace_impl(&db, "proj-lim", Some(big.to_string_lossy().to_string()))
+            .unwrap();
+        assert_eq!(t.tasks.len(), 1);
+        assert!(t.sources[0]
+            .reason
+            .clone()
+            .unwrap_or_default()
+            .contains("单文件超过"));
+
+        // 4) 记录数上限：205 个合法任务 → 只保留 200，并标记 truncated。
+        let many = temp_dir("limit-count");
+        std::fs::create_dir_all(many.join("tasks")).unwrap();
+        for i in 0..205 {
+            let v = serde_json::json!({
+                "id": format!("t-{i:03}"),
+                "updatedAt": format!("2026-11-{:02}T00:00:00Z", (i % 28) + 1),
+                "paths": ["a.ts"],
+                "checks": []
+            });
+            std::fs::write(
+                many.join("tasks").join(format!("t-{i:03}.json")),
+                serde_json::to_vec(&v).unwrap(),
+            )
+            .unwrap();
+        }
+        let t = dws_build_trace_impl(&db, "proj-lim", Some(many.to_string_lossy().to_string()))
+            .unwrap();
+        assert_eq!(t.tasks.len(), MAX_LEDGER_TASKS);
+        assert!(t.sources[0].truncated);
+        assert!(t.sources[0]
+            .reason
+            .clone()
+            .unwrap_or_default()
+            .contains("截断"));
+
+        for d in [typed, broken, big, many] {
+            let _ = std::fs::remove_dir_all(&d);
+        }
+    }
+
+    #[test]
+    fn probe_snapshots_are_readable_bounded_and_marked_transient() {
+        let db = Db::open_in_memory().unwrap();
+        let now = now_iso();
+        let root = temp_dir("probe-plain");
+        insert_project(&db, "proj-p", "探针项目", "active", &now);
+        insert_dev_project(&db, "dev-p", "探针仓库", &root.to_string_lossy(), &now);
+        insert_task(&db, "task-p", "任务 P", &now);
+        dws_task_link_save_impl(
+            &db, "proj-p", Some("task-p".into()), Some("dev-p".into()), None, None, None, None,
+        )
+        .unwrap();
+
+        // 非 Git 目录也能探测并落瞬时快照（不依赖 git 是否安装）。
+        let first = dws_git_risk_probe_impl(&db, "proj-p", None).unwrap();
+        assert!(first.persisted);
+        assert_eq!(first.repos.len(), 1);
+        assert_eq!(first.history.len(), 1);
+        assert_eq!(first.history[0].repo_count, 1);
+        assert_eq!(first.history[0].git_status, "not_a_repo");
+        assert!(first.repos[0].risks.iter().any(|r| r.code == "not_a_repo"));
+
+        // 旧格式（changed_files_json 是裸数组）读取时按「仓库数未知」处理，不 panic。
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO dws_workspace_probes
+                 (id, project_id, probed_at, git_status, branch, detached, head_sha, dirty_count,
+                  is_worktree, main_repo_path, changed_files_json, risks_json)
+                 VALUES ('legacy-1', 'proj-p', '2026-01-01T00:00:00Z', 'ok', 'main', 0, NULL, 0,
+                  0, NULL, '[{\"path\":\"a.ts\",\"status\":\"M\",\"group\":\"src\"}]', '[]')",
+                [],
+            )
+            .map_err(AppError::from)?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        let with_legacy = dws_git_risk_probe_impl(&db, "proj-p", None).unwrap();
+        let legacy = with_legacy
+            .history
+            .iter()
+            .find(|h| h.id == "legacy-1")
+            .expect("旧格式快照必须可读");
+        assert_eq!(legacy.repo_count, 0, "旧格式没有仓库归属 → 仓库数未知");
+
+        // 历史读取有上限（最多 5 条），不一次倒出全部行。
+        for _ in 0..6 {
+            let _ = dws_git_risk_probe_impl(&db, "proj-p", None).unwrap();
+        }
+        let capped = dws_git_risk_probe_impl(&db, "proj-p", None).unwrap();
+        assert_eq!(capped.history.len(), PROBE_HISTORY_LIMIT as usize);
+
+        // 归档项目：只当次返回，不写探测快照表。
+        insert_project(&db, "proj-par", "归档探针", "archived", &now);
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO dws_task_links
+                 (id, project_id, dev_project_id, task_id, handoff_pack_id, build_id,
+                  acceptance_record_id, note, created_at, updated_at)
+                 VALUES ('dl-arch', 'proj-par', 'dev-p', '', '', '', '', '', ?1, ?1)",
+                [&now],
+            )
+            .map_err(AppError::from)?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        let arch = dws_git_risk_probe_impl(&db, "proj-par", None).unwrap();
+        assert!(!arch.persisted, "归档项目不得写入探测快照");
+        assert!(arch.history.is_empty());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn git_risk_overlap_only_uses_own_repo_ledger() {
+        if !require_git() {
+            return;
+        }
+        let db = Db::open_in_memory().unwrap();
+        let now = now_iso();
+        let root_a = temp_dir("risk-a");
+        let root_b = temp_dir("risk-b");
+        insert_project(&db, "proj-a", "项目 A", "active", &now);
+        insert_project(&db, "proj-b", "项目 B", "active", &now);
+        insert_dev_project(&db, "dev-a", "仓库 A", &root_a.to_string_lossy(), &now);
+        insert_dev_project(&db, "dev-b", "仓库 B", &root_b.to_string_lossy(), &now);
+        insert_task(&db, "task-a", "任务 A", &now);
+        insert_task(&db, "task-b", "任务 B", &now);
+        dws_task_link_save_impl(
+            &db, "proj-a", Some("task-a".into()), Some("dev-a".into()), None, None, None, None,
+        )
+        .unwrap();
+        dws_task_link_save_impl(
+            &db, "proj-b", Some("task-b".into()), Some("dev-b".into()), None, None, None, None,
+        )
+        .unwrap();
+
+        // A 仓库有真实改动 shared.ts；B 仓库的台账声明了 shared.ts。
+        git_in(&root_a, &["init", "-q"]);
+        std::fs::write(root_a.join("shared.ts"), "v1\n").unwrap();
+        git_in(&root_a, &["add", "."]);
+        git_in(&root_a, &["commit", "-q", "-m", "init"]);
+        std::fs::write(root_a.join("shared.ts"), "v2\n").unwrap();
+        write_ledger(&root_a, "task-a", "bld-a", &["src/keep.ts"]);
+        write_ledger(&root_b, "task-b", "bld-b", &["shared.ts"]);
+
+        let probe_a = dws_git_risk_probe_impl(&db, "proj-a", None).unwrap();
+        let repo_a = &probe_a.repos[0];
+        assert!(repo_a.changed_files_known, "改动清单必须真的读到");
+        assert!(repo_a.changed_files.iter().any(|f| f.path == "shared.ts"));
+        let codes: Vec<&str> = repo_a.risks.iter().map(|r| r.code.as_str()).collect();
+        assert!(
+            !codes.contains(&"task_path_overlap"),
+            "另一个仓库的台账不得参与本项目的重叠判定: {codes:?}"
+        );
+
+        // 只有把声明写进 A 仓库自己的台账，才应判定重叠。
+        write_ledger(&root_a, "task-a", "bld-a", &["shared.ts"]);
+        let probe_a2 = dws_git_risk_probe_impl(&db, "proj-a", None).unwrap();
+        let overlap = probe_a2.repos[0]
+            .risks
+            .iter()
+            .find(|r| r.code == "task_path_overlap")
+            .expect("本仓库台账声明同文件时必须有重叠风险");
+        assert!(overlap.files.iter().any(|f| f == "shared.ts"));
+        assert!(overlap.message.contains("task-a"));
+        assert!(!overlap.message.contains("task-b"));
+
+        let _ = std::fs::remove_dir_all(&root_a);
+        let _ = std::fs::remove_dir_all(&root_b);
     }
 }

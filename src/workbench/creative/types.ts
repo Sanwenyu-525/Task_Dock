@@ -77,6 +77,14 @@ export interface CreativeModuleProps {
   onNotice: (kind: CreativeNoticeKind, text: string) => void;
   /** 请求壳层切到另一个模块（跨模块跳转必须走它，不自己改 state）。 */
   switchModule: (id: CreativeModuleId) => void;
+  /**
+   * 打开开发工作台（由壳层执行导航事务：未保存确认、开发项目上下文提交、失败回退）。
+   *
+   * 专业模块**不得**自己调用任何「打开窗口 / 切路由」的 IPC——旧实现走
+   * `open_project_workspace_window` 只会导航到工作空间页，不是开发工作台。
+   * 可选：壳层未注入时模块必须显式提示「导航不可用」，不允许静默失败。
+   */
+  onOpenDevWorkbench?: (devProjectId: string) => void;
 }
 
 /** 单个类型的模块注册表：模块 ID → 内容区组件。未列出的 ID 由壳层渲染占位。 */

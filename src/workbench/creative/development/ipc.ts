@@ -67,9 +67,6 @@ export const dwsGitRiskProbe = (projectId: string, ledgerDir?: string | null) =>
 export const dwsRevealPath = (path: string) =>
   creativeInvoke<void>("fs_reveal", { path });
 
-/** 既有命令：打开开发工作台窗口（既有导航机制，目标为当前工作空间项目）。 */
-export const dwsOpenDevWorkbench = (projectId: string | null) =>
-  creativeInvoke<{ opened: boolean; projectId: string | null; requestId: number | null }>(
-    "open_project_workspace_window",
-    { projectId, requestId: null },
-  );
+// 注意：这里**没有**「打开开发工作台」的 IPC。
+// 旧实现误用了兼容命令 `open_project_workspace_window`（它只导航到工作空间页），
+// 现已统一改走壳层注入的 `onOpenDevWorkbench`（见 `../types.ts` 契约）。

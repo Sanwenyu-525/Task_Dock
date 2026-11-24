@@ -1317,6 +1317,8 @@ export default function ProjectWorkspacePanel({
           rootExists={project.rootExists}
           devProjectId={project.devProjectId}
           onNotice={onNotice}
+          // 开发工作台导航统一交给壳层事务（不在专业模块里另写一套跳转）。
+          onOpenDevWorkbench={onOpenDevWorkbench}
           switchModule={(id) => void switchModule(id as WorkspaceModuleId)}
         />
       )}

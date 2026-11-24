@@ -199,6 +199,13 @@
   color: var(--danger, #e5484d);
 }
 
+.dws-empty-cta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
 @container ui-page (max-width: 720px) {
   .dws-link-form {
     flex-direction: column;
