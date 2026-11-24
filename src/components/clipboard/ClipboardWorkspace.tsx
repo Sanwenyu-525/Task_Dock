@@ -1693,7 +1693,15 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
                 <span className="workspace-rail-eyebrow">剪贴板</span>
                 <h2>内容导航</h2>
               </div>
-              <div className="clip-side-sections" role="tablist" aria-label="剪贴板视图">
+              <div
+                className="clip-side-sections"
+                role="tablist"
+                aria-label="剪贴板视图"
+                // 指示条位置只受当前视图影响：CSS 用这个索引做位移动画，
+                // 切换时不再瞬时换底色。
+                style={{ "--clip-tab-index": section === "groups" ? 1 : 0 } as React.CSSProperties}
+              >
+                <span className="clip-side-indicator" aria-hidden="true" />
                 <button
                   role="tab"
                   aria-selected={section === "items"}

@@ -754,3 +754,28 @@ portal 到 body，注册弹层栈 modal 层：Escape 只关灯箱，z 序在抽�
 - 回归：`ClipboardGroupDetail.test.tsx` 新增「640 预览」「预览缺失退回缩略图」「只有原图」
   三例，并让该文件默认用会回调 `isIntersecting` 的 `IntersectionObserver` 桩；
   `Media.test.tsx`、条目卡片与分组卡片用例保持通过。本轮桌面会话锁定，未做真机截图。
+
+### 14.10 侧栏「历史 / 分组」并排 + 滑动指示条（2026-11-24）
+
+- 布局：`.clip-side-sections` 由纵向堆叠改为两列 grid（`repeat(2, minmax(0, 1fr))`），
+  两个入口并排一行，侧栏少占一行高度；文字超出用省略号，计数用 `tabular-nums` 对齐。
+- 选中态：底色与描边改由一条**可滑动的指示条** `.clip-side-indicator` 负责。容器用
+  `--clip-tab-index`（历史 0 / 分组 1）驱动
+  `transform: translateX(calc(var(--clip-tab-index) * (100% + 3px)))`，过渡 180ms
+  `cubic-bezier(.2,0,0,1)`；按钮自身 `background: transparent`（否则会盖住指示条、
+  动画不可见），只有 `.active` 保留文字色；指示条 `pointer-events: none`，不抢点击。
+- 减少动效：`@media (prefers-reduced-motion: reduce)` 内直接 `transition: none`。
+- 回归：新增 `clipboard-page.nav.test.ts` 守卫四条结构约束（两列 grid + 定位基准、
+  指示条位移与过渡、选中按钮不自铺底色、减少动效关过渡），读 CSS 断言避免只改类名。
+
+### 14.11 分组卡片内图片仍显虚：分辨率边界（2026-11-24）
+
+- 结论：这是**分辨率边界**，不是取图链路没生效。网格已在用 640px 预览（运行中的数据目录
+  `…\clipboard\thumbs\*-preview-640.png` 会在打开分组详情时真实落盘，本机实测 640px 单张
+  250KB 左右），但整屏 2560×1380 截图塞进 ~416 CSS px（125% 缩放 ≈ 520 设备像素）的卡片，
+  等于把整屏压到约 1/5 尺度：缩略图里所有正文都小于 1 个像素，必然糊。
+- 可继续动的只有两处：① 提高 `PREVIEW_MAX_EDGE`（IPC 包体与内存随平方增长，卡片像素没变时
+  收益有限）；② 改采样质量（`image.rs::resize_to_max_edge` 目前是 sRGB 域 4×4 均值，
+  等价把 1px 细笔画平均成灰；线性光平均 + 轻量锐化在同尺寸下更利落，但需要给缓存文件名加版本，
+  否则旧的 `*-preview-640.png` 不会重建）。看细节仍应点开灯箱读原图。
+
