@@ -688,6 +688,10 @@ export interface ClipboardFilter {
   favorite?: boolean;
   groupId?: string;
   taskId?: string;
+  /** 项目关联筛选：只返回关联该项目（直接关联或所属分组关联）的条目/分组。 */
+  projectId?: string;
+  /** true = 只看未关联任何项目的条目/分组；与 projectId 同传时以 projectId 为准。 */
+  projectUnlinked?: boolean;
   /** 精确匹配来源进程（如 chrome.exe）；展示名由 UI 换算。 */
   sourceApp?: string;
   /** 最近 N 天；不传/0 表示不限。 */
@@ -749,6 +753,14 @@ export interface ClipboardTaskLink {
   created_at: string;
   label: string;
   kind: string;
+}
+
+/** 条目/分组与项目根的关联（v98）；只存引用，不复制正文，也不是 Agent 授权。 */
+export interface ClipboardProjectLink {
+  projectId: string;
+  targetType: "item" | "group" | string;
+  targetId: string;
+  createdAt: string;
 }
 
 export interface PasteTarget {
@@ -4512,6 +4524,12 @@ export interface FileJobSnapshot {
 
 export type KnowledgeBaseKind = "personal" | "project" | "workspace";
 
+/** 知识库归属分类（后端按 kind + 绑定派生，不落库）。 */
+export type KnowledgeOwnership = "global" | "project" | "workspaceLegacy" | "unowned";
+
+/** 知识库列表作用域：全局管理列表与项目视图必须是不同查询。 */
+export type KnowledgeListScope = "all" | "global" | "project" | "unowned";
+
 export type KnowledgeSourceKind = "file" | "folder" | "note" | "capture" | "text";
 
 export type KnowledgeSourceMode = "reference" | "imported";
@@ -4523,6 +4541,8 @@ export interface KnowledgeBase {
   name: string;
   description: string;
   kind: KnowledgeBaseKind;
+  /** 归属分类（后端派生）：全局 / 项目 / 兼容旧工作区 / 未归属（绑定项目被删）。 */
+  ownership: KnowledgeOwnership;
   projectId: string | null;
   /** 工作区类型知识库的真实绑定（复用 workspace_projects.id）。 */
   workspaceId: string | null;

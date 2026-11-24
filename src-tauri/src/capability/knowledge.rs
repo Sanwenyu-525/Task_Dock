@@ -42,6 +42,10 @@ pub struct KnowledgeBase {
     pub project_id: Option<String>,
     /// 工作区类型知识库的真实绑定；复用 `workspace_projects.id`。
     pub workspace_id: Option<String>,
+    /// 归属分类（派生字段，不落库）：`global` / `project` / `workspaceLegacy` / `unowned`。
+    /// 项目删除后 `project_id/workspace_id` 被置空的知识库必须显示为 `unowned`，
+    /// 绝不能被当成全局知识库（否则会静默扩大可见范围）。
+    pub ownership: String,
     pub favorite: bool,
     pub doc_count: i64,
     pub indexed_count: i64,
@@ -510,13 +514,18 @@ fn chunk_text(content: &str) -> Vec<(usize, String)> {
 }
 
 fn row_to_base(row: &rusqlite::Row<'_>) -> rusqlite::Result<KnowledgeBase> {
+    let kind: String = row.get(3)?;
+    let project_id: Option<String> = row.get(4)?;
+    let workspace_id: Option<String> = row.get(5)?;
+    let ownership = classify_ownership(&kind, project_id.as_deref(), workspace_id.as_deref()).to_string();
     Ok(KnowledgeBase {
         id: row.get(0)?,
         name: row.get(1)?,
         description: row.get(2)?,
-        kind: row.get(3)?,
-        project_id: row.get(4)?,
-        workspace_id: row.get(5)?,
+        kind,
+        project_id,
+        workspace_id,
+        ownership,
         favorite: row.get::<_, i64>(6)? != 0,
         doc_count: row.get(7)?,
         indexed_count: row.get(8)?,
@@ -524,6 +533,34 @@ fn row_to_base(row: &rusqlite::Row<'_>) -> rusqlite::Result<KnowledgeBase> {
         created_at: row.get(10)?,
         updated_at: row.get(11)?,
     })
+}
+
+/// 归属分类：旧 `workspace` 类型仍按项目绑定资源兼容呈现，并标记为 legacy。
+fn classify_ownership(
+    kind: &str,
+    project_id: Option<&str>,
+    workspace_id: Option<&str>,
+) -> &'static str {
+    match kind {
+        "personal" => "global",
+        "project" if project_id.is_some() => "project",
+        "workspace" if workspace_id.is_some() => "workspaceLegacy",
+        _ => "unowned",
+    }
+}
+
+/// 列表作用域：管理列表与项目视图必须是不同查询意图（规范 §9.5）。
+pub(crate) fn normalize_list_scope(scope: Option<&str>) -> AppResult<&'static str> {
+    match scope.map(str::trim).filter(|s| !s.is_empty()) {
+        // 缺省保持旧行为（管理界面全量）；项目视图必须显式传 scope。
+        None | Some("all") => Ok("all"),
+        Some("global") => Ok("global"),
+        Some("project") => Ok("project"),
+        Some("unowned") => Ok("unowned"),
+        Some(other) => Err(AppError::Validation(format!(
+            "知识库列表作用域非法: {other}（允许 all|global|project|unowned）"
+        ))),
+    }
 }
 
 const BASE_COLUMNS: &str = "kb.id, kb.name, kb.description, kb.kind, kb.project_id, kb.workspace_id, \
@@ -612,8 +649,63 @@ pub fn list_bases_impl(db: &Db, query: Option<&str>, kind: Option<&str>) -> AppR
     })
 }
 
-pub fn get_base_impl(db: &Db, id: &str) -> AppResult<KnowledgeBaseDetail> {
+/// 按作用域列出知识库（规范 §9.4 / §9.5）：管理全量、全局、项目、未归属是四种查询意图。
+///
+/// 项目视图必须显式传 `project_id`：返回「该项目拥有（含旧 workspace 绑定）」以及
+/// 「有文档明确关联到该项目」的知识库；其他项目的私有知识库不会出现在结果里。
+pub fn list_bases_scoped_impl(
+    db: &Db,
+    query: Option<&str>,
+    kind: Option<&str>,
+    scope: Option<&str>,
+    project_id: Option<&str>,
+) -> AppResult<Vec<KnowledgeBase>> {
+    let q = query.map(str::trim).filter(|v| !v.is_empty());
+    let kind = kind.map(str::trim).filter(|v| !v.is_empty());
+    if let Some(k) = kind {
+        normalize_kind(k)?;
+    }
+    let scope = normalize_list_scope(scope)?;
+    let project = project_id.map(str::trim).filter(|v| !v.is_empty());
+    if scope == "project" && project.is_none() {
+        return Err(AppError::Validation("项目视图需要 projectId".into()));
+    }
+    let pat = q.map(like_pattern);
+    let mut sql = format!(
+        "SELECT {BASE_COLUMNS} FROM knowledge_bases kb \
+         WHERE (?1 IS NULL OR kb.name LIKE ?1 ESCAPE '\\' OR kb.description LIKE ?1 ESCAPE '\\') \
+           AND (?2 IS NULL OR kb.kind = ?2)"
+    );
+    let mut values: Vec<Box<dyn rusqlite::ToSql>> = vec![
+        Box::new(pat),
+        Box::new(kind.map(str::to_string)),
+    ];
+    match scope {
+        "global" => sql.push_str(" AND kb.kind = 'personal'"),
+        "unowned" => sql.push_str(
+            " AND kb.kind IN ('project','workspace') \
+               AND kb.project_id IS NULL AND kb.workspace_id IS NULL",
+        ),
+        "project" => {
+            sql.push_str(
+                " AND (kb.project_id = ?3 OR kb.workspace_id = ?3 OR EXISTS( \
+                    SELECT 1 FROM knowledge_links l JOIN knowledge_documents d ON d.id = l.doc_id \
+                    WHERE l.target_kind = 'project' AND l.target_id = ?3 AND d.kb_id = kb.id))",
+            );
+            values.push(Box::new(project.unwrap_or_default().to_string()));
+        }
+        _ => {}
+    }
+    sql.push_str(" ORDER BY kb.favorite DESC, kb.updated_at DESC, kb.id");
     db.with_read(|conn| {
+        let mut stmt = conn.prepare(&sql)?;
+        let refs: Vec<&dyn rusqlite::ToSql> = values.iter().map(|v| v.as_ref()).collect();
+        let rows = stmt.query_map(refs.as_slice(), row_to_base)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+    })
+}
+
+pub fn get_base_impl(db: &Db, id: &str) -> AppResult<KnowledgeBaseDetail> {    db.with_read(|conn| {
         let base = read_base(conn, id)?;
         let mut stmt = conn.prepare(&format!(
             "SELECT {DOC_COLUMNS} FROM knowledge_documents WHERE kb_id = ?1 \
@@ -2056,6 +2148,96 @@ mod tests {
         let by_project = search_impl(&db, "约定", &[], None, Some("p1"), 10, 0).unwrap();
         assert_eq!(by_project.total, 1);
         assert_eq!(by_project.hits[0].title, "a.md");
+        std::fs::remove_dir_all(data).ok();
+    }
+
+    #[test]
+    fn list_bases_scoped_separates_global_project_and_unowned() {
+        let db = Db::open_in_memory().unwrap();
+        let data = temp_dir("scope");
+        let now = now_iso();
+        for (id, name) in [("p1", "项目一"), ("p2", "项目二")] {
+            db.with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO workspace_projects(id,name,kind,root_path,dev_project_id,note,status,created_at,updated_at) \
+                     VALUES(?1,?2,'general','',NULL,'','active',?3,?3)",
+                    params![id, name, now],
+                )?;
+                Ok::<_, AppError>(())
+            })
+            .unwrap();
+        }
+        let kb_global = kb(&db, "全局库");
+        let kb_a = create_base_impl(
+            &db,
+            KnowledgeBaseInput {
+                name: "A 库".into(),
+                description: String::new(),
+                kind: "project".into(),
+                project_id: Some("p1".into()),
+                workspace_id: None,
+            },
+        )
+        .unwrap()
+        .id;
+        let kb_b = create_base_impl(
+            &db,
+            KnowledgeBaseInput {
+                name: "B 库".into(),
+                description: String::new(),
+                kind: "project".into(),
+                project_id: Some("p2".into()),
+                workspace_id: None,
+            },
+        )
+        .unwrap()
+        .id;
+        // 全局库里的文档明确关联到 p1 后，才允许出现在 p1 的项目视图。
+        let file = data.join("shared.md");
+        std::fs::write(&file, "共享约定").unwrap();
+        let (_, doc) = import_file_impl(
+            &db,
+            &data,
+            &kb_global,
+            file.to_str().unwrap(),
+            "reference",
+            None,
+        )
+        .unwrap();
+        add_link_impl(&db, doc.as_deref().unwrap(), "project", "p1", "").unwrap();
+
+        let ids = |scope: &str, project: Option<&str>| {
+            let mut out: Vec<String> = list_bases_scoped_impl(&db, None, None, Some(scope), project)
+                .unwrap()
+                .into_iter()
+                .map(|b| b.id)
+                .collect();
+            out.sort();
+            out
+        };
+        assert_eq!(ids("all", None), {
+            let mut all = vec![kb_global.clone(), kb_a.clone(), kb_b.clone()];
+            all.sort();
+            all
+        });
+        assert_eq!(ids("global", None), vec![kb_global.clone()]);
+        let mut p1_view = vec![kb_a.clone(), kb_global.clone()];
+        p1_view.sort();
+        assert_eq!(ids("project", Some("p1")), p1_view, "A 看不到 B 的私有库");
+        assert_eq!(ids("project", Some("p2")), vec![kb_b.clone()]);
+        assert!(list_bases_scoped_impl(&db, None, None, Some("project"), None).is_err());
+
+        // 项目删除：绑定被 SET NULL，库只能进入 unowned，不能被当成全局。
+        db.with_conn(|conn| {
+            conn.execute("DELETE FROM workspace_projects WHERE id='p2'", [])?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        assert_eq!(ids("unowned", None), vec![kb_b.clone()]);
+        assert!(!ids("global", None).contains(&kb_b));
+        let base = get_base_impl(&db, &kb_b).unwrap().base;
+        assert_eq!(base.ownership, "unowned");
+        assert_eq!(base.doc_count, 0);
         std::fs::remove_dir_all(data).ok();
     }
 

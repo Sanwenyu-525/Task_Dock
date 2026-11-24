@@ -52,3 +52,13 @@ export function useProjectContext(): ProjectContextValue {
   }
   return ctx;
 }
+
+/**
+ * 可选读取项目上下文：给「可能不在 ProjectContextProvider 内」的浮层（如剪贴板抽屉）用。
+ *
+ * 返回 null 表示确实没有 Provider，调用方必须隐藏项目相关 UI；
+ * **不得**把 null 当成「全部项目」或伪造默认项目（ADR-0010 禁止静默兜底）。
+ */
+export function useOptionalProjectContext(): ProjectContextValue | null {
+  return useContext(ProjectContext);
+}

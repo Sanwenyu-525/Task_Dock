@@ -51,6 +51,7 @@ import {
   Trash2,
   Archive,
   Eye,
+  Globe,
 } from "lucide-react";
 
 import DropdownMenu, { type DropdownMenuItem } from "../ui/DropdownMenu";
@@ -111,6 +112,7 @@ import {
 import {
   bindSettingsStore,
   FILE_WORKSPACE_SETTING_KEY,
+  GLOBAL_STATE_KEY,
   normalizePersisted,
 } from "../../lib/filesWorkspace/persist";
 import { dropTargetAt, registerFileDropConsumer, discardOperation } from "../../lib/fileDrop";
@@ -727,6 +729,20 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
   const sourceRef = useRef(source);
   sourceRef.current = source;
 
+  /**
+   * 文件现场作用域：`project` 读写 `project:<id>` 现场；`global` 读写跨项目共用的
+   * `global` 现场。它只决定「浏览现场」，不代表目录被项目拥有，也不改变顶栏项目选择。
+   */
+  const [viewScope, setViewScope] = useState<"project" | "global">(project?.id ? "project" : "global");
+  /** 用户显式切过作用域后，项目切换不再改写它（全局现场在所有项目之间共用）。 */
+  const scopeTouchedRef = useRef(false);
+
+  // 未显式选择作用域时：有当前项目默认进项目现场，没有项目退到全局现场（不自动选项目）。
+  useEffect(() => {
+    if (scopeTouchedRef.current) return;
+    setViewScope(project?.id ? "project" : "global");
+  }, [project?.id]);
+
   const paneTargets = useMemo<TransferTarget[]>(() => {
     const ids = paneIds(tree);
     return ids
@@ -768,33 +784,42 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
     return list;
   }, [searchSources, project, pinnedDirs]);
 
-  // ── 项目 hydration（代际令牌防串位）──────────────────────────────────
+  /**
+   * 项目已选中且处于项目现场时，才读写 `project:<id>`；否则统一落到跨项目共用的
+   * `global` 现场。作用域只影响浏览现场，不改变顶栏的项目选择。
+   */
+  const projectScoped = viewScope === "project" && Boolean(project?.id);
+  const viewStateKey = projectScoped && project ? `project:${project.id}` : GLOBAL_STATE_KEY;
+  /** 只有项目现场才把项目根当默认落点；全局现场对项目根目录的变化完全无感。 */
+  const viewDefaultRoot = projectScoped ? (project?.rootPath ?? null) : null;
+
+  // ── 现场 hydration（代际令牌防串位：项目切换与作用域切换共用同一通道）────
   useEffect(() => {
-    const stateKey = project?.id ? `project:${project.id}` : "global";
     const gen = ++hydrateGenRef.current;
     const persisted = normalizePersisted(
       (useSettingsStore.getState().settings as unknown as Record<string, unknown> | null)?.[
         FILE_WORKSPACE_SETTING_KEY
       ],
     );
-    const saved = persisted.states[stateKey];
+    const saved = persisted.states[viewStateKey];
     if (saved) {
       savedHydratedRef.current = true;
-      store.getState().hydrate(saved, stateKey);
+      store.getState().hydrate(saved, viewStateKey);
     } else {
-      // 无项目态：单窗格空布局；有项目根目录时第一个窗格打开根目录。
+      // 无已存现场：单窗格空布局；仅项目现场且存在项目根目录时，第一窗格打开根目录。
+      // 全局现场不自动打开当前项目根目录，避免把项目现场混进全局浏览。
       // （设置若尚未加载完成，下面的订阅会在设置到达后补一次恢复。）
       const freshTree = defaultTree();
-      store.getState().hydrate({ tree: freshTree, panes: [], activePaneId: paneIds(freshTree)[0] }, stateKey);
-      if (project?.rootPath) {
-        store.getState().openInPane(paneIds(freshTree)[0], project.rootPath, "newTab");
+      store.getState().hydrate({ tree: freshTree, panes: [], activePaneId: paneIds(freshTree)[0] }, viewStateKey);
+      if (viewDefaultRoot) {
+        store.getState().openInPane(paneIds(freshTree)[0], viewDefaultRoot, "newTab");
       }
     }
     if (gen === hydrateGenRef.current) {
-      store.getState().setStateKey(stateKey);
+      store.getState().setStateKey(viewStateKey);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project?.id, project?.rootPath]);
+  }, [viewStateKey, projectScoped, viewDefaultRoot]);
 
   // 模板列表读取：设置变化时刷新（修订号触发）。
   const persisted = useMemo(
@@ -2117,11 +2142,52 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
           <span className="fw-toolbar-name">
             {source === "recycle" ? t("fw.recycle.title") : t("fw.title")}
           </span>
-          {project && (
+          {/* 回收站是全局视图：仍显示项目标识，但不提供服务层作用域切换。 */}
+          {source === "recycle" && project && (
             <span className="fw-toolbar-project" data-tip={project.rootPath || undefined}>
               <FolderOpen size={12} aria-hidden="true" />
               {project.name}
             </span>
+          )}
+          {/* 文件现场作用域切换：只切浏览现场，不清空顶栏项目选择。 */}
+          {source === "files" && (
+            <div
+              className="fw-source-switch fw-scope-switch"
+              role="tablist"
+              aria-label={t("fw.scope.switchLabel")}
+            >
+              <button
+                type="button"
+                role="tab"
+                aria-selected={projectScoped}
+                className={`fw-source-btn fw-scope-btn${projectScoped ? " is-active" : ""}`}
+                disabled={!project}
+                data-tip={project?.rootPath || t("fw.scope.noProject")}
+                onClick={() => {
+                  scopeTouchedRef.current = true;
+                  setViewScope("project");
+                }}
+              >
+                <FolderOpen size={12} aria-hidden="true" />
+                <span className="fw-scope-btn-label">
+                  {project ? `${t("fw.scope.project")} · ${project.name}` : t("fw.scope.project")}
+                </span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={!projectScoped}
+                className={`fw-source-btn fw-scope-btn${projectScoped ? "" : " is-active"}`}
+                data-tip={t("fw.scope.globalHint")}
+                onClick={() => {
+                  scopeTouchedRef.current = true;
+                  setViewScope("global");
+                }}
+              >
+                <Globe size={12} aria-hidden="true" />
+                <span className="fw-scope-btn-label">{t("fw.scope.global")}</span>
+              </button>
+            </div>
           )}
         </div>
 
@@ -2415,7 +2481,7 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
             dropHint={dropHint}
             onHoverZone={onHoverZone}
             layoutEditMode={false}
-            projectRoot={project?.rootPath ?? null}
+            projectRoot={viewDefaultRoot}
             onPreviewSelectionChange={handlePreviewSelectionChange}
           />
         ) : (
@@ -2427,7 +2493,7 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
             dropHint={dropHint}
             onHoverZone={onHoverZone}
             layoutEditMode={layoutEditMode}
-            projectRoot={project?.rootPath ?? null}
+            projectRoot={viewDefaultRoot}
             onPreviewSelectionChange={handlePreviewSelectionChange}
           />
         )}

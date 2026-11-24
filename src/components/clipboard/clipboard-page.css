@@ -1330,3 +1330,32 @@
 .clipboard-page .clip-group-card .clip-group-summary {
   text-align: left;
 }
+
+/* 项目关联标签（v98）：与任务/工作现场关联条同一套语言，只补「可取消」的 chip。 */
+.clip-projectlink-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.clip-projectlink-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 200px;
+  padding: 1px 2px 1px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  background: var(--surface-hover);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.clip-projectlink-chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

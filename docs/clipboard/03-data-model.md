@@ -110,6 +110,26 @@
 素材删除后由应用侧解除关联。对应命令 `clipboard_link_snapshot` /
 `clipboard_unlink_snapshot` / `clipboard_snapshot_links`，当前 UI 未接入。
 
+### clipboard_item_project_links / clipboard_group_project_links（v98 项目关联）
+
+数据作用域 Phase 2（`docs/architecture/TaskDock-Global-Project-Data-Scope-Architecture.md` §8）
+引入的两张关联表，语义与任务关联一致：
+
+| 列 | 说明 |
+|---|---|
+| `item_id` / `group_id` | → `clipboard_items(id)` / `clipboard_groups(id)` ON DELETE CASCADE |
+| `project_id` | → `workspace_projects(id)` ON DELETE CASCADE |
+| `created_at` | RFC3339 |
+
+复合主键 `(item_id, project_id)` / `(group_id, project_id)`，重复关联幂等；索引
+`(project_id, item_id)` / `(project_id, group_id)` 供项目筛选。**只存引用**：不复制正文、
+不改变归属、不构成 Agent 读取或导出授权（导出仍走预览 + 确认令牌）。
+
+- 命令：`clipboard_link_project` / `clipboard_unlink_project` / `clipboard_project_links`。
+- 删除项目只级联删除关联行，剪贴板内容与分组不变；删除条目/分组只清自身关联。
+- 备份：登记进 `EXTENDED_TABLES` 与 `BACKUP_TABLES`（restore 顺序 191/192，depends_on
+  含 `workspace_projects`）；快速备份按本次实际导出的条目/分组截断，避免恢复指向缺失父行。
+
 ## 二、静态加密格式（ADR-0012，批次 1–6）
 
 开启 `clipboard_encrypt_history`（默认关闭，旧库保持明文）后：
@@ -141,9 +161,11 @@
   - **v15**：`clipboard_items` 追加 `title` / `title_source` 两列（默认 `''` / `'none'`）。
     旧记录保持空标题由前端回退 `preview` 展示；标题不参与去重哈希，备份/恢复、
     DTO、命令签名同步扩展（`ClipboardItem` 新增两个字段）。
+  - **v98**：`clipboard_item_project_links` / `clipboard_group_project_links`
+    （数据作用域 Phase 2；只存引用，双外键级联）。v95–v97 已被并行任务占用，顺延至 98。
 - 版本检查在测试中覆盖：旧库逐级升级到最新、迁移中途失败回滚后重试成功。
-- 回滚/重置路径：数据管理命令删除表时同时删除 `clipboard_snapshot_links`，
-  避免外键残留（`db/mod.rs` 的清理 SQL）。
+- 回滚/重置路径：数据管理命令按 `EXTENDED_TABLES` 逆序清理，先删两张项目关联表，
+  再删 `clipboard_group_items` / `clipboard_items`，避免外键残留。
 
 ## 三、去重与归一化
 
@@ -183,6 +205,8 @@ URL 取域名 + 首段路径；HTML 优先 `<h1>`/`<title>`；图片为尺寸描
 | 删除分组及内容 | 只删除**未被其他分组引用、未被任务或工作现场单独关联、未收藏/置顶**的条目；其余保留，并返回 `retained_shared` |
 | 显式删除条目 | 用户明确删除内容：条目、资产引用、组内关系、任务/工作现场关联一并移除；因此从所有分组消失。界面文案已明确提示，不再声称“仍被引用会保留” |
 | 任务删除 | 仅级联删除 `clipboard_task_links`，剪贴板内容与分组不变 |
+| 项目删除 | 仅级联删除 `clipboard_item_project_links` / `clipboard_group_project_links`，剪贴板内容与分组不变 |
+| 取消项目关联 | 只删对应关联行；条目仍留在历史与其他项目的关联中 |
 | 资产文件 | 删除后检查 `clipboard_assets` 是否仍引用同一路径；无引用才删文件 |
 | 清空全部历史（`clipboard_clear_history`） | 删除**全部**条目与分组（含收藏/置顶），解除全部任务/工作现场关联；提交成功后清理 `images/`、`thumbs/` 中失去引用的缓存文件；系统剪贴板、外部原始文件、任务与现场记录均保留；粘贴进行中拒绝执行 |
 | 清空时的采集竞态 | 清空前推进 `capture_epoch`；事件在产生时携带代数，旧代数的事件与排队内容在清空后直接丢弃，不会把清空前的复制重新写回；清空后才产生的复制使用新代数，正常记录。若清空因数据库错误回滚，此前排队未入库的采集会被丢弃（历史本身保持原样），这是“旧内容不得回写”的保守取舍 |

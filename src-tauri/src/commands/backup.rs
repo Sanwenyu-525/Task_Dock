@@ -106,6 +106,9 @@ pub const EXTENDED_TABLES: &[&str] = &[
     "workspace_snapshot_items",
     "action_acks",
     "clipboard_snapshot_links",
+    // 项目关联（v98）：条目/分组 ↔ 项目根，只存引用；恢复晚于条目、分组与项目根。
+    "clipboard_item_project_links",
+    "clipboard_group_project_links",
     // 规划中心（v0.7）：导入按此顺序插入（满足外键依赖），清除按逆序。
     "planning_projects",
     "planning_milestones",
@@ -421,6 +424,24 @@ pub const BACKUP_TABLES: &[BackupTableRule] = &[
         "recent",
         190,
         &["tasks", "clipboard_items", "clipboard_groups"],
+        true
+    ),
+    // 项目关联（v98）：与条目/分组同属剪贴板模块，restore 顺序介于任务关联与粘贴任务之间；
+    // 快速备份按「本次实际导出的条目/分组」截断，避免恢复时指向未导出的父行。
+    rule!(
+        "clipboard_item_project_links",
+        "clipboard",
+        "recent",
+        191,
+        &["workspace_projects", "clipboard_items"],
+        true
+    ),
+    rule!(
+        "clipboard_group_project_links",
+        "clipboard",
+        "recent",
+        192,
+        &["workspace_projects", "clipboard_groups"],
         true
     ),
     rule!(
@@ -1463,6 +1484,13 @@ fn generic_sql(table: &str, kind: BackupKind) -> AppResult<String> {
             "SELECT * FROM clipboard_task_links WHERE (target_type = 'group' AND target_id IN (SELECT id FROM clipboard_groups)) OR (target_type = 'item' AND target_id IN ({})) ORDER BY rowid",
             items
         ),
+        "clipboard_item_project_links" => format!(
+            "SELECT * FROM clipboard_item_project_links WHERE item_id IN ({}) ORDER BY rowid",
+            items
+        ),
+        "clipboard_group_project_links" => {
+            "SELECT * FROM clipboard_group_project_links WHERE group_id IN (SELECT id FROM clipboard_groups) ORDER BY rowid".to_string()
+        }
         "clipboard_paste_jobs" => format!(
             "SELECT * FROM clipboard_paste_jobs WHERE id IN (SELECT id FROM clipboard_paste_jobs ORDER BY started_at DESC, id DESC LIMIT {}) ORDER BY rowid",
             QUICK_CLIPBOARD_PASTE_LIMIT

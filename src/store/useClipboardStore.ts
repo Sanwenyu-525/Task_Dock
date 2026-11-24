@@ -84,6 +84,10 @@ export interface ClipboardFilters {
   kind: string;
   search: string;
   favorite: boolean;
+  /** 项目关联筛选：当前项目 id；空 = 不限项目（默认）。 */
+  projectId?: string;
+  /** true = 只看未关联任何项目的条目/分组；与 projectId 同传时以 projectId 为准。 */
+  projectUnlinked?: boolean;
   /** 来源进程精确筛选；空/未定义表示全部来源。 */
   sourceApp?: string;
   /** 最近 N 天；空/0 表示不限时间。 */
@@ -191,6 +195,9 @@ function queryView(f: ClipboardFilters, limit: number, offset: number) {
   if (f.sourceApp) filter.sourceApp = f.sourceApp;
   if (f.recentDays && f.recentDays > 0) filter.recentDays = f.recentDays;
   if (f.sort === "most_used") filter.sort = "most_used";
+  // 项目筛选只影响浏览范围；不发 IPC 时保持旧请求形状，避免影响轻量视图与缓存键。
+  if (f.projectId) filter.projectId = f.projectId;
+  else if (f.projectUnlinked) filter.projectUnlinked = true;
   return clipboardView(filter);
 }
 

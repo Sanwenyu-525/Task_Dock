@@ -889,6 +889,41 @@ pub fn clipboard_task_links(
 }
 
 #[tauri::command]
+pub fn clipboard_link_project(
+    state: State<'_, Arc<ClipboardRuntime>>,
+    project_id: String,
+    target_type: String,
+    target_id: String,
+) -> AppResult<store::ClipboardProjectLink> {
+    let rt = runtime(&state);
+    let link = store::link_project(&rt.db, &project_id, &target_type, &target_id)?;
+    rt.emit_changed("link-project");
+    Ok(link)
+}
+
+#[tauri::command]
+pub fn clipboard_unlink_project(
+    state: State<'_, Arc<ClipboardRuntime>>,
+    project_id: String,
+    target_type: String,
+    target_id: String,
+) -> AppResult<()> {
+    let rt = runtime(&state);
+    store::unlink_project(&rt.db, &project_id, &target_type, &target_id)?;
+    rt.emit_changed("unlink-project");
+    Ok(())
+}
+
+#[tauri::command]
+pub fn clipboard_project_links(
+    state: State<'_, Arc<ClipboardRuntime>>,
+    target_type: String,
+    target_id: String,
+) -> AppResult<Vec<store::ClipboardProjectLink>> {
+    store::project_links(&runtime(&state).db, &target_type, &target_id)
+}
+
+#[tauri::command]
 pub fn clipboard_link_snapshot(
     state: State<'_, Arc<ClipboardRuntime>>,
     snapshot_id: String,

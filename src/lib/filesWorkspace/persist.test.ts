@@ -8,6 +8,8 @@ import {
   bindSettingsStore,
   FILE_WORKSPACE_SETTING_KEY,
   FILE_WORKSPACE_VERSION,
+  GLOBAL_STATE_KEY,
+  MAX_STATES,
   defaultPersisted,
   normalizePersisted,
   persistFilesWorkspace,
@@ -40,6 +42,18 @@ describe("normalizePersisted", () => {
     };
     const out = normalizePersisted(raw);
     expect(Object.keys(out.states).sort()).toEqual(["global", "project:abc_1"]);
+  });
+
+  it("states 超上限时保住 global（腾出的名额来自项目态）", () => {
+    const base = { tree: validTree(), panes: [], activePaneId: "x" };
+    const states: Record<string, unknown> = {};
+    for (let i = 1; i <= MAX_STATES; i += 1) states[`project:p${i}`] = base;
+    // global 排在最后：朴素 slice(0, MAX_STATES) 会把它裁掉。
+    states[GLOBAL_STATE_KEY] = base;
+    const out = normalizePersisted({ version: FILE_WORKSPACE_VERSION, states });
+    expect(Object.keys(out.states)).toHaveLength(MAX_STATES);
+    expect(out.states[GLOBAL_STATE_KEY]).toBeDefined();
+    expect(out.states[`project:p${MAX_STATES}`]).toBeUndefined();
   });
 
   it("状态内 activePaneId 非法时落到第一个窗格", () => {
@@ -316,6 +330,27 @@ describe("persistFilesWorkspace 写入链", () => {
     bindSettingsStore(() => ({ settings: null, update: async () => {} }));
     await expect(persistFilesWorkspace((c) => ({ ...c }))).rejects.toThrow("设置尚未加载");
     await __flushFilesWorkspaceWrites();
+  });
+
+  it("超上限写入时保住 global，淘汰最旧的项目态", async () => {
+    const base = { tree: validTree(), panes: [], activePaneId: "x" };
+    const states: Record<string, unknown> = { [GLOBAL_STATE_KEY]: base };
+    for (let i = 1; i < MAX_STATES; i += 1) states[`project:p${i}`] = base;
+    fake.settings = {
+      [FILE_WORKSPACE_SETTING_KEY]: { version: FILE_WORKSPACE_VERSION, states, templates: [], recentTemplates: [] },
+    };
+
+    // 再写一个新项目现场 → 总 9 个键，必须裁掉最旧的 project:p1，global 保留。
+    await persistFilesWorkspace((cur) => ({
+      ...cur,
+      states: { ...cur.states, [`project:p${MAX_STATES}`]: base },
+    }));
+
+    const saved = fake.settings?.[FILE_WORKSPACE_SETTING_KEY] as FilesWorkspacePersisted;
+    expect(Object.keys(saved.states)).toHaveLength(MAX_STATES);
+    expect(saved.states[GLOBAL_STATE_KEY]).toBeDefined();
+    expect(saved.states["project:p1"]).toBeUndefined();
+    expect(saved.states[`project:p${MAX_STATES}`]).toBeDefined();
   });
 });
 

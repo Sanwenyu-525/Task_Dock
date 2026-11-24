@@ -1171,3 +1171,58 @@ fsReadText(path, 512 KiB)            ← 唯一磁盘读取
 - 失败策略：JSON `invalid` / `too-large` 强制回源码并展示解析器消息与位置，树形按钮 `disabled`，
   绝不显示半成品树；CSV 解析不会失败，只有预算降级标记。
 - 能力边界（明确不做）：文件内查找、排序、列宽拖拽、冻结列、虚拟滚动；超宽表提示切源码视图。
+
+---
+
+## 16. 全局 / 项目文件现场作用域（2026-11-23，数据作用域 Phase 1）
+
+依据：`docs/architecture/TaskDock-Global-Project-Data-Scope-Architecture.md` §7 / §14 Phase 1。
+目标只有一条：**文件工作区可以在页内切换「当前项目 / 全局文件」两种浏览现场**，而项目隔离只作用于
+浏览现场与布局状态，不代表目录被项目拥有，也不构成目录访问权限边界。
+
+### 16.1 现场键与默认规则
+
+| 项 | 规则 |
+|---|---|
+| 现场键 | `global` 或 `project:<projectId>`，与既有 `file_workspace_layouts.states` 完全一致，不新增键、不升级版本 |
+| 默认 | 顶栏已选项目 → `project:<id>`；未选项目 → `global`（不自动选第一个项目） |
+| 用户显式切换后 | 项目切换不再改写作用域：全局现场在所有项目之间共用（A → B 保持 `global`） |
+| 作用域 vs 项目选择 | 页内切换只改 `viewScope`，不清空、不改写 `workspace_active_project`，不新增第二个项目选择器 |
+
+`global` 是常驻键：`states` 仍受 `MAX_STATES = 8`（设置校验与服务端 `settings.rs` 同口径）限制，
+但超限时 **LRU 只淘汰最旧的项目态，绝不裁掉 `global`**（`persist.ts` 读取侧与写入侧同一规则）。
+因此最多保留 7 个项目现场 + 1 个全局现场。
+
+### 16.2 hydration 与竞态
+
+- 项目切换与作用域切换共用一条 hydration 通道，以 `hydrateGenRef` 代次令牌丢弃过期落地。
+- `hydrate()` 先 `flushPendingPersist()`：待写的 ≤600ms 编辑按**旧键**落盘，不会串到新键。
+- 全局现场不订阅 `project.rootPath`：项目根变化不会重载全局现场（避免把项目现场混进全局浏览）。
+- 只有项目现场把 `project.rootPath` 作为首个窗格的默认落点，并作为 `projectRoot` 传给 `FilePane`
+  （空态「当前项目」入口与打开文件夹的默认目录）；全局现场该值为 `null`。
+
+### 16.3 UI
+
+- 工具栏标题区新增分段控件：`当前项目 · {项目名}` / `全局文件`；回收站数据源不显示该控件
+  （回收站是全局视图，仍显示项目标识）。
+- 未选项目时「当前项目」段不可用，`data-tip` 说明原因；全局段恒可用。
+- 长项目名按 `max-width: 320px` 截断，完整路径走 `data-tip`；不做第二套分段控件样式
+  （复用 `fw-source-switch` / `fw-source-btn`，只补截断与禁用态）。
+
+### 16.4 明确不做
+
+- 不复制、不移动、不删除任何文件；不改项目根目录，不做 `rootPath` 权限沙箱。
+- 不合并项目收藏夹与全局收藏夹：`pinnedDirs` / `recentDirs` 仍按现场保存。
+- 不改模板语义：自定义模板与最近模板仍在 `states` 之外，全局共享。
+- 搜索对话框的项目根来源（`workspaceSearchSources`）保持现状；全局现场不自动打开项目根。
+
+### 16.5 验证（本批）
+
+- `src/components/files/FilesWorkspacePanel.scope.test.tsx`（新增 5 例）：默认进项目现场、
+  切全局不清项目选择、全局现场跨项目保留、项目现场 A→B 立即换场、未选项目时项目段禁用。
+- `src/lib/filesWorkspace/persist.test.ts`（+2 例）：读取侧与写入侧超限时均保住 `global`。
+- 定向执行：`npx vitest run src/components/files src/store/useFilesWorkspaceStore.test.ts src/lib/filesWorkspace`
+  → 64/65 文件通过；唯一失败 `columnWidths.test.ts` 与本批无关（该测试与其被测源码相对 HEAD 均无改动，
+  属基线失败，待列宽任务处理）。
+- `npx tsc --noEmit` 只剩 `src/workbench/ProjectWorkspacePanel.tsx(877,11)`（他人未提交的
+  `NovelOverviewSummary` 改动引入，本批文件无类型错误）。

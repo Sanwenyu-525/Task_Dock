@@ -25,6 +25,37 @@ pub mod secure;
 pub mod secure_migration;
 pub mod store;
 
+/// v98（2026-11-23，数据作用域 Phase 2）：剪贴板条目/分组与项目根的可选关联。
+///
+/// 语义边界（`docs/architecture/TaskDock-Global-Project-Data-Scope-Architecture.md` §8）：
+/// - 只存 ID 与时间，不复制正文、图片或敏感元数据（ADR-0012 加密边界不变）；
+/// - 删除项目只级联删除关联行，绝不删除剪贴板内容；
+/// - 删除条目/分组只清理自身关系；项目关联不等于 Agent 授权。
+pub const MIGRATION_98: (i64, &'static str) = (
+    98,
+    r#"
+CREATE TABLE clipboard_item_project_links (
+  item_id TEXT NOT NULL REFERENCES clipboard_items(id) ON DELETE CASCADE,
+  project_id TEXT NOT NULL REFERENCES workspace_projects(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (item_id, project_id)
+);
+
+CREATE TABLE clipboard_group_project_links (
+  group_id TEXT NOT NULL REFERENCES clipboard_groups(id) ON DELETE CASCADE,
+  project_id TEXT NOT NULL REFERENCES workspace_projects(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (group_id, project_id)
+);
+
+CREATE INDEX idx_clip_item_project_project
+  ON clipboard_item_project_links(project_id, item_id);
+
+CREATE INDEX idx_clip_group_project_project
+  ON clipboard_group_project_links(project_id, group_id);
+"#,
+);
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};

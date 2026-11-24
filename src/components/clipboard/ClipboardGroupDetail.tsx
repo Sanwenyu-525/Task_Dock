@@ -34,6 +34,7 @@ import { ClipboardThumb, useInViewport, usePreviewImage, useThumbnail } from "./
 import PastePanel from "./PastePanel";
 import TaskLinkBar from "./TaskLinkBar";
 import WorkspaceLinkBar from "./WorkspaceLinkBar";
+import ProjectLinkBar from "./ProjectLinkBar";
 import type { AskConfirm, LinkTask } from "./types";
 
 export default function ClipboardGroupDetail({
@@ -766,6 +767,7 @@ export default function ClipboardGroupDetail({
 
         <TaskLinkBar targetType="group" targetId={group.id} />
         <WorkspaceLinkBar targetType="group" targetId={group.id} />
+        <ProjectLinkBar targetType="group" targetId={group.id} />
         <AgentExportPanel targetType="group" targetId={group.id} taskId={linkTask?.id ?? null} />
 
         {/* 危险操作紧跟在「导出给 Agent」之后，与说明同一行；不单独占满整行。 */}

@@ -136,8 +136,14 @@
   white-space: nowrap;
 }
 
-.capability-panel .cap-list-meta {
-  font-size: 11px;
+.capability-panel .cap-scope-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 0 10px 8px;
+}
+
+.capability-panel .cap-list-meta {  font-size: 11px;
   color: var(--text-tertiary);
   overflow: hidden;
   text-overflow: ellipsis;

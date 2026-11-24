@@ -12,7 +12,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
-  AlertTriangle, Archive, ArrowUpDown, ChevronDown, Clipboard, Copy, Eraser, Filter, FolderPlus, Info, Link2,
+  AlertTriangle, Archive, ArrowUpDown, ChevronDown, Clipboard, Copy, Eraser, Filter, FolderKanban, FolderPlus, Info, Link2,
   ListChecks, Loader2, Merge, Pause, Pin, Play, RefreshCw, RotateCcw, Settings as SettingsIcon,
   Star, Trash2, X,
 } from "lucide-react";
@@ -53,6 +53,7 @@ import { fileTypeFromName } from "../../lib/fileTypeUi";
 import { CLIPBOARD_DENSITY_OPTIONS } from "../../lib/clipboardDensity";
 import { EXIT_MS, REORDER_MS, prefersReducedMotion } from "../../lib/motion";
 import { useClipboardStore } from "../../store/useClipboardStore";
+import { useOptionalProjectContext } from "../../workbench/ProjectContext";
 import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
 import { useLifecycleStore } from "../../store/useLifecycleStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
@@ -171,6 +172,25 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
   const selectedItems = useClipboardStore((s) => s.selectedItems);
   const selectedGroups = useClipboardStore((s) => s.selectedGroups);
   const setFilters = useClipboardStore((s) => s.setFilters);
+  /**
+   * 项目上下文可能不存在（抽屉浮层不在 ProjectContextProvider 内）。这里只隐藏项目筛选，
+   * 不伪造默认项目，也不把 null 当成「全部项目」（ADR-0010）。
+   */
+  const projectCtx = useOptionalProjectContext();
+  const activeProjectId = projectCtx?.projectId ?? null;
+  /** 项目筛选范围：all=不限（默认）/ project=当前项目 / unlinked=未关联项目。 */
+  const projectScope: "all" | "project" | "unlinked" = filters.projectId
+    ? "project"
+    : filters.projectUnlinked
+      ? "unlinked"
+      : "all";
+  // 顶栏切换项目后，「当前项目」范围跟着走；项目被取消选择时退回「全部」，
+  // 不让列表停在一个已不存在的项目 id 上。
+  useEffect(() => {
+    if (!filters.projectId) return;
+    if (!activeProjectId) setFilters({ projectId: undefined });
+    else if (filters.projectId !== activeProjectId) setFilters({ projectId: activeProjectId });
+  }, [activeProjectId, filters.projectId, setFilters]);
   const setSection = useClipboardStore((s) => s.setSection);
   const density = useClipboardStore((s) => s.density);
   const setDensity = useClipboardStore((s) => s.setDensity);
@@ -392,12 +412,17 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
     run: () => void | Promise<void>;
   } | null>(null);
   /** 列表滚动状态的归属键：筛选或「历史/分组」视图一变，旧锚点与旧位置一律作废。 */
-  const listFilterKey = `${section}|${filters.kind}|${filters.favorite ? "1" : "0"}|${filters.search.trim()}|${filters.sourceApp ?? ""}|${filters.recentDays ?? 0}|${filters.sort ?? "recent"}`;
+  const projectScopeKey = filters.projectId
+    ? `p:${filters.projectId}`
+    : filters.projectUnlinked
+      ? "unlinked"
+      : "all";
+  const listFilterKey = `${section}|${filters.kind}|${filters.favorite ? "1" : "0"}|${filters.search.trim()}|${filters.sourceApp ?? ""}|${filters.recentDays ?? 0}|${filters.sort ?? "recent"}|${projectScopeKey}`;
   /**
    * 预览归属键：不含排序。筛选/视图一变，右侧内容就不再对应当前列表，
    * 立即收起预览，避免右栏残留一条已被筛掉的记录；仅重排（排序）不打断预览。
    */
-  const previewScopeKey = `${section}|${filters.kind}|${filters.favorite ? "1" : "0"}|${filters.search.trim()}|${filters.sourceApp ?? ""}|${filters.recentDays ?? 0}`;
+  const previewScopeKey = `${section}|${filters.kind}|${filters.favorite ? "1" : "0"}|${filters.search.trim()}|${filters.sourceApp ?? ""}|${filters.recentDays ?? 0}|${projectScopeKey}`;
   const previewScopeRef = useRef(previewScopeKey);
   useEffect(() => {
     if (previewScopeRef.current === previewScopeKey) return;
@@ -673,6 +698,8 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
     filters.sourceApp,
     filters.recentDays,
     filters.sort,
+    filters.projectId,
+    filters.projectUnlinked,
     load,
   ]);
 
@@ -1481,6 +1508,67 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
               ariaLabel="搜索剪贴板历史"
               clearLabel="清除搜索"
             />
+            {/* 项目关联范围：只切列表范围，不改变顶栏项目选择，也不删除内容。 */}
+            {!isDrawer && projectCtx && (
+              <DropdownMenu
+                menuLabel="项目筛选范围"
+                menuMinWidth={220}
+                placement="bottom-start"
+                items={[
+                  {
+                    key: "all",
+                    label: "全部内容",
+                    description: "不按项目关联筛选",
+                    radio: true,
+                    checked: projectScope === "all",
+                    onSelect: () => setFilters({ projectId: undefined, projectUnlinked: false }),
+                  },
+                  {
+                    key: "project",
+                    label: activeProjectId
+                      ? `当前项目 · ${projectCtx.selectedProject?.name ?? ""}`
+                      : "当前项目",
+                    description: activeProjectId
+                      ? "只看关联该项目（含所属分组关联）的内容"
+                      : "尚未选择项目，先在顶栏选择项目",
+                    radio: true,
+                    checked: projectScope === "project",
+                    disabled: !activeProjectId,
+                    onSelect: () => {
+                      if (!activeProjectId) return;
+                      setFilters({ projectId: activeProjectId, projectUnlinked: false });
+                    },
+                  },
+                  {
+                    key: "unlinked",
+                    label: "未关联项目",
+                    description: "只看没有关联任何项目的内容",
+                    radio: true,
+                    checked: projectScope === "unlinked",
+                    onSelect: () => setFilters({ projectId: undefined, projectUnlinked: true }),
+                  },
+                ]}
+                trigger={({ ref, expanded, onClick, onKeyDown }) => (
+                  <button
+                    ref={ref}
+                    type="button"
+                    className={`btn sm clip-project-filter-btn ${expanded ? "is-open" : ""}`}
+                    aria-haspopup="menu"
+                    aria-expanded={expanded}
+                    data-tip="按项目关联范围筛选；不改变当前项目选择，也不删除任何内容"
+                    onClick={onClick}
+                    onKeyDown={onKeyDown}
+                  >
+                    <FolderKanban size={12} aria-hidden="true" />
+                    {projectScope === "project"
+                      ? "当前项目"
+                      : projectScope === "unlinked"
+                        ? "未关联项目"
+                        : "全部内容"}
+                  </button>
+                )}
+              />
+            )}
             {section === "items" && (
               <DropdownMenu
                 menuLabel="剪贴板排序"

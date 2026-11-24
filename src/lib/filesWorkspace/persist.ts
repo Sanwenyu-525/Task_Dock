@@ -108,6 +108,9 @@ export interface FilesWorkspacePersisted {
   recentTemplates: string[];
 }
 
+/** 全局文件现场的常驻键：跨项目共用，LRU 只淘汰项目态，绝不淘汰它。 */
+export const GLOBAL_STATE_KEY = "global";
+
 export const MAX_STATES = 8;
 export const MAX_TEMPLATES = 20;
 export const MAX_RECENT = 8;
@@ -311,9 +314,19 @@ export function normalizePersisted(raw: unknown): FilesWorkspacePersisted {
   }
   const out = defaultPersisted();
   if (isRecord(raw.states)) {
-    const entries = Object.entries(raw.states).slice(0, MAX_STATES);
+    const all = Object.entries(raw.states);
+    let entries = all;
+    if (all.length > MAX_STATES) {
+      // 超限时按 LRU 只保留最近 MAX_STATES 个；全局现场是跨项目共用的常驻现场，
+      // 位置靠前也要保住它（腾出一个项目态名额，而不是把 global 裁掉）。
+      entries = all.slice(0, MAX_STATES);
+      if (!entries.some(([key]) => key === GLOBAL_STATE_KEY)) {
+        const globalEntry = all.find(([key]) => key === GLOBAL_STATE_KEY);
+        if (globalEntry) entries = [...entries.slice(0, MAX_STATES - 1), globalEntry];
+      }
+    }
     for (const [key, value] of entries) {
-      const keyOk = key === "global" || /^project:[A-Za-z0-9_-]{1,64}$/.test(key);
+      const keyOk = key === GLOBAL_STATE_KEY || /^project:[A-Za-z0-9_-]{1,64}$/.test(key);
       if (!keyOk) continue;
       const state = normalizeState(value);
       if (state) out.states[key] = state;
@@ -385,9 +398,12 @@ export async function persistFilesWorkspace(
     const next = mutate(current);
     // LRU 收敛：states 超 MAX_STATES 时丢弃最旧（由 mutate 侧维护 updatedAt 太重，
     // 这里按对象键序保留前 N 个即可——写入侧总是把活跃键放回末尾）。
+    // 全局现场是常驻键：超限时只淘汰最旧的项目态，绝不把 global 写丢。
     const stateKeys = Object.keys(next.states);
     if (stateKeys.length > MAX_STATES) {
-      for (const key of stateKeys.slice(0, stateKeys.length - MAX_STATES)) {
+      const overflow = stateKeys.length - MAX_STATES;
+      const victims = stateKeys.filter((key) => key !== GLOBAL_STATE_KEY).slice(0, overflow);
+      for (const key of victims) {
         delete next.states[key];
       }
     }

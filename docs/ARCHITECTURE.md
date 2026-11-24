@@ -1536,6 +1536,8 @@ clipboard_assets          （图片原图/缩略图文件路径，role=image/thu
 clipboard_groups          （auto/manual；collecting/closed）
 clipboard_group_items     （组内 position 顺序，双外键级联）
 clipboard_task_links      （任务↔条目/分组；任务删除只删关联）
+clipboard_item_project_links   （v98 条目↔项目根，只存引用；项目删除只级联关联）
+clipboard_group_project_links  （v98 分组↔项目根，同上；关联不构成 Agent 授权）
 clipboard_paste_jobs      （逐项粘贴审计：sent/remaining/status/restored）
 clipboard_snapshot_links  （v0.5 工作现场↔素材，只存关联）
 

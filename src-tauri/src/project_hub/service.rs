@@ -1579,6 +1579,13 @@ pub(crate) fn delete_project_tx(
         &format!("DELETE FROM planning_projects WHERE {OWNED_PLANS_WHERE}"),
         params![project_id],
     )?;
+    // 项目删除后知识文档的项目关联会变成幽灵引用（knowledge_links.target_id 没有外键），
+    // 必须显式清理；知识库本身由 project_id/workspace_id 的 ON DELETE SET NULL 保留，
+    // 并在列表里显示为「未归属」，不会被误当成全局库。
+    conn.execute(
+        "DELETE FROM knowledge_links WHERE target_kind = 'project' AND target_id = ?1",
+        params![project_id],
+    )?;
     conn.execute(
         "DELETE FROM workspace_projects WHERE id = ?1",
         params![project_id],

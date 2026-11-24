@@ -55,8 +55,17 @@ pub fn capability_kb_list(
     db: State<'_, Arc<Db>>,
     query: Option<String>,
     kind: Option<String>,
+    scope: Option<String>,
+    project_id: Option<String>,
 ) -> AppResult<Vec<KnowledgeBase>> {
-    knowledge::list_bases_impl(&db, query.as_deref(), kind.as_deref())
+    // scope 缺省 = all（兼容旧调用与全局管理列表）；项目视图必须显式传 projectId。
+    knowledge::list_bases_scoped_impl(
+        &db,
+        query.as_deref(),
+        kind.as_deref(),
+        scope.as_deref(),
+        project_id.as_deref(),
+    )
 }
 
 #[tauri::command]

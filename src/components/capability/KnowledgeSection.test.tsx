@@ -41,6 +41,7 @@ const base = {
   name: "资料库",
   description: "项目资料",
   kind: "personal" as const,
+  ownership: "global" as const,
   projectId: null,
   workspaceId: null,
   favorite: false,
@@ -211,8 +212,7 @@ describe("KnowledgeSection", () => {
     );
   });
 
-  it("失败文档展示诊断原因，重建与删除调用真实命令", async () => {
-    render(<KnowledgeSection />);
+  it("失败文档展示诊断原因，重建与删除调用真实命令", async () => {    render(<KnowledgeSection />);
     await screen.findByText("丢失.md");
     fireEvent.click(screen.getByText("丢失.md"));
     await waitFor(() => expect(api.capabilityDocumentGet).toHaveBeenCalledWith("d2"));
@@ -226,5 +226,39 @@ describe("KnowledgeSection", () => {
     const confirm = await screen.findByRole("dialog");
     fireEvent.click(within(confirm).getByRole("button", { name: "删除" }));
     await waitFor(() => expect(api.capabilityDocumentDelete).toHaveBeenCalledWith("d2"));
+  });
+
+  it("作用域切片下推后端参数，不做前端过滤", async () => {
+    render(<KnowledgeSection />);
+    await screen.findAllByText("资料库");
+    expect(api.capabilityKbList).toHaveBeenLastCalledWith(undefined, undefined, "all", undefined);
+
+    fireEvent.click(screen.getByRole("button", { name: "全局" }));
+    await waitFor(() =>
+      expect(api.capabilityKbList).toHaveBeenLastCalledWith(undefined, undefined, "global", undefined),
+    );
+  });
+
+  it("未归属知识库展示恢复入口并按显式选择重绑", async () => {
+    api.capabilityKbList.mockResolvedValue([{ ...base, ownership: "unowned", projectId: null }]);
+    render(<KnowledgeSection />);
+    await screen.findAllByText("资料库");
+    expect(screen.getByText(/原绑定的项目已删除/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "转为全局" }));
+    await waitFor(() =>
+      expect(api.capabilityKbUpdate).toHaveBeenCalledWith("kb1", {
+        name: "资料库",
+        description: "项目资料",
+        kind: "personal",
+        projectId: null,
+        workspaceId: null,
+      }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "未归属" }));
+    await waitFor(() =>
+      expect(api.capabilityKbList).toHaveBeenLastCalledWith(undefined, undefined, "unowned", undefined),
+    );
   });
 });

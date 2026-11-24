@@ -160,6 +160,28 @@ html[data-theme="light"] .fw-root {
   outline-offset: 1px;
 }
 
+/* 文件现场作用域切换（当前项目 / 全局文件）：复用「文件 / 回收站」分段控件样式，
+   只补截断与收缩，避免长项目名把标题区挤爆。 */
+.fw-scope-switch {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 320px;
+}
+
+.fw-scope-btn {
+  min-width: 0;
+}
+
+.fw-scope-btn-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fw-scope-btn:disabled {
+  opacity: 0.55;
+}
+
 /* 布局模板快捷入口：紧邻「文件 / 回收站」切换右侧，只展示最近使用的 2 个模板。
    其余模板在紧凑菜单里；模板多时按钮文字截断，完整名称走 data-tip。 */
 .fw-quick-templates {

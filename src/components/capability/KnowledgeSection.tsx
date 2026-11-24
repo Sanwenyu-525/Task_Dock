@@ -3,7 +3,7 @@
 //! 原文边界在 UI 也要说清楚：引用模式只索引原文件；导入模式由知识库托管副本；
 //! 删除文档不删除用户原文件。导入报告按 imported/skipped/duplicate/failed 如实展示。
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   Download,
@@ -42,11 +42,11 @@ import {
   type KnowledgeBase,
   type KnowledgeBaseKind,
   type KnowledgeDocStatus,
-  type KnowledgeDocument,
-  type KnowledgeDocumentDetail,
+  type KnowledgeDocument,  type KnowledgeDocumentDetail,
   type KnowledgeSearchPage,
   type KnowledgeSourceMode,
   type KnowledgeStats,
+  type KnowledgeListScope,
 } from "../../lib/bridge";
 import { errorMessage } from "../../lib/errors";
 import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
@@ -61,6 +61,7 @@ import {
   StatusBadge,
 } from "../ui";
 import { pickFolder } from "../../lib/filesWorkspace/folderPicker";
+import { useOptionalProjectContext } from "../../workbench/ProjectContext";
 
 type ImportKind = "file" | "folder" | "note" | "capture" | "text";
 
@@ -87,6 +88,14 @@ function sourceLabel(t: (key: "cap.doc.source.file" | "cap.doc.source.folder" | 
 
 export default function KnowledgeSection() {
   const { t } = useLocale();
+  const projectCtx = useOptionalProjectContext();
+  const activeProjectId = projectCtx?.projectId ?? null;
+  const [scope, setScopeState] = useState<KnowledgeListScope>("all");
+  const scopeTouchedRef = useRef(false);
+  const selectScope = useCallback((next: KnowledgeListScope) => {
+    scopeTouchedRef.current = true;
+    setScopeState(next);
+  }, []);
   const [stats, setStats] = useState<KnowledgeStats | null>(null);
   const [bases, setBases] = useState<KnowledgeBase[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -130,9 +139,15 @@ export default function KnowledgeSection() {
     setLoading(true);
     setError(null);
     try {
+      // 作用域必须下推到后端：全局管理列表与项目视图是不同查询，不能前端过滤。
       const [nextStats, nextBases] = await Promise.all([
         capabilityKnowledgeStats(),
-        capabilityKbList(),
+        capabilityKbList(
+          undefined,
+          undefined,
+          scope,
+          scope === "project" ? (activeProjectId ?? undefined) : undefined,
+        ),
       ]);
       setStats(nextStats);
       setBases(nextBases);
@@ -147,7 +162,18 @@ export default function KnowledgeSection() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [scope, activeProjectId]);
+
+  // 项目内的知识库视图默认只看当前项目（不能在 A 项目里先看到 B 的私有库）；
+  // 无项目上下文时退回全量管理列表。用户显式切过作用域后尊重用户选择。
+  useEffect(() => {
+    if (scopeTouchedRef.current) {
+      if (scope === "project" && !activeProjectId) setScopeState("all");
+      return;
+    }
+    const next: KnowledgeListScope = activeProjectId ? "project" : "all";
+    if (next !== scope) setScopeState(next);
+  }, [activeProjectId, scope]);
 
   const loadDocs = useCallback(
     async (kbId: string, query: string, status: "" | KnowledgeDocStatus) => {
@@ -251,9 +277,49 @@ export default function KnowledgeSection() {
   }
 
   function bindingName(base: KnowledgeBase): string | null {
-    const id = base.kind === "project" ? base.projectId : base.kind === "workspace" ? base.workspaceId : null;
+    const id = base.projectId ?? base.workspaceId;
     if (!id) return null;
     return projects.find((project) => project.id === id)?.name ?? id;
+  }
+
+  /** 归属文案：不按 kind 直译，避免把项目删除后的残留库显示成「个人/全局」。 */
+  function ownershipLabel(base: KnowledgeBase): string {
+    switch (base.ownership) {
+      case "global":
+        return t("cap.kb.owner.global");
+      case "project":
+        return t("cap.kb.owner.project", { name: bindingName(base) ?? "" });
+      case "workspaceLegacy":
+        return t("cap.kb.owner.workspaceLegacy", { name: bindingName(base) ?? "" });
+      default:
+        return t("cap.kb.owner.unowned");
+    }
+  }
+
+  /** 未归属库的显式恢复入口：转为全局，或归入当前项目（都要用户点，不自动迁移）。 */
+  async function recoverBase(base: KnowledgeBase, target: "global" | "project") {
+    const projectId = target === "project" ? activeProjectId : null;
+    if (target === "project" && !projectId) {
+      setError(t("cap.kb.owner.noProject"));
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await capabilityKbUpdate(base.id, {
+        name: base.name,
+        description: base.description,
+        kind: target === "project" ? "project" : "personal",
+        projectId,
+        workspaceId: null,
+      });
+      setNotice(t("cap.kb.owner.recovered"));
+      await loadLists(true);
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function submitKb() {
@@ -546,6 +612,29 @@ export default function KnowledgeSection() {
             <span>{t("cap.kb.listTitle")}</span>
             <span className="cap-muted">{bases.length}</span>
           </div>
+          <div className="cap-scope-chips" role="group" aria-label={t("cap.kb.scopeLabel")}>
+            {(["all", "global", "unowned"] as KnowledgeListScope[]).map((item) => (
+              <button
+                key={item}
+                type="button"
+                className={`btn xs${scope === item ? " primary" : ""}`}
+                aria-pressed={scope === item}
+                onClick={() => selectScope(item)}
+              >
+                {t(`cap.kb.scope.${item}` as "cap.kb.scope.all")}
+              </button>
+            ))}
+            {activeProjectId ? (
+              <button
+                type="button"
+                className={`btn xs${scope === "project" ? " primary" : ""}`}
+                aria-pressed={scope === "project"}
+                onClick={() => selectScope("project")}
+              >
+                {t("cap.kb.scope.project")}
+              </button>
+            ) : null}
+          </div>
           <div className="cap-list">
             {bases.map((base) => (
               <button
@@ -567,9 +656,7 @@ export default function KnowledgeSection() {
                   <span className="cap-ellipsis">{base.name}</span>
                 </span>
                 <span className="cap-list-meta">
-                  {t(`cap.kb.kind.${base.kind}` as "cap.kb.kind.personal")}
-                  {bindingName(base) ? ` · ${bindingName(base)}` : ""} ·{" "}
-                  {t("cap.kb.docCount", { count: base.docCount })}
+                  {ownershipLabel(base)} · {t("cap.kb.docCount", { count: base.docCount })}
                 </span>
               </button>
             ))}
@@ -590,6 +677,30 @@ export default function KnowledgeSection() {
           </div>
           {selectedBase ? (
             <>
+              {selectedBase.ownership === "unowned" ? (
+                <div className="cap-warning" role="status">
+                  <X size={13} aria-hidden="true" />
+                  <span>{t("cap.kb.owner.unownedHint")}</span>
+                  <button
+                    type="button"
+                    className="btn xs"
+                    disabled={busy}
+                    onClick={() => void recoverBase(selectedBase, "global")}
+                  >
+                    {t("cap.kb.owner.toGlobal")}
+                  </button>
+                  {activeProjectId ? (
+                    <button
+                      type="button"
+                      className="btn xs"
+                      disabled={busy}
+                      onClick={() => void recoverBase(selectedBase, "project")}
+                    >
+                      {t("cap.kb.owner.toProject")}
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
               <div className="cap-toolbar">
                 <button type="button" className="btn xs" onClick={() => setImportKind("file")}>
                   <Upload size={12} /> {t("cap.kb.importFile")}

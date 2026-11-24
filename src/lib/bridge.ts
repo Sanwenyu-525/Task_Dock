@@ -44,6 +44,7 @@ import type {
   CleanupReport,
   ClearReport,
   ClipboardTaskLink,
+  ClipboardProjectLink,
   PasteTarget,
   PasteStartReport,
   PasteJob,
@@ -282,6 +283,7 @@ import type {
   KnowledgeSourceMode,
   KnowledgeDocStatus,
   KnowledgeBase,
+  KnowledgeListScope,
   KnowledgeDocument,
   KnowledgeLink,
   KnowledgeDocumentDetail,
@@ -789,6 +791,9 @@ export const clipboardView = (filter?: ClipboardFilter) =>
       favorite: filter?.favorite ?? false,
       groupId: filter?.groupId ?? null,
       taskId: filter?.taskId ?? null,
+      // 项目筛选只在生效时出现：默认值不进入 IPC，既有调用形状（含测试断言）保持不变。
+      ...(filter?.projectId ? { projectId: filter.projectId } : {}),
+      ...(filter?.projectUnlinked ? { projectUnlinked: true } : {}),
       sourceApp: filter?.sourceApp ?? null,
       recentDays: filter?.recentDays ?? null,
       sort: filter?.sort ?? null,
@@ -934,6 +939,19 @@ export const clipboardUnlinkTask = (linkId: string) =>
   invoke<void>("clipboard_unlink_task", { linkId });
 export const clipboardTaskLinks = (taskId: string) =>
   invoke<ClipboardTaskLink[]>("clipboard_task_links", { taskId });
+/** 把条目/分组关联到项目根；重复关联幂等，返回首次建立的关系。 */
+export const clipboardLinkProject = (
+  projectId: string,
+  targetType: "item" | "group",
+  targetId: string,
+) => invoke<ClipboardProjectLink>("clipboard_link_project", { projectId, targetType, targetId });
+export const clipboardUnlinkProject = (
+  projectId: string,
+  targetType: "item" | "group",
+  targetId: string,
+) => invoke<void>("clipboard_unlink_project", { projectId, targetType, targetId });
+export const clipboardProjectLinks = (targetType: "item" | "group", targetId: string) =>
+  invoke<ClipboardProjectLink[]>("clipboard_project_links", { targetType, targetId });
 export const clipboardVisibleTargets = () =>
   invoke<PasteTarget[]>("clipboard_visible_targets");
 /**
@@ -2859,8 +2877,12 @@ export const onRecycleSyncDone = (cb: (summary: RecycleSyncSummary) => void): Pr
 
 export const capabilityKnowledgeStats = () =>
   invoke<KnowledgeStats>("capability_knowledge_stats", {});
-export const capabilityKbList = (query?: string, kind?: string) =>
-  invoke<KnowledgeBase[]>("capability_kb_list", { query, kind });
+export const capabilityKbList = (
+  query?: string,
+  kind?: string,
+  scope?: KnowledgeListScope,
+  projectId?: string,
+) => invoke<KnowledgeBase[]>("capability_kb_list", { query, kind, scope, projectId });
 export const capabilityKbGet = (id: string) =>
   invoke<KnowledgeBaseDetail>("capability_kb_get", { id });
 export const capabilityKbCreate = (input: {

@@ -39,6 +39,7 @@ import ImageLightbox from "./ImageLightbox";
 import { ClipboardLargeImage } from "./Media";
 import TaskLinkBar from "./TaskLinkBar";
 import WorkspaceLinkBar from "./WorkspaceLinkBar";
+import ProjectLinkBar from "./ProjectLinkBar";
 import type { AskConfirm, LinkTask } from "./types";
 
 /** 文件路径状态：ok / missing / inaccessible / checking / unknown（查询失败，不可确认）。 */
@@ -932,6 +933,7 @@ export default function ClipboardItemDetail({
 
         <TaskLinkBar targetType="item" targetId={item.id} />
         <WorkspaceLinkBar targetType="item" targetId={item.id} />
+        <ProjectLinkBar targetType="item" targetId={item.id} />
         <AgentExportPanel targetType="item" targetId={item.id} taskId={linkTask?.id ?? null} />
       </div>
 

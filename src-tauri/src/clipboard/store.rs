@@ -260,6 +260,13 @@ pub struct ClipboardFilter {
     pub favorite: bool,
     pub group_id: Option<String>,
     pub task_id: Option<String>,
+    /// 项目关联筛选：`Some(id)` 只返回直接关联该项目、或属于该项目关联分组的条目。
+    /// 关联只表示「项目引用了这份内容」，不改变归属，也不构成访问授权。
+    #[serde(default)]
+    pub project_id: Option<String>,
+    /// true = 只返回未关联任何项目的条目/分组；与 `project_id` 同时传时以前者为准。
+    #[serde(default)]
+    pub project_unlinked: bool,
     /// 精确匹配 `source_app`（保留原始进程标识，展示名由前端换算）。
     pub source_app: Option<String>,
     /// 最近 N 天；0/None 表示不限。用 `last_seen_at` 判定，不扫描正文。
@@ -302,6 +309,22 @@ fn item_filters(filter: &ClipboardFilter) -> (String, Vec<Value>) {
         );
         args.push(Value::Text(task.into()));
         args.push(Value::Text(task.into()));
+    }
+    if let Some(project) = filter.project_id.as_deref().filter(|p| !p.is_empty()) {
+        // 直接关联条目，或属于已关联该项目的分组：EXISTS 子查询不会放大行数，天然去重。
+        sql.push_str(
+            " AND (EXISTS(SELECT 1 FROM clipboard_item_project_links lp WHERE lp.project_id = ? AND lp.item_id = i.id)
+                OR EXISTS(SELECT 1 FROM clipboard_group_project_links lg JOIN clipboard_group_items gi ON gi.group_id = lg.group_id
+                          WHERE lg.project_id = ? AND gi.item_id = i.id))",
+        );
+        args.push(Value::Text(project.into()));
+        args.push(Value::Text(project.into()));
+    } else if filter.project_unlinked {
+        sql.push_str(
+            " AND NOT EXISTS(SELECT 1 FROM clipboard_item_project_links lp WHERE lp.item_id = i.id)
+                AND NOT EXISTS(SELECT 1 FROM clipboard_group_project_links lg JOIN clipboard_group_items gi ON gi.group_id = lg.group_id
+                          WHERE gi.item_id = i.id)",
+        );
     }
     (sql, args)
 }
@@ -510,6 +533,13 @@ fn list_groups_with_scan(
     if let Some(task) = filter.task_id.as_deref().filter(|t| !t.is_empty()) {
         sql.push_str(" AND EXISTS(SELECT 1 FROM clipboard_task_links lt WHERE lt.task_id = ? AND lt.target_type = 'group' AND lt.target_id = g.id)");
         args.push(Value::Text(task.into()));
+    }
+    if let Some(project) = filter.project_id.as_deref().filter(|p| !p.is_empty()) {
+        // 分组级筛选只看分组自身的关联；条目级关联由条目列表负责，两者不互相冒充。
+        sql.push_str(" AND EXISTS(SELECT 1 FROM clipboard_group_project_links lg WHERE lg.project_id = ? AND lg.group_id = g.id)");
+        args.push(Value::Text(project.into()));
+    } else if filter.project_unlinked {
+        sql.push_str(" AND NOT EXISTS(SELECT 1 FROM clipboard_group_project_links lg WHERE lg.group_id = g.id)");
     }
     if let Some(group) = filter.group_id.as_deref().filter(|g| !g.is_empty()) {
         sql.push_str(" AND g.id = ?");
@@ -2521,6 +2551,141 @@ pub fn task_links(db: &Db, task_id: &str) -> AppResult<Vec<ClipboardTaskLink>> {
     })
 }
 
+// ── 项目关联（v98，数据作用域 Phase 2）───────────────────────
+// 关联只保存引用，不复制正文；删除项目/条目/分组只级联删除关系，
+// 项目关联也不构成 Agent 读取或导出授权（导出仍走 preview + confirmationToken）。
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClipboardProjectLink {
+    pub project_id: String,
+    pub target_type: String,
+    pub target_id: String,
+    pub created_at: String,
+}
+
+fn project_link_table(target_type: &str) -> AppResult<&'static str> {
+    match target_type {
+        "item" => Ok("clipboard_item_project_links"),
+        "group" => Ok("clipboard_group_project_links"),
+        _ => Err(AppError::Validation("target_type 必须是 item 或 group".into())),
+    }
+}
+
+fn project_link_column(target_type: &str) -> &'static str {
+    if target_type == "item" {
+        "item_id"
+    } else {
+        "group_id"
+    }
+}
+
+pub fn link_project(
+    db: &Db,
+    project_id: &str,
+    target_type: &str,
+    target_id: &str,
+) -> AppResult<ClipboardProjectLink> {
+    let table = project_link_table(target_type)?;
+    let column = project_link_column(target_type);
+    let project = project_id.trim();
+    if project.is_empty() {
+        return Err(AppError::Validation("project_id 不能为空".into()));
+    }
+    db.with_conn(|conn| {
+        let project_exists: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM workspace_projects WHERE id = ?1",
+            params![project],
+            |r| r.get(0),
+        )?;
+        if project_exists == 0 {
+            return Err(AppError::NotFound("项目不存在".into()));
+        }
+        let target_exists: i64 = if target_type == "item" {
+            conn.query_row(
+                "SELECT COUNT(*) FROM clipboard_items WHERE id = ?1",
+                params![target_id],
+                |r| r.get(0),
+            )?
+        } else {
+            conn.query_row(
+                "SELECT COUNT(*) FROM clipboard_groups WHERE id = ?1",
+                params![target_id],
+                |r| r.get(0),
+            )?
+        };
+        if target_exists == 0 {
+            return Err(AppError::NotFound("剪贴板内容不存在".into()));
+        }
+        let now = crate::agents::now_iso();
+        conn.execute(
+            &format!(
+                "INSERT OR IGNORE INTO {table} ({column}, project_id, created_at) VALUES (?1, ?2, ?3)"
+            ),
+            params![target_id, project, now],
+        )?;
+        // 已存在时返回首次建立的时间，避免同一条关联被反复「刷新」。
+        let created_at: String = conn.query_row(
+            &format!("SELECT created_at FROM {table} WHERE {column} = ?1 AND project_id = ?2"),
+            params![target_id, project],
+            |r| r.get(0),
+        )?;
+        Ok(ClipboardProjectLink {
+            project_id: project.into(),
+            target_type: target_type.into(),
+            target_id: target_id.into(),
+            created_at,
+        })
+    })
+}
+
+pub fn unlink_project(
+    db: &Db,
+    project_id: &str,
+    target_type: &str,
+    target_id: &str,
+) -> AppResult<()> {
+    let table = project_link_table(target_type)?;
+    let column = project_link_column(target_type);
+    db.with_conn(|conn| {
+        let n = conn.execute(
+            &format!("DELETE FROM {table} WHERE {column} = ?1 AND project_id = ?2"),
+            params![target_id, project_id],
+        )?;
+        if n == 0 {
+            return Err(AppError::NotFound("关联不存在".into()));
+        }
+        Ok(())
+    })
+}
+
+pub fn project_links(
+    db: &Db,
+    target_type: &str,
+    target_id: &str,
+) -> AppResult<Vec<ClipboardProjectLink>> {
+    let table = project_link_table(target_type)?;
+    let column = project_link_column(target_type);
+    db.with_conn(|conn| {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT project_id, created_at FROM {table} WHERE {column} = ?1 ORDER BY created_at"
+        ))?;
+        let rows = stmt.query_map(params![target_id], |r| {
+            Ok(ClipboardProjectLink {
+                project_id: r.get(0)?,
+                target_type: target_type.into(),
+                target_id: target_id.into(),
+                created_at: r.get(1)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    })
+}
+
 // ── 工作现场关联（v0.5）────────────────────────────────────
 // 现场 ↔ 剪贴板素材只写关联不复制内容；删除现场或素材时关联级联消失。
 
@@ -3908,6 +4073,92 @@ mod tests {
             )?)
         })
         .unwrap()
+    }
+
+    fn seed_project(db: &Db, id: &str, name: &str) {
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO workspace_projects
+                   (id, name, kind, status, root_path, dev_project_id, note, created_at, updated_at)
+                 VALUES (?1, ?2, 'general', 'active', '', NULL, '', '2026-11-23T00:00:00Z', '2026-11-23T00:00:00Z')",
+                params![id, name],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    /// 数据作用域 Phase 2：项目关联只影响浏览范围，绝不删除剪贴板内容。
+    #[test]
+    fn project_links_filter_groups_and_cascade() {
+        let tmp = TempRoot::new();
+        let db = Db::open(&tmp.0.join("app.db")).unwrap();
+        let root = tmp.0.join("clipboard");
+        let s = settings();
+        seed_project(&db, "p-a", "项目A");
+        seed_project(&db, "p-b", "项目B");
+
+        let linked = record_capture(&db, &root, &text_payload("关联内容"), &s)
+            .unwrap()
+            .item;
+        let loose = record_capture(&db, &root, &text_payload("未关联内容"), &s)
+            .unwrap()
+            .item;
+
+        // 同一条目可同时关联 A、B；重复关联幂等且保留首次时间。
+        let first = link_project(&db, "p-a", "item", &linked.id).unwrap();
+        link_project(&db, "p-b", "item", &linked.id).unwrap();
+        let again = link_project(&db, "p-a", "item", &linked.id).unwrap();
+        assert_eq!(first.created_at, again.created_at);
+        assert_eq!(project_links(&db, "item", &linked.id).unwrap().len(), 2);
+
+        // 项目筛选：A 只看到关联内容，且不会因多项目关联出现重复行。
+        let by_a = list_items(
+            &db,
+            &ClipboardFilter {
+                project_id: Some("p-a".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(by_a.len(), 1);
+        assert_eq!(by_a[0].id, linked.id);
+
+        // 未关联筛选：只看到 loose，已关联条目被排除。
+        let unlinked = list_items(
+            &db,
+            &ClipboardFilter {
+                project_unlinked: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(unlinked.iter().any(|i| i.id == loose.id));
+        assert!(!unlinked.iter().any(|i| i.id == linked.id));
+
+        // 分组关联让组内条目进入该项目范围（不另存副本）。
+        let group = create_manual_group(&db, "项目组合", std::slice::from_ref(&linked.id)).unwrap();
+        link_project(&db, "p-b", "group", &group.id).unwrap();
+        let groups_b = list_groups(
+            &db,
+            &ClipboardFilter {
+                project_id: Some("p-b".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(groups_b.iter().any(|g| g.id == group.id));
+
+        // 取消关联只删关系，内容仍在。
+        unlink_project(&db, "p-b", "item", &linked.id).unwrap();
+        assert_eq!(project_links(&db, "item", &linked.id).unwrap().len(), 1);
+        assert!(get_item(&db, &linked.id).is_ok(), "取消关联不得删除内容");
+
+        // 删除项目：级联清掉关联行，剪贴板内容与分组都不受影响。
+        crate::project_hub::service::delete_project(&db, "p-a").unwrap();
+        assert!(project_links(&db, "item", &linked.id).unwrap().is_empty());
+        assert!(get_item(&db, &linked.id).is_ok(), "删除项目不得删除剪贴板内容");
+        assert!(get_group(&db, &group.id).is_ok(), "删除项目不得删除分组");
     }
 
     #[test]
